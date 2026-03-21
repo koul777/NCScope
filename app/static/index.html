@@ -1,0 +1,873 @@
+﻿<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>면접 질문 생성기</title>
+  <style>
+    :root { --bg:#f3f6fb; --ink:#132238; --muted:#5f6f83; --line:#dbe3ee; --primary:#0b69ff; --card:#fff; --good:#1f9d55; --warn:#ca8a04; }
+    * { box-sizing:border-box; }
+    body { margin:0; height:100vh; overflow:hidden; background:radial-gradient(circle at 10% 0%, #e7f0ff, var(--bg) 30%); color:var(--ink); font-family:"Segoe UI","Noto Sans KR",sans-serif; }
+    .wrap { width:min(1400px, 98vw); height:100vh; margin:0 auto; padding:8px 12px; display:grid; grid-template-rows:auto 1fr; gap:8px; }
+    .hero { background:linear-gradient(120deg,#0b2a5b,#0b69ff); color:#fff; border-radius:12px; padding:12px 16px; }
+    .hero h1 { margin:0 0 3px; font-size:22px; }
+    .hero p { margin:0; opacity:.92; font-size:12px; }
+    .grid { display:grid; grid-template-columns:minmax(320px,380px) 1fr; gap:10px; min-height:0; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; min-height:0; overflow:auto; }
+    .title { margin:0 0 10px; font-size:16px; font-weight:800; }
+    label { display:block; margin:10px 0 4px; font-size:13px; font-weight:700; }
+    input, textarea, select, button { width:100%; border:1px solid var(--line); border-radius:10px; font-size:14px; }
+    input, textarea, select { padding:10px; }
+    textarea { min-height:180px; resize:vertical; }
+    select { min-height:280px; }
+    select.dropdown { min-height:unset; height:38px; padding:6px 10px; font-size:13px; cursor:pointer; }
+    button { margin-top:10px; border:0; background:var(--primary); color:#fff; font-weight:800; padding:11px; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .btn-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+    .pill { border:1px solid var(--line); border-radius:999px; padding:5px 10px; font-size:12px; background:#f8fbff; }
+    .pill.good { border-color:#bce7cd; color:var(--good); background:#f0fcf5; }
+    .pill.warn { border-color:#f6dea3; color:var(--warn); background:#fff9ea; }
+    .section { border-top:1px dashed var(--line); padding-top:10px; margin-top:10px; }
+    .section h3 { margin:0 0 8px; font-size:14px; }
+    ul { margin:0; padding-left:18px; }
+    li { margin:4px 0; }
+    .sub { color:var(--muted); font-size:12px; margin-top:3px; }
+    .ncs-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .ncs-table th,.ncs-table td { border-bottom:1px solid #eef3fa; text-align:left; padding:8px 6px; }
+    .ncs-table th { color:var(--muted); font-weight:700; }
+    .empty { color:var(--muted); font-size:13px; }
+    .progress-wrap { margin:8px 0 10px; padding:10px; border:1px solid var(--line); border-radius:10px; background:#f8fbff; display:none; }
+    .progress-top { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:13px; }
+    .progress-bar { margin-top:8px; width:100%; height:8px; background:#e6eef9; border-radius:999px; overflow:hidden; }
+    .progress-fill { height:100%; width:8%; background:linear-gradient(90deg,#0b69ff,#57a4ff); transition:width .5s ease; }
+    .progress-note { margin-top:6px; font-size:12px; color:var(--muted); }
+    details summary { cursor:pointer; color:var(--muted); font-size:13px; }
+    pre { background:#0f1722; color:#d6e4f6; border-radius:8px; padding:10px; max-height:300px; overflow:auto; white-space:pre-wrap; }
+    .qcard { border:1px solid #e8eef7; border-radius:10px; padding:10px; margin-bottom:10px; background:#fbfdff; min-height:160px; }
+    .qhead { display:flex; gap:8px; align-items:center; margin-bottom:6px; font-size:12px; color:var(--muted); }
+    .followup-chain { margin:8px 0 8px 12px; border-left:2px solid #b0c8fa; padding-left:10px; }
+    .fu-step { padding:4px 0; font-size:12.5px; color:#32475d; }
+    .fu-label { font-weight:700; color:#1a4ab8; margin-right:4px; }
+    .qnav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+    .qnav-btn { width:auto; margin:0; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; }
+    .qnav-ind { font-size:13px; color:var(--muted); }
+    .result-scroll { max-height:calc(100vh - 180px); overflow:auto; padding-right:4px; }
+    .hidden { display:none !important; }
+    .build-tag { margin-top:4px; font-size:11px; opacity:.8; }
+    @media (max-width:980px){ .grid { grid-template-columns:1fr; } }
+
+    /* 소분류 UI */
+    .sclass-block { margin-top:10px; }
+    .sclass-block label { margin-bottom:6px; }
+    .sclass-extracting { font-size:12px; color:var(--muted); padding:6px 0; display:none; }
+    .sclass-tags { display:flex; flex-wrap:wrap; gap:6px; min-height:28px; margin-bottom:6px; }
+    .sclass-tag {
+      display:inline-flex; align-items:center; gap:5px;
+      background:#e8f0fe; border:1px solid #b0c8fa; border-radius:999px;
+      padding:4px 10px; font-size:12px; font-weight:700; color:#1a4ab8; cursor:default;
+    }
+    .sclass-tag.custom { background:#fef3c7; border-color:#fcd34d; color:#92400e; }
+    .sclass-tag.unmatched { background:#f3f4f6; border-color:#d1d5db; color:#6b7280; font-style:italic; }
+    .sclass-tag button {
+      all:unset; cursor:pointer; font-size:14px; line-height:1;
+      color:inherit; opacity:.6; margin:0; width:auto; padding:0;
+    }
+    .sclass-tag button:hover { opacity:1; }
+    .sclass-dropdown-row { display:flex; gap:6px; align-items:center; }
+    .sclass-dropdown-row select { flex:1; min-height:unset; height:34px; padding:5px 8px; font-size:13px; }
+    .sclass-dropdown-row button { width:auto; margin:0; padding:6px 14px; font-size:13px; border-radius:8px; }
+    .sclass-custom-row { display:flex; gap:6px; margin-top:6px; position:relative; }
+    .sclass-custom-row input { flex:1; height:34px; padding:5px 8px; font-size:13px; }
+    .sclass-custom-row button { width:auto; margin:0; padding:6px 14px; font-size:13px; border-radius:8px; background:#64748b; }
+    /* 자동완성 드롭다운 */
+    .sclass-autocomplete {
+      position:absolute; top:100%; left:0; right:0;
+      max-height:260px; overflow-y:auto; background:#fff;
+      border:1px solid #cbd5e1; border-top:none; border-radius:0 0 8px 8px;
+      box-shadow:0 4px 12px rgba(0,0,0,.12); z-index:100; display:none;
+    }
+    .sclass-autocomplete.fulllist { max-height:340px; }
+    .sclass-autocomplete .ac-item {
+      padding:7px 10px; font-size:13px; cursor:pointer; border-bottom:1px solid #f1f5f9;
+    }
+    .sclass-autocomplete .ac-item:hover,
+    .sclass-autocomplete .ac-item.active { background:#e8f0fe; color:#1a4ab8; }
+    .sclass-autocomplete .ac-item b { color:#1a4ab8; font-weight:700; }
+    .sclass-autocomplete .ac-empty { padding:8px 10px; font-size:12px; color:#9ca3af; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>면접 질문 생성기</h1>
+      <p>직무기술서 파일 + 담당업무 텍스트를 입력하거나, 담당업무를 직접 입력하고 NCS 코드를 선택할 수 있습니다.</p>
+      <div class="build-tag">build: upload+manual-mode</div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2 class="title">1) 입력</h2>
+
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+          <label for="inputMode" style="margin:0; white-space:nowrap; font-size:13px; font-weight:700;">입력 방식</label>
+          <select id="inputMode" class="dropdown" style="flex:1;">
+            <option value="upload" selected>📄 파일 업로드</option>
+            <option value="manual">✏️ 공고문 직접입력</option>
+          </select>
+        </div>
+
+        <div id="uploadBlock">
+          <label for="jdFile">직무기술서 파일 (필수, PDF/TXT)</label>
+          <input id="jdFile" type="file" accept=".pdf,.txt" />
+
+          <!-- 소분류 자동 추출 + 편집 UI -->
+          <div class="sclass-block" id="sclassBlock" style="display:none;">
+            <label>소분류 <span style="font-weight:400;color:var(--muted);">(추출됨 · × 로 제거)</span></label>
+            <div class="sclass-extracting" id="sclassExtracting">소분류 추출 중...</div>
+            <div class="sclass-tags" id="sclassTags"></div>
+
+            <!-- NCS 소분류 검색/선택 -->
+            <div class="sclass-custom-row">
+              <input id="sclassCustomInput" type="text" placeholder="소분류 검색 (예: 총무, 회계, 인사...)" autocomplete="off" />
+              <button type="button" id="btnShowAllSclass" title="전체 NCS 소분류 목록 보기">&#9660; 전체</button>
+              <button type="button" id="btnAddCustom">+ 추가</button>
+              <div class="sclass-autocomplete" id="sclassAutocomplete"></div>
+            </div>
+
+            <!-- 확정 버튼 -->
+            <button type="button" id="btnConfirmSclass" style="background:#1f9d55; margin-top:10px;">소분류 확정 → 면접 질문 생성</button>
+          </div>
+
+          <label for="noticeFile">공고문 파일 (선택, PDF/TXT)</label>
+          <input id="noticeFile" type="file" accept=".pdf,.txt" />
+
+          <label for="dutyText">담당업무 텍스트 (권장)</label>
+          <textarea id="dutyText" placeholder="공고문의 담당업무/직무수행내용을 붙여넣으세요."></textarea>
+
+          <label for="evalText">면접 평가항목 텍스트 (선택)</label>
+          <textarea id="evalText" placeholder="예: 인성, 조직적합도, 청렴수준, 안전역량"></textarea>
+        </div>
+
+        <div id="manualBlock" class="hidden">
+          <label for="noticeText">담당업무 텍스트</label>
+          <textarea id="noticeText" placeholder="수행업무, 요구역량, 우대사항, 협업 방식, 보고체계 등을 붙여넣으세요."></textarea>
+
+          <label for="evalTextManual">면접 평가항목 텍스트 (선택)</label>
+          <textarea id="evalTextManual" placeholder="예: 인성, 조직적합도, 청렴수준, 안전역량"></textarea>
+
+          <label for="ncsSearch">NCS 검색 (코드/명칭)</label>
+          <input id="ncsSearch" type="text" placeholder="예: 02020101 또는 총무" />
+          <div class="btn-row">
+            <button id="btnSearchNcs" type="button" style="background:#334155;">NCS 검색</button>
+            <button id="btnRefreshNcs" type="button" style="background:#475569;">목록 새로고침</button>
+          </div>
+
+          <label for="ncsSelect">NCS 코드 선택 (다중 선택)</label>
+          <select id="ncsSelect" multiple></select>
+          <div class="sub" id="selectedCount">선택된 NCS 코드: 0</div>
+        </div>
+
+
+        <button id="btnRun" style="display:none;">면접 질문 생성</button>
+      </section>
+
+      <section class="card">
+        <h2 class="title">2) 결과</h2>
+        <div class="result-scroll">
+          <div id="errorBox" class="pill warn" style="display:none; margin-bottom:8px;"></div>
+
+          <div id="progressWrap" class="progress-wrap">
+            <div class="progress-top">
+              <strong id="progressStage">요청 준비 중...</strong>
+              <span id="progressTime">0.0s</span>
+            </div>
+            <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+            <div id="progressNote" class="progress-note">생성 중입니다. 페이지를 닫지 마세요.</div>
+          </div>
+
+          <div id="meta" class="meta"></div>
+
+          <div class="section">
+            <h3>파이프라인 진단</h3>
+            <table class="ncs-table" id="diagTable" style="display:none;">
+              <thead><tr><th>단계</th><th>상태</th><th>상세</th></tr></thead>
+              <tbody id="diagBody"></tbody>
+            </table>
+            <div id="diagEmpty" class="empty">한 번 실행하면 진단 정보가 표시됩니다.</div>
+          </div>
+
+          <div class="section">
+            <h3>면접 질문 (페이지당 5개)</h3>
+            <div class="qnav">
+              <button id="btnPrevQ" class="qnav-btn" type="button">이전</button>
+              <span id="qIndicator" class="qnav-ind">0 / 0</span>
+              <button id="btnNextQ" class="qnav-btn" type="button">다음</button>
+            </div>
+            <div id="questionList"></div>
+            <div id="questionEmpty" class="empty">아직 생성된 질문이 없습니다.</div>
+          </div>
+
+          <div class="section">
+            <h3>NCS 매칭 결과</h3>
+            <table class="ncs-table" id="ncsTable" style="display:none;">
+              <thead><tr><th>코드</th><th>능력단위명</th><th>수준</th><th>점수</th></tr></thead>
+              <tbody id="ncsBody"></tbody>
+            </table>
+            <div id="ncsEmpty" class="empty">NCS 데이터가 없습니다.</div>
+          </div>
+
+          <div class="section">
+            <h3>KSA 항목</h3>
+            <ul id="ksaList"></ul>
+            <div id="ksaEmpty" class="empty">KSA 데이터가 없습니다.</div>
+          </div>
+
+          <details>
+            <summary>원본 JSON</summary>
+            <pre id="raw"></pre>
+          </details>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const btn = document.getElementById('btnRun');
+    const btnSearchNcs = document.getElementById('btnSearchNcs');
+    const btnRefreshNcs = document.getElementById('btnRefreshNcs');
+    const ncsSearch = document.getElementById('ncsSearch');
+    const ncsSelect = document.getElementById('ncsSelect');
+    const selectedCount = document.getElementById('selectedCount');
+    const raw = document.getElementById('raw');
+    const errorBox = document.getElementById('errorBox');
+    const progressWrap = document.getElementById('progressWrap');
+    const progressStage = document.getElementById('progressStage');
+    const progressTime = document.getElementById('progressTime');
+    const progressFill = document.getElementById('progressFill');
+    const progressNote = document.getElementById('progressNote');
+    const btnPrevQ = document.getElementById('btnPrevQ');
+    const btnNextQ = document.getElementById('btnNextQ');
+    const qIndicator = document.getElementById('qIndicator');
+    const inputMode = document.getElementById('inputMode');
+    const uploadBlock = document.getElementById('uploadBlock');
+    const manualBlock = document.getElementById('manualBlock');
+    const jdFile = document.getElementById('jdFile');
+    const noticeFile = document.getElementById('noticeFile');
+    const dutyText = document.getElementById('dutyText');
+    const evalText = document.getElementById('evalText');
+    const evalTextManual = document.getElementById('evalTextManual');
+
+    let ncsUnitOptions = [];
+    let progressTimer = null;
+    let progressStartTs = 0;
+    let progressIdx = 0;
+    let currentQuestions = [];
+    let currentQPage = 0;
+    const QUESTION_PAGE_SIZE = 5;
+
+    // ── 소분류 상태 ────────────────────────────────────────────────────────
+    // { label: string, type: 'matched'|'unmatched'|'custom' }[]
+    let sclassItems = [];
+    let allNcsCats = [];   // 자동완성용 전체 NCS 소분류 목록
+    let extractedSclassBase = []; // 파일에서 처음 추출된 소분류(삭제 계산 기준)
+
+    function normSclassLabel(v) {
+      return String(v || '').replace(/\s+/g, '').trim().toLowerCase();
+    }
+    function dedupSclassLabels(labels) {
+      const out = [];
+      const seen = new Set();
+      (labels || []).forEach((raw) => {
+        const t = String(raw || '').trim();
+        const k = normSclassLabel(t);
+        if (!t || !k || seen.has(k)) return;
+        seen.add(k);
+        out.push(t);
+      });
+      return out;
+    }
+
+    // 페이지 로드 시 NCS 소분류 목록 미리 가져오기
+    fetch('/api/ncs/sclass-list').then(r => r.json()).then(d => { allNcsCats = d.ncs_cats || []; }).catch(() => {});
+
+    const sclassBlock     = document.getElementById('sclassBlock');
+    const sclassExtracting= document.getElementById('sclassExtracting');
+    const sclassTags      = document.getElementById('sclassTags');
+    const sclassCustomInput = document.getElementById('sclassCustomInput');
+    const btnAddCustom    = document.getElementById('btnAddCustom');
+
+    function renderSclassTags() {
+      sclassTags.innerHTML = '';
+      sclassItems.forEach((item, idx) => {
+        if (item.type === 'unmatched') return;  // 미매칭은 표시 안 함
+        const tag = document.createElement('span');
+        tag.className = 'sclass-tag' + (item.type === 'custom' ? ' custom' : '');
+        const prefix = item.type === 'custom' ? '[직접] ' : '';
+        tag.innerHTML = `${prefix}${item.label} <button title="제거">×</button>`;
+        tag.querySelector('button').onclick = () => { sclassItems.splice(idx, 1); renderSclassTags(); };
+        sclassTags.appendChild(tag);
+      });
+    }
+
+    function addSclassItem(label, type) {
+      label = label.trim();
+      if (!label) return;
+      if (sclassItems.some(i => i.label === label)) return;  // 중복 방지
+      sclassItems.push({ label, type });
+      renderSclassTags();
+    }
+
+
+    async function extractSclassFromFile(file) {
+      sclassBlock.style.display = 'block';
+      sclassExtracting.style.display = 'block';
+      sclassItems = [];
+      renderSclassTags();
+      try {
+        const fd = new FormData();
+        fd.append('jd_file', file);
+        const res = await fetch('/api/jd/extract-sclass', { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        allNcsCats = data.ncs_cats || [];
+        extractedSclassBase = dedupSclassLabels(data.matched || []);
+        extractedSclassBase.forEach(l => addSclassItem(l, 'matched'));
+        (data.unmatched || []).forEach(l => addSclassItem(l, 'unmatched'));
+      } catch(e) {
+        console.warn('소분류 추출 실패:', e);
+        extractedSclassBase = [];
+      } finally {
+        sclassExtracting.style.display = 'none';
+      }
+    }
+
+    // 파일 선택 시 자동 추출
+    document.getElementById('jdFile').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (file) extractSclassFromFile(file);
+      else { sclassBlock.style.display = 'none'; sclassItems = []; extractedSclassBase = []; }
+    });
+
+
+    // ── 자동완성 드롭다운 ──────────────────────────────────────────────
+    const acBox = document.getElementById('sclassAutocomplete');
+    let acActiveIdx = -1;
+
+    function showAutocomplete(query) {
+      acBox.innerHTML = '';
+      acActiveIdx = -1;
+      if (!query) { acBox.style.display = 'none'; return; }
+      const q = query.toLowerCase();
+      const already = new Set(sclassItems.map(i => i.label));
+      const hits = allNcsCats.filter(c => !already.has(c) && c.toLowerCase().includes(q)).slice(0, 15);
+      if (!hits.length) {
+        acBox.innerHTML = '<div class="ac-empty">일치하는 소분류가 없습니다</div>';
+        acBox.style.display = 'block';
+        return;
+      }
+      hits.forEach((cat, i) => {
+        const div = document.createElement('div');
+        div.className = 'ac-item';
+        // 매칭 부분 볼드 표시
+        const lo = cat.toLowerCase();
+        const idx = lo.indexOf(q);
+        div.innerHTML = cat.substring(0, idx) + '<b>' + cat.substring(idx, idx + q.length) + '</b>' + cat.substring(idx + q.length);
+        div.addEventListener('mousedown', e => { e.preventDefault(); selectAutocomplete(cat); });
+        acBox.appendChild(div);
+      });
+      acBox.style.display = 'block';
+    }
+
+    function selectAutocomplete(cat) {
+      addSclassItem(cat, 'custom');
+      sclassCustomInput.value = '';
+      acBox.style.display = 'none';
+      acActiveIdx = -1;
+      sclassCustomInput.focus();
+    }
+
+    sclassCustomInput.addEventListener('input', () => showAutocomplete(sclassCustomInput.value.trim()));
+    sclassCustomInput.addEventListener('focus', () => {
+      if (sclassCustomInput.value.trim()) showAutocomplete(sclassCustomInput.value.trim());
+    });
+    sclassCustomInput.addEventListener('blur', () => { setTimeout(() => { if (!fullListOpen) { acBox.style.display = 'none'; } }, 150); });
+
+    sclassCustomInput.addEventListener('keydown', e => {
+      const items = acBox.querySelectorAll('.ac-item');
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        acActiveIdx = Math.min(acActiveIdx + 1, items.length - 1);
+        items.forEach((el, i) => el.classList.toggle('active', i === acActiveIdx));
+        if (items[acActiveIdx]) items[acActiveIdx].scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        acActiveIdx = Math.max(acActiveIdx - 1, 0);
+        items.forEach((el, i) => el.classList.toggle('active', i === acActiveIdx));
+        if (items[acActiveIdx]) items[acActiveIdx].scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (acActiveIdx >= 0 && items[acActiveIdx]) {
+          selectAutocomplete(items[acActiveIdx].textContent);
+        } else if (sclassCustomInput.value.trim()) {
+          // 목록에 없어도 Enter로 직접 추가 가능
+          btnAddCustom.click();
+        }
+      } else if (e.key === 'Escape') {
+        acBox.style.display = 'none';
+        acActiveIdx = -1;
+      }
+    });
+
+    // + 추가 버튼 (목록에 없는 것도 직접 추가 가능)
+    btnAddCustom.addEventListener('click', () => {
+      const val = sclassCustomInput.value.trim();
+      if (val) { addSclassItem(val, 'custom'); sclassCustomInput.value = ''; acBox.style.display = 'none'; acBox.classList.remove('fulllist'); }
+    });
+
+    // ── 전체 목록 토글 버튼 ─────────────────────────────────────────────
+    const btnShowAll = document.getElementById('btnShowAllSclass');
+    let fullListOpen = false;
+
+    function showFullList() {
+      acBox.innerHTML = '';
+      acActiveIdx = -1;
+      const already = new Set(sclassItems.map(i => i.label));
+      const cats = allNcsCats.filter(c => !already.has(c));
+      if (!cats.length) {
+        acBox.innerHTML = '<div class="ac-empty">추가할 소분류가 없습니다</div>';
+      } else {
+        cats.forEach(cat => {
+          const div = document.createElement('div');
+          div.className = 'ac-item';
+          div.textContent = cat;
+          div.addEventListener('mousedown', e => { e.preventDefault(); selectAutocomplete(cat); if (fullListOpen) showFullList(); });
+          acBox.appendChild(div);
+        });
+      }
+      acBox.classList.add('fulllist');
+      acBox.style.display = 'block';
+      fullListOpen = true;
+      btnShowAll.innerHTML = '&#9650; 닫기';
+    }
+
+    function hideFullList() {
+      acBox.style.display = 'none';
+      acBox.classList.remove('fulllist');
+      fullListOpen = false;
+      btnShowAll.innerHTML = '&#9660; 전체';
+    }
+
+    btnShowAll.addEventListener('click', () => {
+      if (fullListOpen) { hideFullList(); } else { sclassCustomInput.value = ''; showFullList(); }
+    });
+
+    // 검색 입력 시 전체목록 모드 해제
+    const _origShowAC = showAutocomplete;
+    sclassCustomInput.addEventListener('input', () => {
+      if (fullListOpen) { fullListOpen = false; btnShowAll.innerHTML = '&#9660; 전체'; acBox.classList.remove('fulllist'); }
+    });
+
+    // 소분류 확정 버튼 → 실제 면접 질문 생성 실행
+    document.getElementById('btnConfirmSclass').addEventListener('click', () => {
+      document.getElementById('btnRun').click();
+    });
+
+    const PROGRESS_STEPS = [
+      { t: 0, label: '입력값 검증', pct: 14, note: '텍스트와 선택된 NCS 코드를 확인합니다.' },
+      { t: 1.2, label: 'NCS/KSA 컨텍스트 구성', pct: 42, note: '질문 생성을 위한 NCS/KSA 데이터를 수집합니다.' },
+      { t: 3.2, label: '면접 질문 생성', pct: 76, note: '역량 기반 질문을 생성하고 있습니다.' },
+      { t: 6.0, label: '결과 정리', pct: 90, note: '화면 표시용으로 결과를 정리합니다.' },
+    ];
+
+    function startProgress() {
+      progressWrap.style.display = 'block';
+      progressIdx = 0;
+      progressStartTs = performance.now();
+      progressStage.textContent = PROGRESS_STEPS[0].label;
+      progressFill.style.width = `${PROGRESS_STEPS[0].pct}%`;
+      progressNote.textContent = PROGRESS_STEPS[0].note;
+      progressTime.textContent = '0.0s';
+      if (progressTimer) clearInterval(progressTimer);
+      progressTimer = setInterval(() => {
+        const sec = (performance.now() - progressStartTs) / 1000;
+        progressTime.textContent = `${sec.toFixed(1)}s`;
+        while (progressIdx + 1 < PROGRESS_STEPS.length && sec >= PROGRESS_STEPS[progressIdx + 1].t) {
+          progressIdx += 1;
+          progressStage.textContent = PROGRESS_STEPS[progressIdx].label;
+          progressFill.style.width = `${PROGRESS_STEPS[progressIdx].pct}%`;
+          progressNote.textContent = PROGRESS_STEPS[progressIdx].note;
+        }
+        if (sec > 20) {
+          progressStage.textContent = '외부 API/모델 응답 대기';
+          progressFill.style.width = '94%';
+          progressNote.textContent = '외부 API/모델 지연으로 응답이 늦어지고 있습니다.';
+        }
+      }, 200);
+    }
+
+    function stopProgress(doneText) {
+      if (progressTimer) clearInterval(progressTimer);
+      progressTimer = null;
+      progressStage.textContent = doneText || '완료';
+      progressFill.style.width = '100%';
+      progressNote.textContent = '요청 처리가 완료되었습니다.';
+      setTimeout(() => { progressWrap.style.display = 'none'; }, 900);
+    }
+
+    function updateSelectedCount() {
+      const cnt = Array.from(ncsSelect.selectedOptions).length;
+      selectedCount.textContent = `선택된 NCS 코드: ${cnt}`;
+    }
+
+    function setInputMode(mode) {
+      const isUpload = mode !== 'manual';
+      uploadBlock.classList.toggle('hidden', !isUpload);
+      manualBlock.classList.toggle('hidden', isUpload);
+    }
+
+    function collectRuntimeKnobs() {
+      return { ncs_top_k: 4, ksa_units: 3, ksa_factors_per_unit: 2 };
+    }
+
+    function updateQNav() {
+      const total = currentQuestions.length;
+      const totalPages = Math.max(1, Math.ceil(total / QUESTION_PAGE_SIZE));
+      qIndicator.textContent = `${total ? (currentQPage + 1) : 0} / ${totalPages} 페이지`;
+      btnPrevQ.disabled = total <= QUESTION_PAGE_SIZE || currentQPage <= 0;
+      btnNextQ.disabled = total <= QUESTION_PAGE_SIZE || currentQPage >= totalPages - 1;
+    }
+
+    function addMetaPill(meta, text, cls='pill') {
+      const p = document.createElement('div');
+      p.className = cls;
+      p.textContent = text;
+      meta.appendChild(p);
+    }
+
+    function renderMeta(data) {
+      const meta = document.getElementById('meta');
+      meta.innerHTML = '';
+      const mode = data.input_mode || (data.filename ? 'jd_file_upload' : 'manual_text+ncs_click');
+      addMetaPill(meta, `입력방식: ${mode}`, 'pill good');
+      addMetaPill(meta, `공고문 글자수: ${(data.notice_text_preview || '').length}`);
+      addMetaPill(meta, `담당업무 글자수: ${(data.duty_text_preview || '').length}`);
+      addMetaPill(meta, `NCS 소스: ${data.ncs_source || '-'}`, 'pill good');
+
+
+      if (data.ncs_error) {
+        addMetaPill(meta, `NCS 오류: ${data.ncs_error}`, 'pill warn');
+      }
+    }
+
+    function renderPipelineDiag(data, qList) {
+      const table = document.getElementById('diagTable');
+      const body = document.getElementById('diagBody');
+      const empty = document.getElementById('diagEmpty');
+      body.innerHTML = '';
+      const rows = [
+        ['입력 텍스트 파싱', (data.jd_text_preview || '').trim() ? '성공' : '실패', `${(data.jd_text_preview || '').length}자`],
+        ['NCS 매칭', (data.ncs_matches || []).length ? '성공' : '실패', `개수=${(data.ncs_matches || []).length}`],
+        ['KSA 수집', (data.ncs_ksa || []).length ? '성공' : '없음', `개수=${(data.ncs_ksa || []).length}`],
+        ['질문 생성', (qList || []).length ? '성공' : '실패', `개수=${(qList || []).length}`],
+      ];
+      for (const [step, status, detail] of rows) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${step}</td><td>${status}</td><td>${detail}</td>`;
+        body.appendChild(tr);
+      }
+      table.style.display = 'table';
+      empty.style.display = 'none';
+    }
+
+    function renderQuestionList(items) {
+      const root = document.getElementById('questionList');
+      const empty = document.getElementById('questionEmpty');
+      currentQuestions = Array.isArray(items) ? items : [];
+      const totalPages = Math.max(1, Math.ceil(currentQuestions.length / QUESTION_PAGE_SIZE));
+      if (currentQPage >= totalPages) currentQPage = 0;
+      root.innerHTML = '';
+      if (!currentQuestions.length) {
+        empty.style.display = 'block';
+        updateQNav();
+        return;
+      }
+      empty.style.display = 'none';
+
+      const start = currentQPage * QUESTION_PAGE_SIZE;
+      const pageItems = currentQuestions.slice(start, start + QUESTION_PAGE_SIZE);
+
+      const getFollowUps = (q) => {
+        const fus = Array.isArray((q || {}).follow_ups)
+          ? (q || {}).follow_ups.filter(x => String(x || '').trim())
+          : [];
+        if (fus.length >= 3) return fus.slice(0, 3);
+        const single = String((q || {}).follow_up || '').trim();
+        if (single && !fus.includes(single)) fus.unshift(single);
+        const fallback = [
+          '그 상황에서 본인이 맡은 구체적인 역할과 판단 근거를 말씀해 주세요.',
+          '그 과정에서 가장 어려웠던 부분은 무엇이고, 어떻게 해결하셨나요?',
+          '그 결과는 어땠고, 돌이켜보면 어떤 점을 다르게 하시겠습니까?',
+        ];
+        while (fus.length < 3) fus.push(fallback[fus.length]);
+        return fus.slice(0, 3);
+      };
+
+      for (const [i, q] of pageItems.entries()) {
+        const box = document.createElement('div');
+        box.className = 'qcard';
+
+        const type = q.type || '-';
+        const comp = q.competency || '-';
+        const code = q.ncsClCd || '-';
+        const ev = Array.isArray(q.evaluation_points) ? q.evaluation_points.join(', ') : '-';
+        const fus = getFollowUps(q);
+        const no = start + i + 1;
+
+        box.innerHTML = `
+          <div class="qhead"><strong>#${no}</strong><span>${type}</span><span>${comp}</span><span>${code}</span></div>
+          <div><strong>Q.</strong> ${q.question || '-'}</div>
+          <div class="followup-chain">
+            <div class="fu-step"><span class="fu-label">↳ 꼬리1</span> ${fus[0]}</div>
+            <div class="fu-step"><span class="fu-label">↳ 꼬리2</span> ${fus[1]}</div>
+            <div class="fu-step"><span class="fu-label">↳ 꼬리3</span> ${fus[2]}</div>
+          </div>
+          <div class="sub">평가 포인트: ${ev}</div>
+        `;
+        root.appendChild(box);
+      }
+      updateQNav();
+    }
+
+    function renderNcs(matches) {
+      const table = document.getElementById('ncsTable');
+      const body = document.getElementById('ncsBody');
+      const empty = document.getElementById('ncsEmpty');
+      body.innerHTML = '';
+      if (!matches || !matches.length) {
+        table.style.display = 'none';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      table.style.display = 'table';
+      for (const m of matches) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${m.ncsClCd || '-'}</td><td>${m.compeUnitName || '-'}</td><td>${m.compeUnitLevel || '-'}</td><td>${m.score ?? '-'}</td>`;
+        body.appendChild(tr);
+      }
+    }
+
+    function renderKsa(items) {
+      const ul = document.getElementById('ksaList');
+      const empty = document.getElementById('ksaEmpty');
+      ul.innerHTML = '';
+      if (!items || !items.length) {
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      for (const it of items) {
+        const li = document.createElement('li');
+        li.textContent = `[${it.ncsClCd || '-'}] ${it.compeUnitName || '-'} - ${it.factorName || '-'}${it.factorLevel ? ` (Lv.${it.factorLevel})` : ''}`;
+        ul.appendChild(li);
+      }
+    }
+
+    function render(data) {
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+
+      const s = data.strategy || {};
+      const qList = Array.isArray(s.interview_questions) ? s.interview_questions : [];
+      if (s.error) {
+        errorBox.style.display = 'block';
+        errorBox.textContent = `오류: ${s.error}`;
+      }
+
+      renderMeta(data);
+      renderPipelineDiag(data, qList);
+      currentQPage = 0;
+      renderQuestionList(qList);
+      renderNcs(data.ncs_matches || []);
+      renderKsa(data.ncs_ksa || []);
+      raw.textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function loadNcsOptions(query='') {
+      const q = encodeURIComponent(query || '');
+      const res = await fetch(`/api/ncs/units/options?q=${q}&limit=500`);
+      const data = await res.json();
+      ncsUnitOptions = Array.isArray(data.items) ? data.items : [];
+      ncsSelect.innerHTML = '';
+
+      for (const item of ncsUnitOptions) {
+        const opt = document.createElement('option');
+        const code = item.ncsClCd || '';
+        const name = item.compeUnitName || '';
+        const lv = item.compeUnitLevel || '-';
+        opt.value = code;
+        opt.textContent = `${code} | ${name} | Lv.${lv}`;
+        opt.dataset.name = name;
+        opt.dataset.level = String(lv);
+        opt.dataset.subd = item.ncsSubdCdnm || '';
+        ncsSelect.appendChild(opt);
+      }
+      updateSelectedCount();
+    }
+
+    btn.onclick = async () => {
+      try {
+        const mode = inputMode.value || 'upload';
+        let res;
+        btn.disabled = true;
+        btn.textContent = '실행 중...';
+        startProgress();
+
+        if (mode === 'upload') {
+          const file = jdFile.files && jdFile.files[0];
+          if (!file) throw new Error('직무기술서 파일을 먼저 선택해 주세요.');
+
+          const fd = new FormData();
+          const knobs = collectRuntimeKnobs();
+          fd.append('jd_file', file);
+          const nFile = noticeFile.files && noticeFile.files[0];
+          if (nFile) fd.append('notice_file', nFile);
+          fd.append('strengths', '');
+          fd.append('duty_text', (dutyText.value || '').trim());
+          fd.append('evaluation_text', (evalText.value || '').trim());
+          // 소분류 편집 결과 전달: 최종 목록 + 추가/삭제 delta
+          const finalSclass = dedupSclassLabels(
+            sclassItems
+              .filter(i => i.type !== 'unmatched')
+              .map(i => i.label)
+          );
+          const finalSet = new Set(finalSclass.map(normSclassLabel));
+          const extractedBase = dedupSclassLabels(extractedSclassBase || []);
+          const extractedSet = new Set(extractedBase.map(normSclassLabel));
+          const addSclass = finalSclass.filter(x => !extractedSet.has(normSclassLabel(x)));
+          const removeSclass = extractedBase.filter(x => !finalSet.has(normSclassLabel(x)));
+
+          fd.append('manual_sclass', finalSclass.join(','));
+          fd.append('manual_sclass_add', addSclass.join(','));
+          fd.append('manual_sclass_remove', removeSclass.join(','));
+
+          res = await fetch('/api/jd/strategy/upload', {
+            method: 'POST',
+            body: fd,
+          });
+        } else {
+          const noticeText = document.getElementById('noticeText').value.trim();
+          if (!noticeText) throw new Error('공고문 텍스트를 먼저 입력해 주세요.');
+
+          const selected = Array.from(ncsSelect.selectedOptions).map(opt => ({
+            ncsClCd: opt.value,
+            compeUnitName: opt.dataset.name || '',
+            compeUnitLevel: opt.dataset.level || '',
+            ncsSubdCdnm: opt.dataset.subd || '',
+          }));
+
+          if (!selected.length) throw new Error('NCS 코드를 최소 1개 선택해 주세요.');
+
+          const knobs = collectRuntimeKnobs();
+          res = await fetch('/api/questions/generate-from-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              notice_text: noticeText,
+              duty_text: noticeText,
+              evaluation_text: (evalTextManual.value || '').trim(),
+              selected_ncs: selected,
+              runtime_knobs: knobs,
+            }),
+          });
+        }
+
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error(text);
+        }
+        if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+
+        render(data);
+        stopProgress('완료');
+      } catch (e) {
+        const msg = String(e.message || e);
+        errorBox.style.display = 'block';
+        errorBox.textContent = `오류: ${msg}`;
+        raw.textContent = `오류: ${msg}`;
+        stopProgress('실패');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '면접 질문 생성';
+      }
+    };
+
+    btnSearchNcs.onclick = async () => {
+      try {
+        btnSearchNcs.disabled = true;
+        btnSearchNcs.textContent = '검색 중...';
+        await loadNcsOptions(ncsSearch.value.trim());
+      } catch (e) {
+        errorBox.style.display = 'block';
+        errorBox.textContent = `NCS 검색 오류: ${String(e.message || e)}`;
+      } finally {
+        btnSearchNcs.disabled = false;
+        btnSearchNcs.textContent = 'NCS 검색';
+      }
+    };
+
+    btnRefreshNcs.onclick = async () => {
+      try {
+        btnRefreshNcs.disabled = true;
+        btnRefreshNcs.textContent = '새로고침 중...';
+        ncsSearch.value = '';
+        await loadNcsOptions('');
+      } catch (e) {
+        errorBox.style.display = 'block';
+        errorBox.textContent = `NCS 새로고침 오류: ${String(e.message || e)}`;
+      } finally {
+        btnRefreshNcs.disabled = false;
+        btnRefreshNcs.textContent = '목록 새로고침';
+      }
+    };
+
+    ncsSelect.addEventListener('change', updateSelectedCount);
+    ncsSearch.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        await btnSearchNcs.onclick();
+      }
+    });
+    inputMode.addEventListener('change', () => {
+      setInputMode(inputMode.value);
+    });
+
+    btnPrevQ.onclick = () => {
+      if (!currentQuestions.length) return;
+      if (currentQPage > 0) currentQPage -= 1;
+      renderQuestionList(currentQuestions);
+    };
+    btnNextQ.onclick = () => {
+      if (!currentQuestions.length) return;
+      const totalPages = Math.max(1, Math.ceil(currentQuestions.length / QUESTION_PAGE_SIZE));
+      if (currentQPage < totalPages - 1) currentQPage += 1;
+      renderQuestionList(currentQuestions);
+    };
+
+    updateQNav();
+    setInputMode(inputMode.value || 'upload');
+    loadNcsOptions('')
+      .then(() => fetch('/health').then(r => r.json()))
+      .then((h) => {
+        raw.textContent = JSON.stringify({ status: '준비완료', health: h, ncs_options: ncsUnitOptions.length }, null, 2);
+      })
+      .catch((e) => {
+        raw.textContent = String(e);
+      });
+  </script>
+</body>
+</html>
