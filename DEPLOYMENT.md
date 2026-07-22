@@ -10,8 +10,9 @@ ALIO attachments, local logs, virtual environments, or `node_modules`.
 
 ## 1. Prepare NCS_MCP
 
-Download the compact serving DB from the prepared GitHub draft release:
+Download the compact serving DB from the public GitHub Release:
 
+- Release URL: `https://github.com/koul777/NCScope/releases/tag/ncscope-db-v0.1.0-20260723`
 - Release tag: `ncscope-db-v0.1.0-20260723`
 - DB asset: `ncs_interview_serving_release.db`
 - Manifest asset: `ncs_interview_serving_release.json`
@@ -102,7 +103,7 @@ Real-document benchmark:
 
 ```powershell
 $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
-python scripts\benchmark_alio_jd.py --limit 5 --include-ksa
+python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 ```
 
 Expected MVP behavior:
@@ -110,5 +111,6 @@ Expected MVP behavior:
 - Uploading a JD returns reviewable Kordoc fields.
 - Generation requires `jd_review_json.review_confirmed=true`.
 - MCP lookup uses confirmed NCS detail classifications only.
+- If exact detail-class matching fails, the app returns manual NCS unit suggestions instead of generating ungrounded questions.
 - KSA rows have `factorSource=ncs-mcp` and `ksaStatus=official`.
 - Legacy NCS API endpoints return 410 unless explicitly enabled.

@@ -217,6 +217,7 @@ python -m ncs_mcp.server --transport streamable-http --host 127.0.0.1 --port 877
 
 준비된 serving DB 아티팩트:
 
+- Release URL: `https://github.com/koul777/NCScope/releases/tag/ncscope-db-v0.1.0-20260723`
 - Release tag: `ncscope-db-v0.1.0-20260723`
 - DB asset: `ncs_interview_serving_release.db`
 - Manifest asset: `ncs_interview_serving_release.json`
