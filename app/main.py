@@ -182,6 +182,40 @@ def _merge_sclass_terms(
     return [x for x in out if _norm_sclass_key(x) not in remove_keys]
 
 
+def _merge_review_text(*values: Any, max_chars: int = 3000) -> str:
+    """Merge review fields in priority order with line-level de-duplication."""
+
+    lines: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            candidates = [str(item or "") for item in value]
+        else:
+            candidates = re.split(r"\n+", str(value or ""))
+        for candidate in candidates:
+            text = re.sub(r"\s+", " ", str(candidate or "")).strip(" \t\r\n-•·")
+            if text:
+                lines.append(text)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    total = 0
+    for line in lines:
+        key = re.sub(r"\s+", "", line).lower()
+        if not key or key in seen:
+            continue
+        next_total = total + len(line) + (1 if out else 0)
+        if out and next_total > max_chars:
+            break
+        seen.add(key)
+        out.append(line)
+        total = next_total
+        if total >= max_chars:
+            break
+    return "\n".join(out)[:max_chars].strip()
+
+
 def _repeat_count_from_weight(weight: float, default: int = 1, max_repeat: int = 6) -> int:
     try:
         v = int(round(float(weight)))
@@ -193,15 +227,23 @@ def _repeat_count_from_weight(weight: float, default: int = 1, max_repeat: int =
 def _build_priority_notice_text(
     notice_text: str,
     duty_text: str = "",
+    qualification_text: str = "",
+    preference_text: str = "",
     evaluation_text: str = "",
 ) -> str:
     notice = str(notice_text or "").strip()
     duty = str(duty_text or "").strip()
+    qualification = str(qualification_text or "").strip()
+    preference = str(preference_text or "").strip()
     evaluation = str(evaluation_text or "").strip()
 
     parts: list[str] = []
     if duty:
-        parts.append(f"[담당업무-우선]\n{duty[:2500]}")
+        parts.append(f"[담당업무-직무기술서 우선]\n{duty[:2500]}")
+    if qualification:
+        parts.append(f"[지원자격-직무기술서 우선]\n{qualification[:1800]}")
+    if preference:
+        parts.append(f"[우대사항-직무기술서 우선]\n{preference[:1800]}")
     if evaluation:
         parts.append(f"[면접평가항목-우선]\n{evaluation[:1800]}")
     if notice:
@@ -212,23 +254,35 @@ def _build_priority_notice_text(
 def _build_priority_query_text(
     base_text: str,
     duty_text: str = "",
+    qualification_text: str = "",
+    preference_text: str = "",
     evaluation_text: str = "",
 ) -> str:
     base = str(base_text or "").strip()[:5000]
     duty = str(duty_text or "").strip()[:2500]
+    qualification = str(qualification_text or "").strip()[:1800]
+    preference = str(preference_text or "").strip()[:1800]
     evaluation = str(evaluation_text or "").strip()[:1500]
 
     base_w = _to_float_or(os.getenv("JD_BASE_TEXT_WEIGHT", "1.0"), 1.0)
     duty_w = _to_float_or(os.getenv("DUTY_TEXT_WEIGHT", "3.0"), 3.0)
+    qualification_w = _to_float_or(os.getenv("QUALIFICATION_TEXT_WEIGHT", "1.4"), 1.4)
+    preference_w = _to_float_or(os.getenv("PREFERENCE_TEXT_WEIGHT", "1.2"), 1.2)
     eval_w = _to_float_or(os.getenv("EVALUATION_TEXT_WEIGHT", "2.5"), 2.5)
 
     base_rep = _repeat_count_from_weight(base_w, default=1, max_repeat=4)
     duty_rep = _repeat_count_from_weight(duty_w, default=3, max_repeat=6)
+    qualification_rep = _repeat_count_from_weight(qualification_w, default=1, max_repeat=4)
+    preference_rep = _repeat_count_from_weight(preference_w, default=1, max_repeat=4)
     eval_rep = _repeat_count_from_weight(eval_w, default=2, max_repeat=6)
 
     chunks: list[str] = []
     if duty:
         chunks.extend([f"[담당업무]{duty}"] * duty_rep)
+    if qualification:
+        chunks.extend([f"[지원자격]{qualification}"] * qualification_rep)
+    if preference:
+        chunks.extend([f"[우대사항]{preference}"] * preference_rep)
     if evaluation:
         chunks.extend([f"[면접평가항목]{evaluation}"] * eval_rep)
     if base:
@@ -1023,6 +1077,32 @@ async def parse_jd_review_endpoint(jd_file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=422, detail=f"Kordoc parse failed: {exc}") from exc
 
 
+@app.post("/api/notice/parse-review")
+async def parse_notice_review_endpoint(notice_file: UploadFile = File(...)) -> dict:
+    """Parse a job notice and return editable supplementary review fields."""
+
+    data = await notice_file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="uploaded file is empty")
+    _check_upload_size(data, "notice_file")
+    name = (notice_file.filename or "").lower()
+    try:
+        if name.endswith(".txt"):
+            text = data.decode("utf-8", errors="ignore")
+            parsed = {"markdown": text, "metadata": {"source": "txt"}}
+        else:
+            parsed = parse_with_kordoc(
+                data,
+                filename=notice_file.filename or "",
+                ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
+            )
+        result = structure_job_description(parsed, filename=notice_file.filename or "")
+        result["review_kind"] = "notice_supplement"
+        return result
+    except KordocParseError as exc:
+        raise HTTPException(status_code=422, detail=f"Kordoc parse failed: {exc}") from exc
+
+
 @app.post("/api/jd/strategy/upload")
 async def jd_strategy_upload(
     jd_file: UploadFile = File(...),
@@ -1033,6 +1113,8 @@ async def jd_strategy_upload(
     manual_sclass_add: str = Form(default=""),
     manual_sclass_remove: str = Form(default=""),
     duty_text: str = Form(default=""),
+    qualification_text: str = Form(default=""),
+    preference_text: str = Form(default=""),
     evaluation_text: str = Form(default=""),
     jd_review_json: str = Form(default=""),
 ) -> dict:
@@ -1087,11 +1169,20 @@ async def jd_strategy_upload(
     reviewed_markdown = str((review_payload.get("document") or {}).get("markdown", "")).strip()
     if reviewed_markdown:
         jd_text = reviewed_markdown
-    duty_text_clean = str(duty_text or "").strip()
-    if not duty_text_clean:
-        duty_text_clean = "\n".join(str(x).strip() for x in (reviewed_fields.get("duties") or []) if str(x).strip())
-    qualification_text_clean = "\n".join(
-        str(x).strip() for x in (reviewed_fields.get("qualifications") or []) if str(x).strip()
+    duty_text_clean = _merge_review_text(
+        reviewed_fields.get("duties") or [],
+        duty_text,
+        max_chars=3000,
+    )
+    qualification_text_clean = _merge_review_text(
+        reviewed_fields.get("qualifications") or [],
+        qualification_text,
+        max_chars=2400,
+    )
+    preference_text_clean = _merge_review_text(
+        reviewed_fields.get("preferences") or [],
+        preference_text,
+        max_chars=2400,
     )
     evaluation_text_clean = str(evaluation_text or "").strip()
     manual_sclass_final_terms = _parse_sclass_terms(manual_sclass)
@@ -1113,12 +1204,10 @@ async def jd_strategy_upload(
     prompt_notice_text = _build_priority_notice_text(
         notice_text=notice_text,
         duty_text=duty_text_clean,
+        qualification_text=qualification_text_clean,
+        preference_text=preference_text_clean,
         evaluation_text=evaluation_text_clean,
     )
-    if qualification_text_clean:
-        prompt_notice_text = (
-            f"{prompt_notice_text}\n지원자격:\n{qualification_text_clean}"
-        ).strip()
     notice_context = build_notice_context_from_jd(jd_text=jd_text, notice_text=prompt_notice_text, max_chars=5000)
 
     _require_ncs_mcp_url()
@@ -1285,6 +1374,8 @@ async def jd_strategy_upload(
     unit_rank_query_text = _build_priority_query_text(
         base_text=jd_for_match,
         duty_text=duty_text_clean,
+        qualification_text=qualification_text_clean,
+        preference_text=preference_text_clean,
         evaluation_text=evaluation_text_clean,
     )
     if ncs_items and ncs_source in {"ncs-mcp", "api-hrdk-code-first", "api-hrdk-clcode", "api-hrdk-keyword", "api-hrdk-sclass-verified", "api-hrdk-sclass-name"}:
@@ -1388,6 +1479,8 @@ async def jd_strategy_upload(
     ksa_query_text = _build_priority_query_text(
         base_text=jd_text,
         duty_text=duty_text_clean,
+        qualification_text=qualification_text_clean,
+        preference_text=preference_text_clean,
         evaluation_text=evaluation_text_clean,
     )
     if ncs_matches:
@@ -1491,6 +1584,7 @@ async def jd_strategy_upload(
         "notice_context_preview": notice_context[:1200],
         "duty_text_preview": duty_text_clean[:1200],
         "qualification_text_preview": qualification_text_clean[:1200],
+        "preference_text_preview": preference_text_clean[:1200],
         "evaluation_text_preview": evaluation_text_clean[:1200],
         "jd_review_confirmed": review_payload.get("review_confirmed") is True,
         "jd_review": review_payload if review_payload else None,

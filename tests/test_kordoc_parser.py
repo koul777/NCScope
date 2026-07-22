@@ -29,3 +29,72 @@ def test_loads_kordoc_json_recovers_after_stdout_warning() -> None:
     result = _loads_kordoc_json(raw)
 
     assert result == {"success": True, "markdown": "ok"}
+
+
+def test_structure_job_description_extracts_notice_supplement_aliases() -> None:
+    markdown = """
+담당 예정 업무: 예산 집행 및 사업 일정 관리
+공통자격: 관련 분야 실무경력 3년 이상
+가산점: 공공기관 사업관리 경험
+평가요소: 문제해결능력, 의사소통능력
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="notice.pdf")
+    fields = result["fields"]
+
+    assert fields["duties"] == ["예산 집행 및 사업 일정 관리"]
+    assert fields["qualifications"] == ["관련 분야 실무경력 3년 이상"]
+    assert fields["preferences"] == ["공공기관 사업관리 경험"]
+    assert fields["evaluation"] == ["문제해결능력, 의사소통능력"]
+
+
+def test_notice_evaluation_ignores_document_and_written_exam_sections() -> None:
+    markdown = """
+### 전형 방법
+서류전형
+평가 대상: 입사지원자 전원
+전형 사항(평가 기준)
+항목|비고
+응시 요건의 적합성 | 채용 기준의 적합성, 블라인드 채용 기준의 위배 여부 등을 심사함.
+직무 수행
+요건의 적합성 | 교육, 경력, 자격 요건 등이 채용 분야와 관련성이 있는지 여부를 심사함.
+의사소통 및
+문제 해결 능력 | 구성원과 원만한 의사소통 역량, 문제 파악 및 해결 방안 제시 능력 등을 심사함.
+발전가능성 | 직무역량 개발 계획과 잠재력 등을 심사함.
+필기전형
+응시 대상: 서류전형 합격자
+전형 사항(평가 기준)
+직업기초능력평가(NCS) 의사소통능력 15문항
+자원관리능력 15문항
+문제해결능력 15문항
+논술 보고서 작성 능력 1문항
+나. 인적성 검사
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="notice.pdf")
+
+    assert result["fields"]["evaluation"] == []
+
+
+def test_notice_evaluation_keeps_interview_section_only() -> None:
+    markdown = """
+### 전형 방법
+서류전형
+전형 사항(평가 기준)
+응시 요건의 적합성 | 채용 기준의 적합성
+필기전형
+직업기초능력평가(NCS) 의사소통능력 15문항
+면접전형
+전형 사항(평가 기준)
+직무역량 | 직무수행에 필요한 지식과 경험
+의사소통능력 | 조직 내 협업과 소통 역량
+발전가능성 | 직무역량 개발 계획과 잠재력
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="notice.pdf")
+
+    assert result["fields"]["evaluation"] == [
+        "직무역량 | 직무수행에 필요한 지식과 경험",
+        "의사소통능력 | 조직 내 협업과 소통 역량",
+        "발전가능성 | 직무역량 개발 계획과 잠재력",
+    ]

@@ -55,6 +55,33 @@ def test_parse_review_returns_detail_candidates(mocker):
     assert resp.json()["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
 
 
+def test_notice_parse_review_extracts_supplement_fields(mocker):
+    mocker.patch(
+        "app.main.parse_with_kordoc",
+        return_value={
+            "markdown": (
+                "담당 예정 업무: 예산 집행 관리\n"
+                "공통자격: 관련 분야 실무경력 3년 이상\n"
+                "가산점: 공공기관 사업관리 경험\n"
+                "평가요소: 문제해결능력"
+            )
+        },
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/notice/parse-review",
+            files={"notice_file": ("notice.pdf", b"%PDF-test", "application/pdf")},
+        )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert "예산 집행" in "\n".join(body["fields"]["duties"])
+    assert "실무경력" in "\n".join(body["fields"]["qualifications"])
+    assert "공공기관" in "\n".join(body["fields"]["preferences"])
+    assert "문제해결" in "\n".join(body["fields"]["evaluation"])
+
+
 def test_mcp_only_requires_human_review_confirmation(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)
@@ -227,6 +254,51 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
     build_strategy.assert_called_once()
     assert build_strategy.call_args.kwargs["api_key_override"] == request_key
     assert request_key not in resp.text
+
+
+def test_upload_merges_notice_supplement_text(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    unit = {
+        "ncsClCd": "0201010103_22v2",
+        "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
+        "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
+        "compeUnitDef": "\uacbd\uc601\ubaa9\ud45c\ub97c \uc218\ub9bd\ud55c\ub2e4",
+        "score": 1.0,
+    }
+    ksa = {
+        "ncsClCd": unit["ncsClCd"],
+        "compeUnitName": unit["compeUnitName"],
+        "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    mocker.patch("app.main.search_units_by_detail", return_value=[unit])
+    mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
+    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    mocker.patch("app.main.build_ncs_context_pack", return_value={})
+    mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}}
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "qualification_text": "지원자격: 관련 분야 실무경력 3년 이상",
+                "preference_text": "우대사항: 공공기관 사업관리 경험",
+            },
+        )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["jd_review_confirmed"] is True
+    assert body["ncs_source"].startswith("ncs-mcp")
+    assert body["ncs_ksa"][0]["factorSource"] == "ncs-mcp"
+    assert body["ncs_ksa"][0]["ksaStatus"] == "official"
+    assert "실무경력" in body["qualification_text_preview"]
+    assert "사업관리" in body["preference_text_preview"]
 
 
 def test_mcp_search_matches_detail_not_small_category(mocker):

@@ -33,6 +33,18 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
         "수행내용",
         "담당직무",
         "기관주요업무",
+        "주요직무",
+        "주요 직무",
+        "직무개요",
+        "직무 개요",
+        "담당 예정 업무",
+        "담당예정업무",
+        "채용직무",
+        "채용 직무",
+        "직무분야",
+        "직무 분야",
+        "주요 수행업무",
+        "주요 담당업무",
     ),
     "qualifications": (
         "지원자격",
@@ -44,12 +56,59 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
         "응시요건",
         "관련 자격",
         "관련자격",
+        "공통자격",
+        "공통 자격",
+        "응시요건",
+        "응시 요건",
+        "필수요건",
+        "필수 요건",
+        "자격사항",
+        "자격 사항",
+        "자격조건",
+        "자격 조건",
+        "채용자격",
+        "채용 자격",
     ),
     "preferences": (
         "우대사항",
         "우대조건",
         "가점사항",
         "우대요건",
+        "우대 사항",
+        "우대 조건",
+        "가점 사항",
+        "우대 요건",
+        "우대",
+        "가산점",
+        "가점",
+        "우대가점",
+        "우대 가점",
+        "우대자격",
+        "우대 자격",
+        "우대조건 및 가점",
+        "우대 조건 및 가점",
+        "우대요건 및 가점",
+        "우대 요건 및 가점",
+    ),
+    "evaluation": (
+        "면접평가",
+        "면접 평가",
+        "면접평가항목",
+        "면접 평가항목",
+        "면접평가기준",
+        "면접 평가기준",
+        "면접전형",
+        "면접 전형",
+        "면접항목",
+        "면접 항목",
+        "면접심사",
+        "면접 심사",
+        "평가요소",
+        "평가 요소",
+        "면접방법",
+        "면접 방법",
+        "면접내용",
+        "면접 내용",
     ),
     "knowledge": ("필요지식", "지식"),
     "skills": ("필요기술", "기술"),
@@ -109,6 +168,79 @@ def _section_for_label(label: str) -> str | None:
     for section, aliases in _SECTION_ALIASES.items():
         if key in {_norm(alias) for alias in aliases}:
             return section
+    return None
+
+
+_INTERVIEW_STAGE_PATTERNS = (
+    "면접",
+    "구술",
+    "발표면접",
+    "토론면접",
+    "직무면접",
+    "인성면접",
+    "pt면접",
+    "pt 면접",
+)
+
+_NON_INTERVIEW_STAGE_PATTERNS = (
+    "서류전형",
+    "서류 전형",
+    "서류심사",
+    "서류 심사",
+    "필기전형",
+    "필기 전형",
+    "필기시험",
+    "필기 시험",
+    "인적성",
+    "인성검사",
+    "적성검사",
+    "직업기초능력평가",
+    "직업기초능력 평가",
+    "논술",
+)
+
+_GENERIC_EVALUATION_LABELS = (
+    "평가항목",
+    "평가 항목",
+    "평가기준",
+    "평가 기준",
+    "심사기준",
+    "심사 기준",
+    "심사방법",
+    "심사 방법",
+    "전형사항",
+    "전형 사항",
+)
+
+
+def _stage_from_line(line: str) -> str | None:
+    key = _norm(line)
+    if not key:
+        return None
+    if any(_norm(pattern) in key for pattern in _INTERVIEW_STAGE_PATTERNS):
+        return "interview"
+    if any(_norm(pattern) in key for pattern in _NON_INTERVIEW_STAGE_PATTERNS):
+        return "non_interview"
+    return None
+
+
+def _generic_evaluation_label(line: str) -> bool:
+    key = _norm(line)
+    return bool(key) and any(_norm(pattern) in key for pattern in _GENERIC_EVALUATION_LABELS)
+
+
+def _section_value_from_inline_label(line: str) -> tuple[str, str] | None:
+    text = _clean_text(line)
+    if not text:
+        return None
+    for section, aliases in _SECTION_ALIASES.items():
+        for alias in sorted(aliases, key=len, reverse=True):
+            pattern = rf"^\s*{re.escape(alias)}\s*[:：\-–—]\s*(.+?)\s*$"
+            match = re.match(pattern, text, flags=re.IGNORECASE)
+            if match:
+                value = _clean_text(match.group(1))
+                if value:
+                    return section, value
     return None
 
 
@@ -289,10 +421,15 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     markdown = str(parsed.get("markdown") or "")
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in _SECTION_ALIASES}
     current: str | None = None
+    stage_context: str | None = None
 
     def add(section: str, text: str, block: dict[str, Any] | None = None, line: int = 0) -> None:
         for item in _split_items(text):
             if not item:
+                continue
+            if section == "evaluation" and stage_context == "non_interview":
+                continue
+            if section == "evaluation" and _stage_from_line(item) == "non_interview":
                 continue
             if any(_norm(existing.get("text")) == _norm(item) for existing in sections[section]):
                 continue
@@ -303,6 +440,11 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         line = raw_line.strip()
         if not line:
             continue
+        line_stage = _stage_from_line(line)
+        if line_stage:
+            stage_context = line_stage
+            if stage_context == "non_interview" and current == "evaluation":
+                current = None
         cells = _split_table_row(line)
         if cells:
             if _is_separator_row(cells):
@@ -310,18 +452,37 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             label_index = next((i for i, cell in enumerate(cells) if _section_for_label(cell)), -1)
             if label_index >= 0:
                 current = _section_for_label(cells[label_index])
+                if current == "evaluation" and stage_context == "non_interview":
+                    current = None
+                    continue
                 if current and len(cells) > label_index + 1:
                     add(current, " ".join(cells[label_index + 1 :]), line=line_no)
                 continue
+        inline = _section_value_from_inline_label(line)
+        if inline:
+            current, value = inline
+            if current == "evaluation" and stage_context == "non_interview":
+                current = None
+                continue
+            add(current, value, line=line_no)
+            continue
         heading_text = re.sub(r"^#{1,6}\s*", "", line)
         heading_text = re.sub(r"^(?:\d+[.)]|[가-힣][.)])\s*", "", heading_text)
         heading = _section_for_label(heading_text)
+        if not heading and _generic_evaluation_label(heading_text):
+            heading = "evaluation"
         if heading:
             current = heading
+            if current == "evaluation" and stage_context == "non_interview":
+                current = None
+                continue
             remainder = re.sub(
                 r"^.*?(?:수행업무|직무수행내용|주요업무|담당업무|직무내용|수행내용|담당직무|"
-                r"지원자격|자격요건|응시자격|필수자격|자격기준|지원요건|응시요건|우대사항|우대조건|"
-                r"가점사항|우대요건|필요지식|필요기술|직무수행태도|수행태도|직업기초능력|세분류)\s*[:：-]?\s*",
+                r"주요직무|직무개요|담당\s*예정\s*업무|채용직무|직무분야|주요\s*수행업무|주요\s*담당업무|"
+                r"지원자격|자격요건|응시자격|필수자격|자격기준|지원요건|응시요건|공통자격|필수요건|자격사항|자격조건|채용자격|"
+                r"우대사항|우대조건|가점사항|우대요건|우대|가산점|가점|우대가점|우대자격|"
+                r"평가항목|평가기준|면접평가|면접평가항목|면접평가기준|면접전형|면접항목|면접심사|심사기준|평가요소|면접방법|면접내용|심사방법|"
+                r"필요지식|필요기술|직무수행태도|수행태도|직업기초능력|세분류)\s*[:：-]?\s*",
                 "",
                 line,
             )
@@ -370,6 +531,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             "duties": [item["text"] for item in sections["duties"]],
             "qualifications": [item["text"] for item in sections["qualifications"]],
             "preferences": [item["text"] for item in sections["preferences"]],
+            "evaluation": [item["text"] for item in sections["evaluation"]],
             "knowledge": [item["text"] for item in sections["knowledge"]],
             "skills": [item["text"] for item in sections["skills"]],
             "attitudes": [item["text"] for item in sections["attitudes"]],
