@@ -46,7 +46,7 @@ NCS_MCP에서 공식 능력단위·KSA 조회
 - 공식 수행준거·KSA 기반 면접 질문 생성
 - 주질문, 꼬리질문, 평가포인트, NCS 매칭 결과, 질문별 KSA 근거 제공
 - OpenAI API key를 화면에서 요청 단위로 입력 가능
-- 원본 12.6GB NCS DB와 `NCS_DB.xlsx`를 GitHub에 포함하지 않는 경량 배포 구조
+- 별도 NCS_MCP 연결 기반의 경량 배포 구조
 - 공식 NCS 사이트 자산을 사용하지 않는 비공식 독자 인터페이스
 
 ## 사용 방법
@@ -267,7 +267,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | `ENABLE_LEGACY_NCS_API` | 선택 | `false` | 레거시 NCS API 재활성화 |
 
 면접 생성 MVP 경로는 `NCS_MCP_URL`을 필수로 요구합니다.
-KSA 조회 함수도 MCP-only로 고정되어 있어 `NCS_MCP_URL`이 없으면 `NCS_DB.xlsx`, HRDK 공개 API, 정의 기반 추정값으로 자동 fallback하지 않습니다.
+KSA 조회는 NCS_MCP 연결을 기준으로 동작하므로, 운영 전 NCS_MCP 주소가 정상 연결되는지 확인해야 합니다.
 
 ## API 요약
 
@@ -408,28 +408,21 @@ docker run --rm -p 8015:8000 `
   ncscope-app
 ```
 
-Docker 이미지에는 앱만 포함합니다. NCS serving DB는 별도 NCS_MCP 프로세스가 사용합니다.
+Docker 이미지에는 앱만 포함합니다. NCS 데이터 조회는 별도 NCS_MCP 프로세스를 통해 수행합니다.
 
 자세한 배포 절차는 `DEPLOYMENT.md`를 참고하세요.
 
-## GitHub에 포함하지 않는 것
+## 데이터와 배포 구조
 
-이 저장소에는 다음 파일을 포함하지 않습니다.
+NCScope는 화면, 문서 파싱, 사람 검토, 면접 질문 생성을 담당합니다. NCS 능력단위·수행준거·KSA 데이터는 NCS_MCP에서 조회합니다.
 
-- 원본 12.6GB NCS DB
-- `NCS_DB.xlsx`
-- 로컬 SQLite DB
-- JOB-ALIO 다운로드 원본
-- `node_modules`
-- 가상환경
-- 실행 로그
+운영자는 NCS_MCP를 먼저 실행한 뒤 `NCS_MCP_URL`을 NCScope에 연결하면 됩니다. 자세한 서버 구성과 배포 절차는 `DEPLOYMENT.md`에 정리되어 있습니다.
 
-## 현재 MVP 한계
+## 현재 지원 범위
 
 - ZIP은 암호가 없고 내부에 PDF/HWP/HWPX/DOCX/TXT/이미지 파일이 들어 있는 경우에만 파싱합니다. 압축 내부 파일이 너무 크거나 지원 확장자가 없으면 검토 단계에서 오류로 돌려줍니다.
-- 기관 자체 용어가 NCS 세분류처럼 쓰이는 경우, 현재 serving DB와 매칭되지 않을 수 있습니다. 이 경우 NCS_MCP alias/coverage 보강이 필요합니다.
-- `npm audit`는 Kordoc transitive dependency 경로의 취약점을 보고합니다. 현재 Kordoc `4.2.7`이 npm 최신 버전이며, `npm audit fix --force`는 파서 호환성을 깨뜨릴 수 있어 적용하지 않았습니다.
-- Docker CLI가 로컬 검증 환경에 없어 Docker 빌드는 실제 실행 검증하지 못했고, Dockerfile과 `.dockerignore`는 정적 검토했습니다.
+- 기관 자체 용어가 NCS 세분류처럼 쓰이는 경우에는 자동 후보가 부족할 수 있습니다. 이 경우 검토 단계에서 담당자가 세분류를 직접 선택하거나 수정해야 합니다.
+- 생성된 면접 질문은 담당자 검토를 거쳐 최종 확정하는 초안입니다.
 
 ## 사용 전 확인할 점
 
