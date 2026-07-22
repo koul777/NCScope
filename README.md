@@ -1,110 +1,192 @@
 # NCScope
 
-NCScope is a Korean public-sector interview-question builder.
+공공기관 채용 공고문과 직무기술서를 올리면, NCS 세분류를 확인한 뒤 공식 KSA 근거로 구조화 면접 질문을 생성하는 프로그램입니다.
 
-It lets a public institution upload a job notice and job description, review the
-NCS detail classification extracted by Kordoc, then generate structured
-interview questions grounded in official NCS competency-unit criteria and KSA
-evidence served by NCS_MCP.
+NCScope는 직무기술서 파일을 Kordoc으로 파싱하고, 사람이 세분류를 최종 확인한 다음, NCS_MCP의 read-only serving DB에서 공식 능력단위·수행준거·KSA를 조회합니다. 이후 해당 근거를 바탕으로 주질문, 꼬리질문, 평가포인트가 포함된 구조화 면접 질문을 생성합니다.
 
-![NCScope home screen](docs/images/ncscope-home.png)
+![NCScope 화면](docs/images/ncscope-home.png)
 
-## What it does
+## 왜 필요한가
 
-- Parses job descriptions in PDF/HWP/HWPX/DOCX with Kordoc.
-- Extracts candidate NCS detail classifications, not just small categories.
-- Forces a human-in-the-loop review before official NCS lookup.
-- Calls NCS_MCP through `NCS_MCP_URL` for official competency units,
-  performance criteria, and KSA rows.
-- Generates structured interview questions with main questions, follow-ups, and
-  evaluation points.
-- Keeps the full NCS source DB and `NCS_DB.xlsx` outside this GitHub repository.
+공공기관 채용 실무에서는 직무기술서, 공고문, NCS 세분류, 능력단위, 수행준거, KSA를 사람이 일일이 맞춰 보며 면접 질문을 설계해야 합니다. 이 과정은 시간이 오래 걸리고, 세분류를 잘못 잡으면 질문의 근거가 흔들립니다.
 
-## Target user flow
-
-1. Open NCScope in a browser.
-2. Optional: paste an OpenAI API key into the `OpenAI API key` field.
-   - The key is not saved by the browser app.
-   - It is sent only with the current generation request.
-   - If left blank, the server uses its `OPENAI_API_KEY` environment variable.
-3. Upload the job-description file.
-4. NCScope runs Kordoc and shows extracted duties, qualifications, preferences,
-   and NCS detail classifications.
-5. The human reviewer checks or edits the detail classification values.
-6. Click `추출 결과 검토·확정`.
-7. Optional: upload the broader job notice and paste interview evaluation items.
-8. Click `MCP KSA 기반 면접 질문 생성`.
-9. Review:
-   - pipeline diagnostics,
-   - matched NCS competency units,
-   - official KSA evidence,
-   - structured interview questions.
-
-## Architecture
+NCScope의 목표는 다음 흐름을 하나로 묶는 것입니다.
 
 ```text
-Public institution user
-        |
-        v
-NCScope FastAPI app
-        |
-        |-- Kordoc Node bridge -> JD parsing
-        |-- Human review gate -> confirmed NCS detail classification
-        |-- NCS_MCP_URL ------> read-only NCS_MCP serving DB
-        |-- OpenAI API -------> structured question generation
-        v
-Interview question pack
+공고문/직무기술서 업로드
+        ↓
+Kordoc 문서 파싱
+        ↓
+사람이 NCS 세분류 확인
+        ↓
+NCS_MCP에서 공식 능력단위·KSA 조회
+        ↓
+구조화 면접 질문 생성
 ```
 
-NCScope and NCS_MCP are deployed as separate processes.
+## 핵심 기능
 
-| Component | Role |
+- PDF/HWP/HWPX/DOCX 직무기술서 파싱
+- 소분류가 아니라 세분류 기준 NCS 후보 추출
+- Human-in-the-loop 방식의 세분류 검토·확정
+- 확정된 세분류 기준 NCS_MCP 공식 능력단위 조회
+- 공식 수행준거·KSA 기반 면접 질문 생성
+- 주질문, 꼬리질문, 평가포인트, NCS 매칭 결과, KSA 근거 제공
+- OpenAI API key를 화면에서 요청 단위로 입력 가능
+- 원본 12.6GB NCS DB와 `NCS_DB.xlsx`를 GitHub에 포함하지 않는 경량 배포 구조
+
+## 사용 방법
+
+### 1. 화면 열기
+
+로컬 또는 배포된 NCScope 주소를 엽니다.
+
+```text
+http://127.0.0.1:8015
+```
+
+### 2. OpenAI API key 입력
+
+화면의 `OpenAI API key` 칸에 키를 입력할 수 있습니다.
+
+- 입력한 키는 브라우저 저장소나 서버 DB에 저장하지 않습니다.
+- 해당 생성 요청에만 FormData/JSON으로 전달됩니다.
+- 비워 두면 서버의 `OPENAI_API_KEY` 환경변수를 사용합니다.
+- 응답 JSON에는 키 원문이 포함되지 않고 `request`, `env`, `missing` 상태만 표시됩니다.
+
+### 3. 직무기술서 업로드
+
+`직무기술서 파일`에 PDF/HWP/HWPX/DOCX 파일을 올립니다.
+
+Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
+
+- 수행업무
+- 지원자격
+- 우대사항
+- 확정할 NCS 세분류
+
+### 4. 세분류 검토·확정
+
+자동 추출된 세분류가 맞는지 사람이 확인합니다.
+
+예시:
+
+```text
+경영기획
+총무
+정보기술기획
+프로젝트관리
+```
+
+필요하면 직접 수정한 뒤 `추출 결과 검토·확정` 버튼을 누릅니다.
+
+이 단계가 중요한 이유는 NCScope가 소분류나 키워드가 아니라, 사람이 확정한 세분류를 기준으로 NCS_MCP를 조회하기 때문입니다.
+
+### 5. 공고문과 평가항목 입력
+
+선택적으로 다음 정보를 추가합니다.
+
+- 공고문 파일
+- 담당업무 텍스트
+- 면접 평가항목 텍스트
+
+예시:
+
+```text
+담당업무: 경영계획 수립, 사업성과 분석, 예산 운영 지원
+평가항목: 문제해결능력, 의사소통능력, 청렴성, 조직적합도
+```
+
+### 6. 면접 질문 생성
+
+`MCP KSA 기반 면접 질문 생성`을 누릅니다.
+
+결과 영역에서 다음을 확인할 수 있습니다.
+
+- 파이프라인 진단
+- NCS 매칭 결과
+- KSA 항목
+- 구조화 면접 질문
+- 원본 JSON
+
+## 결과물 예시
+
+생성 결과는 다음 구조를 가집니다.
+
+```json
+{
+  "interview_questions": [
+    {
+      "type": "경험",
+      "competency": "경영계획 수립",
+      "ncsClCd": "0201010103_22v2",
+      "question": "사업 목표를 수립하거나 조정한 경험 중 가장 어려웠던 사례를 말씀해 주세요.",
+      "follow_ups": [
+        "당시 목표 설정의 근거는 무엇이었습니까?",
+        "이해관계자 의견이 충돌했을 때 어떻게 조정했습니까?",
+        "결과를 어떤 지표로 평가했습니까?"
+      ],
+      "evaluation_points": [
+        "환경분석 능력",
+        "목표수립의 타당성",
+        "이해관계자 조정",
+        "성과관리 관점"
+      ]
+    }
+  ]
+}
+```
+
+## 시스템 구조
+
+NCScope는 앱과 NCS_MCP를 분리해서 배포합니다.
+
+| 구성요소 | 역할 |
 | --- | --- |
-| NCScope | Browser UI + FastAPI workflow orchestration |
-| Kordoc | PDF/HWP/HWPX/DOCX parsing |
-| NCS_MCP | Official NCS competency-unit/KSA lookup |
-| Serving DB | Compact read-only SQLite DB, distributed separately |
-| OpenAI API | Optional generation/reranking model backend |
+| NCScope FastAPI 앱 | 화면, 업로드, 검토, 질문 생성 흐름 제어 |
+| Kordoc | PDF/HWP/HWPX/DOCX 문서 파싱 |
+| NCS_MCP | 공식 NCS 능력단위·수행준거·KSA 조회 |
+| serving DB | 약 117MB 경량 read-only SQLite DB |
+| OpenAI API | 구조화 면접 질문 생성 및 선택적 재정렬 |
 
-## Repository and data policy
+```text
+사용자
+  ↓
+NCScope UI
+  ↓
+FastAPI
+  ├─ Kordoc 문서 파싱
+  ├─ Human review gate
+  ├─ NCS_MCP_URL → 공식 NCS/KSA 조회
+  └─ OpenAI API → 질문 생성
+```
 
-This repository intentionally does not include:
+## 설치 방법
 
-- the original 12.6 GB NCS source DB,
-- `NCS_DB.xlsx`,
-- local SQLite DBs,
-- downloaded ALIO attachments,
-- local logs,
-- virtual environments,
-- `node_modules`.
-
-The compact serving DB is published separately as a release artifact or external
-artifact and mounted into NCS_MCP.
-
-Prepared artifact:
-
-- Release tag: `ncscope-db-v0.1.0-20260723`
-- DB asset: `ncs_interview_serving_release.db`
-- Manifest asset: `ncs_interview_serving_release.json`
-- DB SHA-256: `F9BB59B8853E8F69DC4698028EC347ED9BD74D26133FBCEB031B05FD90F89B23`
-
-## Local setup
-
-### 1. Install NCScope dependencies
+### 1. 저장소 받기
 
 ```powershell
 git clone https://github.com/koul777/NCScope.git
 cd NCScope
+```
 
+### 2. Python 패키지 설치
+
+```powershell
 pip install -r requirements.txt
+```
+
+### 3. Kordoc 설치
+
+```powershell
 npm ci
 ```
 
-`npm ci` installs Kordoc for the Node parsing bridge.
+`npm ci`는 `scripts/kordoc_parse.mjs`에서 사용하는 Kordoc Node 패키지를 설치합니다.
 
-### 2. Start NCS_MCP
+## NCS_MCP 준비
 
-Start NCS_MCP separately with the compact serving DB:
+NCScope는 원본 NCS DB를 직접 들고 있지 않습니다. NCS_MCP를 별도 프로세스로 실행해야 합니다.
 
 ```powershell
 $env:NCS_DB_PATH="C:\data\ncs_interview_serving_release.db"
@@ -112,12 +194,19 @@ $env:NCS_MCP_READ_ONLY="1"
 python -m ncs_mcp.server --transport streamable-http --host 127.0.0.1 --port 8778
 ```
 
-Required NCS_MCP tools:
+필수 MCP 도구:
 
 - `ncs_search`
 - `ncs_unit_detail`
 
-### 3. Start NCScope
+준비된 serving DB 아티팩트:
+
+- Release tag: `ncscope-db-v0.1.0-20260723`
+- DB asset: `ncs_interview_serving_release.db`
+- Manifest asset: `ncs_interview_serving_release.json`
+- DB SHA-256: `F9BB59B8853E8F69DC4698028EC347ED9BD74D26133FBCEB031B05FD90F89B23`
+
+## NCScope 실행
 
 ```powershell
 $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
@@ -125,39 +214,32 @@ $env:MAX_UPLOAD_MB="30"
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 ```
 
-Open:
-
-```text
-http://127.0.0.1:8015
-```
-
-You can also use:
+또는:
 
 ```powershell
 .\run_local.ps1
 ```
 
-## Environment variables
+## 환경변수
 
-| Variable | Required | Default | Purpose |
+| 변수 | 필수 여부 | 기본값 | 설명 |
 | --- | --- | --- | --- |
-| `NCS_MCP_URL` | Yes | empty | Streamable HTTP endpoint for NCS_MCP |
-| `OPENAI_API_KEY` | No | empty | Server-side fallback OpenAI key |
-| `OPENAI_MODEL` | No | `gpt-4o-mini` | General model override |
-| `OPENAI_STRATEGY_MODEL` | No | `gpt-4o-mini` | Interview strategy generation model |
-| `DATABASE_URL` | No | `sqlite:///./ncscope.db` | Small app DB, not the NCS source DB |
-| `MAX_UPLOAD_MB` | No | `30` | Upload limit |
-| `KORDOC_OCR` | No | `true` | Enable Kordoc OCR path when available |
-| `ENABLE_ADMIN_ENDPOINTS` | No | `false` | Enables admin endpoints only when explicitly needed |
-| `ADMIN_TOKEN` | Conditional | empty | Required if admin endpoints are enabled |
-| `ENABLE_LEGACY_NCS_API` | No | `false` | Re-enables legacy local/NCS API endpoints |
+| `NCS_MCP_URL` | 필수 | 없음 | NCS_MCP Streamable HTTP 주소 |
+| `OPENAI_API_KEY` | 선택 | 없음 | 서버 기본 OpenAI 키 |
+| `OPENAI_MODEL` | 선택 | `gpt-4o-mini` | 일반 모델 설정 |
+| `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
+| `DATABASE_URL` | 선택 | `sqlite:///./ncscope.db` | 앱용 소형 DB |
+| `MAX_UPLOAD_MB` | 선택 | `30` | 업로드 제한 |
+| `KORDOC_OCR` | 선택 | `true` | Kordoc OCR 경로 사용 |
+| `ENABLE_ADMIN_ENDPOINTS` | 선택 | `false` | 관리자 API 활성화 |
+| `ADMIN_TOKEN` | 조건부 | 없음 | 관리자 API 사용 시 필요 |
+| `ENABLE_LEGACY_NCS_API` | 선택 | `false` | 레거시 NCS API 재활성화 |
 
-The interview MVP path requires `NCS_MCP_URL` and does not use bundled
-`NCS_DB.xlsx` or local full-DB fallbacks.
+면접 생성 MVP 경로는 `NCS_MCP_URL`을 필수로 요구합니다.
 
-## API overview
+## API 요약
 
-### Parse for review
+### 직무기술서 파싱·검토
 
 ```http
 POST /api/jd/parse-review
@@ -165,17 +247,17 @@ POST /api/jd/parse-review
 
 Form:
 
-- `jd_file`: PDF/HWP/HWPX/DOCX job description.
+- `jd_file`: PDF/HWP/HWPX/DOCX 직무기술서
 
-Returns:
+반환:
 
-- parsed markdown,
-- duties,
-- qualifications,
-- preferences,
-- `fields.ncs_detail_candidates`.
+- 문서 markdown
+- 수행업무
+- 지원자격
+- 우대사항
+- `fields.ncs_detail_candidates`
 
-### Generate from uploaded JD
+### 업로드 기반 면접 질문 생성
 
 ```http
 POST /api/jd/strategy/upload
@@ -183,14 +265,14 @@ POST /api/jd/strategy/upload
 
 Form:
 
-- `jd_file`: original job-description file.
-- `notice_file`: optional job notice.
-- `jd_review_json`: reviewed result from `/api/jd/parse-review`.
-- `openai_api_key`: optional request-scoped OpenAI key.
-- `duty_text`: optional duties override.
-- `evaluation_text`: optional interview-evaluation criteria.
+- `jd_file`: 원본 직무기술서
+- `notice_file`: 선택 공고문
+- `jd_review_json`: 사람이 검토·확정한 JSON
+- `openai_api_key`: 선택 요청 단위 OpenAI 키
+- `duty_text`: 선택 담당업무 보정 텍스트
+- `evaluation_text`: 선택 평가항목 텍스트
 
-Required review gate:
+필수 review gate:
 
 ```json
 {
@@ -201,7 +283,9 @@ Required review gate:
 }
 ```
 
-### Generate from manually selected NCS units
+`review_confirmed`가 정확히 `true`가 아니거나 세분류가 비어 있으면 NCS_MCP 조회를 진행하지 않습니다.
+
+### 직접 선택한 NCS 기준 질문 생성
 
 ```http
 POST /api/questions/generate-from-text
@@ -219,48 +303,55 @@ JSON:
       "compeUnitName": "경영계획 수립"
     }
   ],
-  "openai_api_key": "optional-request-key"
+  "openai_api_key": "선택 입력"
 }
 ```
 
-## Verification
-
-Run the core checks:
+## 검증 방법
 
 ```powershell
 python -m py_compile app\main.py app\settings.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py
 python -m pytest -q
 ```
 
-Run a real-document ALIO benchmark:
+현재 검증 결과:
+
+- `python -m pytest -q` → 152 passed
+- `py_compile` → passed
+- `npm ci` → passed
+- Kordoc 최신 npm 버전 `4.2.7` 확인
+
+## JOB-ALIO 실문서 벤치마크
+
+실제 공공기관 채용공고의 직무기술서를 내려받아 파싱 성능을 확인할 수 있습니다.
 
 ```powershell
 $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
 python scripts\benchmark_alio_jd.py --limit 5 --include-ksa
 ```
 
-Latest benchmark report in this branch:
+최신 리포트:
 
 - `reports/alio_jd_benchmark_20260723_042758.md`
 - `reports/alio_jd_benchmark_20260723_042758.csv`
 
-Observed result:
+관찰 결과:
 
-- 5 recent JOB-ALIO postings inspected.
-- 4 documents parsed.
-- 2 documents had NCS detail candidates.
-- 1 document had extracted detail candidates but no current MCP match.
-- 1 ZIP attachment was marked out-of-scope for the MVP parser.
+- 최근 JOB-ALIO 공고 5건 검사
+- 문서 4건 파싱 성공
+- 세분류 후보가 추출된 문서 2건
+- 세분류는 추출됐지만 현재 MCP DB와 매칭되지 않은 문서 1건
+- ZIP 첨부 1건은 MVP 범위 밖으로 분류
 
-## Docker deployment
+## Docker 배포
 
-Build:
+빌드:
 
 ```powershell
 docker build -t ncscope-app .
 ```
 
-Run against local NCS_MCP:
+실행:
 
 ```powershell
 docker run --rm -p 8015:8000 `
@@ -270,28 +361,34 @@ docker run --rm -p 8015:8000 `
   ncscope-app
 ```
 
-The Docker image should contain the app only. The compact NCS serving DB belongs
-to the separate NCS_MCP process.
+Docker 이미지에는 앱만 포함합니다. NCS serving DB는 별도 NCS_MCP 프로세스가 사용합니다.
 
-See `DEPLOYMENT.md` for the full two-process deployment checklist.
+자세한 배포 절차는 `DEPLOYMENT.md`를 참고하세요.
 
-## Known MVP boundaries
+## GitHub에 포함하지 않는 것
 
-- ZIP attachments are not parsed directly; unzip and upload the contained
-  PDF/HWP/HWPX/DOCX file.
-- Some institutions use local labels that look like NCS detail classifications
-  but do not exist in the current serving DB. Those require alias/coverage work
-  in NCS_MCP.
-- Docker CLI was not available in the local development environment during the
-  first validation pass, so Dockerfile validation was syntax/dependency review
-  plus `.dockerignore` hygiene checks.
-- `npm audit` currently reports transitive vulnerabilities under the Kordoc
-  dependency chain. Do not run `npm audit fix --force` blindly because it may
-  change Kordoc major behavior; validate parser compatibility before upgrading.
+이 저장소에는 다음 파일을 포함하지 않습니다.
 
-## License and usage note
+- 원본 12.6GB NCS DB
+- `NCS_DB.xlsx`
+- 로컬 SQLite DB
+- JOB-ALIO 다운로드 원본
+- `node_modules`
+- 가상환경
+- 실행 로그
 
-NCScope is an MVP implementation for public-sector structured interview
-preparation. Before production use, confirm the institution's data-handling
-rules, API-key handling policy, model logging policy, and official NCS source
-licensing requirements.
+## 현재 MVP 한계
+
+- ZIP 첨부파일은 직접 파싱하지 않습니다. 압축을 풀어 PDF/HWP/HWPX/DOCX 파일을 업로드해야 합니다.
+- 기관 자체 용어가 NCS 세분류처럼 쓰이는 경우, 현재 serving DB와 매칭되지 않을 수 있습니다. 이 경우 NCS_MCP alias/coverage 보강이 필요합니다.
+- `npm audit`는 Kordoc transitive dependency 경로의 취약점을 보고합니다. 현재 Kordoc `4.2.7`이 npm 최신 버전이며, `npm audit fix --force`는 파서 호환성을 깨뜨릴 수 있어 적용하지 않았습니다.
+- Docker CLI가 로컬 검증 환경에 없어 Docker 빌드는 실제 실행 검증하지 못했고, Dockerfile과 `.dockerignore`는 정적 검토했습니다.
+
+## 사용 전 확인할 점
+
+실제 운영 전에 기관 내부 기준에 따라 다음을 확인해야 합니다.
+
+- 직무기술서와 공고문에 개인정보가 포함되는지
+- OpenAI API 사용 시 데이터 처리 정책이 기관 기준에 맞는지
+- NCS 원천 데이터와 serving DB 배포 방식이 라이선스·보안 기준에 맞는지
+- 면접 질문을 최종 확정하기 전 담당자가 NCS 근거와 질문 적합성을 검토했는지
