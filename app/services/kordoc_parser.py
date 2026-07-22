@@ -58,6 +58,43 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
     "ncs_detail": ("세분류", "NCS세분류", "NCS 세분류"),
 }
 
+_NOTICE_REVIEW_ALIASES: dict[str, tuple[str, ...]] = {
+    "duty_text": (
+        "담당업무",
+        "수행업무",
+        "직무수행내용",
+        "직무내용",
+        "주요업무",
+        "채용분야 주요업무",
+        "직무기술서",
+    ),
+    "evaluation_text": (
+        "평가항목",
+        "평가기준",
+        "면접평가",
+        "면접 평가",
+        "면접전형",
+        "면접심사",
+        "심사기준",
+        "전형방법",
+        "직무능력",
+        "직업기초능력",
+    ),
+    "qualification_text": (
+        "지원자격",
+        "응시자격",
+        "자격요건",
+        "필수자격",
+        "지원요건",
+    ),
+    "preference_text": (
+        "우대사항",
+        "우대조건",
+        "가점사항",
+        "우대요건",
+    ),
+}
+
 
 def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
@@ -375,6 +412,116 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             "attitudes": [item["text"] for item in sections["attitudes"]],
             "basic_competencies": [item["text"] for item in sections["basic_competencies"]],
             "ncs_detail_candidates": detail_candidates,
+        },
+        "document": {
+            "metadata": parsed.get("metadata") or {},
+            "outline": parsed.get("outline") or [],
+            "warnings": parsed.get("warnings") or [],
+            "qualitySummary": parsed.get("qualitySummary"),
+            "pageQuality": parsed.get("pageQuality") or [],
+            "markdown": markdown,
+        },
+    }
+
+
+def _looks_like_new_notice_section(line: str) -> bool:
+    text = _clean_text(line)
+    if not text:
+        return False
+    text = re.sub(r"^#{1,6}\s*", "", text).strip()
+    if re.match(r"^(?:#{1,6}\s*)?(?:\d+[.)]|[가-힣][.)]|[IVX]+[.)])\s*\S{2,30}\s*$", text):
+        return True
+    key = _norm(text)
+    headings = {
+        "채용분야",
+        "채용인원",
+        "근무조건",
+        "보수",
+        "전형절차",
+        "접수기간",
+        "제출서류",
+        "합격자발표",
+        "임용",
+        "기타사항",
+        "문의처",
+    }
+    return key in {_norm(x) for x in headings}
+
+
+def _extract_notice_windows(markdown: str, aliases: tuple[str, ...], max_lines: int = 9, max_chars: int = 2200) -> list[str]:
+    lines = [_clean_text(line) for line in str(markdown or "").splitlines()]
+    lines = [line for line in lines if line]
+    out: list[str] = []
+    seen: set[str] = set()
+    alias_keys = [_norm(alias) for alias in aliases]
+    for idx, line in enumerate(lines):
+        line_key = _norm(line)
+        if not line_key or not any(alias_key and alias_key in line_key for alias_key in alias_keys):
+            continue
+        window: list[str] = [line]
+        for next_line in lines[idx + 1 : idx + max_lines]:
+            if _looks_like_new_notice_section(next_line) and len(window) > 1:
+                break
+            window.append(next_line)
+        value = "\n".join(window)
+        value = value[:max_chars].strip()
+        key = _norm(value)
+        if value and key not in seen:
+            seen.add(key)
+            out.append(value)
+    return out[:4]
+
+
+def structure_job_notice(parsed: dict[str, Any], filename: str = "") -> dict[str, Any]:
+    """Return reviewable duty/evaluation text candidates from a broader job notice.
+
+    A notice usually does not contain a clean NCS classification table.  The goal
+    is therefore not to auto-confirm anything, but to pre-fill the human review
+    fields with the most relevant duty/evaluation windows.
+    """
+
+    markdown = str(parsed.get("markdown") or "")
+    jd_like = structure_job_description(parsed, filename=filename)
+    fields = jd_like.get("fields", {}) if isinstance(jd_like.get("fields"), dict) else {}
+
+    duty_candidates = list(fields.get("duties") or []) + _extract_notice_windows(
+        markdown, _NOTICE_REVIEW_ALIASES["duty_text"]
+    )
+    evaluation_candidates = _extract_notice_windows(markdown, _NOTICE_REVIEW_ALIASES["evaluation_text"])
+    qualification_candidates = list(fields.get("qualifications") or []) + _extract_notice_windows(
+        markdown, _NOTICE_REVIEW_ALIASES["qualification_text"]
+    )
+    preference_candidates = list(fields.get("preferences") or []) + _extract_notice_windows(
+        markdown, _NOTICE_REVIEW_ALIASES["preference_text"]
+    )
+
+    def dedup_join(values: list[str], max_chars: int = 3000) -> str:
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = _clean_text(value)
+            key = _norm(text)
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+        return "\n".join(out)[:max_chars].strip()
+
+    return {
+        "filename": filename,
+        "parser": "kordoc",
+        "review_required": True,
+        "fields": {
+            "duty_text": dedup_join(duty_candidates),
+            "evaluation_text": dedup_join(evaluation_candidates, max_chars=2200),
+            "qualification_text": dedup_join(qualification_candidates, max_chars=1800),
+            "preference_text": dedup_join(preference_candidates, max_chars=1800),
+        },
+        "candidates": {
+            "duty_text": duty_candidates[:6],
+            "evaluation_text": evaluation_candidates[:6],
+            "qualification_text": qualification_candidates[:6],
+            "preference_text": preference_candidates[:6],
         },
         "document": {
             "metadata": parsed.get("metadata") or {},

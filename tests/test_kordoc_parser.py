@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.kordoc_parser import _loads_kordoc_json, structure_job_description
+from app.services.kordoc_parser import _loads_kordoc_json, structure_job_description, structure_job_notice
 
 
 def test_structure_job_description_extracts_detail_from_html_table() -> None:
@@ -29,3 +29,28 @@ def test_loads_kordoc_json_recovers_after_stdout_warning() -> None:
     result = _loads_kordoc_json(raw)
 
     assert result == {"success": True, "markdown": "ok"}
+
+
+def test_structure_job_notice_extracts_duty_and_evaluation_windows() -> None:
+    markdown = """
+## 채용분야
+경영기획 담당자 1명
+
+## 담당업무
+- 경영계획 수립 및 사업성과 분석
+- 예산 운영 지원과 대내외 보고자료 작성
+
+## 면접전형 평가항목
+- 문제해결능력
+- 의사소통능력
+- 청렴성 및 조직적합도
+
+## 기타사항
+최종합격자는 임용 후 배치 예정
+"""
+
+    result = structure_job_notice({"markdown": markdown}, filename="notice.txt")
+
+    assert "경영계획 수립" in result["fields"]["duty_text"]
+    assert "문제해결능력" in result["fields"]["evaluation_text"]
+    assert "기타사항" not in result["fields"]["evaluation_text"]

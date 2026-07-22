@@ -5,46 +5,77 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NCScope</title>
   <style>
-    :root { --bg:#f3f6fb; --ink:#132238; --muted:#5f6f83; --line:#dbe3ee; --primary:#0b69ff; --card:#fff; --good:#1f9d55; --warn:#ca8a04; }
+    :root {
+      --bg:#eef4fb;
+      --ink:#10233f;
+      --muted:#64748b;
+      --line:#d7e2f1;
+      --primary:#005bac;
+      --primary-2:#008bd2;
+      --navy:#012b5d;
+      --card:#fff;
+      --good:#15803d;
+      --warn:#b7791f;
+      --shadow:0 14px 40px rgba(15, 42, 77, .10);
+    }
     * { box-sizing:border-box; }
-    body { margin:0; height:100vh; overflow:hidden; background:radial-gradient(circle at 10% 0%, #e7f0ff, var(--bg) 30%); color:var(--ink); font-family:"Segoe UI","Noto Sans KR",sans-serif; }
-    .wrap { width:min(1400px, 98vw); height:100vh; margin:0 auto; padding:8px 12px; display:grid; grid-template-rows:auto 1fr; gap:8px; }
-    .hero { background:linear-gradient(120deg,#0b2a5b,#0b69ff); color:#fff; border-radius:12px; padding:12px 16px; }
-    .hero h1 { margin:0 0 3px; font-size:22px; }
-    .hero p { margin:0; opacity:.92; font-size:12px; }
-    .grid { display:grid; grid-template-columns:minmax(320px,380px) 1fr; gap:10px; min-height:0; }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; min-height:0; overflow:auto; }
-    .title { margin:0 0 10px; font-size:16px; font-weight:800; }
-    label { display:block; margin:10px 0 4px; font-size:13px; font-weight:700; }
-    input, textarea, select, button { width:100%; border:1px solid var(--line); border-radius:10px; font-size:14px; }
-    input, textarea, select { padding:10px; }
+    body { margin:0; height:100vh; overflow:hidden; background:linear-gradient(180deg,#f8fbff 0%, var(--bg) 58%, #e7eff9 100%); color:var(--ink); font-family:"Segoe UI","Noto Sans KR",sans-serif; letter-spacing:-.02em; }
+    .wrap { width:min(1440px, 98vw); height:100vh; margin:0 auto; padding:10px 14px 12px; display:grid; grid-template-rows:auto 1fr; gap:12px; }
+    .hero { position:relative; overflow:hidden; background:linear-gradient(120deg,var(--navy),#005bac 55%,#1aa0dc); color:#fff; border-radius:18px; padding:0; box-shadow:var(--shadow); }
+    .hero:after { content:""; position:absolute; right:-60px; top:-90px; width:330px; height:330px; border-radius:50%; background:rgba(255,255,255,.14); }
+    .govbar { position:relative; z-index:1; padding:9px 18px; background:rgba(0,0,0,.18); font-size:12px; font-weight:700; display:flex; align-items:center; gap:8px; }
+    .govbar:before { content:""; width:8px; height:8px; border-radius:50%; background:#42d3ff; box-shadow:0 0 0 4px rgba(66,211,255,.18); }
+    .hero-main { position:relative; z-index:1; display:flex; justify-content:space-between; align-items:flex-end; gap:18px; padding:18px 22px 20px; }
+    .hero h1 { margin:0 0 6px; font-size:30px; line-height:1; font-weight:900; }
+    .hero p { margin:0; opacity:.94; font-size:14px; font-weight:600; }
+    .hero-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; min-width:310px; }
+    .badge { border:1px solid rgba(255,255,255,.34); background:rgba(255,255,255,.14); border-radius:999px; padding:7px 11px; font-size:12px; font-weight:800; backdrop-filter:blur(4px); }
+    .build-tag { margin-top:7px; font-size:12px; opacity:.78; }
+    .grid { display:grid; grid-template-columns:minmax(360px,410px) 1fr; gap:12px; min-height:0; }
+    .card { background:rgba(255,255,255,.96); border:1px solid rgba(198,213,233,.9); border-radius:18px; padding:16px; min-height:0; overflow:auto; box-shadow:var(--shadow); }
+    .title { display:flex; align-items:center; gap:8px; margin:0 0 14px; font-size:18px; font-weight:900; }
+    .title .step { display:inline-grid; place-items:center; width:28px; height:28px; border-radius:9px; color:#fff; background:linear-gradient(135deg,var(--primary),var(--primary-2)); font-size:14px; }
+    label { display:block; margin:12px 0 6px; font-size:13px; font-weight:800; color:#162b4d; }
+    input, textarea, select, button { width:100%; border:1px solid var(--line); border-radius:12px; font-size:14px; }
+    input, textarea, select { padding:11px 12px; background:#fff; transition:border-color .15s ease, box-shadow .15s ease, background .15s ease; }
+    input:focus, textarea:focus, select:focus { outline:none; border-color:#2f8fdb; box-shadow:0 0 0 4px rgba(47,143,219,.14); }
     textarea { min-height:180px; resize:vertical; }
     select { min-height:280px; }
     select.dropdown { min-height:unset; height:38px; padding:6px 10px; font-size:13px; cursor:pointer; }
-    button { margin-top:10px; border:0; background:var(--primary); color:#fff; font-weight:800; padding:11px; cursor:pointer; }
+    button { margin-top:10px; border:0; background:linear-gradient(135deg,var(--primary),var(--primary-2)); color:#fff; font-weight:900; padding:12px; cursor:pointer; box-shadow:0 8px 18px rgba(0,91,172,.20); }
+    button:hover:not(:disabled) { filter:brightness(1.03); transform:translateY(-1px); }
     button:disabled { opacity:.6; cursor:not-allowed; }
     .btn-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
     .meta { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
-    .pill { border:1px solid var(--line); border-radius:999px; padding:5px 10px; font-size:12px; background:#f8fbff; }
+    .pill { border:1px solid var(--line); border-radius:999px; padding:6px 11px; font-size:12px; background:#f8fbff; font-weight:700; }
     .pill.good { border-color:#bce7cd; color:var(--good); background:#f0fcf5; }
     .pill.warn { border-color:#f6dea3; color:var(--warn); background:#fff9ea; }
-    .section { border-top:1px dashed var(--line); padding-top:10px; margin-top:10px; }
-    .section h3 { margin:0 0 8px; font-size:14px; }
+    .section { border-top:1px solid #e7eef8; padding-top:13px; margin-top:13px; }
+    .section h3 { margin:0 0 9px; font-size:15px; }
     ul { margin:0; padding-left:18px; }
     li { margin:4px 0; }
     .sub { color:var(--muted); font-size:12px; margin-top:3px; }
+    .workflow-menu { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0 12px; }
+    .flow-step { border:1px solid #dce8f6; border-radius:14px; padding:10px; background:#f8fbff; min-height:74px; }
+    .flow-step strong { display:block; font-size:12px; color:#17345c; margin-bottom:4px; }
+    .flow-step span { display:block; font-size:11px; color:var(--muted); line-height:1.35; }
+    .flow-step.active { border-color:#75b8e8; background:#edf8ff; box-shadow:0 0 0 3px rgba(0,139,210,.10); }
+    .flow-step.done { border-color:#a7dfbf; background:#f0fcf5; }
+    .review-panel { margin-top:14px; padding:14px; border:1px solid #cbdcf0; border-radius:16px; background:linear-gradient(180deg,#fbfdff,#f3f8ff); }
+    .review-panel-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:6px; }
+    .review-panel-head label { margin:0; }
     .ncs-table { width:100%; border-collapse:collapse; font-size:13px; }
     .ncs-table th,.ncs-table td { border-bottom:1px solid #eef3fa; text-align:left; padding:8px 6px; }
     .ncs-table th { color:var(--muted); font-weight:700; }
     .empty { color:var(--muted); font-size:13px; }
-    .progress-wrap { margin:8px 0 10px; padding:10px; border:1px solid var(--line); border-radius:10px; background:#f8fbff; display:none; }
+    .progress-wrap { margin:8px 0 10px; padding:12px; border:1px solid #bed7f5; border-radius:14px; background:linear-gradient(180deg,#f7fbff,#eef7ff); display:none; }
     .progress-top { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:13px; }
     .progress-bar { margin-top:8px; width:100%; height:8px; background:#e6eef9; border-radius:999px; overflow:hidden; }
-    .progress-fill { height:100%; width:8%; background:linear-gradient(90deg,#0b69ff,#57a4ff); transition:width .5s ease; }
+    .progress-fill { height:100%; width:8%; background:linear-gradient(90deg,var(--primary),#3db3e8); transition:width .5s ease; }
     .progress-note { margin-top:6px; font-size:12px; color:var(--muted); }
     details summary { cursor:pointer; color:var(--muted); font-size:13px; }
     pre { background:#0f1722; color:#d6e4f6; border-radius:8px; padding:10px; max-height:300px; overflow:auto; white-space:pre-wrap; }
-    .qcard { border:1px solid #e8eef7; border-radius:10px; padding:10px; margin-bottom:10px; background:#fbfdff; min-height:160px; }
+    .qcard { border:1px solid #dfe9f6; border-radius:15px; padding:13px; margin-bottom:12px; background:linear-gradient(180deg,#fff,#f8fbff); min-height:160px; }
     .qhead { display:flex; gap:8px; align-items:center; margin-bottom:6px; font-size:12px; color:var(--muted); }
     .followup-chain { margin:8px 0 8px 12px; border-left:2px solid #b0c8fa; padding-left:10px; }
     .fu-step { padding:4px 0; font-size:12.5px; color:#32475d; }
@@ -52,10 +83,9 @@
     .qnav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .qnav-btn { width:auto; margin:0; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; }
     .qnav-ind { font-size:13px; color:var(--muted); }
-    .result-scroll { max-height:calc(100vh - 180px); overflow:auto; padding-right:4px; }
+    .result-scroll { max-height:calc(100vh - 210px); overflow:auto; padding-right:4px; }
     .hidden { display:none !important; }
-    .build-tag { margin-top:4px; font-size:11px; opacity:.8; }
-    @media (max-width:980px){ .grid { grid-template-columns:1fr; } }
+    @media (max-width:980px){ body { overflow:auto; height:auto; } .wrap { height:auto; } .grid { grid-template-columns:1fr; } .hero-main { align-items:flex-start; flex-direction:column; } .hero-badges { justify-content:flex-start; min-width:0; } .result-scroll { max-height:none; } }
 
     /* legacy small-category helper */
     .sclass-block { margin-top:10px; }
@@ -64,8 +94,8 @@
     .sclass-tags { display:flex; flex-wrap:wrap; gap:6px; min-height:28px; margin-bottom:6px; }
     .sclass-tag {
       display:inline-flex; align-items:center; gap:5px;
-      background:#e8f0fe; border:1px solid #b0c8fa; border-radius:999px;
-      padding:4px 10px; font-size:12px; font-weight:700; color:#1a4ab8; cursor:default;
+      background:#e8f3ff; border:1px solid #acd3ff; border-radius:999px;
+      padding:5px 10px; font-size:12px; font-weight:800; color:#07569b; cursor:default;
     }
     .sclass-tag.custom { background:#fef3c7; border-color:#fcd34d; color:#92400e; }
     .sclass-tag.unmatched { background:#f3f4f6; border-color:#d1d5db; color:#6b7280; font-style:italic; }
@@ -100,14 +130,24 @@
 <body>
   <div class="wrap">
     <section class="hero">
-      <h1>NCScope</h1>
-      <p>직무기술서에서 세분류를 검토·확정한 뒤 NCS_MCP의 공식 KSA로 구조화 면접 질문을 생성합니다.</p>
-      <div class="build-tag">build: kordoc-hitl-mcp</div>
+      <div class="govbar">국가직무능력표준(NCS) 기반 공정채용 면접질문 생성</div>
+      <div class="hero-main">
+        <div>
+          <h1>NCScope</h1>
+          <p>직무기술서 세분류 확인 → 공식 NCS KSA 조회 → 구조화 면접 질문 생성</p>
+          <div class="build-tag">Kordoc · Human Review · NCS_MCP · KSA Evidence</div>
+        </div>
+        <div class="hero-badges">
+          <span class="badge">세분류 검토 필수</span>
+          <span class="badge">read-only DB</span>
+          <span class="badge">공식 KSA 근거</span>
+        </div>
+      </div>
     </section>
 
     <div class="grid">
       <section class="card">
-        <h2 class="title">1) 입력</h2>
+        <h2 class="title"><span class="step">1</span>입력</h2>
 
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
           <label for="inputMode" style="margin:0; white-space:nowrap; font-size:13px; font-weight:700;">입력 방식</label>
@@ -123,12 +163,31 @@
           입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 비워두면 서버의 <code>OPENAI_API_KEY</code>를 사용합니다.
         </div>
 
+        <div class="workflow-menu" aria-label="검토 단계">
+          <div id="flowApi" class="flow-step active">
+            <strong>1. API 설정</strong>
+            <span>요청 키 또는 서버 환경변수 확인</span>
+          </div>
+          <div id="flowJd" class="flow-step">
+            <strong>2. 직무기술서 세분류</strong>
+            <span>Kordoc 추출값을 사람이 확정</span>
+          </div>
+          <div id="flowNotice" class="flow-step">
+            <strong>3. 공고문 핵심텍스트</strong>
+            <span>담당업무·평가항목 검토</span>
+          </div>
+          <div id="flowGenerate" class="flow-step">
+            <strong>4. 질문 생성</strong>
+            <span>NCS_MCP KSA 기반 생성</span>
+          </div>
+        </div>
+
         <div id="uploadBlock">
           <label for="jdFile">직무기술서 파일 (필수, PDF/HWP/HWPX/DOCX/이미지/TXT)</label>
           <input id="jdFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.png,.jpg,.jpeg,.webp,.txt" />
 
-          <div id="jdReviewBlock" style="display:none; margin-top:14px; padding:12px; border:1px solid #cbd5e1; border-radius:10px; background:#f8fafc;">
-            <div style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
+          <div id="jdReviewBlock" class="review-panel" style="display:none;">
+            <div class="review-panel-head">
               <label style="margin:0;">Kordoc 자동 추출 검토</label>
               <span id="jdReviewStatus" class="sub">파일을 분석합니다...</span>
             </div>
@@ -164,6 +223,14 @@
 
           <label for="noticeFile">공고문 파일 (선택, PDF/TXT)</label>
           <input id="noticeFile" type="file" accept=".pdf,.txt" />
+          <div id="noticeReviewBlock" class="review-panel" style="display:none;">
+            <div class="review-panel-head">
+              <label style="margin:0;">공고문 핵심 텍스트 검토</label>
+              <span id="noticeReviewStatus" class="sub">공고문에서 담당업무와 평가항목을 추출합니다...</span>
+            </div>
+            <p class="sub" style="margin:6px 0 10px;">공고문에서 끌어온 담당업무·면접평가 항목을 확인하고 필요하면 수정하세요.</p>
+            <button type="button" id="btnConfirmNoticeReview" style="background:#005bac; margin-top:8px;">공고문 핵심 텍스트 검토·적용</button>
+          </div>
 
           <label for="dutyText">담당업무 텍스트 (권장)</label>
           <textarea id="dutyText" placeholder="공고문의 담당업무/직무수행내용을 붙여넣으세요."></textarea>
@@ -196,7 +263,7 @@
       </section>
 
       <section class="card">
-        <h2 class="title">2) 결과</h2>
+        <h2 class="title"><span class="step">2</span>결과</h2>
         <div class="result-scroll">
           <div id="errorBox" class="pill warn" style="display:none; margin-bottom:8px;"></div>
 
@@ -287,6 +354,13 @@
     const reviewQualifications = document.getElementById('reviewQualifications');
     const reviewPreferences = document.getElementById('reviewPreferences');
     const reviewNcsDetail = document.getElementById('reviewNcsDetail');
+    const noticeReviewBlock = document.getElementById('noticeReviewBlock');
+    const noticeReviewStatus = document.getElementById('noticeReviewStatus');
+    const btnConfirmNoticeReview = document.getElementById('btnConfirmNoticeReview');
+    const flowApi = document.getElementById('flowApi');
+    const flowJd = document.getElementById('flowJd');
+    const flowNotice = document.getElementById('flowNotice');
+    const flowGenerate = document.getElementById('flowGenerate');
 
     let ncsUnitOptions = [];
     let progressTimer = null;
@@ -303,6 +377,7 @@
     let extractedSclassBase = []; // 파일에서 처음 추출된 소분류(삭제 계산 기준)
     let jdReviewPayload = null;
     let reviewConfirmed = false;
+    let noticeReviewConfirmed = false;
 
     function normSclassLabel(v) {
       return String(v || '').replace(/\s+/g, '').trim().toLowerCase();
@@ -322,6 +397,38 @@
 
     function requestOpenAIKey() {
       return (openaiApiKey && openaiApiKey.value ? openaiApiKey.value : '').trim();
+    }
+
+    function setFlowStep(el, state, detail) {
+      if (!el) return;
+      el.classList.remove('active', 'done');
+      if (state) el.classList.add(state);
+      const span = el.querySelector('span');
+      if (span && detail) span.textContent = detail;
+    }
+
+    function updateWorkflowMenu() {
+      setFlowStep(
+        flowApi,
+        requestOpenAIKey() ? 'done' : 'active',
+        requestOpenAIKey() ? '요청 단위 키 입력됨' : '서버 환경변수 또는 입력 키 사용'
+      );
+      setFlowStep(
+        flowJd,
+        reviewConfirmed ? 'done' : (jdReviewPayload ? 'active' : ''),
+        reviewConfirmed ? '세분류 확정 완료' : (jdReviewPayload ? '세분류 검토 필요' : '직무기술서 업로드 대기')
+      );
+      const hasNoticeText = Boolean((dutyText.value || '').trim() || (evalText.value || '').trim());
+      setFlowStep(
+        flowNotice,
+        noticeReviewConfirmed ? 'done' : (hasNoticeText ? 'active' : ''),
+        noticeReviewConfirmed ? '공고문 핵심텍스트 적용됨' : (hasNoticeText ? '담당업무·평가항목 검토 필요' : '공고문 또는 직접입력 대기')
+      );
+      setFlowStep(
+        flowGenerate,
+        reviewConfirmed ? 'active' : '',
+        reviewConfirmed ? '생성 가능' : '세분류 확정 후 가능'
+      );
     }
 
     // 페이지 로드 시 NCS 소분류 목록 미리 가져오기
@@ -388,6 +495,7 @@
       reviewConfirmed = false;
       jdReviewPayload = null;
       btn.style.display = 'none';
+      updateWorkflowMenu();
       try {
         const fd = new FormData();
         fd.append('jd_file', file);
@@ -401,9 +509,34 @@
         reviewNcsDetail.value = (fields.ncs_detail_candidates || []).join('\n');
         jdReviewPayload = data;
         jdReviewStatus.textContent = '검토 필요';
+        updateWorkflowMenu();
       } catch (e) {
         jdReviewStatus.textContent = '자동 파싱 실패';
         console.warn('Kordoc 검토 파싱 실패:', e);
+        updateWorkflowMenu();
+      }
+    }
+
+    async function parseNoticeForReview(file) {
+      noticeReviewBlock.style.display = 'block';
+      noticeReviewStatus.textContent = '공고문 분석 중...';
+      noticeReviewConfirmed = false;
+      updateWorkflowMenu();
+      try {
+        const fd = new FormData();
+        fd.append('notice_file', file);
+        const res = await fetch('/api/notice/parse-review', { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const fields = data.fields || {};
+        if (fields.duty_text) dutyText.value = fields.duty_text;
+        if (fields.evaluation_text) evalText.value = fields.evaluation_text;
+        noticeReviewStatus.textContent = '검토 필요';
+      } catch (e) {
+        noticeReviewStatus.textContent = '자동 추출 실패 · 직접 입력 가능';
+        console.warn('공고문 검토 파싱 실패:', e);
+      } finally {
+        updateWorkflowMenu();
       }
     }
 
@@ -429,6 +562,20 @@
       document.getElementById('btnConfirmReview').style.background = '#15803d';
       btn.style.display = 'block';
       btn.textContent = 'MCP KSA 기반 면접 질문 생성';
+      updateWorkflowMenu();
+    });
+
+    btnConfirmNoticeReview.addEventListener('click', () => {
+      if (!(dutyText.value || '').trim() && !(evalText.value || '').trim()) {
+        noticeReviewStatus.textContent = '적용할 담당업무 또는 평가항목 텍스트가 없습니다.';
+        dutyText.focus();
+        return;
+      }
+      noticeReviewConfirmed = true;
+      noticeReviewStatus.textContent = '적용됨';
+      btnConfirmNoticeReview.textContent = '공고문 핵심 텍스트 적용 완료';
+      btnConfirmNoticeReview.style.background = '#15803d';
+      updateWorkflowMenu();
     });
 
     // 파일 선택 시 자동 추출
@@ -444,8 +591,24 @@
         extractedSclassBase = [];
         jdReviewPayload = null;
         reviewConfirmed = false;
+        updateWorkflowMenu();
       }
     });
+
+    noticeFile.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (file) {
+        parseNoticeForReview(file);
+      } else {
+        noticeReviewBlock.style.display = 'none';
+        noticeReviewConfirmed = false;
+        updateWorkflowMenu();
+      }
+    });
+
+    openaiApiKey.addEventListener('input', updateWorkflowMenu);
+    dutyText.addEventListener('input', () => { noticeReviewConfirmed = false; updateWorkflowMenu(); });
+    evalText.addEventListener('input', () => { noticeReviewConfirmed = false; updateWorkflowMenu(); });
 
 
     // ── 자동완성 드롭다운 ──────────────────────────────────────────────
@@ -1006,6 +1169,7 @@
     });
     inputMode.addEventListener('change', () => {
       setInputMode(inputMode.value);
+      updateWorkflowMenu();
     });
 
     btnPrevQ.onclick = () => {
@@ -1022,6 +1186,7 @@
 
     updateQNav();
     setInputMode(inputMode.value || 'upload');
+    updateWorkflowMenu();
     loadNcsOptions('')
       .then(() => fetch('/health').then(r => r.json()))
       .then((h) => {

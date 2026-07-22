@@ -55,6 +55,27 @@ def test_parse_review_returns_detail_candidates(mocker):
     assert resp.json()["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
 
 
+def test_notice_parse_review_prefills_duty_and_evaluation_text():
+    notice = (
+        "## 담당업무\n"
+        "- 경영계획 수립 및 사업성과 분석\n"
+        "## 면접전형 평가항목\n"
+        "- 문제해결능력\n"
+        "- 의사소통능력\n"
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/notice/parse-review",
+            files={"notice_file": ("notice.txt", notice.encode("utf-8"), "text/plain")},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "경영계획 수립" in body["fields"]["duty_text"]
+    assert "문제해결능력" in body["fields"]["evaluation_text"]
+
+
 def test_mcp_only_requires_human_review_confirmation(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)

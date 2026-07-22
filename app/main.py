@@ -22,7 +22,7 @@ from app.repository import save_match_result
 from app.schemas import AiInterviewRequest, AiInterviewResponse, PostingCreate, ReportCreate, ReportOut
 from app.services.ai_strategy import build_strategy_with_openai, rank_postings_with_openai
 from app.services.external_api import fetch_ncs, fetch_ncs_highschool_course, fetch_public_inst, fetch_recruitment
-from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description
+from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description, structure_job_notice
 from app.services.ncs_mcp_client import NcsMcpError, ncs_mcp_status, search_units_by_detail
 from app.services.jd_strategy import (
     ai_pick_sclass_from_csv,
@@ -1021,6 +1021,30 @@ async def parse_jd_review_endpoint(jd_file: UploadFile = File(...)) -> dict:
         return structure_job_description(parsed, filename=jd_file.filename or "")
     except KordocParseError as exc:
         raise HTTPException(status_code=422, detail=f"Kordoc parse failed: {exc}") from exc
+
+
+@app.post("/api/notice/parse-review")
+async def parse_notice_review_endpoint(notice_file: UploadFile = File(...)) -> dict:
+    """Parse a job notice and return editable duty/evaluation text candidates."""
+
+    data = await notice_file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="notice_file is empty")
+    _check_upload_size(data, "notice_file")
+    filename = notice_file.filename or ""
+    name = filename.lower()
+    try:
+        if name.endswith(".txt"):
+            parsed = {"markdown": data.decode("utf-8", errors="ignore")}
+        else:
+            parsed = parse_with_kordoc(
+                data,
+                filename=filename,
+                ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
+            )
+        return structure_job_notice(parsed, filename=filename)
+    except KordocParseError as exc:
+        raise HTTPException(status_code=422, detail=f"Kordoc notice parse failed: {exc}") from exc
 
 
 @app.post("/api/jd/strategy/upload")
