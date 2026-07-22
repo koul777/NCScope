@@ -31,7 +31,8 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
 )
 ARCHIVE_MEMBER_LIMIT = 12
-SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt"}
+SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
+SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 @dataclass
@@ -200,7 +201,11 @@ def parse_benchmark_document(data: bytes, filename: str, max_bytes: int) -> dict
                             "metadata": {"filename": member_label},
                         }
                     else:
-                        parsed = parse_with_kordoc(member_bytes, filename=member_label, ocr=False)
+                        parsed = parse_with_kordoc(
+                            member_bytes,
+                            filename=member_label,
+                            ocr=member_suffix in SUPPORTED_IMAGE_SUFFIXES,
+                        )
                 except KordocParseError as exc:
                     warnings.append(f"{member_label}: {exc}")
                     continue
@@ -213,7 +218,7 @@ def parse_benchmark_document(data: bytes, filename: str, max_bytes: int) -> dict
     except zipfile.BadZipFile as exc:
         raise KordocParseError("not a readable ZIP archive") from exc
     if not chunks:
-        raise KordocParseError("ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT files")
+        raise KordocParseError("ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT/image files")
     return {
         "markdown": "\n\n---\n\n".join(chunks),
         "metadata": {"filename": filename, "archive": True, "members": members},

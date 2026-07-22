@@ -324,7 +324,7 @@ def _check_upload_size(data: bytes, label: str) -> None:
 
 
 _ARCHIVE_MEMBER_LIMIT = 12
-_SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt"}
+_SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
 _REVIEW_SESSION_TTL_SEC = 4 * 60 * 60
 _REVIEW_SESSION_MAX = 500
 _REVIEW_SESSION_LOCK = threading.Lock()
@@ -426,7 +426,7 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
     if not chunks:
         raise HTTPException(
             status_code=422,
-            detail=f"{label} ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT job-description files",
+            detail=f"{label} ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT/image job-description files",
         )
     return {
         "markdown": "\n\n---\n\n".join(chunks),

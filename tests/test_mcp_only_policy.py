@@ -103,6 +103,23 @@ def test_parse_review_accepts_zip_with_supported_jd_text():
     assert "ZIP member: job_description.txt" in body["document"]["markdown"]
 
 
+def test_parse_review_accepts_zip_with_supported_jd_image(mocker):
+    data = _zip_bytes({"job_description.jpg": "fake image bytes"})
+    parse = mocker.patch("app.main.parse_with_kordoc", return_value={"markdown": JD_TEXT})
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("jd.zip", data, "application/zip")},
+        )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
+    assert "ZIP member: job_description.jpg" in body["document"]["markdown"]
+    parse.assert_called_once()
+
+
 def test_parse_review_rejects_encrypted_zip_as_422():
     data = _mark_zip_encrypted(_zip_bytes({"job_description.txt": JD_TEXT}))
 

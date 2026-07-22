@@ -53,6 +53,22 @@ def test_benchmark_zip_txt_member_is_parsed_without_kordoc() -> None:
     assert parsed["metadata"]["members"] == [{"filename": "직무기술서.txt", "suffix": ".txt"}]
 
 
+def test_benchmark_zip_image_member_uses_kordoc_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def fake_parse_with_kordoc(data: bytes, filename: str, ocr: bool) -> dict:
+        calls.append((filename, ocr))
+        return {"markdown": "세분류: 경영기획"}
+
+    monkeypatch.setattr(benchmark_alio_jd, "parse_with_kordoc", fake_parse_with_kordoc)
+    data = _zip_bytes({"직무기술서.jpg": "fake image bytes"})
+
+    parsed = parse_benchmark_document(data, filename="alio.zip", max_bytes=1024 * 1024)
+
+    assert "ZIP member: 직무기술서.jpg" in parsed["markdown"]
+    assert calls == [("직무기술서.jpg", True)]
+
+
 def test_benchmark_zip_encrypted_member_returns_parse_error() -> None:
     data = _mark_zip_encrypted(_zip_bytes({"직무기술서.txt": "세분류: 경영기획"}))
 
