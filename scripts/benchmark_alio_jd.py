@@ -206,7 +206,12 @@ def benchmark_one(
             if include_ksa and units:
                 ksa = get_ksa_by_units(units[:2], max_factors_per_unit=3)
                 row["mcp_ksa"] = len(ksa)
-        row["status"] = "ok" if details else "parsed_no_detail"
+        if not details:
+            row["status"] = "parsed_no_detail"
+        elif os.getenv("NCS_MCP_URL", "").strip() and not row["mcp_units"]:
+            row["status"] = "detail_no_mcp_match"
+        else:
+            row["status"] = "ok"
         return row
     except (KordocParseError, NcsMcpError, httpx.HTTPError, RuntimeError, OSError) as exc:
         row["status"] = "error"
@@ -242,7 +247,9 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
             writer.writerow({field: row.get(field, "") for field in fields})
 
     ok = sum(1 for row in rows if row.get("status") == "ok")
-    parsed = sum(1 for row in rows if row.get("status") in {"ok", "parsed_no_detail"})
+    detail_no_mcp = sum(1 for row in rows if row.get("status") == "detail_no_mcp_match")
+    with_detail = ok + detail_no_mcp
+    parsed = sum(1 for row in rows if row.get("status") in {"ok", "detail_no_mcp_match", "parsed_no_detail"})
     details = sum(int(row.get("detail_count") or 0) for row in rows)
     avg_parse = int(sum(int(row.get("parse_ms") or 0) for row in rows if row.get("parse_ms")) / max(1, parsed))
     lines = [
@@ -252,7 +259,8 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         "",
         f"- Samples attempted: {len(rows)}",
         f"- Parsed documents: {parsed}",
-        f"- Documents with detail candidates: {ok}",
+        f"- Documents with detail candidates: {with_detail}",
+        f"- Documents with detail candidates but no MCP match: {detail_no_mcp}",
         f"- Total detail candidates: {details}",
         f"- Average parse time: {avg_parse} ms",
         f"- MCP URL configured: {bool(os.getenv('NCS_MCP_URL', '').strip())}",

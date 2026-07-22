@@ -49,16 +49,17 @@ python scripts\benchmark_alio_jd.py --limit 5 --include-ksa
 
 Latest report:
 
-- `reports\alio_jd_benchmark_20260723_041523.md`
-- `reports\alio_jd_benchmark_20260723_041523.csv`
+- `reports\alio_jd_benchmark_20260723_042758.md`
+- `reports\alio_jd_benchmark_20260723_042758.csv`
 
 Results:
 
 - Samples attempted: 5
 - Parsed documents: 4
 - Documents with detail candidates: 2
+- Documents with detail candidates but no MCP match: 1
 - Total detail candidates: 8
-- Average parse time: 515 ms
+- Average parse time: 520 ms
 - One ZIP attachment was classified as unsupported because the MVP scope is PDF/HWP/HWPX/DOCX.
 
 Observed detail candidates:
@@ -75,12 +76,13 @@ Known benchmark finding:
 
 Compact DB:
 
-`C:\workspace\NCS_MCP\tmp\ncs_interview_serving_test.db`
+`C:\workspace\NCS_MCP\tmp\ncs_interview_serving_release.db`
 
 | Table | Rows |
 | --- | ---: |
 | `classifications` | 1,109 |
 | `competency_units` | 13,435 |
+| `competency_elements` | 47,620 |
 | `performance_criteria` | 196,658 |
 | `ksa_items` | 574,279 |
 | `ncs_training_courses` | 11,819 |
