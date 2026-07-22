@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description, structure_job_notice
-from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units, search_units_by_detail
+from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units, search_units_by_detail, suggest_units_by_text
 
 
 ALIO_LIST_URL = "https://job.alio.go.kr/recruit.do"
@@ -185,6 +185,8 @@ def benchmark_one(
         "notice_has_eval": False,
         "mcp_units": 0,
         "mcp_ksa": 0,
+        "mcp_suggestions": 0,
+        "suggestion_top": "",
         "status": "unknown",
         "error": "",
     }
@@ -229,6 +231,14 @@ def benchmark_one(
             if include_ksa and units:
                 ksa = get_ksa_by_units(units[:2], max_factors_per_unit=3)
                 row["mcp_ksa"] = len(ksa)
+            if not units:
+                suggestions = suggest_units_by_text(details[:10], max_units=8)
+                row["mcp_suggestions"] = len(suggestions)
+                row["suggestion_top"] = "; ".join(
+                    str(item.get("compeUnitName") or item.get("ncsClCd") or "").strip()
+                    for item in suggestions[:3]
+                    if str(item.get("compeUnitName") or item.get("ncsClCd") or "").strip()
+                )
         if not details:
             row["status"] = "parsed_no_detail"
         elif os.getenv("NCS_MCP_URL", "").strip() and not row["mcp_units"]:
@@ -264,6 +274,8 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         "notice_has_eval",
         "mcp_units",
         "mcp_ksa",
+        "mcp_suggestions",
+        "suggestion_top",
         "url",
         "error",
     ]
@@ -280,6 +292,7 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
     details = sum(int(row.get("detail_count") or 0) for row in rows)
     notice_duty_count = sum(1 for row in rows if row.get("notice_has_duty"))
     notice_eval_count = sum(1 for row in rows if row.get("notice_has_eval"))
+    suggestion_count = sum(1 for row in rows if int(row.get("mcp_suggestions") or 0) > 0)
     avg_parse = int(sum(int(row.get("parse_ms") or 0) for row in rows if row.get("parse_ms")) / max(1, parsed))
     lines = [
         f"# ALIO JD Benchmark - {stamp}",
@@ -292,12 +305,13 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         f"- Documents with detail candidates but no MCP match: {detail_no_mcp}",
         f"- Notice pages with duty text candidates: {notice_duty_count}",
         f"- Notice pages with evaluation text candidates: {notice_eval_count}",
+        f"- Detail-no-match documents with manual NCS suggestions: {suggestion_count}",
         f"- Total detail candidates: {details}",
         f"- Average parse time: {avg_parse} ms",
         f"- MCP URL configured: {bool(os.getenv('NCS_MCP_URL', '').strip())}",
         "",
-        "| idx | status | attachment | parse_ms | detail candidates | notice duty chars | notice eval chars | MCP units | MCP KSA |",
-        "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: |",
+        "| idx | status | attachment | parse_ms | detail candidates | notice duty chars | notice eval chars | MCP units | MCP KSA | suggestions |",
+        "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         detail = str(row.get("detail_candidates") or "").replace("|", "/")
@@ -305,7 +319,8 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         lines.append(
             f"| {row.get('idx')} | {row.get('status')} | {attachment} | "
             f"{row.get('parse_ms') or 0} | {detail} | {row.get('notice_duty_chars') or 0} | "
-            f"{row.get('notice_eval_chars') or 0} | {row.get('mcp_units') or 0} | {row.get('mcp_ksa') or 0} |"
+            f"{row.get('notice_eval_chars') or 0} | {row.get('mcp_units') or 0} | "
+            f"{row.get('mcp_ksa') or 0} | {row.get('mcp_suggestions') or 0} |"
         )
     lines.extend(["", f"CSV: `{csv_path}`", ""])
     md_path.write_text("\n".join(lines), encoding="utf-8")

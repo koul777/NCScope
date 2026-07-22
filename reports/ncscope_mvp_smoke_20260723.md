@@ -51,8 +51,8 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 
 Latest report:
 
-- `reports\alio_jd_benchmark_20260723_045837.md`
-- `reports\alio_jd_benchmark_20260723_045837.csv`
+- `reports\alio_jd_benchmark_20260723_051244.md`
+- `reports\alio_jd_benchmark_20260723_051244.csv`
 
 Results:
 
@@ -62,8 +62,9 @@ Results:
 - Documents with detail candidates but no MCP match: 2
 - Notice pages with duty text candidates: 10
 - Notice pages with evaluation text candidates: 9
+- Detail-no-match documents with manual NCS suggestions: 1
 - Total detail candidates: 11
-- Average parse time: 515 ms
+- Average parse time: 500 ms
 - Three ZIP attachments were classified as unsupported because the MVP scope is PDF/HWP/HWPX/DOCX.
 
 Observed detail candidates:

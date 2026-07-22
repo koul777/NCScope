@@ -360,8 +360,8 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 
 최신 리포트:
 
-- `reports/alio_jd_benchmark_20260723_045837.md`
-- `reports/alio_jd_benchmark_20260723_045837.csv`
+- `reports/alio_jd_benchmark_20260723_051244.md`
+- `reports/alio_jd_benchmark_20260723_051244.csv`
 
 관찰 결과:
 
@@ -370,6 +370,7 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 - 세분류 후보가 추출된 문서 4건
 - 세분류는 추출됐지만 현재 MCP DB와 매칭되지 않은 문서 2건
 - 공고문 본문에서 담당업무 후보 10건, 평가항목 후보 9건 추출
+- exact 매칭 실패 문서 중 수동 NCS 후보가 제시된 문서 1건
 - ZIP 첨부 3건은 MVP 범위 밖으로 분류
 - `간호수행`, `간호행정관리`, `임상병리`처럼 serving DB exact 세분류 매칭이 없는 경우는 수동 NCS 선택 후보 흐름으로 회수
 
