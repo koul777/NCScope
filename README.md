@@ -110,6 +110,8 @@ Current prepared artifact:
 - Manifest asset: `ncs_interview_serving_release.json`
 - DB SHA-256: `F9BB59B8853E8F69DC4698028EC347ED9BD74D26133FBCEB031B05FD90F89B23`
 
+See `DEPLOYMENT.md` for the two-process deployment checklist.
+
 ## Data Policy
 
 - Do not commit `.db`, `.xlsx`, local logs, virtual environments, or `node_modules`.
