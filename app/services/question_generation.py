@@ -15,6 +15,78 @@ _ENTRY_LEVEL_TRIGGER_RE = re.compile(
 )
 _ENTRY_LEVEL_ALREADY_RE = re.compile(r"(유사\s*사례|가정\s*상황|가정해|가정하여|가정하고)")
 
+_DEFAULT_FOLLOW_UPS = [
+    "그 상황에서 본인이 맡은 구체적인 역할과 판단 근거를 설명해 주세요.",
+    "가장 어려웠던 지점은 무엇이었고 어떻게 해결했습니까?",
+    "결과를 다시 평가한다면 어떤 점을 개선하시겠습니까?",
+]
+_DEFAULT_EVALUATION_POINTS = [
+    "상황과 목표를 구조적으로 설명하는가",
+    "판단 근거와 의사결정 기준이 명확한가",
+    "실행 과정과 협업 방식이 구체적인가",
+    "성과와 학습 내용을 사실에 기반해 제시하는가",
+]
+
+
+def _render_question_generation_prompt(
+    ncs_lines: list[str],
+    ksa_lines: list[str],
+    jd_text: str,
+    strengths: str,
+    mode: str,
+    target_count: int,
+    extra_context: str,
+) -> str:
+    mode_hint = {
+        "ncs_code_only": "NCS 코드 중심 구조화 면접",
+        "diverse": "다양한 유형의 구조화 면접",
+        "personalized": "지원자 맥락 반영 구조화 면접",
+        "ksa_driven": "KSA 직접 검증 구조화 면접",
+        "local_pack": "JD와 KSA 통합 구조화 면접",
+    }.get(mode, "구조화 면접")
+
+    return (
+        "아래 컨텍스트를 바탕으로 구조화 면접 질문을 생성하세요.\n"
+        f"모드: {mode_hint}\n"
+        f"생성 개수: {target_count}\n\n"
+        "[규칙]\n"
+        "- 반드시 한국어로 작성합니다.\n"
+        "- 질문은 STAR 답변을 유도해야 합니다.\n"
+        "- 각 질문은 하나의 역량만 검증합니다.\n"
+        "- 각 질문마다 follow_ups 3개를 포함합니다.\n"
+        "- follow_ups는 주질문, 구체화, 판단 근거, 결과/교훈 순서로 깊어져야 합니다.\n"
+        "- 질문끼리 내용이 겹치면 안 됩니다.\n"
+        "- evaluation_points는 4~6개의 측정 가능한 문장으로 작성합니다.\n"
+        "- ksa_refs에는 해당 질문과 직접 연결되는 KSA 키워드 2~4개를 넣습니다.\n"
+        "- 민감하거나 차별적인 질문은 생성하지 않습니다.\n\n"
+        "[질문 유형 비율]\n"
+        "- 경험: 50%\n"
+        "- 상황: 30%\n"
+        "- 직무지식: 20%\n\n"
+        "[출력 형식]\n"
+        "JSON 객체 하나만 출력:\n"
+        "{\n"
+        '  "interview_questions": [\n'
+        "    {\n"
+        '      "type": "경험|상황|직무지식",\n'
+        '      "competency": "능력단위명",\n'
+        '      "ncsClCd": "코드",\n'
+        '      "question": "주질문",\n'
+        '      "follow_ups": ["구체화", "판단 근거", "결과/교훈"],\n'
+        '      "evaluation_points": ["항목1", "항목2", "항목3", "항목4"],\n'
+        '      "ksa_refs": ["KSA1", "KSA2"]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "[NCS]\n"
+        f"{chr(10).join(ncs_lines) if ncs_lines else '- 없음'}\n\n"
+        "[KSA]\n"
+        f"{chr(10).join(ksa_lines) if ksa_lines else '- 없음'}\n\n"
+        + (f"[JD]\n{jd_text[:1500]}\n\n" if jd_text else "")
+        + (f"[강점/프로필]\n{strengths[:1500]}\n\n" if strengths else "")
+        + (f"[추가 컨텍스트]\n{extra_context[:1500]}\n" if extra_context else "")
+    )
+
 
 def _soften_entry_level_question(question: str) -> str:
     q = str(question or "").strip()
@@ -77,54 +149,14 @@ def _build_question_generation_prompt(
         unit = str(row.get("compeUnitName", "")).strip()
         ksa_lines.append(f"- {factor} | unit={unit} | source={src}")
 
-    mode_hint = {
-        "ncs_code_only": "NCS 肄붾뱶 以묒떖 援ъ“??硫댁젒",
-        "diverse": "?ㅼ뼇???좏삎??援ъ“??硫댁젒",
-        "personalized": "吏?먯옄 留λ씫 諛섏쁺 援ъ“??硫댁젒",
-        "ksa_driven": "KSA 吏곸젒 寃利?援ъ“??硫댁젒",
-        "local_pack": "JD+KSA ?듯빀 援ъ“??硫댁젒",
-    }.get(mode, "援ъ“??硫댁젒")
-
-    return (
-        "?꾨옒 而⑦뀓?ㅽ듃濡?援ъ“??硫댁젒 吏덈Ц???앹꽦?섏꽭??\n"
-        f"紐⑤뱶: {mode_hint}\n"
-        f"?앹꽦 媛쒖닔: {target_count}\n\n"
-        "[洹쒖튃]\n"
-        "- 諛섎뱶???쒓뎅?대줈 ?묒꽦\n"
-        "- 吏덈Ц? STAR ?묐떟???좊룄?댁빞 ??n"
-        "- 媛?吏덈Ц? ?⑥씪 ??웾留?寃利?n"
-        "- 媛?吏덈Ц留덈떎 follow_ups 3媛쒕? 諛섎뱶???ы븿\n"
-        "- follow_ups??瑗щ━臾쇨린 援ъ“: 二쇱쭏臾멤넂瑗щ━1?믨섕由??믨섕由? ?쒖꽌濡????듬???諛쏆븘????源딆씠 ?뚭퀬?쒕뒗 吏덈Ц\n"
-        "- 瑗щ━吏덈Ц?쇰━ ?댁슜??寃뱀튂硫????? 媛곴컖 evaluation_points???ㅻⅨ ??ぉ??寃利?n"
-        "- evaluation_points??4~6媛? 痢≪젙 媛?ν븳 臾몄옣\n"
-        "- ksa_refs?먮뒗 ?대떦 吏덈Ц怨?吏곸젒 ?곌껐??KSA ?ㅼ썙??2~4媛?n"
-        "- 誘쇨컧/李⑤퀎 吏덈Ц 湲덉?\n\n"
-        "[吏덈Ц ?좏삎 鍮꾩쑉]\n"
-        "- 寃쏀뿕: 50%\n"
-        "- ?곹솴: 30%\n"
-        "- 吏곷Т吏?? 20%\n\n"
-        "[異쒕젰 ?뺤떇]\n"
-        "JSON 媛앹껜 ?섎굹留?異쒕젰:\n"
-        "{\n"
-        '  "interview_questions": [\n'
-        "    {\n"
-        '      "type": "寃쏀뿕|?곹솴|吏곷Т吏??,\n'
-        '      "competency": "?λ젰?⑥쐞紐?,\n'
-        '      "ncsClCd": "肄붾뱶",\n'
-        '      "question": "二쇱쭏臾?,\n'
-        '      "follow_ups": ["?щ?援ъ껜??, "?대젮?/?泥?, "寃곌낵/援먰썕"],\n'
-        '      "evaluation_points": ["??ぉ1", "??ぉ2", "??ぉ3", "??ぉ4"],\n'
-        '      "ksa_refs": ["KSA1", "KSA2"]\n'
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        "[NCS]\n"
-        f"{chr(10).join(ncs_lines) if ncs_lines else '- ?놁쓬'}\n\n"
-        "[KSA]\n"
-        f"{chr(10).join(ksa_lines) if ksa_lines else '- ?놁쓬'}\n\n"
-        + (f"[JD]\n{jd_text[:1500]}\n\n" if jd_text else "")
-        + (f"[媛뺤젏/?꾨줈??\n{strengths[:1500]}\n\n" if strengths else "")
-        + (f"[異붽?而⑦뀓?ㅽ듃]\n{extra_context[:1500]}\n" if extra_context else "")
+    return _render_question_generation_prompt(
+        ncs_lines=ncs_lines,
+        ksa_lines=ksa_lines,
+        jd_text=jd_text,
+        strengths=strengths,
+        mode=mode,
+        target_count=target_count,
+        extra_context=extra_context,
     )
 
 
@@ -221,12 +253,7 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
         if single:
             follow_ups = [_soften_entry_level_question(single)]
     if len(follow_ups) < 3:
-        fallback_fus = [
-            "洹??곹솴?먯꽌 蹂몄씤??留≪? 援ъ껜?곸씤 ??븷怨??먮떒 洹쇨굅瑜?留먯???二쇱꽭??",
-            "洹?怨쇱젙?먯꽌 媛???대젮?좊뜕 遺遺꾩? 臾댁뾿?닿퀬, ?대뼸寃??닿껐?섏뀲?섏슂?",
-            "洹?寃곌낵???대븷怨? ?뚯씠耳쒕낫硫??대뼡 ?먯쓣 ?ㅻⅤ寃??섏떆寃좎뒿?덇퉴?",
-        ]
-        for f in fallback_fus:
+        for f in _DEFAULT_FOLLOW_UPS:
             if len(follow_ups) >= 3:
                 break
             follow_ups.append(f)
@@ -235,13 +262,7 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
     ev = item.get("evaluation_points")
     evaluation_points = [str(x).strip() for x in (ev or []) if str(x).strip()] if isinstance(ev, list) else []
     if len(evaluation_points) < 4:
-        defaults = [
-            "?곹솴 留λ씫??援ъ“?곸쑝濡??ㅻ챸?섎뒗媛",
-            "?듭떖 ?섏궗寃곗젙 洹쇨굅媛 紐낇솗?쒓?",
-            "?ㅽ뻾 怨쇱젙怨??묒뾽 諛⑹떇??援ъ껜?곸씤媛",
-            "?깃낵? ?숈뒿 ?ъ씤?몃? ?섏튂 ?먮뒗 ?ъ떎濡??쒖떆?섎뒗媛",
-        ]
-        for d in defaults:
+        for d in _DEFAULT_EVALUATION_POINTS:
             if len(evaluation_points) >= 4:
                 break
             evaluation_points.append(d)
@@ -252,7 +273,7 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
 
     return {
         "question": question,
-        "type": str(item.get("type", "寃쏀뿕")).strip() or "寃쏀뿕",
+        "type": str(item.get("type", "경험")).strip() or "경험",
         "competency": str(item.get("competency", "")).strip(),
         "ncsClCd": str(item.get("ncsClCd", "")).strip(),
         "evaluation_points": evaluation_points,
@@ -354,7 +375,7 @@ def _generate_questions_with_openai_from_ncs(
     payload_base = {
         "model": settings.openai_model,
         "messages": [
-            {"role": "system", "content": "怨듦났湲곌? 援ъ“??硫댁젒 ?ㅺ퀎 ?꾨Ц媛. JSON留?異쒕젰."},
+            {"role": "system", "content": "공공기관 구조화 면접 설계 전문가입니다. JSON만 출력하세요."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.5,
@@ -373,7 +394,7 @@ def _generate_questions_with_openai_from_ncs(
     p3["temperature"] = 0.3
     p3["messages"][1]["content"] = (
         str(p3["messages"][1]["content"])
-        + "\n\n以묒슂: ?ㅻ챸臾??놁씠 JSON留?異쒕젰?섏꽭?? ?좏슚??JSON 媛앹껜 1媛쒕? 諛섑솚?섏꽭??"
+        + "\n\n중요: 설명문 없이 JSON만 출력하세요. 유효한 JSON 객체 1개만 반환하세요."
     )
     attempts.append((p3, min(240.0, timeout_sec + 30.0)))
 

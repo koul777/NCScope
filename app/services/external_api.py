@@ -103,7 +103,6 @@ def fetch_ncs_highschool_course(
             settings.ncs_base_url,
             "https://www.ncs.go.kr/api/",
             "http://www.ncs.go.kr/api/",
-            "https://c.q-net.or.kr/openapi/",
         ]
     )
     # Deduplicate while preserving order.

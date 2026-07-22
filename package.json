@@ -1,0 +1,11 @@
+{
+  "name": "ncscope-document-parser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "parse-document": "node scripts/kordoc_parse.mjs"
+  },
+  "dependencies": {
+    "kordoc": "^4.2.7"
+  }
+}

@@ -26,7 +26,8 @@ def _load_env_file(path: Path) -> None:
 
 
 _load_env_file(Path(".env"))
-_load_env_file(Path(".env.example"))
+if os.getenv("LOAD_ENV_EXAMPLE", "false").strip().lower() in {"1", "true", "yes", "y"}:
+    _load_env_file(Path(".env.example"))
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,8 @@ class Settings:
     public_inst_base_url: str = os.getenv("PUBLIC_INST_BASE_URL", "https://apis.data.go.kr/1051000/public_inst/")
     recruitment_base_url: str = os.getenv("RECRUITMENT_BASE_URL", "https://apis.data.go.kr/1051000/recruitment/")
     ncs_base_url: str = os.getenv("NCS_BASE_URL", "https://www.ncs.go.kr/api/")
+    ncs_mcp_url: str = os.getenv("NCS_MCP_URL", "")
+    ncs_mcp_timeout: int = int(os.getenv("NCS_MCP_TIMEOUT_SEC", "45"))
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
@@ -49,11 +52,36 @@ class Settings:
             or os.getenv("DATA_GO_KR_SERVICE_KEY", "").strip()
         )
 
+    def ncs_mcp_endpoint(self) -> str:
+        return os.getenv("NCS_MCP_URL", "").strip()
+
+    def ncs_mcp_timeout_sec(self) -> float:
+        raw = os.getenv("NCS_MCP_TIMEOUT_SEC", str(self.ncs_mcp_timeout)).strip()
+        try:
+            return max(5.0, float(raw))
+        except ValueError:
+            return float(self.ncs_mcp_timeout)
+
+    def max_upload_bytes(self) -> int:
+        raw = os.getenv("MAX_UPLOAD_MB", "30").strip()
+        try:
+            mb = float(raw)
+        except ValueError:
+            mb = 30.0
+        mb = max(1.0, min(100.0, mb))
+        return int(mb * 1024 * 1024)
+
     def openai_key(self) -> str:
         return os.getenv("OPENAI_API_KEY", "").strip()
 
     def admin_token(self) -> str:
         return os.getenv("ADMIN_TOKEN", "").strip()
+
+    def enable_admin_endpoints(self) -> bool:
+        return os.getenv("ENABLE_ADMIN_ENDPOINTS", "false").strip().lower() in {"1", "true", "yes", "y"}
+
+    def enable_legacy_ncs_api(self) -> bool:
+        return os.getenv("ENABLE_LEGACY_NCS_API", "false").strip().lower() in {"1", "true", "yes", "y"}
 
     def auto_sync_public_inst(self) -> bool:
         return os.getenv("AUTO_SYNC_PUBLIC_INST", "false").strip().lower() in {"1", "true", "yes", "y"}
