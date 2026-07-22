@@ -103,6 +103,13 @@ The compact NCS serving DB belongs to NCS_MCP, not this app image. Publish that
 DB as a GitHub Release asset or external artifact, then mount it into NCS_MCP
 with `NCS_DB_PATH`.
 
+Current prepared artifact:
+
+- GitHub draft release tag: `ncscope-db-v0.1.0-20260723`
+- DB asset: `ncs_interview_serving_release.db`
+- Manifest asset: `ncs_interview_serving_release.json`
+- DB SHA-256: `F9BB59B8853E8F69DC4698028EC347ED9BD74D26133FBCEB031B05FD90F89B23`
+
 ## Data Policy
 
 - Do not commit `.db`, `.xlsx`, local logs, virtual environments, or `node_modules`.
