@@ -51,6 +51,25 @@ Kordoc 문서 파싱
 
 ## 사용 방법
 
+### 가장 쉬운 로컬 실행
+
+Windows에서 이 저장소를 받은 뒤 `START_NCSCOPE.bat`를 더블클릭하면 됩니다.
+
+실행 파일은 다음 순서로 동작합니다.
+
+1. `.env`가 있으면 환경변수를 불러옵니다.
+2. `NCS_MCP_URL`이 로컬 주소이고 아직 켜져 있지 않으면 `C:\workspace\NCS_MCP` 또는 `..\NCS_MCP`의 로컬 NCS DB 검색 서버를 자동으로 시작합니다.
+3. NCScope 앱을 `http://127.0.0.1:8015`에서 실행합니다.
+4. 브라우저를 자동으로 엽니다.
+
+현재 PC처럼 `C:\workspace\NCS_MCP\data\processed\ncs.db`가 준비되어 있으면 별도 명령 없이 실행됩니다. 다른 위치를 쓰는 경우 `.env`에 다음 값을 지정하세요.
+
+```text
+NCS_MCP_REPO=C:\workspace\NCS_MCP
+NCS_DB_PATH=C:\workspace\NCS_MCP\data\processed\ncs.db
+NCS_MCP_URL=http://127.0.0.1:8778/mcp
+```
+
 ### 1. 화면 열기
 
 로컬 또는 배포된 NCScope 주소를 엽니다.
