@@ -557,6 +557,103 @@ def _sanitize_request_openai_key(value: str | None) -> str:
     return key
 
 
+def _ksa_key(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _clean_ksa_evidence_row(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        "ncsClCd": str(row.get("ncsClCd", "")).strip(),
+        "compeUnitName": str(row.get("compeUnitName", "")).strip(),
+        "factorName": str(row.get("factorName", "")).strip(),
+        "factorLevel": str(row.get("factorLevel", "")).strip(),
+        "factorSource": str(row.get("factorSource", "")).strip(),
+        "ksaStatus": str(row.get("ksaStatus", "")).strip(),
+    }
+
+
+def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dict[str, Any]] | None) -> dict[str, Any]:
+    if not isinstance(strategy, dict):
+        strategy = {}
+    questions = strategy.get("interview_questions")
+    if not isinstance(questions, list):
+        return strategy
+
+    evidence_rows: list[dict[str, str]] = []
+    seen_rows: set[tuple[str, str]] = set()
+    for raw in ncs_ksa or []:
+        if not isinstance(raw, dict):
+            continue
+        row = _clean_ksa_evidence_row(raw)
+        if not row["factorName"]:
+            continue
+        key = (row["ncsClCd"], _ksa_key(row["factorName"]))
+        if key in seen_rows:
+            continue
+        seen_rows.add(key)
+        evidence_rows.append(row)
+    if not evidence_rows:
+        return strategy
+
+    def _pick_for_question(question: dict[str, Any]) -> list[dict[str, str]]:
+        code = str(question.get("ncsClCd", "")).strip()
+        refs = [str(x).strip() for x in (question.get("ksa_refs") or []) if str(x).strip()] if isinstance(question.get("ksa_refs"), list) else []
+        ref_keys = [_ksa_key(x) for x in refs]
+        picked: list[dict[str, str]] = []
+        picked_keys: set[tuple[str, str]] = set()
+
+        def add(row: dict[str, str]) -> None:
+            if len(picked) >= 4:
+                return
+            key = (row["ncsClCd"], _ksa_key(row["factorName"]))
+            if key in picked_keys:
+                return
+            picked_keys.add(key)
+            picked.append(row)
+
+        preferred = [row for row in evidence_rows if code and row["ncsClCd"] == code]
+        fallback = preferred or evidence_rows
+
+        for ref_key in ref_keys:
+            if not ref_key:
+                continue
+            for row in fallback:
+                factor_key = _ksa_key(row["factorName"])
+                if ref_key in factor_key or factor_key in ref_key:
+                    add(row)
+            if len(picked) >= 2:
+                break
+        for row in fallback:
+            add(row)
+            if len(picked) >= 3:
+                break
+        return picked[:3]
+
+    enriched: list[dict[str, Any]] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            enriched.append(item)
+            continue
+        q = dict(item)
+        evidence = _pick_for_question(q)
+        if evidence:
+            existing_refs = [
+                str(x).strip()
+                for x in (q.get("ksa_refs") or [])
+                if str(x).strip()
+            ] if isinstance(q.get("ksa_refs"), list) else []
+            for row in evidence:
+                factor = row.get("factorName", "")
+                if factor and factor not in existing_refs:
+                    existing_refs.append(factor)
+            q["ksa_refs"] = existing_refs[:4]
+            q["ksa_evidence"] = evidence
+        enriched.append(q)
+    strategy["interview_questions"] = enriched
+    strategy["question_evidence_policy"] = "ncs_mcp_ksa_attached_by_code_and_ref"
+    return strategy
+
+
 def _select_verified_sclass_candidates(
     candidates: list[dict[str, Any]] | None,
     max_keep: int = 4,
@@ -1733,6 +1830,7 @@ async def jd_strategy_upload(
             error_message=f"model_generation_failed: {e}",
             target_count=24,
         )
+    strategy = _attach_ksa_evidence_to_strategy(strategy, ncs_ksa)
 
     if review_session:
         _record_audit_event(
@@ -1927,6 +2025,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
             error_message=f"model_generation_failed: {e}",
             target_count=24,
         )
+    strategy = _attach_ksa_evidence_to_strategy(strategy, ncs_ksa)
 
     _record_audit_event(
         request,

@@ -22,7 +22,9 @@ Verified the MVP path:
   - NCS matches: 4
   - KSA rows: 12
   - KSA factor source: `ncs-mcp`
-  - Generated interview questions: 10
+  - Generated interview questions: 7 in the latest live model smoke
+  - Question-level `ksa_evidence`: 2-3 official KSA rows attached per generated question
+  - `question_evidence_policy`: `ncs_mcp_ksa_attached_by_code_and_ref`
   - `jd_review_session_id`: present
   - Audit event for the confirmed review/generation path: recorded without API key or document body.
 - Direct MCP smoke:

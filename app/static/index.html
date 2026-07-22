@@ -89,6 +89,8 @@
     .followup-chain { margin:8px 0 8px 12px; border-left:2px solid #b0c8fa; padding-left:10px; }
     .fu-step { padding:4px 0; font-size:12.5px; color:#32475d; }
     .fu-label { font-weight:700; color:#1a4ab8; margin-right:4px; }
+    .evidence-list { margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; }
+    .evidence-pill { border:1px solid #c8def7; background:#f3f8ff; border-radius:999px; padding:5px 9px; font-size:11.5px; color:#17345c; }
     .qnav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .qnav-btn { width:auto; margin:0; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; }
     .qnav-ind { font-size:13px; color:var(--muted); }
@@ -964,6 +966,29 @@
         sub.className = 'sub';
         sub.textContent = `평가 포인트: ${ev}`;
         box.appendChild(sub);
+
+        const evidenceRows = Array.isArray(q.ksa_evidence) ? q.ksa_evidence : [];
+        const ksaRefs = Array.isArray(q.ksa_refs) ? q.ksa_refs.filter(x => String(x || '').trim()) : [];
+        if (evidenceRows.length || ksaRefs.length) {
+          const evWrap = document.createElement('div');
+          evWrap.className = 'evidence-list';
+          const label = document.createElement('span');
+          label.className = 'evidence-pill';
+          label.textContent = 'KSA 근거';
+          evWrap.appendChild(label);
+          const rows = evidenceRows.length
+            ? evidenceRows
+            : ksaRefs.map(x => ({ factorName: x, ncsClCd: code, factorSource: 'model-ref' }));
+          rows.slice(0, 4).forEach((row) => {
+            const pill = document.createElement('span');
+            pill.className = 'evidence-pill';
+            const factor = row.factorName || '-';
+            const src = row.factorSource || row.ksaStatus || '';
+            pill.textContent = `[${row.ncsClCd || code || '-'}] ${factor}${src ? ` · ${src}` : ''}`;
+            evWrap.appendChild(pill);
+          });
+          box.appendChild(evWrap);
+        }
         root.appendChild(box);
       }
       updateQNav();

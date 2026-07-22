@@ -281,7 +281,21 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     rerank = mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
-    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+    build_strategy = mocker.patch(
+        "app.main.build_jd_strategy_with_openai",
+        return_value={
+            "interview_questions": [
+                {
+                    "question": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd \uc2dc \uc2dc\uc7a5\ud658\uacbd\uc744 \uc5b4\ub5bb\uac8c \ubd84\uc11d\ud558\uaca0\uc2b5\ub2c8\uae4c?",
+                    "type": "\uc9c1\ubb34\uc9c0\uc2dd",
+                    "competency": unit["compeUnitName"],
+                    "ncsClCd": unit["ncsClCd"],
+                    "follow_ups": ["\ubd84\uc11d \uadfc\uac70\ub294?", "\uc704\ud5d8\uc694\uc778\uc740?", "\uac1c\uc120\uc810\uc740?"],
+                    "evaluation_points": ["\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d", "\uadfc\uac70 \uc81c\uc2dc", "\ub300\uc548 \ube44\uad50", "\uc2e4\ud589\uacc4\ud68d"],
+                }
+            ]
+        },
+    )
     review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]})
     request_key = "sk-test-ncscope-request-key"
 
@@ -306,6 +320,10 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert body["ncs_source"].startswith("ncs-mcp")
     assert body["ncs_ksa"][0]["factorSource"] == "ncs-mcp"
     assert body["ncs_ksa"][0]["ksaStatus"] == "official"
+    question = body["strategy"]["interview_questions"][0]
+    assert question["ksa_refs"] == ["\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d"]
+    assert question["ksa_evidence"][0]["factorSource"] == "ncs-mcp"
+    assert question["ksa_evidence"][0]["ksaStatus"] == "official"
 
 
 def test_upload_rejects_invalid_request_openai_key(monkeypatch, mocker):
