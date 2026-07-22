@@ -69,7 +69,7 @@ Observed detail candidates:
 
 Known benchmark finding:
 
-- `간호수행` and `간호행정관리` were extracted from the ALIO JD, but current strict NCS_MCP search returned 0 units. Treat this as an NCS_MCP alias/coverage follow-up, not a payroll2 parsing failure.
+- `간호수행` and `간호행정관리` were extracted from the ALIO JD, but current strict NCS_MCP search returned 0 units. Treat this as an NCS_MCP alias/coverage follow-up, not a NCScope parsing failure.
 - Documents without an NCS classification table correctly require human detail entry in the review step.
 
 ## NCS_MCP Serving DB Evidence

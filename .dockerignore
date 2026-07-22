@@ -9,6 +9,10 @@ __pycache__
 *.db-shm
 *.xlsx
 *.zip
+*.pdf
+*.docx
+*.hwp
+*.hwpx
 *.out.log
 *.err.log
 node_modules

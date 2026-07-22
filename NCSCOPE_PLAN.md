@@ -13,8 +13,7 @@ Release asset or external artifact and is consumed only through `NCS_MCP_URL`.
 ## Product Scope
 
 - Product name: NCScope
-- Working app folder: `payroll2` for now
-- Recommended public repo/folder name: `ncscope`
+- Working app folder/repository name: `NCScope`
 - Core user flow: upload JD -> parse -> review/confirm detail categories ->
   fetch official NCS/KSA -> generate structured interview questions
 

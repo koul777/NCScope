@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./payroll2.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ncscope.db")
 
 engine = create_engine(
     DATABASE_URL,
@@ -17,4 +17,3 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
-

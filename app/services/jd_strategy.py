@@ -3367,7 +3367,7 @@ def _default_ncs_xlsx_path() -> str:
 def _default_app_db_path() -> str:
     here = os.path.abspath(__file__)
     root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
-    return os.path.join(root, "payroll2.db")
+    return os.path.join(root, "ncscope.db")
 
 
 def _connect_local_db(db_path: str) -> sqlite3.Connection:

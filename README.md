@@ -37,7 +37,7 @@ Or use:
 - `NCS_MCP_URL`: Streamable HTTP endpoint for NCS_MCP, for example `http://127.0.0.1:8778/mcp`
 - `OPENAI_API_KEY`: optional, used for AI interview generation and reranking
 - `OPENAI_MODEL`: optional model override
-- `DATABASE_URL`: optional app DB URL, default `sqlite:///./payroll2.db`
+- `DATABASE_URL`: optional app DB URL, default `sqlite:///./ncscope.db`
 - `MAX_UPLOAD_MB`: optional upload limit, default `30`
 - `ENABLE_ADMIN_ENDPOINTS`: optional, default `false`
 - `ADMIN_TOKEN`: required when admin endpoints are enabled

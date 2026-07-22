@@ -66,10 +66,8 @@ def test_lookup_sclass_query_dedup_by_normalized_key(monkeypatch):
     assert out[0]["ncs_code_no"] == "200103"
 
 
-def test_find_sclass_code_tuple_space_equivalent(monkeypatch):
-    tmp_dir = Path("C:/workspace/payroll2/.tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = tmp_dir / "ncs_sclass_codes_for_test.csv"
+def test_find_sclass_code_tuple_space_equivalent(monkeypatch, tmp_path):
+    csv_path = tmp_path / "ncs_sclass_codes_for_test.csv"
     csv_path.write_text(
         (
             "NCS_CODE_NO,NCS_LCLAS_CD,NCS_LCLAS_CDNM,NCS_MCLAS_CD,NCS_MCLAS_CDNM,NCS_SCLAS_CD,NCS_SCLAS_CDNM\n"
