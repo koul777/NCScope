@@ -114,6 +114,7 @@ Expected MVP behavior:
 - MCP lookup uses confirmed NCS detail classifications only.
 - If exact detail-class matching fails, the app returns manual NCS unit suggestions instead of generating ungrounded questions.
 - KSA rows have `factorSource=ncs-mcp` and `ksaStatus=official`.
+- KSA lookup requires `NCS_MCP_URL`; no XLSX/HRDK/definition fallback is used for official KSA.
 - Legacy NCS API endpoints return 410 unless explicitly enabled.
 - In production, pass secrets through the platform environment. Do not rely on
   automatic `.env` loading unless `NCSCOPE_LOAD_DOTENV=true` is intentionally

@@ -4328,196 +4328,20 @@ def fetch_ncs_ksa_by_units(
     max_factors_per_unit: int = 3,
     use_ncs007_fallback: bool | None = None,
 ) -> list[dict[str, Any]]:
-    # When the prepared NCS_MCP service is configured, it is the authoritative
-    # KSA source. Do not silently mix in the legacy XLSX/HRDK fallbacks in
-    # production, because that hides serving DB or classification failures.
-    if settings.ncs_mcp_endpoint():
-        mcp_rows = get_ksa_by_units(
-            list(ncs_matches or [])[: max(1, int(max_units or 5))],
-            max_factors_per_unit=max(1, int(max_factors_per_unit or 3)),
-        )
-        if not mcp_rows:
-            raise NcsMcpError("NCS MCP returned no official KSA rows")
-        return mcp_rows
+    # MVP policy: KSA must come from the compact read-only NCS_MCP serving DB.
+    # Do not silently fall back to NCS_DB.xlsx, public HRDK endpoints, or
+    # definition-derived pseudo factors. If MCP is unavailable, generation must
+    # fail or switch to the explicit manual-selection flow.
+    if not settings.ncs_mcp_endpoint():
+        raise NcsMcpError("NCS_MCP_URL is required for official KSA lookup")
 
-    def _derive_factors_from_definition(
-        compe_unit_name: str,
-        compe_unit_def: str,
-        limit: int,
-    ) -> list[dict[str, str]]:
-        txt = _repair_mojibake(str(compe_unit_def or "")).strip()
-        if not txt:
-            return []
-
-        stop = {
-            "능력", "단위", "능력단위", "직무", "업무", "수행", "관련", "활동", "기준", "절차",
-            "활용", "이해", "관리", "처리", "지원", "운영", "계획", "실행", "평가",
-        }
-        out_rows: list[dict[str, str]] = []
-        seen_local: set[str] = set()
-
-        # phrase candidates first, then token candidates.
-        phrases = re.split(
-            r"[.;:\n]|,\s*|(?:\s*및\s*)|(?:\s*또는\s*)|하고|하며|하여",
-            txt,
-        )
-        for p in phrases:
-            v = re.sub(r"\s+", " ", p).strip()
-            if len(v) < 3:
-                continue
-            v = re.sub(r"^(하는|하여|위한|위해)\s+", "", v).strip()
-            v = re.sub(r"\s*능력$", "", v).strip()
-            v = re.sub(r"(하는|하며|하고|하여|한다|된다)$", "", v).strip()
-            if not v:
-                continue
-            n = re.sub(r"\s+", "", v)
-            if n in seen_local or n in stop:
-                continue
-            seen_local.add(n)
-            out_rows.append(
-                {
-                    "factorName": v[:40],
-                    "factorLevel": "",
-                    "compeUnitName": compe_unit_name,
-                    "factorSource": "definition",
-                }
-            )
-            if len(out_rows) >= limit:
-                return out_rows
-
-        token_rows: list[str] = []
-        for tok in re.findall(r"[\uac00-\ud7a3]{2,12}", txt):
-            base = re.sub(r"(을|를|이|가|은|는|의|에|로|과|와)$", "", tok).strip()
-            base = re.sub(r"(하고|하며|하여|하는|한다|된다)$", "", base).strip()
-            if len(base) < 2 or base in stop:
-                continue
-            token_rows.append(base)
-        for tok, _ in Counter(token_rows).most_common(40):
-            if tok in seen_local:
-                continue
-            seen_local.add(tok)
-            out_rows.append(
-                {
-                    "factorName": tok,
-                    "factorLevel": "",
-                    "compeUnitName": compe_unit_name,
-                    "factorSource": "definition",
-                }
-            )
-            if len(out_rows) >= limit:
-                break
-        return out_rows
-
-    out: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    max_units = max(1, int(max_units or 5))
-    max_factors_per_unit = max(1, int(max_factors_per_unit or 3))
-    use_ncs007 = True if use_ncs007_fallback is None else bool(use_ncs007_fallback)
-
-    for m in (ncs_matches or [])[:max_units]:
-        code = str(m.get("ncsClCd", "")).strip()
-        if not code:
-            continue
-        compe_name = str(m.get("compeUnitName", "")).strip()
-        compe_def = str(m.get("compeUnitDef", "")).strip()
-
-        cached = _KSA_FACTOR_CACHE_BY_CODE.get(code)
-        if cached is None:
-            factor_rows: list[dict[str, str]] = []
-            local_seen: set[str] = set()
-
-            # 0) Local-first: NCS_DB.xlsx Q/S-based KSA rows for exact NCS_CL_CD.
-            xlsx_rows = _ksa_from_local_xlsx_by_code(code, limit=max_factors_per_unit * 4)
-            for r in xlsx_rows:
-                fact = str(r.get("factorName", "")).strip()
-                if not fact or fact in local_seen:
-                    continue
-                local_seen.add(fact)
-                factor_rows.append(
-                    {
-                        "factorName": fact,
-                        "factorLevel": str(r.get("factorLevel", "")).strip(),
-                        "compeUnitName": str(r.get("compeUnitName", "")).strip() or compe_name,
-                        "factorSource": str(r.get("factorSource", "")).strip() or "xlsx-qs",
-                    }
-                )
-                if len(factor_rows) >= max_factors_per_unit * 4:
-                    break
-
-            # 1) Primary: NCS006 capability factors.
-            if not factor_rows:
-                for no in range(1, max(4, max_factors_per_unit * 2) + 1):
-                    rows = _hrdk_call("NCS006", {"NCS_CL_CD": code, "COMPE_UNIT_FACTR_NO": str(no)})
-                    for r in rows:
-                        fact = str(r.get("COMPE_UNIT_FACTR_NAME", "")).strip()
-                        if not fact or fact in local_seen:
-                            continue
-                        local_seen.add(fact)
-                        factor_rows.append(
-                            {
-                                "factorName": fact,
-                                "factorLevel": str(r.get("COMPE_UNIT_FACTR_LEVEL", "")).strip(),
-                                "compeUnitName": str(r.get("COMPE_UNIT_NAME", "")).strip() or compe_name,
-                                "factorSource": "ncs006",
-                            }
-                        )
-                    if len(factor_rows) >= max_factors_per_unit * 4:
-                        break
-
-            # 2) Secondary: NCS007 keyword search by NCS code.
-            if not factor_rows and use_ncs007:
-                rows = _hrdk_call("NCS007", {"LVL": "6", "SWRD": code, "SNUM": "1", "ENUM": "120"})
-                for r in rows:
-                    if str(r.get("NCS_CL_CD", "")).strip() != code:
-                        continue
-                    fact = str(r.get("COMPE_UNIT_FACTR_NAME", "")).strip()
-                    if not fact or fact in local_seen:
-                        continue
-                    local_seen.add(fact)
-                    factor_rows.append(
-                        {
-                            "factorName": fact,
-                            "factorLevel": str(r.get("COMPE_UNIT_FACTR_LEVEL", "")).strip(),
-                            "compeUnitName": str(r.get("COMPE_UNIT_NAME", "")).strip() or compe_name,
-                            "factorSource": "ncs007",
-                        }
-                    )
-                    if len(factor_rows) >= max_factors_per_unit * 4:
-                        break
-
-            # 3) Last fallback: derive factor candidates from COMPE_UNIT_DEF text.
-            if not factor_rows:
-                factor_rows = _derive_factors_from_definition(
-                    compe_unit_name=compe_name,
-                    compe_unit_def=compe_def,
-                    limit=max(max_factors_per_unit * 2, 4),
-                )
-
-            _KSA_FACTOR_CACHE_BY_CODE[code] = factor_rows
-            cached = factor_rows
-
-        unit_count = 0
-        for f in (cached or []):
-            fact = str(f.get("factorName", "")).strip()
-            if not fact:
-                continue
-            key = (code, fact)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(
-                {
-                    "ncsClCd": code,
-                    "compeUnitName": str(f.get("compeUnitName", "")).strip() or compe_name,
-                    "factorName": fact,
-                    "factorLevel": str(f.get("factorLevel", "")).strip(),
-                    "factorSource": str(f.get("factorSource", "")).strip() or "unknown",
-                }
-            )
-            unit_count += 1
-            if unit_count >= max_factors_per_unit:
-                break
-    return out
+    mcp_rows = get_ksa_by_units(
+        list(ncs_matches or [])[: max(1, int(max_units or 5))],
+        max_factors_per_unit=max(1, int(max_factors_per_unit or 3)),
+    )
+    if not mcp_rows:
+        raise NcsMcpError("NCS MCP returned no official KSA rows")
+    return mcp_rows
 
 
 def _compact_text_for_tfidf(text: str) -> str:

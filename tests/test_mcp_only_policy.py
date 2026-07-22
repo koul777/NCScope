@@ -4,10 +4,12 @@ import json
 import io
 import zipfile
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
 from app.services import ncs_mcp_client
+from app.services.jd_strategy import fetch_ncs_ksa_by_units
 
 
 JD_TEXT = "\uc138\ubd84\ub958: \uacbd\uc601\uae30\ud68d\n\ub2f4\ub2f9\uc5c5\ubb34: \uacbd\uc601\uacc4\ud68d \uc218\ub9bd"
@@ -478,6 +480,17 @@ def test_legacy_ncs_sclass_ksa_endpoint_disabled_by_default(monkeypatch):
         resp = client.get("/api/ncs/sclass/ksa?sclassName=\ucd1d\ubb34")
 
     assert resp.status_code == 410
+
+
+def test_ksa_lookup_requires_ncs_mcp_url(monkeypatch):
+    monkeypatch.delenv("NCS_MCP_URL", raising=False)
+
+    with pytest.raises(ncs_mcp_client.NcsMcpError, match="NCS_MCP_URL"):
+        fetch_ncs_ksa_by_units(
+            [{"ncsClCd": "0201010103_22v2", "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd"}],
+            max_units=1,
+            max_factors_per_unit=1,
+        )
 
 
 def test_parse_review_rejects_large_upload_before_kordoc(monkeypatch, mocker):

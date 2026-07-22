@@ -12,7 +12,7 @@ Verified the MVP path:
 
 ## NCScope Evidence
 
-- `python -m pytest -q`: 167 passed, 2 FastAPI deprecation warnings.
+- `python -m pytest -q`: 168 passed, 2 FastAPI deprecation warnings.
 - `python -m py_compile app\main.py app\settings.py app\repository.py app\models.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py`: passed.
 - API smoke with confirmed detail `경영기획`:
   - HTTP status: 200
@@ -46,6 +46,7 @@ Verified the MVP path:
   - encrypted ZIP member -> 422 instead of server error
   - ZIP image member -> parsed through Kordoc/OCR path instead of being skipped
   - confirmed generation requires a server-created `review_session_id`
+  - KSA lookup requires `NCS_MCP_URL`; no XLSX/HRDK/definition fallback is used for official KSA
 
 ## ALIO JD Benchmark Evidence
 

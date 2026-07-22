@@ -267,6 +267,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | `ENABLE_LEGACY_NCS_API` | 선택 | `false` | 레거시 NCS API 재활성화 |
 
 면접 생성 MVP 경로는 `NCS_MCP_URL`을 필수로 요구합니다.
+KSA 조회 함수도 MCP-only로 고정되어 있어 `NCS_MCP_URL`이 없으면 `NCS_DB.xlsx`, HRDK 공개 API, 정의 기반 추정값으로 자동 fallback하지 않습니다.
 
 ## API 요약
 
@@ -359,7 +360,7 @@ python -m pytest -q
 
 현재 검증 결과:
 
-- `python -m pytest -q` → 167 passed
+- `python -m pytest -q` → 168 passed
 - `py_compile` → passed
 - `npm ci` → passed
 - Kordoc 최신 npm 버전 `4.2.7` 확인
