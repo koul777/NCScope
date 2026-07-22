@@ -140,25 +140,93 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
         "ksaStatus": "official",
     }
     mocker.patch("app.main.search_units_by_detail", return_value=[unit])
-    mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
+    rerank = mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
-    mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}}
+    request_key = "sk-test-ncscope-request-key"
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": request_key,
+            },
+        )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    rerank.assert_called_once()
+    assert rerank.call_args.kwargs["openai_api_key"] == request_key
+    build_strategy.assert_called_once()
+    assert build_strategy.call_args.kwargs["api_key_override"] == request_key
+    assert request_key not in resp.text
+    assert body["jd_review_confirmed"] is True
+    assert body["ncs_source"].startswith("ncs-mcp")
+    assert body["ncs_ksa"][0]["factorSource"] == "ncs-mcp"
+    assert body["ncs_ksa"][0]["ksaStatus"] == "official"
+
+
+def test_upload_rejects_invalid_request_openai_key(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
     review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}}
 
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
-            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": "sk-test invalid",
+            },
         )
 
-    body = resp.json()
+    assert resp.status_code == 400
+    assert "openai_api_key" in resp.text
+
+
+def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    unit = {
+        "ncsClCd": "0201010103_22v2",
+        "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
+        "compeUnitLevel": "5",
+        "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
+        "compeUnitDef": "\uacbd\uc601\ubaa9\ud45c\ub97c \uc218\ub9bd\ud55c\ub2e4",
+    }
+    ksa = {
+        "ncsClCd": unit["ncsClCd"],
+        "compeUnitName": unit["compeUnitName"],
+        "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    mocker.patch("app.main.build_ncs_context_pack", return_value={})
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+    request_key = "sk-test-manual-request-key"
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-from-text",
+            json={
+                "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
+                "evaluation_text": "\ubb38\uc81c\ud574\uacb0\ub2a5\ub825",
+                "selected_ncs": [unit],
+                "openai_api_key": request_key,
+            },
+        )
+
     assert resp.status_code == 200
-    assert body["jd_review_confirmed"] is True
-    assert body["ncs_source"].startswith("ncs-mcp")
-    assert body["ncs_ksa"][0]["factorSource"] == "ncs-mcp"
-    assert body["ncs_ksa"][0]["ksaStatus"] == "official"
+    body = resp.json()
+    assert body["openai_key_source"] == "request"
+    build_strategy.assert_called_once()
+    assert build_strategy.call_args.kwargs["api_key_override"] == request_key
+    assert request_key not in resp.text
 
 
 def test_mcp_search_matches_detail_not_small_category(mocker):

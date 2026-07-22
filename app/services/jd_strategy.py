@@ -7,6 +7,7 @@ import re
 import time
 import math
 import csv
+import hashlib
 import sqlite3
 import subprocess
 import tempfile
@@ -2753,12 +2754,13 @@ def _ai_rerank_ncs_matches(
     jd_text: str,
     ranked_items: list[dict[str, Any]],
     top_k: int = 8,
+    api_key_override: str = "",
 ) -> list[dict[str, Any]]:
     enabled = os.getenv("ENABLE_AI_RERANK", "true").strip().lower() in {"1", "true", "yes", "y"}
     if not enabled:
         return []
 
-    api_key = settings.openai_key()
+    api_key = str(api_key_override or "").strip() or settings.openai_key()
     if not api_key or len(ranked_items) < 2:
         return []
 
@@ -2951,6 +2953,7 @@ def rerank_ncs_matches(
     ncs_items: list[dict[str, Any]],
     top_k: int = 8,
     preferred_sclass: list[str] | None = None,
+    openai_api_key: str = "",
 ) -> tuple[list[dict[str, Any]], str]:
     rank_pool_k = max(top_k, 12)
     diversity_cap: int | None = None
@@ -2981,7 +2984,12 @@ def rerank_ncs_matches(
     if not ranked:
         return [], "keyword"
 
-    ai_ranked = _ai_rerank_ncs_matches(jd_text=jd_text, ranked_items=ranked, top_k=top_k)
+    ai_ranked = _ai_rerank_ncs_matches(
+        jd_text=jd_text,
+        ranked_items=ranked,
+        top_k=top_k,
+        api_key_override=openai_api_key,
+    )
     if ai_ranked:
         return ai_ranked[:top_k], "ai"
 
@@ -3036,8 +3044,12 @@ def _check_openai_connectivity(api_key: str, ttl_sec: int = 60) -> tuple[bool, s
         ttl_sec = int(ttl_sec)
     ttl_sec = max(0, ttl_sec)
 
+    key_fingerprint = hashlib.sha256(str(api_key or "").encode("utf-8")).hexdigest()[:16]
     now = time.time()
-    if (now - float(_OPENAI_NET_CACHE.get("ts", 0.0))) < ttl_sec:
+    if (
+        _OPENAI_NET_CACHE.get("key") == key_fingerprint
+        and (now - float(_OPENAI_NET_CACHE.get("ts", 0.0))) < ttl_sec
+    ):
         return bool(_OPENAI_NET_CACHE.get("ok", True)), str(_OPENAI_NET_CACHE.get("msg", ""))
 
     msg = ""
@@ -3079,6 +3091,7 @@ def _check_openai_connectivity(api_key: str, ttl_sec: int = 60) -> tuple[bool, s
         msg = str(e)
 
     _OPENAI_NET_CACHE["ts"] = now
+    _OPENAI_NET_CACHE["key"] = key_fingerprint
     _OPENAI_NET_CACHE["ok"] = ok
     _OPENAI_NET_CACHE["msg"] = msg
     return ok, msg
@@ -3095,8 +3108,9 @@ def build_strategy_with_openai(
     duty_text: str = "",
     evaluation_text: str = "",
     desired_job: str = "",
+    api_key_override: str = "",
 ) -> dict[str, Any]:
-    api_key = settings.openai_key()
+    api_key = str(api_key_override or "").strip() or settings.openai_key()
     target_count = max(5, min(40, int(os.getenv("INTERVIEW_TARGET_COUNT", "10") or "10")))
     retry_target_count = max(5, min(10, target_count))
     primary_model = (os.getenv("OPENAI_STRATEGY_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()

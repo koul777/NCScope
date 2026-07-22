@@ -117,6 +117,12 @@
           </select>
         </div>
 
+        <label for="openaiApiKey">OpenAI API key (선택)</label>
+        <input id="openaiApiKey" type="password" placeholder="sk-... 또는 환경변수 OPENAI_API_KEY 사용" autocomplete="off" spellcheck="false" />
+        <div class="sub" style="margin-top:-4px; margin-bottom:10px;">
+          입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 비워두면 서버의 <code>OPENAI_API_KEY</code>를 사용합니다.
+        </div>
+
         <div id="uploadBlock">
           <label for="jdFile">직무기술서 파일 (필수, PDF/HWP/HWPX/DOCX/이미지/TXT)</label>
           <input id="jdFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.png,.jpg,.jpeg,.webp,.txt" />
@@ -269,6 +275,7 @@
     const inputMode = document.getElementById('inputMode');
     const uploadBlock = document.getElementById('uploadBlock');
     const manualBlock = document.getElementById('manualBlock');
+    const openaiApiKey = document.getElementById('openaiApiKey');
     const jdFile = document.getElementById('jdFile');
     const noticeFile = document.getElementById('noticeFile');
     const dutyText = document.getElementById('dutyText');
@@ -311,6 +318,10 @@
         out.push(t);
       });
       return out;
+    }
+
+    function requestOpenAIKey() {
+      return (openaiApiKey && openaiApiKey.value ? openaiApiKey.value : '').trim();
     }
 
     // 페이지 로드 시 NCS 소분류 목록 미리 가져오기
@@ -661,6 +672,7 @@
       addMetaPill(meta, `공고문 글자수: ${(data.notice_text_preview || '').length}`);
       addMetaPill(meta, `담당업무 글자수: ${(data.duty_text_preview || '').length}`);
       addMetaPill(meta, `NCS 소스: ${data.ncs_source || '-'}`, 'pill good');
+      addMetaPill(meta, `OpenAI key: ${data.openai_key_source || '-'}`);
 
 
       if (data.ncs_error) {
@@ -877,6 +889,8 @@
           const nFile = noticeFile.files && noticeFile.files[0];
           if (nFile) fd.append('notice_file', nFile);
           fd.append('strengths', '');
+          const requestKey = requestOpenAIKey();
+          if (requestKey) fd.append('openai_api_key', requestKey);
           fd.append('duty_text', (dutyText.value || '').trim());
           fd.append('evaluation_text', (evalText.value || '').trim());
           if (!reviewConfirmed || !jdReviewPayload) {
@@ -926,6 +940,7 @@
               evaluation_text: (evalTextManual.value || '').trim(),
               selected_ncs: selected,
               runtime_knobs: knobs,
+              openai_api_key: requestOpenAIKey(),
             }),
           });
         }

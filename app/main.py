@@ -317,6 +317,15 @@ def _check_upload_size(data: bytes, label: str) -> None:
         )
 
 
+def _sanitize_request_openai_key(value: str | None) -> str:
+    key = str(value or "").strip()
+    if not key:
+        return ""
+    if len(key) > 300 or any(ch.isspace() for ch in key):
+        raise HTTPException(status_code=400, detail="openai_api_key is invalid")
+    return key
+
+
 def _select_verified_sclass_candidates(
     candidates: list[dict[str, Any]] | None,
     max_keep: int = 4,
@@ -1019,6 +1028,7 @@ async def jd_strategy_upload(
     jd_file: UploadFile = File(...),
     notice_file: UploadFile | None = File(default=None),
     strengths: str = Form(default=""),
+    openai_api_key: str = Form(default=""),
     manual_sclass: str = Form(default=""),
     manual_sclass_add: str = Form(default=""),
     manual_sclass_remove: str = Form(default=""),
@@ -1028,6 +1038,7 @@ async def jd_strategy_upload(
 ) -> dict:
     # 최적값 고정 (사용자 노출 제거)
     run_top_k, run_ksa_units, run_ksa_factors = FAST_NCS_TOP_K, FAST_KSA_UNITS, FAST_KSA_FACTORS_PER_UNIT
+    request_openai_api_key = _sanitize_request_openai_key(openai_api_key)
 
     async def _read_text(upload: UploadFile | None, label: str) -> tuple[str, bytes, str]:
         if not upload:
@@ -1282,6 +1293,7 @@ async def jd_strategy_upload(
             ncs_items=ncs_items,
             top_k=run_top_k,
             preferred_sclass=ncs_query_terms,
+            openai_api_key=request_openai_api_key,
         )
         if ncs_matches:
             ncs_source = f"{ncs_source}+ai-rerank" if rerank_mode == "ai" else f"{ncs_source}+rerank"
@@ -1460,6 +1472,7 @@ async def jd_strategy_upload(
                 duty_text=duty_text_clean,
                 evaluation_text=evaluation_text_clean,
                 desired_job="",
+                api_key_override=request_openai_api_key,
             ),
         )
     except Exception as e:
@@ -1484,6 +1497,7 @@ async def jd_strategy_upload(
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,
+        "openai_key_source": "request" if request_openai_api_key else ("env" if settings.openai_key() else "missing"),
         "extracted_focus_terms": vision_terms,
         "subcategory_text_preview": subcategory_text[:800],
         "small_categories_extracted": extracted_small_categories,
@@ -1520,6 +1534,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
     notice_text = str(payload.get("notice_text", "")).strip()
     duty_text = str(payload.get("duty_text", "")).strip()
     evaluation_text = str(payload.get("evaluation_text", "")).strip()
+    request_openai_api_key = _sanitize_request_openai_key(payload.get("openai_api_key", ""))
     selected_ncs = payload.get("selected_ncs", [])
     knobs = payload.get("runtime_knobs", {}) if isinstance(payload.get("runtime_knobs", {}), dict) else {}
     run_top_k, run_ksa_units, run_ksa_factors = _clamp_runtime_knobs(
@@ -1633,6 +1648,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
                 duty_text=duty_text,
                 evaluation_text=evaluation_text,
                 desired_job="",
+                api_key_override=request_openai_api_key,
             ),
         )
     except Exception as e:
@@ -1655,6 +1671,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
         "profile_used": False,
         "ncs_source": "manual-selected",
         "ncs_error": "",
+        "openai_key_source": "request" if request_openai_api_key else ("env" if settings.openai_key() else "missing"),
         "extracted_focus_terms": [],
         "subcategory_text_preview": "",
         "small_categories": [],

@@ -340,8 +340,9 @@ def _generate_questions_with_openai_from_ncs(
     target_count: int = 6,
     mode: str = "diverse",
     extra_context: str = "",
+    api_key_override: str = "",
 ) -> list[dict[str, Any]]:
-    api_key = settings.openai_key()
+    api_key = str(api_key_override or "").strip() or settings.openai_key()
     if not api_key:
         return []
 
