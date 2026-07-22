@@ -1,5 +1,5 @@
 {
-  "name": "ncscope-document-parser",
+  "name": "ncscope",
   "private": true,
   "type": "module",
   "scripts": {
