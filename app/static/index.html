@@ -197,8 +197,9 @@
         </div>
 
         <div id="uploadBlock">
-          <label for="jdFile">직무기술서 파일 (필수, PDF/HWP/HWPX/DOCX/이미지/TXT)</label>
-          <input id="jdFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.png,.jpg,.jpeg,.webp,.txt" />
+          <label for="jdFile">직무기술서 파일 (필수)</label>
+          <div class="sub" style="margin:-2px 0 6px;">PDF/HWP/HWPX/DOCX/TXT/이미지 또는 지원 문서를 담은 ZIP</div>
+          <input id="jdFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt" />
 
           <div id="jdReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
@@ -235,8 +236,9 @@
             <button type="button" id="btnConfirmSclass" style="background:#1f9d55; margin-top:10px;">레거시 보정 적용 → 면접 질문 생성</button>
           </div>
 
-          <label for="noticeFile">공고문 파일 (선택, PDF/TXT)</label>
-          <input id="noticeFile" type="file" accept=".pdf,.txt" />
+          <label for="noticeFile">공고문 파일 (선택)</label>
+          <div class="sub" style="margin:-2px 0 6px;">PDF/TXT 또는 지원 문서를 담은 ZIP</div>
+          <input id="noticeFile" type="file" accept=".pdf,.txt,.zip" />
           <div id="noticeReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
               <label style="margin:0;">공고문 핵심 텍스트 검토</label>

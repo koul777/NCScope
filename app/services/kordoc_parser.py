@@ -182,6 +182,14 @@ def _looks_like_detail_candidate(value: str) -> bool:
     return bool(re.search(r"[가-힣A-Za-z]", text))
 
 
+def _clean_detail_candidate_text(value: str) -> str:
+    text = _clean_text(value)
+    text = re.sub(r"\s*[\(（\[]\s*특화\s*분류\s*[\)）\]]\s*", "", text)
+    text = re.sub(r"^[,;/|]+", "", text)
+    text = re.sub(r"[,;/|:：\-]+$", "", text)
+    return _clean_text(text)
+
+
 def _block_text(block: Any) -> str:
     if isinstance(block, str):
         return block
@@ -225,9 +233,14 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
             label_index = next((i for i, cell in enumerate(cells) if _section_for_label(cell) == "ncs_detail"), -1)
             if label_index >= 0:
                 pipe_detail_index = label_index
-                value = " ".join(cells[label_index + 1 :])
-                value = re.sub(r"(?<!^)\s+(?=\d+\s*\.\s*)", "\n", value)
-                candidates.extend(_split_items(value))
+                value_cells = cells[label_index + 1 :]
+                if len(value_cells) > 1:
+                    for value in value_cells:
+                        candidates.extend(_split_items(value))
+                else:
+                    value = " ".join(value_cells)
+                    value = re.sub(r"(?<!^)\s+(?=\d+\s*\.\s*)", "\n", value)
+                    candidates.extend(_split_items(value))
                 continue
             if pipe_detail_index is not None and not any(_section_for_label(cell) for cell in cells):
                 value = cells[pipe_detail_index] if pipe_detail_index < len(cells) else cells[-1]
@@ -254,9 +267,14 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
             label_index = next((i for i, cell in enumerate(cells) if _section_for_label(cell) == "ncs_detail"), -1)
             if label_index >= 0:
                 detail_index = label_index
-                value = " ".join(cells[label_index + 1 :])
-                value = re.sub(r"(?<!^)\s+(?=\d+\s*\.\s*)", "\n", value)
-                candidates.extend(_split_items(value))
+                value_cells = cells[label_index + 1 :]
+                if len(value_cells) > 1:
+                    for value in value_cells:
+                        candidates.extend(_split_items(value))
+                else:
+                    value = " ".join(value_cells)
+                    value = re.sub(r"(?<!^)\s+(?=\d+\s*\.\s*)", "\n", value)
+                    candidates.extend(_split_items(value))
                 continue
             if detail_index is None:
                 continue
@@ -268,7 +286,7 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     seen: set[str] = set()
     clean_candidates = []
     for item in candidates:
-        text = _clean_text(item)
+        text = _clean_detail_candidate_text(item)
         if not _looks_like_detail_candidate(text):
             continue
         if text in seen:

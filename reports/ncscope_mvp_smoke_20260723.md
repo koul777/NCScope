@@ -12,7 +12,7 @@ Verified the MVP path:
 
 ## NCScope Evidence
 
-- `python -m pytest -q`: 158 passed, 2 FastAPI deprecation warnings.
+- `python -m pytest -q`: 160 passed, 2 FastAPI deprecation warnings.
 - `python -m py_compile app\main.py app\settings.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py`: passed.
 - API smoke with confirmed detail `경영기획`:
   - HTTP status: 200
@@ -51,20 +51,20 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 
 Latest report:
 
-- `reports\alio_jd_benchmark_20260723_051244.md`
-- `reports\alio_jd_benchmark_20260723_051244.csv`
+- `reports\alio_jd_benchmark_20260723_052143.md`
+- `reports\alio_jd_benchmark_20260723_052143.csv`
 
 Results:
 
 - Samples attempted: 10
-- Parsed documents: 6
-- Documents with detail candidates: 4
-- Documents with detail candidates but no MCP match: 2
+- Parsed documents: 9
+- Documents with detail candidates: 7
+- Documents with detail candidates but no MCP match: 3
 - Notice pages with duty text candidates: 10
 - Notice pages with evaluation text candidates: 9
-- Detail-no-match documents with manual NCS suggestions: 1
-- Total detail candidates: 11
-- Average parse time: 500 ms
+- Detail-no-match documents with manual NCS suggestions: 2
+- Total detail candidates: 27
+- Average parse time: 642 ms
 - Three ZIP attachments were classified as unsupported because the MVP scope is PDF/HWP/HWPX/DOCX.
 
 Observed detail candidates:
@@ -80,6 +80,7 @@ Known benchmark finding:
 - Documents without an NCS classification table correctly require human detail entry in the review step.
 - Table-label noise such as `능력단위` and `주요사업` is now filtered from detail-class candidates.
 - When exact detail-class matching fails, NCScope now returns manual-selection suggestions instead of generating ungrounded interview questions.
+- ZIP attachments are parsed in memory when they contain supported PDF/HWP/HWPX/DOCX/TXT files.
 - Gap evidence: `reports\ncs_mcp_detail_gap_20260723.md`
 
 ## NCS_MCP Serving DB Evidence

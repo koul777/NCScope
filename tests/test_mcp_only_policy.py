@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import io
+import zipfile
 
 from fastapi.testclient import TestClient
 
@@ -35,6 +37,14 @@ def _patch_mcp_upload_common(mocker) -> None:
     mocker.patch("app.main.review_ocr_terms_with_openai", return_value=[])
 
 
+def _zip_bytes(files: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, text in files.items():
+            archive.writestr(name, text)
+    return buffer.getvalue()
+
+
 def test_parse_review_returns_detail_candidates(mocker):
     mocker.patch("app.main.parse_with_kordoc", return_value={"markdown": JD_TEXT})
     mocker.patch(
@@ -53,6 +63,21 @@ def test_parse_review_returns_detail_candidates(mocker):
 
     assert resp.status_code == 200
     assert resp.json()["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
+
+
+def test_parse_review_accepts_zip_with_supported_jd_text():
+    data = _zip_bytes({"job_description.txt": JD_TEXT})
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("jd.zip", data, "application/zip")},
+        )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
+    assert "ZIP member: job_description.txt" in body["document"]["markdown"]
 
 
 def test_notice_parse_review_prefills_duty_and_evaluation_text():

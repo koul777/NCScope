@@ -68,3 +68,18 @@ def test_structure_job_description_filters_detail_label_noise() -> None:
     result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
 
     assert result["fields"]["ncs_detail_candidates"] == ["원자력발전설비운영"]
+
+
+def test_structure_job_description_cleans_detail_candidate_punctuation() -> None:
+    markdown = """
+| 세분류 | 영상의학 (특화분류) | 임상병리 (특화분류) | 간호업무 보조/ | 재원환자 관리, |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "영상의학",
+        "임상병리",
+        "간호업무 보조",
+        "재원환자 관리",
+    ]

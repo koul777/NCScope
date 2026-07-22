@@ -35,7 +35,7 @@ NCS_MCP에서 공식 능력단위·KSA 조회
 
 ## 핵심 기능
 
-- PDF/HWP/HWPX/DOCX 직무기술서 파싱
+- PDF/HWP/HWPX/DOCX/TXT 직무기술서와 해당 파일을 담은 ZIP 파싱
 - 소분류가 아니라 세분류 기준 NCS 후보 추출
 - Human-in-the-loop 방식의 세분류 검토·확정
 - 확정된 세분류 기준 NCS_MCP 공식 능력단위 조회
@@ -66,7 +66,7 @@ http://127.0.0.1:8015
 
 ### 3. 직무기술서 업로드
 
-`직무기술서 파일`에 PDF/HWP/HWPX/DOCX 파일을 올립니다.
+`직무기술서 파일`에 PDF/HWP/HWPX/DOCX/TXT 파일 또는 해당 파일을 담은 ZIP을 올립니다.
 
 Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 
@@ -160,7 +160,7 @@ NCScope는 앱과 NCS_MCP를 분리해서 배포합니다.
 | 구성요소 | 역할 |
 | --- | --- |
 | NCScope FastAPI 앱 | 화면, 업로드, 검토, 질문 생성 흐름 제어 |
-| Kordoc | PDF/HWP/HWPX/DOCX 문서 파싱 |
+| Kordoc | PDF/HWP/HWPX/DOCX/TXT 및 ZIP 내부 지원 문서 파싱 |
 | NCS_MCP | 공식 NCS 능력단위·수행준거·KSA 조회 |
 | serving DB | 약 117MB 경량 read-only SQLite DB |
 | OpenAI API | 구조화 면접 질문 생성 및 선택적 재정렬 |
@@ -264,7 +264,7 @@ POST /api/jd/parse-review
 
 Form:
 
-- `jd_file`: PDF/HWP/HWPX/DOCX 직무기술서
+- `jd_file`: PDF/HWP/HWPX/DOCX/TXT 직무기술서 또는 지원 파일을 담은 ZIP
 
 반환:
 
@@ -345,7 +345,7 @@ python -m pytest -q
 
 현재 검증 결과:
 
-- `python -m pytest -q` → 158 passed
+- `python -m pytest -q` → 160 passed
 - `py_compile` → passed
 - `npm ci` → passed
 - Kordoc 최신 npm 버전 `4.2.7` 확인
@@ -361,18 +361,18 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 
 최신 리포트:
 
-- `reports/alio_jd_benchmark_20260723_051244.md`
-- `reports/alio_jd_benchmark_20260723_051244.csv`
+- `reports/alio_jd_benchmark_20260723_052143.md`
+- `reports/alio_jd_benchmark_20260723_052143.csv`
 
 관찰 결과:
 
 - 최근 JOB-ALIO 공고 10건 검사
-- 문서 6건 파싱 성공
-- 세분류 후보가 추출된 문서 4건
-- 세분류는 추출됐지만 현재 MCP DB와 매칭되지 않은 문서 2건
+- 문서 9건 파싱 성공
+- 세분류 후보가 추출된 문서 7건
+- 세분류는 추출됐지만 현재 MCP DB와 매칭되지 않은 문서 3건
 - 공고문 본문에서 담당업무 후보 10건, 평가항목 후보 9건 추출
-- exact 매칭 실패 문서 중 수동 NCS 후보가 제시된 문서 1건
-- ZIP 첨부 3건은 MVP 범위 밖으로 분류
+- exact 매칭 실패 문서 중 수동 NCS 후보가 제시된 문서 2건
+- ZIP 첨부 3건은 내부 지원 문서를 메모리에서 읽어 파싱
 - `간호수행`, `간호행정관리`, `임상병리`처럼 serving DB exact 세분류 매칭이 없는 경우는 수동 NCS 선택 후보 흐름으로 회수
 
 ## Docker 배포
@@ -411,7 +411,7 @@ Docker 이미지에는 앱만 포함합니다. NCS serving DB는 별도 NCS_MCP 
 
 ## 현재 MVP 한계
 
-- ZIP 첨부파일은 직접 파싱하지 않습니다. 압축을 풀어 PDF/HWP/HWPX/DOCX 파일을 업로드해야 합니다.
+- ZIP은 암호가 없고 내부에 PDF/HWP/HWPX/DOCX/TXT가 들어 있는 경우에만 파싱합니다. 압축 내부 파일이 너무 크거나 지원 확장자가 없으면 검토 단계에서 오류로 돌려줍니다.
 - 기관 자체 용어가 NCS 세분류처럼 쓰이는 경우, 현재 serving DB와 매칭되지 않을 수 있습니다. 이 경우 NCS_MCP alias/coverage 보강이 필요합니다.
 - `npm audit`는 Kordoc transitive dependency 경로의 취약점을 보고합니다. 현재 Kordoc `4.2.7`이 npm 최신 버전이며, `npm audit fix --force`는 파서 호환성을 깨뜨릴 수 있어 적용하지 않았습니다.
 - Docker CLI가 로컬 검증 환경에 없어 Docker 빌드는 실제 실행 검증하지 못했고, Dockerfile과 `.dockerignore`는 정적 검토했습니다.

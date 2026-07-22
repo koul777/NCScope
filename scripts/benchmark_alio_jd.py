@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import csv
 import html
+import io
 import os
 import re
 import sys
 import time
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +30,8 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
 )
+ARCHIVE_MEMBER_LIMIT = 12
+SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt"}
 
 
 @dataclass
@@ -145,6 +149,64 @@ def safe_filename(name: str, idx: str, seq: int) -> str:
     return f"{idx}_{seq}_{cleaned}"
 
 
+def _suffix_of(name: str) -> str:
+    return Path(str(name or "").replace("\\", "/")).suffix.lower()
+
+
+def _safe_member_label(name: str) -> str:
+    value = str(name or "").replace("\\", "/").split("/")[-1].strip()
+    value = re.sub(r"[\r\n\t]+", " ", value)
+    return value[:160] or "archive_member"
+
+
+def parse_benchmark_document(data: bytes, filename: str, max_bytes: int) -> dict[str, Any]:
+    suffix = _suffix_of(filename)
+    if suffix == ".txt":
+        return {"markdown": data.decode("utf-8", errors="ignore"), "metadata": {"filename": filename}}
+    if suffix != ".zip":
+        return parse_with_kordoc(data, filename=filename, ocr=False)
+
+    chunks: list[str] = []
+    members: list[dict[str, str]] = []
+    warnings: list[str] = []
+    total_uncompressed = 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                member_suffix = _suffix_of(info.filename)
+                if member_suffix not in SUPPORTED_ARCHIVE_DOC_SUFFIXES:
+                    continue
+                total_uncompressed += int(info.file_size or 0)
+                if total_uncompressed > max_bytes:
+                    raise KordocParseError(f"archive contents exceed limit: {total_uncompressed} > {max_bytes}")
+                if len(members) >= ARCHIVE_MEMBER_LIMIT:
+                    warnings.append(f"archive member limit reached: {ARCHIVE_MEMBER_LIMIT}")
+                    break
+                member_label = _safe_member_label(info.filename)
+                try:
+                    parsed = parse_with_kordoc(archive.read(info), filename=member_label, ocr=False)
+                except KordocParseError as exc:
+                    warnings.append(f"{member_label}: {exc}")
+                    continue
+                markdown = str(parsed.get("markdown") or "").strip()
+                if not markdown:
+                    warnings.append(f"{member_label}: empty parse result")
+                    continue
+                members.append({"filename": member_label, "suffix": member_suffix})
+                chunks.append(f"# ZIP member: {member_label}\n\n{markdown}")
+    except zipfile.BadZipFile as exc:
+        raise KordocParseError("not a readable ZIP archive") from exc
+    if not chunks:
+        raise KordocParseError("ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT files")
+    return {
+        "markdown": "\n\n---\n\n".join(chunks),
+        "metadata": {"filename": filename, "archive": True, "members": members},
+        "warnings": warnings,
+    }
+
+
 def download_attachment(
     client: httpx.Client,
     attachment: Attachment,
@@ -177,6 +239,7 @@ def benchmark_one(
         "bytes": 0,
         "parse_ms": 0,
         "markdown_len": 0,
+        "archive_members": 0,
         "detail_candidates": "",
         "detail_count": 0,
         "notice_duty_chars": 0,
@@ -211,14 +274,11 @@ def benchmark_one(
         row["attachment"] = attachment.name
         out_path = out_dir / safe_filename(attachment.name, page.idx, 1)
         row["bytes"] = download_attachment(client, attachment, out_path, page.url, max_bytes=max_bytes)
-        if out_path.suffix.lower() in {".zip", ".7z", ".rar"}:
-            row["status"] = "unsupported_archive"
-            row["error"] = "archive attachments are not part of the PDF/HWP/HWPX/DOCX MVP parser scope"
-            return row
 
         start = time.perf_counter()
-        parsed = parse_with_kordoc(out_path.read_bytes(), filename=attachment.name, ocr=False)
+        parsed = parse_benchmark_document(out_path.read_bytes(), filename=attachment.name, max_bytes=max_bytes)
         row["parse_ms"] = int((time.perf_counter() - start) * 1000)
+        row["archive_members"] = len((parsed.get("metadata") or {}).get("members") or [])
         markdown = str(parsed.get("markdown") or "")
         row["markdown_len"] = len(markdown)
         structured = structure_job_description(parsed, filename=attachment.name)
@@ -266,6 +326,7 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         "bytes",
         "parse_ms",
         "markdown_len",
+        "archive_members",
         "detail_count",
         "detail_candidates",
         "notice_duty_chars",
@@ -310,15 +371,16 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         f"- Average parse time: {avg_parse} ms",
         f"- MCP URL configured: {bool(os.getenv('NCS_MCP_URL', '').strip())}",
         "",
-        "| idx | status | attachment | parse_ms | detail candidates | notice duty chars | notice eval chars | MCP units | MCP KSA | suggestions |",
-        "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| idx | status | attachment | parse_ms | archive files | detail candidates | notice duty chars | notice eval chars | MCP units | MCP KSA | suggestions |",
+        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         detail = str(row.get("detail_candidates") or "").replace("|", "/")
         attachment = str(row.get("attachment") or "").replace("|", "/")
         lines.append(
             f"| {row.get('idx')} | {row.get('status')} | {attachment} | "
-            f"{row.get('parse_ms') or 0} | {detail} | {row.get('notice_duty_chars') or 0} | "
+            f"{row.get('parse_ms') or 0} | {row.get('archive_members') or 0} | {detail} | "
+            f"{row.get('notice_duty_chars') or 0} | "
             f"{row.get('notice_eval_chars') or 0} | {row.get('mcp_units') or 0} | "
             f"{row.get('mcp_ksa') or 0} | {row.get('mcp_suggestions') or 0} |"
         )

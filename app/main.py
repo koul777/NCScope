@@ -3,10 +3,12 @@
 import asyncio
 import csv
 import functools
+import io
 import json
 import os
 import re
 import threading
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -315,6 +317,107 @@ def _check_upload_size(data: bytes, label: str) -> None:
             status_code=413,
             detail=f"{label} exceeds MAX_UPLOAD_MB ({max_bytes // (1024 * 1024)} MB)",
         )
+
+
+_ARCHIVE_MEMBER_LIMIT = 12
+_SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt"}
+
+
+def _suffix_of(name: str) -> str:
+    return Path(str(name or "").replace("\\", "/")).suffix.lower()
+
+
+def _safe_member_label(name: str) -> str:
+    value = str(name or "").replace("\\", "/").split("/")[-1].strip()
+    value = re.sub(r"[\r\n\t]+", " ", value)
+    return value[:160] or "archive_member"
+
+
+def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dict[str, Any]:
+    name = str(filename or "")
+    suffix = _suffix_of(name)
+    if suffix == ".txt":
+        return {"markdown": data.decode("utf-8", errors="ignore"), "metadata": {"filename": name}}
+    try:
+        return parse_with_kordoc(
+            data,
+            filename=name,
+            ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
+        )
+    except KordocParseError as exc:
+        if suffix == ".pdf":
+            text = extract_pdf_text(data)
+            if not text.strip():
+                try:
+                    text = extract_pdf_text_fallback(data, max_pages=6)
+                except Exception:
+                    text = ""
+            if text.strip():
+                return {
+                    "markdown": text,
+                    "metadata": {"filename": name, "fallback": "pdf-text"},
+                    "warnings": [f"Kordoc parse failed; used PDF text fallback: {exc}"],
+                }
+        raise HTTPException(status_code=422, detail=f"{label} could not be parsed by Kordoc: {exc}") from exc
+
+
+def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, Any]:
+    """Parse one upload or a ZIP of supported documents into one markdown payload."""
+
+    name = str(filename or "")
+    if _suffix_of(name) != ".zip":
+        return _parse_single_document_upload(data, name, label)
+
+    max_bytes = settings.max_upload_bytes()
+    members: list[dict[str, str]] = []
+    chunks: list[str] = []
+    warnings: list[str] = []
+    total_uncompressed = 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                member_name = info.filename
+                suffix = _suffix_of(member_name)
+                if suffix not in _SUPPORTED_ARCHIVE_DOC_SUFFIXES:
+                    continue
+                total_uncompressed += int(info.file_size or 0)
+                if total_uncompressed > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"{label} archive contents exceed MAX_UPLOAD_MB ({max_bytes // (1024 * 1024)} MB)",
+                    )
+                if len(members) >= _ARCHIVE_MEMBER_LIMIT:
+                    warnings.append(f"archive member limit reached: {_ARCHIVE_MEMBER_LIMIT}")
+                    break
+                member_bytes = archive.read(info)
+                member_label = _safe_member_label(member_name)
+                try:
+                    parsed = _parse_single_document_upload(member_bytes, member_label, label)
+                except HTTPException as exc:
+                    warnings.append(f"{member_label}: {exc.detail}")
+                    continue
+                markdown = str(parsed.get("markdown") or "").strip()
+                if not markdown:
+                    warnings.append(f"{member_label}: empty parse result")
+                    continue
+                members.append({"filename": member_label, "suffix": suffix})
+                chunks.append(f"# ZIP member: {member_label}\n\n{markdown}")
+                warnings.extend(str(x) for x in (parsed.get("warnings") or []) if str(x).strip())
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=422, detail=f"{label} is not a readable ZIP archive") from exc
+
+    if not chunks:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label} ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT job-description files",
+        )
+    return {
+        "markdown": "\n\n---\n\n".join(chunks),
+        "metadata": {"filename": name, "archive": True, "members": members},
+        "warnings": warnings,
+    }
 
 
 def _sanitize_request_openai_key(value: str | None) -> str:
@@ -1018,15 +1121,8 @@ async def parse_jd_review_endpoint(jd_file: UploadFile = File(...)) -> dict:
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
     _check_upload_size(data, "jd_file")
-    try:
-        parsed = parse_with_kordoc(
-            data,
-            filename=jd_file.filename or "",
-            ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
-        )
-        return structure_job_description(parsed, filename=jd_file.filename or "")
-    except KordocParseError as exc:
-        raise HTTPException(status_code=422, detail=f"Kordoc parse failed: {exc}") from exc
+    parsed = _parse_upload_document(data, jd_file.filename or "", "jd_file")
+    return structure_job_description(parsed, filename=jd_file.filename or "")
 
 
 @app.post("/api/notice/parse-review")
@@ -1038,19 +1134,8 @@ async def parse_notice_review_endpoint(notice_file: UploadFile = File(...)) -> d
         raise HTTPException(status_code=400, detail="notice_file is empty")
     _check_upload_size(data, "notice_file")
     filename = notice_file.filename or ""
-    name = filename.lower()
-    try:
-        if name.endswith(".txt"):
-            parsed = {"markdown": data.decode("utf-8", errors="ignore")}
-        else:
-            parsed = parse_with_kordoc(
-                data,
-                filename=filename,
-                ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
-            )
-        return structure_job_notice(parsed, filename=filename)
-    except KordocParseError as exc:
-        raise HTTPException(status_code=422, detail=f"Kordoc notice parse failed: {exc}") from exc
+    parsed = _parse_upload_document(data, filename, "notice_file")
+    return structure_job_notice(parsed, filename=filename)
 
 
 @app.post("/api/jd/strategy/upload")
@@ -1078,27 +1163,9 @@ async def jd_strategy_upload(
         if not data:
             raise HTTPException(status_code=400, detail=f"{label} is empty")
         _check_upload_size(data, label)
-        if name.endswith(".txt"):
-            return data.decode("utf-8", errors="ignore"), data, name
-        try:
-            parsed = parse_with_kordoc(
-                data,
-                filename=upload.filename or "",
-                ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
-            )
-            text = str(parsed.get("markdown") or "")
-            if text.strip():
-                return text, data, name
-        except KordocParseError:
-            if not name.endswith(".pdf"):
-                raise HTTPException(status_code=422, detail=f"{label} could not be parsed by Kordoc")
-        if name.endswith(".pdf"):
-            text = extract_pdf_text(data)
-            if not text.strip():
-                try:
-                    text = extract_pdf_text_fallback(data, max_pages=6)
-                except Exception:
-                    text = ""
+        parsed = _parse_upload_document(data, upload.filename or "", label)
+        text = str(parsed.get("markdown") or "")
+        if text.strip():
             return text, data, name
         raise HTTPException(status_code=400, detail=f"{label} could not be parsed")
 
