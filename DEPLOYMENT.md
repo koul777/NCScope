@@ -75,6 +75,7 @@ locally.
 Recommended defaults:
 
 ```text
+NCSCOPE_LOAD_DOTENV=false
 NCS_MCP_URL=<required>
 MAX_UPLOAD_MB=30
 KORDOC_OCR=true
@@ -96,7 +97,7 @@ ENABLE_LEGACY_NCS_API=true
 
 ```powershell
 python -m pytest -q
-python -m py_compile app\main.py app\settings.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py
+python -m py_compile app\main.py app\settings.py app\repository.py app\models.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py
 ```
 
 Real-document benchmark:
@@ -114,3 +115,6 @@ Expected MVP behavior:
 - If exact detail-class matching fails, the app returns manual NCS unit suggestions instead of generating ungrounded questions.
 - KSA rows have `factorSource=ncs-mcp` and `ksaStatus=official`.
 - Legacy NCS API endpoints return 410 unless explicitly enabled.
+- In production, pass secrets through the platform environment. Do not rely on
+  automatic `.env` loading unless `NCSCOPE_LOAD_DOTENV=true` is intentionally
+  set for a trusted single-process local environment.

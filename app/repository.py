@@ -10,6 +10,7 @@ from sqlalchemy import desc, select
 
 from app.db import SessionLocal
 from app.models import (
+    AuditLog,
     Attachment,
     Branch,
     DocumentParsed,
@@ -282,6 +283,27 @@ def save_match_result(posting_id: int, report: dict) -> None:
             model_version=report.get("model_version", "mvp-0.1"),
         )
         s.add(rec)
+
+
+def record_audit_log(
+    *,
+    actor_id: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    ip_hash: str = "",
+) -> int:
+    with db_session() as s:
+        rec = AuditLog(
+            actor_id=str(actor_id or "anonymous")[:128],
+            action=str(action or "")[:64],
+            resource_type=str(resource_type or "")[:64],
+            resource_id=str(resource_id or "")[:128],
+            ip_hash=(str(ip_hash or "")[:128] or None),
+        )
+        s.add(rec)
+        s.flush()
+        return int(rec.id)
 
 
 def upsert_institution(

@@ -37,12 +37,15 @@ def test_jd_strategy_upload_no_nameerror_regression(monkeypatch, mocker):
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
-    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["총무"]}}
+    jd_text = "총무 및 자산관리 업무"
+    structured = {"document": {"markdown": jd_text}, "fields": {"ncs_detail_candidates": ["총무"]}}
+    session = main._create_review_session(jd_text.encode("utf-8"), structured, "jd.txt")
+    review = {**structured, "review_confirmed": True, "review_session_id": session["id"], "review_session": session}
 
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/jd/strategy/upload",
-            files={"jd_file": ("jd.txt", "총무 및 자산관리 업무", "text/plain")},
+            files={"jd_file": ("jd.txt", jd_text, "text/plain")},
             data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
         )
 

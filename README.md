@@ -225,6 +225,14 @@ python -m ncs_mcp.server --transport streamable-http --host 127.0.0.1 --port 877
 
 ## NCScope 실행
 
+로컬에서는 `.env.example`을 `.env`로 복사한 뒤 필요한 값을 채울 수 있습니다.
+
+```powershell
+Copy-Item .env.example .env
+```
+
+보안상 FastAPI 앱 import 시점에는 `.env`를 자동으로 읽지 않습니다. 로컬 실행은 `.\run_local.ps1`을 권장합니다. 이 스크립트는 현재 프로세스에만 `.env` 값을 읽어 들이며, 키 원문은 출력하지 않습니다.
+
 ```powershell
 $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
 $env:MAX_UPLOAD_MB="30"
@@ -241,6 +249,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 
 | 변수 | 필수 여부 | 기본값 | 설명 |
 | --- | --- | --- | --- |
+| `NCSCOPE_LOAD_DOTENV` | 선택 | `false` | 앱 import 시 `.env` 자동 로드 여부. 배포/테스트 기본값은 비활성화 |
 | `NCS_MCP_URL` | 필수 | 없음 | NCS_MCP Streamable HTTP 주소 |
 | `OPENAI_API_KEY` | 선택 | 없음 | 서버 기본 OpenAI 키 |
 | `OPENAI_MODEL` | 선택 | `gpt-4o-mini` | 일반 모델 설정 |
@@ -339,13 +348,13 @@ JSON:
 ## 검증 방법
 
 ```powershell
-python -m py_compile app\main.py app\settings.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py
+python -m py_compile app\main.py app\settings.py app\repository.py app\models.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py
 python -m pytest -q
 ```
 
 현재 검증 결과:
 
-- `python -m pytest -q` → 160 passed
+- `python -m pytest -q` → 165 passed
 - `py_compile` → passed
 - `npm ci` → passed
 - Kordoc 최신 npm 버전 `4.2.7` 확인
@@ -361,8 +370,8 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 
 최신 리포트:
 
-- `reports/alio_jd_benchmark_20260723_052143.md`
-- `reports/alio_jd_benchmark_20260723_052143.csv`
+- `reports/alio_jd_benchmark_20260723_053926.md`
+- `reports/alio_jd_benchmark_20260723_053926.csv`
 
 관찰 결과:
 

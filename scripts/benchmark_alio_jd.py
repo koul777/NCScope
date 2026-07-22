@@ -185,8 +185,22 @@ def parse_benchmark_document(data: bytes, filename: str, max_bytes: int) -> dict
                     warnings.append(f"archive member limit reached: {ARCHIVE_MEMBER_LIMIT}")
                     break
                 member_label = _safe_member_label(info.filename)
+                if info.flag_bits & 0x1:
+                    warnings.append(f"{member_label}: encrypted ZIP member is not supported")
+                    continue
                 try:
-                    parsed = parse_with_kordoc(archive.read(info), filename=member_label, ocr=False)
+                    member_bytes = archive.read(info)
+                except (RuntimeError, OSError, zipfile.BadZipFile) as exc:
+                    warnings.append(f"{member_label}: ZIP member could not be read: {exc}")
+                    continue
+                try:
+                    if member_suffix == ".txt":
+                        parsed = {
+                            "markdown": member_bytes.decode("utf-8", errors="ignore"),
+                            "metadata": {"filename": member_label},
+                        }
+                    else:
+                        parsed = parse_with_kordoc(member_bytes, filename=member_label, ocr=False)
                 except KordocParseError as exc:
                     warnings.append(f"{member_label}: {exc}")
                     continue

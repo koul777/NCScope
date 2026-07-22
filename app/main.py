@@ -3,16 +3,19 @@
 import asyncio
 import csv
 import functools
+import hashlib
 import io
 import json
 import os
 import re
+import secrets
 import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.init_db import init_db
@@ -20,6 +23,7 @@ from app.repository import create_posting as repo_create_posting
 from app.repository import fetch_posting_for_report, get_posting as repo_get_posting
 from app.repository import list_postings as repo_list_postings
 from app.repository import recommend_postings as repo_recommend_postings
+from app.repository import record_audit_log
 from app.repository import save_match_result
 from app.schemas import AiInterviewRequest, AiInterviewResponse, PostingCreate, ReportCreate, ReportOut
 from app.services.ai_strategy import build_strategy_with_openai, rank_postings_with_openai
@@ -321,6 +325,10 @@ def _check_upload_size(data: bytes, label: str) -> None:
 
 _ARCHIVE_MEMBER_LIMIT = 12
 _SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt"}
+_REVIEW_SESSION_TTL_SEC = 4 * 60 * 60
+_REVIEW_SESSION_MAX = 500
+_REVIEW_SESSION_LOCK = threading.Lock()
+_REVIEW_SESSION_BY_ID: dict[str, dict[str, Any]] = {}
 
 
 def _suffix_of(name: str) -> str:
@@ -391,8 +399,15 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                 if len(members) >= _ARCHIVE_MEMBER_LIMIT:
                     warnings.append(f"archive member limit reached: {_ARCHIVE_MEMBER_LIMIT}")
                     break
-                member_bytes = archive.read(info)
                 member_label = _safe_member_label(member_name)
+                if info.flag_bits & 0x1:
+                    warnings.append(f"{member_label}: encrypted ZIP member is not supported")
+                    continue
+                try:
+                    member_bytes = archive.read(info)
+                except (RuntimeError, OSError, zipfile.BadZipFile) as exc:
+                    warnings.append(f"{member_label}: ZIP member could not be read: {exc}")
+                    continue
                 try:
                     parsed = _parse_single_document_upload(member_bytes, member_label, label)
                 except HTTPException as exc:
@@ -418,6 +433,119 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
         "metadata": {"filename": name, "archive": True, "members": members},
         "warnings": warnings,
     }
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data or b"").hexdigest()
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _request_ip_hash(request: Request | None) -> str:
+    host = ""
+    try:
+        host = str((request.client.host if request and request.client else "") or "").strip()
+    except Exception:
+        host = ""
+    if not host:
+        return ""
+    return _sha256_text(host)
+
+
+def _record_audit_event(
+    request: Request | None,
+    *,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+) -> None:
+    try:
+        record_audit_log(
+            actor_id="anonymous",
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            ip_hash=_request_ip_hash(request),
+        )
+    except Exception:
+        return
+
+
+def _prune_review_sessions(now: float | None = None) -> None:
+    current = float(now if now is not None else time.time())
+    expired = [
+        session_id
+        for session_id, session in _REVIEW_SESSION_BY_ID.items()
+        if current - float(session.get("created_at", 0.0) or 0.0) > _REVIEW_SESSION_TTL_SEC
+    ]
+    for session_id in expired:
+        _REVIEW_SESSION_BY_ID.pop(session_id, None)
+    if len(_REVIEW_SESSION_BY_ID) <= _REVIEW_SESSION_MAX:
+        return
+    oldest = sorted(
+        _REVIEW_SESSION_BY_ID.items(),
+        key=lambda item: float(item[1].get("created_at", 0.0) or 0.0),
+    )
+    for session_id, _ in oldest[: max(0, len(_REVIEW_SESSION_BY_ID) - _REVIEW_SESSION_MAX)]:
+        _REVIEW_SESSION_BY_ID.pop(session_id, None)
+
+
+def _public_review_session(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": session["id"],
+        "document_sha256": session["document_sha256"],
+        "markdown_sha256": session["markdown_sha256"],
+        "filename": session.get("filename", ""),
+        "created_at": session["created_at"],
+        "expires_at": session["created_at"] + _REVIEW_SESSION_TTL_SEC,
+    }
+
+
+def _create_review_session(upload_bytes: bytes, structured: dict[str, Any], filename: str) -> dict[str, Any]:
+    document = structured.get("document") if isinstance(structured.get("document"), dict) else {}
+    markdown = str(document.get("markdown") or "")
+    session = {
+        "id": secrets.token_urlsafe(24),
+        "filename": str(filename or ""),
+        "created_at": time.time(),
+        "document_sha256": _sha256_bytes(upload_bytes),
+        "markdown_sha256": _sha256_text(markdown),
+        "markdown": markdown,
+    }
+    with _REVIEW_SESSION_LOCK:
+        _prune_review_sessions(session["created_at"])
+        _REVIEW_SESSION_BY_ID[session["id"]] = session
+    return _public_review_session(session)
+
+
+def _validate_review_session(review_payload: dict[str, Any], upload_bytes: bytes) -> dict[str, Any]:
+    review_session_payload = review_payload.get("review_session")
+    if not isinstance(review_session_payload, dict):
+        review_session_payload = {}
+    session_id = str(
+        review_payload.get("review_session_id")
+        or review_session_payload.get("id")
+        or ""
+    ).strip()
+    if not session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="jd_review_json.review_session_id is required; call /api/jd/parse-review before generation",
+        )
+    with _REVIEW_SESSION_LOCK:
+        _prune_review_sessions()
+        session = dict(_REVIEW_SESSION_BY_ID.get(session_id) or {})
+    if not session:
+        raise HTTPException(status_code=409, detail="jd_review_json.review_session_id is expired or unknown")
+    if session.get("document_sha256") != _sha256_bytes(upload_bytes):
+        raise HTTPException(status_code=409, detail="jd_review_json review session does not match uploaded jd_file")
+    payload_document = review_payload.get("document") if isinstance(review_payload.get("document"), dict) else {}
+    payload_markdown = str(payload_document.get("markdown") or "")
+    if payload_markdown and _sha256_text(payload_markdown) != session.get("markdown_sha256"):
+        raise HTTPException(status_code=400, detail="jd_review_json.document.markdown does not match server parse session")
+    return session
 
 
 def _sanitize_request_openai_key(value: str | None) -> str:
@@ -1114,7 +1242,7 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
 
 
 @app.post("/api/jd/parse-review")
-async def parse_jd_review_endpoint(jd_file: UploadFile = File(...)) -> dict:
+async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(...)) -> dict:
     """Parse a JD with Kordoc and return editable human-review fields."""
 
     data = await jd_file.read()
@@ -1122,7 +1250,17 @@ async def parse_jd_review_endpoint(jd_file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
     _check_upload_size(data, "jd_file")
     parsed = _parse_upload_document(data, jd_file.filename or "", "jd_file")
-    return structure_job_description(parsed, filename=jd_file.filename or "")
+    structured = structure_job_description(parsed, filename=jd_file.filename or "")
+    review_session = _create_review_session(data, structured, jd_file.filename or "")
+    _record_audit_event(
+        request,
+        action="jd_parse_review",
+        resource_type="jd_review_session",
+        resource_id=review_session["id"],
+    )
+    structured["review_session_id"] = review_session["id"]
+    structured["review_session"] = review_session
+    return structured
 
 
 @app.post("/api/notice/parse-review")
@@ -1140,6 +1278,7 @@ async def parse_notice_review_endpoint(notice_file: UploadFile = File(...)) -> d
 
 @app.post("/api/jd/strategy/upload")
 async def jd_strategy_upload(
+    request: Request,
     jd_file: UploadFile = File(...),
     notice_file: UploadFile | None = File(default=None),
     strengths: str = Form(default=""),
@@ -1181,7 +1320,10 @@ async def jd_strategy_upload(
             raise HTTPException(status_code=400, detail=f"jd_review_json is invalid: {exc}") from exc
 
     reviewed_fields = review_payload.get("fields") if isinstance(review_payload.get("fields"), dict) else {}
-    reviewed_markdown = str((review_payload.get("document") or {}).get("markdown", "")).strip()
+    review_session: dict[str, Any] | None = None
+    if review_payload.get("review_confirmed") is True:
+        review_session = _validate_review_session(review_payload, jd_bytes)
+    reviewed_markdown = str((review_session or {}).get("markdown") or "").strip()
     if reviewed_markdown:
         jd_text = reviewed_markdown
     duty_text_clean = str(duty_text or "").strip()
@@ -1592,6 +1734,14 @@ async def jd_strategy_upload(
             target_count=24,
         )
 
+    if review_session:
+        _record_audit_event(
+            request,
+            action="jd_strategy_generate",
+            resource_type="jd_review_session",
+            resource_id=str(review_session.get("id") or ""),
+        )
+
     return {
         "filename": jd_file.filename,
         "notice_filename": notice_file.filename if notice_file else "",
@@ -1602,7 +1752,17 @@ async def jd_strategy_upload(
         "qualification_text_preview": qualification_text_clean[:1200],
         "evaluation_text_preview": evaluation_text_clean[:1200],
         "jd_review_confirmed": review_payload.get("review_confirmed") is True,
-        "jd_review": review_payload if review_payload else None,
+        "jd_review_session_id": (review_session or {}).get("id", ""),
+        "jd_review_document_sha256": (review_session or {}).get("document_sha256", ""),
+        "jd_review": (
+            {
+                "review_confirmed": review_payload.get("review_confirmed") is True,
+                "review_session_id": (review_session or {}).get("id", review_payload.get("review_session_id", "")),
+                "fields": reviewed_fields,
+            }
+            if review_payload
+            else None
+        ),
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,
@@ -1639,7 +1799,7 @@ async def jd_strategy_upload(
 
 
 @app.post("/api/questions/generate-from-text")
-async def generate_questions_from_text(payload: dict) -> dict:
+async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     notice_text = str(payload.get("notice_text", "")).strip()
     duty_text = str(payload.get("duty_text", "")).strip()
     evaluation_text = str(payload.get("evaluation_text", "")).strip()
@@ -1767,6 +1927,13 @@ async def generate_questions_from_text(payload: dict) -> dict:
             error_message=f"model_generation_failed: {e}",
             target_count=24,
         )
+
+    _record_audit_event(
+        request,
+        action="manual_ncs_generate",
+        resource_type="selected_ncs",
+        resource_id=_sha256_text(",".join(str(x.get("ncsClCd", "")) for x in ncs_matches)),
+    )
 
     return {
         "input_mode": "manual_text+ncs_click",

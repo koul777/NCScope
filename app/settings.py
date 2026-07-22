@@ -25,7 +25,8 @@ def _load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
-_load_env_file(Path(".env"))
+if os.getenv("NCSCOPE_LOAD_DOTENV", "false").strip().lower() in {"1", "true", "yes", "y"}:
+    _load_env_file(Path(".env"))
 if os.getenv("LOAD_ENV_EXAMPLE", "false").strip().lower() in {"1", "true", "yes", "y"}:
     _load_env_file(Path(".env.example"))
 

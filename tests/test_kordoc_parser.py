@@ -83,3 +83,19 @@ def test_structure_job_description_cleans_detail_candidate_punctuation() -> None
         "간호업무 보조",
         "재원환자 관리",
     ]
+
+
+def test_structure_job_description_cleans_html_table_detail_candidate_punctuation() -> None:
+    markdown = """
+<table>
+<tr><td>세분류</td><td>영상의학 (특화분류)</td><td>임상병리 (특화분류)</td><td>간호업무 보조/</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "영상의학",
+        "임상병리",
+        "간호업무 보조",
+    ]

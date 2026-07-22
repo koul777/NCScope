@@ -45,6 +45,29 @@ def _zip_bytes(files: dict[str, str]) -> bytes:
     return buffer.getvalue()
 
 
+def _mark_zip_encrypted(data: bytes) -> bytes:
+    blob = bytearray(data)
+    local_sig = b"PK\x03\x04"
+    central_sig = b"PK\x01\x02"
+    start = 0
+    while True:
+        idx = blob.find(local_sig, start)
+        if idx < 0:
+            break
+        flags = int.from_bytes(blob[idx + 6 : idx + 8], "little") | 0x1
+        blob[idx + 6 : idx + 8] = flags.to_bytes(2, "little")
+        start = idx + 4
+    start = 0
+    while True:
+        idx = blob.find(central_sig, start)
+        if idx < 0:
+            break
+        flags = int.from_bytes(blob[idx + 8 : idx + 10], "little") | 0x1
+        blob[idx + 8 : idx + 10] = flags.to_bytes(2, "little")
+        start = idx + 4
+    return bytes(blob)
+
+
 def test_parse_review_returns_detail_candidates(mocker):
     mocker.patch("app.main.parse_with_kordoc", return_value={"markdown": JD_TEXT})
     mocker.patch(
@@ -80,6 +103,30 @@ def test_parse_review_accepts_zip_with_supported_jd_text():
     assert "ZIP member: job_description.txt" in body["document"]["markdown"]
 
 
+def test_parse_review_rejects_encrypted_zip_as_422():
+    data = _mark_zip_encrypted(_zip_bytes({"job_description.txt": JD_TEXT}))
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("jd.zip", data, "application/zip")},
+        )
+
+    assert resp.status_code == 422
+    assert "no parseable" in resp.text or "encrypted" in resp.text
+
+
+def _confirmed_review_payload(fields: dict, confirmed: object = True, jd_text: str = JD_TEXT) -> dict:
+    structured = {"document": {"markdown": jd_text}, "fields": fields}
+    session = main._create_review_session(jd_text.encode("utf-8"), structured, "jd.txt")
+    return {
+        **structured,
+        "review_confirmed": confirmed,
+        "review_session_id": session["id"],
+        "review_session": session,
+    }
+
+
 def test_notice_parse_review_prefills_duty_and_evaluation_text():
     notice = (
         "## 담당업무\n"
@@ -104,7 +151,7 @@ def test_notice_parse_review_prefills_duty_and_evaluation_text():
 def test_mcp_only_requires_human_review_confirmation(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)
-    review = {"review_confirmed": False, "fields": {"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}}
+    review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}, confirmed=False)
 
     with TestClient(main.app) as client:
         resp = client.post(
@@ -120,7 +167,7 @@ def test_mcp_only_requires_human_review_confirmation(monkeypatch, mocker):
 def test_mcp_only_rejects_truthy_string_confirmation(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)
-    review = {"review_confirmed": "false", "fields": {"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}}
+    review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}, confirmed="false")
 
     with TestClient(main.app) as client:
         resp = client.post(
@@ -133,10 +180,26 @@ def test_mcp_only_rejects_truthy_string_confirmation(monkeypatch, mocker):
     assert "review_confirmed" in resp.text
 
 
+def test_mcp_only_requires_server_review_session(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}}
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+        )
+
+    assert resp.status_code == 400
+    assert "review_session_id" in resp.text
+
+
 def test_mcp_only_requires_reviewed_detail_candidates(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)
-    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": []}}
+    review = _confirmed_review_payload({"ncs_detail_candidates": []})
 
     with TestClient(main.app) as client:
         resp = client.post(
@@ -154,7 +217,7 @@ def test_mcp_only_does_not_autofill_reviewed_detail_candidates(monkeypatch, mock
     _patch_mcp_upload_common(mocker)
     mocker.patch("app.main.extract_detail_categories_from_jd", return_value=["\uacbd\uc601\uae30\ud68d"])
     search = mocker.patch("app.main.search_units_by_detail", return_value=[])
-    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": []}}
+    review = _confirmed_review_payload({"ncs_detail_candidates": []})
 
     with TestClient(main.app) as client:
         resp = client.post(
@@ -180,7 +243,7 @@ def test_mcp_only_returns_manual_suggestions_when_detail_has_no_exact_match(monk
         "isExactDetailMatch": False,
     }
     suggest = mocker.patch("app.main.suggest_units_by_text", return_value=[suggestion])
-    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["\uc784\uc0c1\ubcd1\ub9ac"]}}
+    review = _confirmed_review_payload({"ncs_detail_candidates": ["\uc784\uc0c1\ubcd1\ub9ac"]})
 
     with TestClient(main.app) as client:
         resp = client.post(
@@ -219,7 +282,7 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
-    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}}
+    review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]})
     request_key = "sk-test-ncscope-request-key"
 
     with TestClient(main.app) as client:
@@ -248,7 +311,7 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
 def test_upload_rejects_invalid_request_openai_key(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)
-    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]}}
+    review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]})
 
     with TestClient(main.app) as client:
         resp = client.post(

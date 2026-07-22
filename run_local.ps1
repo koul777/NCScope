@@ -2,6 +2,23 @@ $ErrorActionPreference = "Stop"
 
 Set-Location $PSScriptRoot
 
+$envFile = Join-Path $PSScriptRoot ".env"
+if (Test-Path -LiteralPath $envFile) {
+  Get-Content -LiteralPath $envFile -Encoding UTF8 | ForEach-Object {
+    $line = $_.Trim()
+    if (-not $line -or $line.StartsWith("#") -or $line -notmatch "=") {
+      return
+    }
+    $key, $value = $line -split "=", 2
+    $key = $key.Trim().TrimStart([char]0xFEFF)
+    $value = $value.Trim()
+    if ($key -and $value -and -not [Environment]::GetEnvironmentVariable($key, "Process")) {
+      [Environment]::SetEnvironmentVariable($key, $value, "Process")
+    }
+  }
+  Write-Host "Loaded local .env into process environment."
+}
+
 # Kill existing process on 8015 if any
 $lines = netstat -ano | Select-String ":8015"
 if ($lines) {

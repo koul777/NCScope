@@ -12,8 +12,8 @@ Verified the MVP path:
 
 ## NCScope Evidence
 
-- `python -m pytest -q`: 160 passed, 2 FastAPI deprecation warnings.
-- `python -m py_compile app\main.py app\settings.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py`: passed.
+- `python -m pytest -q`: 165 passed, 2 FastAPI deprecation warnings.
+- `python -m py_compile app\main.py app\settings.py app\repository.py app\models.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py`: passed.
 - API smoke with confirmed detail `경영기획`:
   - HTTP status: 200
   - `ncs_source`: `ncs-mcp+ai-rerank`
@@ -22,7 +22,9 @@ Verified the MVP path:
   - NCS matches: 4
   - KSA rows: 12
   - KSA factor source: `ncs-mcp`
-  - Generated interview questions: 5
+  - Generated interview questions: 10
+  - `jd_review_session_id`: present
+  - Audit event for the confirmed review/generation path: recorded without API key or document body.
 - Direct MCP smoke:
   - `search_units_by_detail(["경영기획"], max_units=3)`: 3 units.
   - `get_ksa_by_units(units[:1], max_factors_per_unit=3)`: 3 official KSA rows.
@@ -39,6 +41,8 @@ Verified the MVP path:
   - strict detail matching excludes small-category-only matches
   - legacy `/api/ncs/sclass/ksa` default -> 410
   - oversized upload rejected before Kordoc -> 413
+  - encrypted ZIP member -> 422 instead of server error
+  - confirmed generation requires a server-created `review_session_id`
 
 ## ALIO JD Benchmark Evidence
 
@@ -51,8 +55,8 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 
 Latest report:
 
-- `reports\alio_jd_benchmark_20260723_052143.md`
-- `reports\alio_jd_benchmark_20260723_052143.csv`
+- `reports\alio_jd_benchmark_20260723_053926.md`
+- `reports\alio_jd_benchmark_20260723_053926.csv`
 
 Results:
 
@@ -64,8 +68,8 @@ Results:
 - Notice pages with evaluation text candidates: 9
 - Detail-no-match documents with manual NCS suggestions: 2
 - Total detail candidates: 27
-- Average parse time: 642 ms
-- Three ZIP attachments were classified as unsupported because the MVP scope is PDF/HWP/HWPX/DOCX.
+- Average parse time: 638 ms
+- ZIP attachments are parsed in memory when they contain supported PDF/HWP/HWPX/DOCX/TXT files.
 
 Observed detail candidates:
 
@@ -80,7 +84,6 @@ Known benchmark finding:
 - Documents without an NCS classification table correctly require human detail entry in the review step.
 - Table-label noise such as `능력단위` and `주요사업` is now filtered from detail-class candidates.
 - When exact detail-class matching fails, NCScope now returns manual-selection suggestions instead of generating ungrounded interview questions.
-- ZIP attachments are parsed in memory when they contain supported PDF/HWP/HWPX/DOCX/TXT files.
 - Gap evidence: `reports\ncs_mcp_detail_gap_20260723.md`
 
 ## NCS_MCP Serving DB Evidence
@@ -106,7 +109,7 @@ Release hashes:
 - DB SHA-256: `F9BB59B8853E8F69DC4698028EC347ED9BD74D26133FBCEB031B05FD90F89B23`
 - Manifest SHA-256: `1BC90A36BBE8CDBEC2A5162EAA1AECC48AC1ED3FA0334864B078960176A20368`
 
-GitHub draft release:
+GitHub public release:
 
 - Tag: `ncscope-db-v0.1.0-20260723`
 - Assets:
