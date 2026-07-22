@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description
+from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description, structure_job_notice
 from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units, search_units_by_detail
 
 
@@ -52,6 +52,17 @@ def _clean_html_text(value: str) -> str:
     text = html.unescape(re.sub(r"<br\s*/?>", "\n", value or "", flags=re.IGNORECASE))
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _html_to_markdownish(value: str) -> str:
+    text = re.sub(r"(?is)<(script|style).*?</\1>", "\n", value or "")
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|li|tr|td|th|h[1-6])>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
 
 
 def fetch_text(client: httpx.Client, url: str, referer: str = ALIO_LIST_URL) -> str:
@@ -168,6 +179,10 @@ def benchmark_one(
         "markdown_len": 0,
         "detail_candidates": "",
         "detail_count": 0,
+        "notice_duty_chars": 0,
+        "notice_eval_chars": 0,
+        "notice_has_duty": False,
+        "notice_has_eval": False,
         "mcp_units": 0,
         "mcp_ksa": 0,
         "status": "unknown",
@@ -178,6 +193,14 @@ def benchmark_one(
         page_meta = extract_detail_metadata(detail_html, page)
         row["org"] = page_meta.org
         row["title"] = page_meta.title
+        notice_review = structure_job_notice({"markdown": _html_to_markdownish(detail_html)}, filename=f"alio-{page.idx}.html")
+        notice_fields = notice_review.get("fields", {}) if isinstance(notice_review.get("fields"), dict) else {}
+        notice_duty = str(notice_fields.get("duty_text") or "").strip()
+        notice_eval = str(notice_fields.get("evaluation_text") or "").strip()
+        row["notice_duty_chars"] = len(notice_duty)
+        row["notice_eval_chars"] = len(notice_eval)
+        row["notice_has_duty"] = bool(notice_duty)
+        row["notice_has_eval"] = bool(notice_eval)
         attachments = extract_jd_attachments(detail_html)
         if not attachments:
             row["status"] = "no_jd_attachment"
@@ -235,6 +258,10 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         "markdown_len",
         "detail_count",
         "detail_candidates",
+        "notice_duty_chars",
+        "notice_eval_chars",
+        "notice_has_duty",
+        "notice_has_eval",
         "mcp_units",
         "mcp_ksa",
         "url",
@@ -251,6 +278,8 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
     with_detail = ok + detail_no_mcp
     parsed = sum(1 for row in rows if row.get("status") in {"ok", "detail_no_mcp_match", "parsed_no_detail"})
     details = sum(int(row.get("detail_count") or 0) for row in rows)
+    notice_duty_count = sum(1 for row in rows if row.get("notice_has_duty"))
+    notice_eval_count = sum(1 for row in rows if row.get("notice_has_eval"))
     avg_parse = int(sum(int(row.get("parse_ms") or 0) for row in rows if row.get("parse_ms")) / max(1, parsed))
     lines = [
         f"# ALIO JD Benchmark - {stamp}",
@@ -261,19 +290,22 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         f"- Parsed documents: {parsed}",
         f"- Documents with detail candidates: {with_detail}",
         f"- Documents with detail candidates but no MCP match: {detail_no_mcp}",
+        f"- Notice pages with duty text candidates: {notice_duty_count}",
+        f"- Notice pages with evaluation text candidates: {notice_eval_count}",
         f"- Total detail candidates: {details}",
         f"- Average parse time: {avg_parse} ms",
         f"- MCP URL configured: {bool(os.getenv('NCS_MCP_URL', '').strip())}",
         "",
-        "| idx | status | attachment | parse_ms | detail candidates | MCP units | MCP KSA |",
-        "| --- | --- | --- | ---: | --- | ---: | ---: |",
+        "| idx | status | attachment | parse_ms | detail candidates | notice duty chars | notice eval chars | MCP units | MCP KSA |",
+        "| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         detail = str(row.get("detail_candidates") or "").replace("|", "/")
         attachment = str(row.get("attachment") or "").replace("|", "/")
         lines.append(
             f"| {row.get('idx')} | {row.get('status')} | {attachment} | "
-            f"{row.get('parse_ms') or 0} | {detail} | {row.get('mcp_units') or 0} | {row.get('mcp_ksa') or 0} |"
+            f"{row.get('parse_ms') or 0} | {detail} | {row.get('notice_duty_chars') or 0} | "
+            f"{row.get('notice_eval_chars') or 0} | {row.get('mcp_units') or 0} | {row.get('mcp_ksa') or 0} |"
         )
     lines.extend(["", f"CSV: `{csv_path}`", ""])
     md_path.write_text("\n".join(lines), encoding="utf-8")

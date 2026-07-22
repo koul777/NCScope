@@ -54,3 +54,17 @@ def test_structure_job_notice_extracts_duty_and_evaluation_windows() -> None:
     assert "경영계획 수립" in result["fields"]["duty_text"]
     assert "문제해결능력" in result["fields"]["evaluation_text"]
     assert "기타사항" not in result["fields"]["evaluation_text"]
+
+
+def test_structure_job_description_filters_detail_label_noise() -> None:
+    markdown = """
+| 항목 | 내용 |
+| --- | --- |
+| 세분류 | 원자력발전설비운영 |
+| 능력단위 | 원자력 발전설비 운전 |
+| 주요사업 | 원자력 발전 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["원자력발전설비운영"]

@@ -6,6 +6,8 @@ NCScope는 직무기술서 파일을 Kordoc으로 파싱하고, 사람이 세분
 
 ![NCScope 화면](docs/images/ncscope-home.png)
 
+NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 공공서비스형 정보 구조만 참고했으며, 공식 로고·아이콘·이미지·사이트 레이아웃을 복제하지 않는 독자 UI입니다.
+
 화면은 네 단계로 구성됩니다.
 
 1. API 설정
@@ -41,6 +43,7 @@ NCS_MCP에서 공식 능력단위·KSA 조회
 - 주질문, 꼬리질문, 평가포인트, NCS 매칭 결과, KSA 근거 제공
 - OpenAI API key를 화면에서 요청 단위로 입력 가능
 - 원본 12.6GB NCS DB와 `NCS_DB.xlsx`를 GitHub에 포함하지 않는 경량 배포 구조
+- 공식 NCS 사이트 자산을 사용하지 않는 비공식 독자 인터페이스
 
 ## 사용 방법
 
@@ -325,7 +328,7 @@ python -m pytest -q
 
 현재 검증 결과:
 
-- `python -m pytest -q` → 154 passed
+- `python -m pytest -q` → 155 passed
 - `py_compile` → passed
 - `npm ci` → passed
 - Kordoc 최신 npm 버전 `4.2.7` 확인
@@ -336,21 +339,22 @@ python -m pytest -q
 
 ```powershell
 $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
-python scripts\benchmark_alio_jd.py --limit 5 --include-ksa
+python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 ```
 
 최신 리포트:
 
-- `reports/alio_jd_benchmark_20260723_042758.md`
-- `reports/alio_jd_benchmark_20260723_042758.csv`
+- `reports/alio_jd_benchmark_20260723_045837.md`
+- `reports/alio_jd_benchmark_20260723_045837.csv`
 
 관찰 결과:
 
-- 최근 JOB-ALIO 공고 5건 검사
-- 문서 4건 파싱 성공
-- 세분류 후보가 추출된 문서 2건
-- 세분류는 추출됐지만 현재 MCP DB와 매칭되지 않은 문서 1건
-- ZIP 첨부 1건은 MVP 범위 밖으로 분류
+- 최근 JOB-ALIO 공고 10건 검사
+- 문서 6건 파싱 성공
+- 세분류 후보가 추출된 문서 4건
+- 세분류는 추출됐지만 현재 MCP DB와 매칭되지 않은 문서 2건
+- 공고문 본문에서 담당업무 후보 10건, 평가항목 후보 9건 추출
+- ZIP 첨부 3건은 MVP 범위 밖으로 분류
 
 ## Docker 배포
 

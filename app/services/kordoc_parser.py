@@ -154,7 +154,26 @@ def _looks_like_detail_candidate(value: str) -> bool:
     if not text:
         return False
     key = _norm(text)
-    if not key or key in {"대분류", "중분류", "소분류", "세분류", "분류체계"}:
+    non_values = {
+        "대분류",
+        "중분류",
+        "소분류",
+        "세분류",
+        "분류체계",
+        "ncs분류체계",
+        "주요사업",
+        "기관주요사업",
+        "기관주요업무",
+        "능력단위",
+        "능력단위명",
+        "능력단위코드",
+        "직무수행내용",
+        "필요지식",
+        "필요기술",
+        "직무수행태도",
+        "관련자격",
+    }
+    if not key or key in {_norm(x) for x in non_values}:
         return False
     if _section_for_label(text) and _section_for_label(text) != "ncs_detail":
         return False

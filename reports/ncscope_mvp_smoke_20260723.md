@@ -10,17 +10,19 @@ Verified the MVP path:
 4. Compact NCS_MCP serving DB deployment policy.
 5. Real ALIO job-description download and parsing benchmark.
 
-## Payroll2 Evidence
+## NCScope Evidence
 
-- `python -m pytest -q`: 150 passed, 2 FastAPI deprecation warnings.
+- `python -m pytest -q`: 155 passed, 2 FastAPI deprecation warnings.
 - `python -m py_compile app\main.py app\settings.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py`: passed.
 - API smoke with confirmed detail `경영기획`:
   - HTTP status: 200
-  - `ncs_source`: `ncs-mcp+rerank`
+  - `ncs_source`: `ncs-mcp+ai-rerank`
+  - `openai_key_source`: `env`
   - `jd_review_confirmed`: true
   - NCS matches: 4
   - KSA rows: 12
   - KSA factor source: `ncs-mcp`
+  - Generated interview questions: 5
 - Direct MCP smoke:
   - `search_units_by_detail(["경영기획"], max_units=3)`: 3 units.
   - `get_ksa_by_units(units[:1], max_factors_per_unit=3)`: 3 official KSA rows.
@@ -44,33 +46,38 @@ Command:
 
 ```powershell
 $env:NCS_MCP_URL='http://127.0.0.1:8778/mcp'
-python scripts\benchmark_alio_jd.py --limit 5 --include-ksa
+python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 ```
 
 Latest report:
 
-- `reports\alio_jd_benchmark_20260723_042758.md`
-- `reports\alio_jd_benchmark_20260723_042758.csv`
+- `reports\alio_jd_benchmark_20260723_045837.md`
+- `reports\alio_jd_benchmark_20260723_045837.csv`
 
 Results:
 
-- Samples attempted: 5
-- Parsed documents: 4
-- Documents with detail candidates: 2
-- Documents with detail candidates but no MCP match: 1
-- Total detail candidates: 8
-- Average parse time: 520 ms
-- One ZIP attachment was classified as unsupported because the MVP scope is PDF/HWP/HWPX/DOCX.
+- Samples attempted: 10
+- Parsed documents: 6
+- Documents with detail candidates: 4
+- Documents with detail candidates but no MCP match: 2
+- Notice pages with duty text candidates: 10
+- Notice pages with evaluation text candidates: 9
+- Total detail candidates: 11
+- Average parse time: 515 ms
+- Three ZIP attachments were classified as unsupported because the MVP scope is PDF/HWP/HWPX/DOCX.
 
 Observed detail candidates:
 
 - `정보통신기획평가원`: `프로젝트관리`, `정보기술전략`, `정보기술기획`, `IT프로젝트관리`, `총무`, `환경미화`
 - `동남권원자력의학원`: `간호수행`, `간호행정관리`
+- `한국수력원자력`: `원자력발전설비운영`, `원자력발전기계설비정비`
+- `동남권원자력의학원`: `임상병리`
 
 Known benchmark finding:
 
-- `간호수행` and `간호행정관리` were extracted from the ALIO JD, but current strict NCS_MCP search returned 0 units. Treat this as an NCS_MCP alias/coverage follow-up, not a NCScope parsing failure.
+- `간호수행`, `간호행정관리`, and `임상병리` were extracted from ALIO JDs, but current strict NCS_MCP search returned 0 units. Treat this as an NCS_MCP alias/coverage follow-up, not a NCScope parsing failure.
 - Documents without an NCS classification table correctly require human detail entry in the review step.
+- Table-label noise such as `능력단위` and `주요사업` is now filtered from detail-class candidates.
 
 ## NCS_MCP Serving DB Evidence
 

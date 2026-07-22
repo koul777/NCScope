@@ -1,6 +1,0 @@
-﻿idx,status,org,title,attachment,bytes,parse_ms,markdown_len,detail_count,detail_candidates,mcp_units,mcp_ksa,url,error
-302998,ok,정보통신기획평가원,2026년 정보통신기획평가원 직원채용(휴직대체) 공고,별첨 7. 직종별 직무기술서.pdf,101326,568,4930,6,프로젝트관리; 정보기술전략; 정보기술기획; IT프로젝트관리; 총무; 환경미화,30,6,https://job.alio.go.kr/recruitview.do?idx=302998,
-302977,parsed_no_detail,한국수력원자력(주),2026년 제2차 체코원전사업처 기간제근로자(통·번역사) 채용,직무명세서.pdf,151545,509,989,0,,0,0,https://job.alio.go.kr/recruitview.do?idx=302977,
-302984,unsupported_archive,부산대학교병원,"계약직(보건직,간호조무직) 공개채용 모집 공고",직무설명서.zip,281349,0,0,0,,0,0,https://job.alio.go.kr/recruitview.do?idx=302984,archive attachments are not part of the PDF/HWP/HWPX/DOCX MVP parser scope
-302960,detail_no_mcp_match,동남권원자력의학원,[직원채용] 별정직 간호직(외과 전담 간호사) 공개 채용,[붙임7] 직무기술서(간호직).pdf,77129,525,2914,2,간호수행; 간호행정관리,0,0,https://job.alio.go.kr/recruitview.do?idx=302960,
-302959,parsed_no_detail,한국수자원공사,[한국수자원공사] 부산울산경남지역협력단 의령2·창녕2현대화사업팀 특수직(기술관리_건설사업) 채용 공고,직무기술서_부산울산경남지역협력단 특수직.pdf,71934,479,976,0,,0,0,https://job.alio.go.kr/recruitview.do?idx=302959,

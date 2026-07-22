@@ -6,30 +6,36 @@
   <title>NCScope</title>
   <style>
     :root {
-      --bg:#eef4fb;
-      --ink:#10233f;
+      --bg:#f3f7fb;
+      --ink:#132238;
       --muted:#64748b;
-      --line:#d7e2f1;
-      --primary:#005bac;
-      --primary-2:#008bd2;
-      --navy:#012b5d;
+      --line:#d9e4f2;
+      --primary:#3447b8;
+      --primary-2:#0ea5a3;
+      --navy:#172554;
+      --accent:#f59e0b;
       --card:#fff;
       --good:#15803d;
       --warn:#b7791f;
-      --shadow:0 14px 40px rgba(15, 42, 77, .10);
+      --shadow:0 18px 48px rgba(18, 34, 56, .11);
     }
     * { box-sizing:border-box; }
-    body { margin:0; height:100vh; overflow:hidden; background:linear-gradient(180deg,#f8fbff 0%, var(--bg) 58%, #e7eff9 100%); color:var(--ink); font-family:"Segoe UI","Noto Sans KR",sans-serif; letter-spacing:-.02em; }
+    body { margin:0; height:100vh; overflow:hidden; background:
+      radial-gradient(circle at 8% 5%, rgba(14,165,163,.12), transparent 28%),
+      radial-gradient(circle at 92% 8%, rgba(52,71,184,.13), transparent 30%),
+      linear-gradient(180deg,#fbfcff 0%, var(--bg) 58%, #ebf1f8 100%);
+      color:var(--ink); font-family:"Segoe UI","Noto Sans KR",sans-serif; letter-spacing:-.02em; }
     .wrap { width:min(1440px, 98vw); height:100vh; margin:0 auto; padding:10px 14px 12px; display:grid; grid-template-rows:auto 1fr; gap:12px; }
-    .hero { position:relative; overflow:hidden; background:linear-gradient(120deg,var(--navy),#005bac 55%,#1aa0dc); color:#fff; border-radius:18px; padding:0; box-shadow:var(--shadow); }
-    .hero:after { content:""; position:absolute; right:-60px; top:-90px; width:330px; height:330px; border-radius:50%; background:rgba(255,255,255,.14); }
-    .govbar { position:relative; z-index:1; padding:9px 18px; background:rgba(0,0,0,.18); font-size:12px; font-weight:700; display:flex; align-items:center; gap:8px; }
-    .govbar:before { content:""; width:8px; height:8px; border-radius:50%; background:#42d3ff; box-shadow:0 0 0 4px rgba(66,211,255,.18); }
+    .hero { position:relative; overflow:hidden; background:linear-gradient(124deg,var(--navy),#243a8f 52%,#0f8f8d); color:#fff; border-radius:20px; padding:0; box-shadow:var(--shadow); }
+    .hero:before { content:""; position:absolute; left:-90px; bottom:-160px; width:320px; height:320px; border-radius:50%; background:rgba(245,158,11,.16); }
+    .hero:after { content:""; position:absolute; right:-60px; top:-90px; width:330px; height:330px; border-radius:50%; background:rgba(255,255,255,.12); }
+    .govbar { position:relative; z-index:1; padding:9px 18px; background:rgba(2,6,23,.22); font-size:12px; font-weight:700; display:flex; align-items:center; gap:8px; }
+    .govbar:before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 4px rgba(245,158,11,.18); }
     .hero-main { position:relative; z-index:1; display:flex; justify-content:space-between; align-items:flex-end; gap:18px; padding:18px 22px 20px; }
-    .hero h1 { margin:0 0 6px; font-size:30px; line-height:1; font-weight:900; }
-    .hero p { margin:0; opacity:.94; font-size:14px; font-weight:600; }
+    .hero h1 { margin:0 0 8px; font-size:31px; line-height:1; font-weight:900; }
+    .hero p { margin:0; opacity:.94; font-size:14px; font-weight:650; max-width:760px; }
     .hero-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; min-width:310px; }
-    .badge { border:1px solid rgba(255,255,255,.34); background:rgba(255,255,255,.14); border-radius:999px; padding:7px 11px; font-size:12px; font-weight:800; backdrop-filter:blur(4px); }
+    .badge { border:1px solid rgba(255,255,255,.32); background:rgba(255,255,255,.13); border-radius:999px; padding:7px 11px; font-size:12px; font-weight:800; backdrop-filter:blur(4px); }
     .build-tag { margin-top:7px; font-size:12px; opacity:.78; }
     .grid { display:grid; grid-template-columns:minmax(360px,410px) 1fr; gap:12px; min-height:0; }
     .card { background:rgba(255,255,255,.96); border:1px solid rgba(198,213,233,.9); border-radius:18px; padding:16px; min-height:0; overflow:auto; box-shadow:var(--shadow); }
@@ -61,6 +67,9 @@
     .flow-step span { display:block; font-size:11px; color:var(--muted); line-height:1.35; }
     .flow-step.active { border-color:#75b8e8; background:#edf8ff; box-shadow:0 0 0 3px rgba(0,139,210,.10); }
     .flow-step.done { border-color:#a7dfbf; background:#f0fcf5; }
+    .guardrail-box { margin:10px 0 12px; padding:12px 13px; border:1px solid #d9e7f5; border-radius:16px; background:linear-gradient(180deg,#fff,#f7fbff); }
+    .guardrail-box strong { display:block; margin-bottom:5px; font-size:13px; color:#17345c; }
+    .guardrail-box span { display:block; color:var(--muted); font-size:12px; line-height:1.45; }
     .review-panel { margin-top:14px; padding:14px; border:1px solid #cbdcf0; border-radius:16px; background:linear-gradient(180deg,#fbfdff,#f3f8ff); }
     .review-panel-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:6px; }
     .review-panel-head label { margin:0; }
@@ -130,17 +139,17 @@
 <body>
   <div class="wrap">
     <section class="hero">
-      <div class="govbar">국가직무능력표준(NCS) 기반 공정채용 면접질문 생성</div>
+      <div class="govbar">비공식 업무 보조도구 · 공식 NCS 데이터 활용 흐름을 독자 UI로 구현</div>
       <div class="hero-main">
         <div>
           <h1>NCScope</h1>
-          <p>직무기술서 세분류 확인 → 공식 NCS KSA 조회 → 구조화 면접 질문 생성</p>
-          <div class="build-tag">Kordoc · Human Review · NCS_MCP · KSA Evidence</div>
+          <p>직무기술서에서 세분류 후보를 추출하고, 공고문 담당업무·평가항목을 검토한 뒤 KSA 근거 면접 질문을 생성합니다.</p>
+          <div class="build-tag">Original interface · Kordoc parsing · Human Review · NCS_MCP evidence</div>
         </div>
         <div class="hero-badges">
+          <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
-          <span class="badge">read-only DB</span>
-          <span class="badge">공식 KSA 근거</span>
+          <span class="badge">KSA 근거 추적</span>
         </div>
       </div>
     </section>
@@ -180,6 +189,11 @@
             <strong>4. 질문 생성</strong>
             <span>NCS_MCP KSA 기반 생성</span>
           </div>
+        </div>
+
+        <div class="guardrail-box">
+          <strong>운영 원칙</strong>
+          <span>공고문은 담당업무·평가항목을 추출해 검토용으로 채우고, 직무기술서의 세분류는 사람이 확정한 값만 MCP 조회에 사용합니다. 로고·공식 사이트 자산은 사용하지 않습니다.</span>
         </div>
 
         <div id="uploadBlock">
