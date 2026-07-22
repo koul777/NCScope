@@ -374,6 +374,7 @@
     const reviewNcsDetail = document.getElementById('reviewNcsDetail');
     const noticeReviewBlock = document.getElementById('noticeReviewBlock');
     const noticeReviewStatus = document.getElementById('noticeReviewStatus');
+    const btnConfirmReview = document.getElementById('btnConfirmReview');
     const btnConfirmNoticeReview = document.getElementById('btnConfirmNoticeReview');
     const flowApi = document.getElementById('flowApi');
     const flowJd = document.getElementById('flowJd');
@@ -384,6 +385,8 @@
     let progressTimer = null;
     let progressStartTs = 0;
     let progressIdx = 0;
+    let progressStepsActive = null;
+    let progressSlowState = null;
     let currentQuestions = [];
     let currentQPage = 0;
     const QUESTION_PAGE_SIZE = 5;
@@ -396,6 +399,8 @@
     let jdReviewPayload = null;
     let reviewConfirmed = false;
     let noticeReviewConfirmed = false;
+    let jdParsing = false;
+    let noticeParsing = false;
 
     function normSclassLabel(v) {
       return String(v || '').replace(/\s+/g, '').trim().toLowerCase();
@@ -507,31 +512,84 @@
       }
     }
 
+    function readableApiError(text) {
+      const rawText = String(text || '').trim();
+      if (!rawText) return '서버 응답이 비어 있습니다.';
+      try {
+        const parsed = JSON.parse(rawText);
+        const detail = parsed.detail ?? parsed.message ?? parsed.error;
+        if (typeof detail === 'string') return detail;
+        if (detail) return JSON.stringify(detail);
+        return JSON.stringify(parsed);
+      } catch {
+        return rawText;
+      }
+    }
+
     async function parseJdForReview(file) {
       jdReviewBlock.style.display = 'block';
       jdReviewStatus.textContent = 'Kordoc 분석 중...';
       reviewConfirmed = false;
       jdReviewPayload = null;
+      jdParsing = true;
+      btnConfirmReview.disabled = true;
+      btnConfirmReview.textContent = 'Kordoc 분석 중...';
+      btnConfirmReview.style.background = '#64748b';
       btn.style.display = 'none';
+      errorBox.style.display = 'none';
+      raw.textContent = `직무기술서 파싱 시작: ${file.name}`;
+      startProgress(PARSE_PROGRESS_STEPS, {
+        label: 'Kordoc 문서 파싱 진행 중',
+        note: 'PDF/HWP/HWPX/DOCX 문서는 표와 OCR 처리 때문에 시간이 걸릴 수 있습니다.',
+      });
       updateWorkflowMenu();
       try {
         const fd = new FormData();
         fd.append('jd_file', file);
         const res = await fetch('/api/jd/parse-review', { method: 'POST', body: fd });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
+        const text = await res.text();
+        if (!res.ok) throw new Error(readableApiError(text));
+        const data = JSON.parse(text);
         const fields = data.fields || {};
         reviewDuties.value = (fields.duties || []).join('\n');
         reviewQualifications.value = (fields.qualifications || []).join('\n');
         reviewPreferences.value = (fields.preferences || []).join('\n');
         reviewNcsDetail.value = (fields.ncs_detail_candidates || []).join('\n');
         jdReviewPayload = data;
-        jdReviewStatus.textContent = '검토 필요';
+        const detailCount = (fields.ncs_detail_candidates || []).length;
+        jdReviewStatus.textContent = detailCount
+          ? `검토 필요 · 세분류 후보 ${detailCount}개`
+          : '검토 필요 · 세분류를 직접 입력하세요';
+        btnConfirmReview.disabled = false;
+        btnConfirmReview.textContent = '추출 결과 검토·확정';
+        btnConfirmReview.style.background = '#0f766e';
+        raw.textContent = JSON.stringify({
+          status: '직무기술서 파싱 완료',
+          filename: data.filename || file.name,
+          ncs_detail_candidates: fields.ncs_detail_candidates || [],
+          duties_count: (fields.duties || []).length,
+          qualifications_count: (fields.qualifications || []).length,
+          preferences_count: (fields.preferences || []).length,
+          review_session_id: data.review_session_id || '',
+        }, null, 2);
+        stopProgress('파싱 완료', '자동 추출 결과를 검토하고 세분류를 확정하세요.');
         updateWorkflowMenu();
       } catch (e) {
-        jdReviewStatus.textContent = '자동 파싱 실패';
+        const msg = String(e.message || e);
+        jdReviewStatus.textContent = '자동 파싱 실패 · 파일/확장자 또는 Kordoc 설치를 확인하세요';
+        errorBox.style.display = 'block';
+        errorBox.textContent = `직무기술서 파싱 오류: ${msg}`;
+        raw.textContent = `직무기술서 파싱 오류: ${msg}`;
+        stopProgress('파싱 실패', '오류 내용을 확인한 뒤 파일을 다시 선택하거나 텍스트를 직접 입력하세요.');
         console.warn('Kordoc 검토 파싱 실패:', e);
         updateWorkflowMenu();
+      } finally {
+        jdParsing = false;
+        if (!jdReviewPayload) {
+          btnConfirmReview.disabled = false;
+          btnConfirmReview.textContent = '다시 분석';
+          btnConfirmReview.style.background = '#b7791f';
+        }
       }
     }
 
@@ -539,28 +597,72 @@
       noticeReviewBlock.style.display = 'block';
       noticeReviewStatus.textContent = '공고문 분석 중...';
       noticeReviewConfirmed = false;
+      noticeParsing = true;
+      btnConfirmNoticeReview.disabled = true;
+      btnConfirmNoticeReview.textContent = '공고문 분석 중...';
+      btnConfirmNoticeReview.style.background = '#64748b';
+      errorBox.style.display = 'none';
+      raw.textContent = `공고문 파싱 시작: ${file.name}`;
+      startProgress(NOTICE_PROGRESS_STEPS, {
+        label: '공고문 파싱 진행 중',
+        note: '공고문에서 담당업무와 면접 평가항목 후보를 찾고 있습니다.',
+      });
       updateWorkflowMenu();
       try {
         const fd = new FormData();
         fd.append('notice_file', file);
         const res = await fetch('/api/notice/parse-review', { method: 'POST', body: fd });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
+        const text = await res.text();
+        if (!res.ok) throw new Error(readableApiError(text));
+        const data = JSON.parse(text);
         const fields = data.fields || {};
         if (fields.duty_text) dutyText.value = fields.duty_text;
         if (fields.evaluation_text) evalText.value = fields.evaluation_text;
-        noticeReviewStatus.textContent = '검토 필요';
+        noticeReviewStatus.textContent = (fields.duty_text || fields.evaluation_text)
+          ? '검토 필요'
+          : '추출 후보 없음 · 직접 입력 또는 생략 가능';
+        btnConfirmNoticeReview.disabled = false;
+        btnConfirmNoticeReview.textContent = '공고문 핵심 텍스트 검토·적용';
+        btnConfirmNoticeReview.style.background = '#005bac';
+        raw.textContent = JSON.stringify({
+          status: '공고문 파싱 완료',
+          filename: data.filename || file.name,
+          duty_text_chars: (fields.duty_text || '').length,
+          evaluation_text_chars: (fields.evaluation_text || '').length,
+        }, null, 2);
+        stopProgress('파싱 완료', '공고문 핵심 텍스트를 확인하고 필요하면 수정하세요.');
       } catch (e) {
+        const msg = String(e.message || e);
         noticeReviewStatus.textContent = '자동 추출 실패 · 직접 입력 가능';
+        errorBox.style.display = 'block';
+        errorBox.textContent = `공고문 파싱 오류: ${msg}`;
+        raw.textContent = `공고문 파싱 오류: ${msg}`;
+        stopProgress('파싱 실패', '공고문은 선택 항목입니다. 직접 입력하거나 생략할 수 있습니다.');
         console.warn('공고문 검토 파싱 실패:', e);
       } finally {
+        noticeParsing = false;
+        btnConfirmNoticeReview.disabled = false;
+        if (!((dutyText.value || '').trim() || (evalText.value || '').trim())) {
+          btnConfirmNoticeReview.textContent = '공고문 단계 생략';
+          btnConfirmNoticeReview.style.background = '#475569';
+        }
         updateWorkflowMenu();
       }
     }
 
-    document.getElementById('btnConfirmReview').addEventListener('click', () => {
+    btnConfirmReview.addEventListener('click', async () => {
+      if (jdParsing) {
+        jdReviewStatus.textContent = 'Kordoc 분석 중입니다. 완료될 때까지 기다려 주세요.';
+        return;
+      }
       if (!jdReviewPayload) {
-        jdReviewStatus.textContent = '검토할 자동 추출 결과가 없습니다.';
+        const file = jdFile.files && jdFile.files[0];
+        if (file) {
+          jdReviewStatus.textContent = '검토할 결과가 없어 파일을 다시 분석합니다.';
+          await parseJdForReview(file);
+        } else {
+          jdReviewStatus.textContent = '직무기술서 파일을 먼저 선택해 주세요.';
+        }
         return;
       }
       jdReviewPayload.fields = jdReviewPayload.fields || {};
@@ -584,9 +686,22 @@
     });
 
     btnConfirmNoticeReview.addEventListener('click', () => {
+      if (noticeParsing) {
+        noticeReviewStatus.textContent = '공고문 분석 중입니다. 완료될 때까지 기다려 주세요.';
+        return;
+      }
       if (!(dutyText.value || '').trim() && !(evalText.value || '').trim()) {
-        noticeReviewStatus.textContent = '적용할 담당업무 또는 평가항목 텍스트가 없습니다.';
-        dutyText.focus();
+        const jdDuties = (reviewDuties.value || '').trim();
+        if (jdDuties) {
+          dutyText.value = jdDuties;
+          noticeReviewStatus.textContent = '공고문 추출값이 없어 직무기술서 수행업무를 사용합니다.';
+        } else {
+          noticeReviewStatus.textContent = '추출된 공고문 핵심 텍스트가 없습니다. 공고문 단계는 선택 항목입니다.';
+        }
+        noticeReviewConfirmed = true;
+        btnConfirmNoticeReview.textContent = '공고문 단계 확인 완료';
+        btnConfirmNoticeReview.style.background = '#15803d';
+        updateWorkflowMenu();
         return;
       }
       noticeReviewConfirmed = true;
@@ -778,39 +893,60 @@
       { t: 6.0, label: '결과 정리', pct: 90, note: '화면 표시용으로 결과를 정리합니다.' },
     ];
 
-    function startProgress() {
+    const PARSE_PROGRESS_STEPS = [
+      { t: 0, label: '파일 업로드 준비', pct: 10, note: '선택한 직무기술서를 서버로 전달합니다.' },
+      { t: 0.8, label: 'Kordoc 문서 파싱', pct: 34, note: '본문, 표, 메타데이터를 추출하고 있습니다.' },
+      { t: 2.4, label: '세분류 후보 추출', pct: 64, note: '소분류가 아니라 세분류 후보를 정리합니다.' },
+      { t: 4.8, label: '검토 화면 구성', pct: 86, note: '사람이 확인할 수행업무와 세분류를 채웁니다.' },
+    ];
+
+    const NOTICE_PROGRESS_STEPS = [
+      { t: 0, label: '공고문 업로드 준비', pct: 12, note: '선택한 공고문 파일을 서버로 전달합니다.' },
+      { t: 0.8, label: 'Kordoc 공고문 파싱', pct: 42, note: '담당업무와 평가항목 후보를 찾고 있습니다.' },
+      { t: 2.4, label: '핵심 텍스트 정리', pct: 78, note: '검토 화면에 넣을 텍스트를 정리합니다.' },
+    ];
+
+    function startProgress(steps = PROGRESS_STEPS, slowState = null) {
+      progressStepsActive = Array.isArray(steps) && steps.length ? steps : PROGRESS_STEPS;
+      progressSlowState = slowState || {
+        label: '외부 API/모델 응답 대기',
+        note: '외부 API/모델 지연으로 응답이 늦어지고 있습니다.',
+      };
       progressWrap.style.display = 'block';
       progressIdx = 0;
       progressStartTs = performance.now();
-      progressStage.textContent = PROGRESS_STEPS[0].label;
-      progressFill.style.width = `${PROGRESS_STEPS[0].pct}%`;
-      progressNote.textContent = PROGRESS_STEPS[0].note;
+      progressStage.textContent = progressStepsActive[0].label;
+      progressFill.style.width = `${progressStepsActive[0].pct}%`;
+      progressNote.textContent = progressStepsActive[0].note;
       progressTime.textContent = '0.0s';
       if (progressTimer) clearInterval(progressTimer);
       progressTimer = setInterval(() => {
         const sec = (performance.now() - progressStartTs) / 1000;
+        const stepsNow = progressStepsActive || PROGRESS_STEPS;
         progressTime.textContent = `${sec.toFixed(1)}s`;
-        while (progressIdx + 1 < PROGRESS_STEPS.length && sec >= PROGRESS_STEPS[progressIdx + 1].t) {
+        while (progressIdx + 1 < stepsNow.length && sec >= stepsNow[progressIdx + 1].t) {
           progressIdx += 1;
-          progressStage.textContent = PROGRESS_STEPS[progressIdx].label;
-          progressFill.style.width = `${PROGRESS_STEPS[progressIdx].pct}%`;
-          progressNote.textContent = PROGRESS_STEPS[progressIdx].note;
+          progressStage.textContent = stepsNow[progressIdx].label;
+          progressFill.style.width = `${stepsNow[progressIdx].pct}%`;
+          progressNote.textContent = stepsNow[progressIdx].note;
         }
         if (sec > 20) {
-          progressStage.textContent = '외부 API/모델 응답 대기';
+          progressStage.textContent = progressSlowState.label;
           progressFill.style.width = '94%';
-          progressNote.textContent = '외부 API/모델 지연으로 응답이 늦어지고 있습니다.';
+          progressNote.textContent = progressSlowState.note;
         }
       }, 200);
     }
 
-    function stopProgress(doneText) {
+    function stopProgress(doneText, noteText) {
       if (progressTimer) clearInterval(progressTimer);
       progressTimer = null;
       progressStage.textContent = doneText || '완료';
       progressFill.style.width = '100%';
-      progressNote.textContent = '요청 처리가 완료되었습니다.';
-      setTimeout(() => { progressWrap.style.display = 'none'; }, 900);
+      progressNote.textContent = noteText || '요청 처리가 완료되었습니다.';
+      progressStepsActive = null;
+      progressSlowState = null;
+      setTimeout(() => { progressWrap.style.display = 'none'; }, 1200);
     }
 
     function updateSelectedCount() {
