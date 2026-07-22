@@ -92,6 +92,8 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 
 이 단계가 중요한 이유는 NCScope가 소분류나 키워드가 아니라, 사람이 확정한 세분류를 기준으로 NCS_MCP를 조회하기 때문입니다.
 
+확정한 세분류가 현재 NCS_MCP serving DB와 정확히 매칭되지 않으면 NCScope는 근거 없는 질문을 자동 생성하지 않습니다. 대신 후보 NCS 능력단위를 보여주고, 담당자가 직접 선택하는 흐름으로 전환합니다.
+
 ### 5. 공고문과 평가항목 입력
 
 선택적으로 다음 정보를 추가합니다.
@@ -120,6 +122,8 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 - KSA 항목
 - 구조화 면접 질문
 - 원본 JSON
+
+세분류 exact 매칭이 실패한 경우에는 직접입력 모드로 전환됩니다. 이때 표시되는 후보 NCS 능력단위는 자동 확정값이 아니며, 담당자가 공식 NCS 명칭과 직무기술서를 비교해 선택해야 합니다.
 
 ## 결과물 예시
 
@@ -269,6 +273,18 @@ Form:
 - 우대사항
 - `fields.ncs_detail_candidates`
 
+### NCS 능력단위 검색·수동 선택 후보
+
+```http
+GET /api/ncs/units/options?q=경영기획
+```
+
+반환:
+
+- exact 세분류 매칭 성공 시 `source: ncs-mcp`
+- exact 매칭 실패 후 후보만 있는 경우 `source: ncs-mcp-suggest`
+- `ncs-mcp-suggest`는 자동 확정이 아니라 사람이 선택해야 하는 후보입니다.
+
 ### 업로드 기반 면접 질문 생성
 
 ```http
@@ -328,7 +344,7 @@ python -m pytest -q
 
 현재 검증 결과:
 
-- `python -m pytest -q` → 155 passed
+- `python -m pytest -q` → 158 passed
 - `py_compile` → passed
 - `npm ci` → passed
 - Kordoc 최신 npm 버전 `4.2.7` 확인
@@ -355,6 +371,7 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 - 세분류는 추출됐지만 현재 MCP DB와 매칭되지 않은 문서 2건
 - 공고문 본문에서 담당업무 후보 10건, 평가항목 후보 9건 추출
 - ZIP 첨부 3건은 MVP 범위 밖으로 분류
+- `간호수행`, `간호행정관리`, `임상병리`처럼 serving DB exact 세분류 매칭이 없는 경우는 수동 NCS 선택 후보 흐름으로 회수
 
 ## Docker 배포
 

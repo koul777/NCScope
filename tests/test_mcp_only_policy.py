@@ -143,6 +143,35 @@ def test_mcp_only_does_not_autofill_reviewed_detail_candidates(monkeypatch, mock
     search.assert_not_called()
 
 
+def test_mcp_only_returns_manual_suggestions_when_detail_has_no_exact_match(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    mocker.patch("app.main.search_units_by_detail", return_value=[])
+    suggestion = {
+        "ncsClCd": "0601010101_20v1",
+        "compeUnitName": "\uc758\ub8cc\uc9c0\uc6d0 \ud6c4\ubcf4",
+        "ncsSubdCdnm": "\uc758\ub8cc\uae30\uae30\uad00\ub9ac",
+        "source": "ncs-mcp-suggest",
+        "isExactDetailMatch": False,
+    }
+    suggest = mocker.patch("app.main.suggest_units_by_text", return_value=[suggestion])
+    review = {"review_confirmed": True, "fields": {"ncs_detail_candidates": ["\uc784\uc0c1\ubcd1\ub9ac"]}}
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+        )
+
+    body = resp.json()
+    assert resp.status_code == 422
+    suggest.assert_called_once_with(["\uc784\uc0c1\ubcd1\ub9ac"], max_units=12)
+    assert body["detail"]["lookup_terms"] == ["\uc784\uc0c1\ubcd1\ub9ac"]
+    assert body["detail"]["suggested_ncs_units"] == [suggestion]
+    assert "exact competency units" in body["detail"]["message"]
+
+
 def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)
@@ -273,6 +302,50 @@ def test_mcp_search_matches_detail_not_small_category(mocker):
     rows = ncs_mcp_client.search_units_by_detail(["\uacbd\uc601\uae30\ud68d"])
 
     assert [row["ncsClCd"] for row in rows] == ["sub-match"]
+
+
+def test_mcp_suggest_units_by_text_keeps_non_exact_candidates(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                {
+                    "id": "suggested-unit",
+                    "text": "\uc784\uc0c1\ubcd1\ub9ac \uad00\ub828 \uc9c8\ubcd1\uc9c4\ub2e8",
+                    "path": {"small": "\ucd95\uc0b0\uc790\uc6d0\uac1c\ubc1c", "sub": "\uc218\uc758\uc11c\ube44\uc2a4"},
+                    "score": 0.42,
+                }
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.suggest_units_by_text(["\uc784\uc0c1\ubcd1\ub9ac"], max_units=5)
+
+    assert rows[0]["ncsClCd"] == "suggested-unit"
+    assert rows[0]["source"] == "ncs-mcp-suggest"
+    assert rows[0]["isExactDetailMatch"] is False
+
+
+def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    mocker.patch("app.main.search_units_by_detail", return_value=[])
+    suggestion = {
+        "ncsClCd": "0601010101_20v1",
+        "compeUnitName": "\uc758\ub8cc\uc9c0\uc6d0 \ud6c4\ubcf4",
+        "ncsSubdCdnm": "\uc758\ub8cc\uae30\uae30\uad00\ub9ac",
+        "source": "ncs-mcp-suggest",
+    }
+    mocker.patch("app.main.suggest_units_by_text", return_value=[suggestion])
+
+    with TestClient(main.app) as client:
+        resp = client.get("/api/ncs/units/options?q=\uc784\uc0c1\ubcd1\ub9ac&limit=10")
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["source"] == "ncs-mcp-suggest"
+    assert body["items"] == [suggestion]
+    assert "Exact detail-class match" in body["message"]
 
 
 def test_legacy_ncs_sclass_ksa_endpoint_disabled_by_default(monkeypatch):

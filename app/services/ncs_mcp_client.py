@@ -193,6 +193,59 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
     return output
 
 
+def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[str, Any]]:
+    """Return non-authoritative NCS unit suggestions for human selection.
+
+    This is intentionally separate from ``search_units_by_detail``.  Exact
+    세분류 matches are authoritative enough to drive KSA lookup, while these
+    suggestions are only a recovery path when an uploaded JD uses an
+    institution-specific or out-of-DB classification label.
+    """
+
+    if "ncs_search" not in _tool_names():
+        raise NcsMcpError("configured NCS MCP does not expose ncs_search")
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    limit = max(1, int(max_units or 20))
+    for term in terms:
+        query = str(term or "").strip()
+        if not query:
+            continue
+        result = _call_tool("ncs_search", {"query": query, "scope": "unit", "limit": min(50, max(5, limit))})
+        rows = result.get("results") or result.get("units") or []
+        if isinstance(rows, dict):
+            rows = rows.get("items") or []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("id") or row.get("unit_code") or "").strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            path = row.get("path") if isinstance(row.get("path"), dict) else {}
+            sub_name = _path_value(path, "sub", "sub_name", "ncsSubdCdnm")
+            small_name = _path_value(path, "small", "small_name", "ncsSclasCdnm")
+            output.append(
+                {
+                    "ncsClCd": code,
+                    "compeUnitName": str(row.get("text") or row.get("unit_name") or "").strip(),
+                    "compeUnitLevel": str(row.get("level") or "").strip(),
+                    "compeUnitDef": str(row.get("api_definition") or row.get("definition") or "").strip(),
+                    "ncsLclasCdnm": _path_value(path, "major", "major_name"),
+                    "ncsMclasCdnm": _path_value(path, "middle", "middle_name"),
+                    "ncsSclasCdnm": small_name,
+                    "ncsSubdCdnm": sub_name,
+                    "matchedDetailName": query,
+                    "source": "ncs-mcp-suggest",
+                    "matchScore": row.get("score", 0.0),
+                    "isExactDetailMatch": _norm(sub_name) == _norm(query),
+                }
+            )
+            if len(output) >= limit:
+                return output
+    return output
+
+
 def _detail_payload(result: dict[str, Any]) -> dict[str, Any]:
     data = _payload(result)
     if isinstance(data.get("data"), dict):

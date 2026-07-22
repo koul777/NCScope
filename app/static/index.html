@@ -1026,26 +1026,63 @@
       raw.textContent = JSON.stringify(data, null, 2);
     }
 
-    async function loadNcsOptions(query='') {
-      const q = encodeURIComponent(query || '');
-      const res = await fetch(`/api/ncs/units/options?q=${q}&limit=500`);
-      const data = await res.json();
-      ncsUnitOptions = Array.isArray(data.items) ? data.items : [];
+    function populateNcsUnitSelect(items, selected=false) {
+      ncsUnitOptions = Array.isArray(items) ? items : [];
       ncsSelect.innerHTML = '';
-
       for (const item of ncsUnitOptions) {
         const opt = document.createElement('option');
         const code = item.ncsClCd || '';
         const name = item.compeUnitName || '';
         const lv = item.compeUnitLevel || '-';
+        const sub = item.ncsSubdCdnm || '';
         opt.value = code;
-        opt.textContent = `${code} | ${name} | Lv.${lv}`;
+        opt.textContent = `${code} | ${name} | ${sub || '세분류 미확인'} | Lv.${lv}`;
         opt.dataset.name = name;
         opt.dataset.level = String(lv);
-        opt.dataset.subd = item.ncsSubdCdnm || '';
+        opt.dataset.subd = sub;
+        opt.selected = !!selected;
         ncsSelect.appendChild(opt);
       }
       updateSelectedCount();
+    }
+
+    function handleStructuredError(detail) {
+      const payload = detail && typeof detail === 'object' ? detail : {};
+      const lookupTerms = Array.isArray(payload.lookup_terms) ? payload.lookup_terms.filter(Boolean) : [];
+      const suggestions = Array.isArray(payload.suggested_ncs_units) ? payload.suggested_ncs_units : [];
+      const termText = lookupTerms.length ? ` (${lookupTerms.join(', ')})` : '';
+      if (suggestions.length) {
+        inputMode.value = 'manual';
+        setInputMode('manual');
+        populateNcsUnitSelect(suggestions, false);
+        ncsSearch.value = lookupTerms[0] || '';
+        if (!noticeText.value.trim()) {
+          noticeText.value = (dutyText.value || '').trim() || (reviewDuties.value || '').trim();
+        }
+        if (!evalTextManual.value.trim()) {
+          evalTextManual.value = (evalText.value || '').trim();
+        }
+        selectedCount.textContent = `정확 매칭 없음 · 후보 ${suggestions.length}개 중 사람이 선택해야 합니다.`;
+        errorBox.textContent = `정확한 NCS 세분류 매칭이 없습니다${termText}. 후보 NCS를 직접 확인·선택한 뒤 질문을 생성하세요.`;
+      } else {
+        errorBox.textContent = `정확한 NCS 세분류 매칭이 없습니다${termText}. 직접입력 모드에서 공식 NCS 코드를 검색·선택해야 합니다.`;
+      }
+      errorBox.style.display = 'block';
+      raw.textContent = JSON.stringify(payload, null, 2);
+      updateWorkflowMenu();
+    }
+
+    async function loadNcsOptions(query='') {
+      const q = encodeURIComponent(query || '');
+      const res = await fetch(`/api/ncs/units/options?q=${q}&limit=500`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || JSON.stringify(data));
+      }
+      populateNcsUnitSelect(data.items || [], false);
+      if (data.source === 'ncs-mcp-suggest' && (data.items || []).length) {
+        selectedCount.textContent = `정확 매칭 없음 · 후보 ${(data.items || []).length}개 중 사람이 선택해야 합니다.`;
+      }
     }
 
     btn.onclick = async () => {
@@ -1129,7 +1166,14 @@
         } catch {
           throw new Error(text);
         }
-        if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+        if (!res.ok) {
+          if (data.detail && typeof data.detail === 'object') {
+            handleStructuredError(data.detail);
+            stopProgress('검토 필요');
+            return;
+          }
+          throw new Error(data.detail || JSON.stringify(data));
+        }
 
         render(data);
         stopProgress('완료');

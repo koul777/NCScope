@@ -12,7 +12,7 @@ Verified the MVP path:
 
 ## NCScope Evidence
 
-- `python -m pytest -q`: 155 passed, 2 FastAPI deprecation warnings.
+- `python -m pytest -q`: 158 passed, 2 FastAPI deprecation warnings.
 - `python -m py_compile app\main.py app\settings.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py`: passed.
 - API smoke with confirmed detail `경영기획`:
   - HTTP status: 200
@@ -78,6 +78,8 @@ Known benchmark finding:
 - `간호수행`, `간호행정관리`, and `임상병리` were extracted from ALIO JDs, but current strict NCS_MCP search returned 0 units. Treat this as an NCS_MCP alias/coverage follow-up, not a NCScope parsing failure.
 - Documents without an NCS classification table correctly require human detail entry in the review step.
 - Table-label noise such as `능력단위` and `주요사업` is now filtered from detail-class candidates.
+- When exact detail-class matching fails, NCScope now returns manual-selection suggestions instead of generating ungrounded interview questions.
+- Gap evidence: `reports\ncs_mcp_detail_gap_20260723.md`
 
 ## NCS_MCP Serving DB Evidence
 

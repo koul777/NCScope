@@ -23,7 +23,7 @@ from app.schemas import AiInterviewRequest, AiInterviewResponse, PostingCreate, 
 from app.services.ai_strategy import build_strategy_with_openai, rank_postings_with_openai
 from app.services.external_api import fetch_ncs, fetch_ncs_highschool_course, fetch_public_inst, fetch_recruitment
 from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description, structure_job_notice
-from app.services.ncs_mcp_client import NcsMcpError, ncs_mcp_status, search_units_by_detail
+from app.services.ncs_mcp_client import NcsMcpError, ncs_mcp_status, search_units_by_detail, suggest_units_by_text
 from app.services.jd_strategy import (
     ai_pick_sclass_from_csv,
     ai_extract_ncs_cl_codes,
@@ -608,9 +608,15 @@ def ncs_unit_options(
         return {"count": 0, "items": [], "source": "ncs-mcp", "message": "Enter a confirmed NCS detail classification."}
     try:
         items = search_units_by_detail([term], max_units=limit)
+        source = "ncs-mcp"
+        message = ""
+        if not items:
+            items = suggest_units_by_text([term], max_units=min(limit, 50))
+            source = "ncs-mcp-suggest"
+            message = "Exact detail-class match was not found. Review suggested NCS units manually."
     except NcsMcpError as exc:
         raise HTTPException(status_code=502, detail=f"NCS MCP lookup failed: {exc}") from exc
-    return {"count": len(items), "items": items}
+    return {"count": len(items), "items": items, "source": source, "message": message}
 
 
 @app.get("/api/ncs/sclass/ksa")
@@ -1257,9 +1263,21 @@ async def jd_strategy_upload(
         except NcsMcpError as exc:
             raise HTTPException(status_code=502, detail=f"NCS MCP lookup failed: {exc}") from exc
         if not ncs_items:
+            try:
+                suggested_units = suggest_units_by_text(lookup_terms, max_units=12)
+            except NcsMcpError:
+                suggested_units = []
             raise HTTPException(
                 status_code=422,
-                detail=f"NCS MCP returned no competency units for reviewed detail terms: {lookup_terms[:8]}",
+                detail={
+                    "message": "NCS MCP returned no exact competency units for the reviewed detail-class terms.",
+                    "lookup_terms": lookup_terms[:8],
+                    "suggested_ncs_units": suggested_units,
+                    "next_step": (
+                        "If the JD uses an institution-specific or out-of-DB label, switch to manual text mode, "
+                        "review the suggested NCS units, select the closest official units, and generate questions."
+                    ),
+                },
             )
         ncs_query_terms = lookup_terms
     elif review_payload.get("review_confirmed") and reviewed_detail_terms:
