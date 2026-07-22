@@ -3,6 +3,7 @@
 import asyncio
 import csv
 import functools
+import json
 import os
 import re
 import threading
@@ -15,13 +16,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.init_db import init_db
 from app.repository import create_posting as repo_create_posting
 from app.repository import fetch_posting_for_report, get_posting as repo_get_posting
-from app.repository import list_active_ncs_units as repo_list_active_ncs_units
 from app.repository import list_postings as repo_list_postings
 from app.repository import recommend_postings as repo_recommend_postings
 from app.repository import save_match_result
 from app.schemas import AiInterviewRequest, AiInterviewResponse, PostingCreate, ReportCreate, ReportOut
 from app.services.ai_strategy import build_strategy_with_openai, rank_postings_with_openai
 from app.services.external_api import fetch_ncs, fetch_ncs_highschool_course, fetch_public_inst, fetch_recruitment
+from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description
+from app.services.ncs_mcp_client import NcsMcpError, ncs_mcp_status, search_units_by_detail
 from app.services.jd_strategy import (
     ai_pick_sclass_from_csv,
     ai_extract_ncs_cl_codes,
@@ -30,8 +32,7 @@ from app.services.jd_strategy import (
     build_ncs_context_pack,
     build_strategy_with_rule_fallback,
     build_strategy_with_openai as build_jd_strategy_with_openai,
-    diagnose_ncs_hrdk,
-    diagnose_ncs_v18_flow,
+    extract_detail_categories_from_jd,
     extract_small_categories_from_jd,
     infer_sclass_candidates_reverse_dictionary,
     infer_sclass_candidates_from_text_catalog,
@@ -56,11 +57,9 @@ from app.services.jd_strategy import (
     review_ocr_terms_with_openai,
     rerank_ncs_matches,
     resolve_sclass_candidates_with_catalog,
-    ensure_ncs_local_index,
-    get_ncs_local_index_status,
     verify_sclass_candidates_with_ncs_api,
 )
-from app.services.ncs import NCS_SAMPLE, map_ncs
+from app.services.ncs import map_ncs
 from app.services.auto_runner import start_auto_runner
 from app.services.queue_manager import QueueManager
 from app.services.sclass_pipeline import (
@@ -72,7 +71,7 @@ from app.services.sclass_pipeline import (
 from app.services.sync_workers import sync_ncs_units, sync_public_institutions
 from app.settings import settings
 
-app = FastAPI(title="Public Hiring Strategy MVP", version="0.2.0")
+app = FastAPI(title="NCScope", version="0.1.0")
 queue = QueueManager(max_retries=2)
 
 
@@ -273,6 +272,60 @@ def _collect_ksa_candidate_units(
     return out
 
 
+def _fetch_ncs_ksa_or_502(
+    ncs_matches: list[dict[str, Any]],
+    max_units: int,
+    max_factors_per_unit: int,
+) -> list[dict[str, Any]]:
+    try:
+        return fetch_ncs_ksa_by_units(
+            ncs_matches=ncs_matches,
+            max_units=max_units,
+            max_factors_per_unit=max_factors_per_unit,
+        )
+    except NcsMcpError as exc:
+        raise HTTPException(status_code=502, detail=f"NCS MCP KSA lookup failed: {exc}") from exc
+
+
+def _require_ncs_mcp_url() -> str:
+    endpoint = settings.ncs_mcp_endpoint()
+    if endpoint:
+        return endpoint
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "NCS_MCP_URL is required for NCScope. Start the read-only NCS_MCP "
+            "server with the compact serving DB and set NCS_MCP_URL."
+        ),
+    )
+
+
+def _require_legacy_ncs_api_enabled() -> None:
+    if not settings.enable_legacy_ncs_api():
+        raise HTTPException(
+            status_code=410,
+            detail="legacy NCS API endpoints are disabled; use NCS_MCP_URL-backed endpoints",
+        )
+
+
+def _check_upload_size(data: bytes, label: str) -> None:
+    max_bytes = settings.max_upload_bytes()
+    if len(data or b"") > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{label} exceeds MAX_UPLOAD_MB ({max_bytes // (1024 * 1024)} MB)",
+        )
+
+
+def _sanitize_request_openai_key(value: str | None) -> str:
+    key = str(value or "").strip()
+    if not key:
+        return ""
+    if len(key) > 300 or any(ch.isspace() for ch in key):
+        raise HTTPException(status_code=400, detail="openai_api_key is invalid")
+    return key
+
+
 def _select_verified_sclass_candidates(
     candidates: list[dict[str, Any]] | None,
     max_keep: int = 4,
@@ -458,26 +511,22 @@ def _save_question_history(
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
-    # Build local NCS index once at startup so request path never scans XLSX.
-    if os.getenv("NCS_LOCAL_INDEX_ON_STARTUP", "true").strip().lower() in {"1", "true", "yes", "y"}:
-        ensure_ncs_local_index()
     start_auto_runner()
 
 
 @app.get("/health")
 def health() -> dict:
-    ncs_local = get_ncs_local_index_status()
+    mcp = ncs_mcp_status()
+    mcp_ready = bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable"))
     return {
-        "status": "ok",
+        "status": "ok" if mcp_ready else "degraded",
         "keys": {
             "public_inst": bool(settings.public_inst_key()),
             "ncs": bool(settings.ncs_key()),
             "openai": bool(settings.openai_key()),
         },
-        "ncs_local": {
-            "indexed": bool(ncs_local.get("indexed")),
-            "row_count": int(ncs_local.get("row_count", 0) or 0),
-        },
+        "ncs_source": "remote-mcp",
+        "ncs_mcp": mcp,
     }
 
 
@@ -550,30 +599,17 @@ def _find_sclass_code_tuple(sclass_name: str) -> dict[str, str] | None:
 
 @app.get("/api/ncs/units/options")
 def ncs_unit_options(
-    q: str = Query(default="", description="NCS code/name search text"),
+    q: str = Query(default="", description="NCS detail classification search text"),
     limit: int = Query(default=300, ge=1, le=1000),
 ) -> dict:
-    items = repo_list_active_ncs_units(limit=limit, query=q)
-    if not items:
-        fallback: list[dict] = []
-        for group in NCS_SAMPLE.values():
-            for r in group:
-                code = str(r.get("ncsClCd", "")).strip()
-                name = str(r.get("compeUnitName", "")).strip()
-                if not code or not name:
-                    continue
-                if q and (q.lower() not in f"{code} {name}".lower()):
-                    continue
-                fallback.append(
-                    {
-                        "ncsClCd": code,
-                        "compeUnitName": name,
-                        "compeUnitLevel": r.get("compeUnitLevel", ""),
-                        "ncsSclasCdnm": "",
-                        "ncsSubdCdnm": "",
-                    }
-                )
-        items = fallback[:limit]
+    _require_ncs_mcp_url()
+    term = str(q or "").strip()
+    if not term:
+        return {"count": 0, "items": [], "source": "ncs-mcp", "message": "Enter a confirmed NCS detail classification."}
+    try:
+        items = search_units_by_detail([term], max_units=limit)
+    except NcsMcpError as exc:
+        raise HTTPException(status_code=502, detail=f"NCS MCP lookup failed: {exc}") from exc
     return {"count": len(items), "items": items}
 
 
@@ -585,6 +621,7 @@ def ncs_sclass_ksa(
     ncs_sclass_code: str = Query(default="", alias="ncsSclasCd"),
     max_units: int = Query(default=80, ge=1, le=200),
 ) -> dict:
+    _require_legacy_ncs_api_enabled()
     l_cd = str(ncs_lclass_code or "").strip()
     m_cd = str(ncs_mclass_code or "").strip()
     s_cd = str(ncs_sclass_code or "").strip()
@@ -635,9 +672,11 @@ def ops_metrics() -> dict:
 
 
 def _require_admin(x_admin_token: str | None) -> None:
+    if not settings.enable_admin_endpoints():
+        raise HTTPException(status_code=403, detail="admin endpoints are disabled")
     expected = settings.admin_token()
     if not expected:
-        return
+        raise HTTPException(status_code=403, detail="ADMIN_TOKEN is required")
     if x_admin_token != expected:
         raise HTTPException(status_code=401, detail="invalid admin token")
 
@@ -663,6 +702,7 @@ def admin_sync_ncs(
     x_admin_token: str | None = Header(default=None),
 ) -> dict:
     _require_admin(x_admin_token)
+    _require_legacy_ncs_api_enabled()
     try:
         return sync_ncs_units(path=path, pages=pages, num_of_rows=num_of_rows)
     except Exception as e:
@@ -695,6 +735,7 @@ def ncs_proxy(
     ncs_job_cd: str | None = Query(default=None),
     ncs_cl_cd: str | None = Query(default=None),
 ) -> dict:
+    _require_legacy_ncs_api_enabled()
     query: dict = {}
     if page_no is not None:
         query["pageNo"] = page_no
@@ -723,6 +764,7 @@ def ncs_highschool_proxy(
     cd_name: str | None = Query(default=None, alias="cdName", description="고교 능력단위명(옵션)"),
     return_type: str = Query(default="xml", alias="returnType", pattern="^(xml|json|XML|JSON)$"),
 ) -> dict:
+    _require_legacy_ncs_api_enabled()
     try:
         return fetch_ncs_highschool_course(
             mcd_nm=mcd_nm,
@@ -741,18 +783,14 @@ def ncs_highschool_proxy(
 @app.get("/api/ncs/diagnose")
 def ncs_diagnose(sample_job_cd: str = Query(default="02020101")) -> dict:
     try:
-        local = get_ncs_local_index_status()
-        v18 = diagnose_ncs_v18_flow(sample_job_cd=sample_job_cd)
-        if v18.get("ok"):
-            return {"provider": "ncs_v18", "local_index": local, **v18}
-        hrdk = diagnose_ncs_hrdk()
+        _ = sample_job_cd
+        status = ncs_mcp_status()
+        ok = bool(status.get("reachable") and status.get("ksaAvailable"))
         return {
-            "provider": "hrdk",
-            "local_index": local,
-            "v18": v18,
-            "hrdk": hrdk,
-            "ok": bool(hrdk.get("ok")),
-            "message": (hrdk.get("message") or v18.get("message") or "diagnose failed"),
+            "provider": "ncs-mcp",
+            "ok": ok,
+            "ncs_mcp": status,
+            "message": "NCS MCP is ready" if ok else "NCS MCP is not ready",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"diagnose failed: {e}") from e
@@ -966,19 +1004,41 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=400, detail="only .pdf or .txt supported")
 
 
+@app.post("/api/jd/parse-review")
+async def parse_jd_review_endpoint(jd_file: UploadFile = File(...)) -> dict:
+    """Parse a JD with Kordoc and return editable human-review fields."""
+
+    data = await jd_file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="uploaded file is empty")
+    _check_upload_size(data, "jd_file")
+    try:
+        parsed = parse_with_kordoc(
+            data,
+            filename=jd_file.filename or "",
+            ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
+        )
+        return structure_job_description(parsed, filename=jd_file.filename or "")
+    except KordocParseError as exc:
+        raise HTTPException(status_code=422, detail=f"Kordoc parse failed: {exc}") from exc
+
+
 @app.post("/api/jd/strategy/upload")
 async def jd_strategy_upload(
     jd_file: UploadFile = File(...),
     notice_file: UploadFile | None = File(default=None),
     strengths: str = Form(default=""),
+    openai_api_key: str = Form(default=""),
     manual_sclass: str = Form(default=""),
     manual_sclass_add: str = Form(default=""),
     manual_sclass_remove: str = Form(default=""),
     duty_text: str = Form(default=""),
     evaluation_text: str = Form(default=""),
+    jd_review_json: str = Form(default=""),
 ) -> dict:
     # 최적값 고정 (사용자 노출 제거)
     run_top_k, run_ksa_units, run_ksa_factors = FAST_NCS_TOP_K, FAST_KSA_UNITS, FAST_KSA_FACTORS_PER_UNIT
+    request_openai_api_key = _sanitize_request_openai_key(openai_api_key)
 
     async def _read_text(upload: UploadFile | None, label: str) -> tuple[str, bytes, str]:
         if not upload:
@@ -987,6 +1047,21 @@ async def jd_strategy_upload(
         data = await upload.read()
         if not data:
             raise HTTPException(status_code=400, detail=f"{label} is empty")
+        _check_upload_size(data, label)
+        if name.endswith(".txt"):
+            return data.decode("utf-8", errors="ignore"), data, name
+        try:
+            parsed = parse_with_kordoc(
+                data,
+                filename=upload.filename or "",
+                ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
+            )
+            text = str(parsed.get("markdown") or "")
+            if text.strip():
+                return text, data, name
+        except KordocParseError:
+            if not name.endswith(".pdf"):
+                raise HTTPException(status_code=422, detail=f"{label} could not be parsed by Kordoc")
         if name.endswith(".pdf"):
             text = extract_pdf_text(data)
             if not text.strip():
@@ -995,13 +1070,29 @@ async def jd_strategy_upload(
                 except Exception:
                     text = ""
             return text, data, name
-        if name.endswith(".txt"):
-            return data.decode("utf-8", errors="ignore"), data, name
-        raise HTTPException(status_code=400, detail=f"{label} only supports .pdf or .txt")
+        raise HTTPException(status_code=400, detail=f"{label} could not be parsed")
 
     jd_text, jd_bytes, jd_name = await _read_text(jd_file, "jd_file")
     notice_text, _, _ = await _read_text(notice_file, "notice_file")
+    review_payload: dict[str, Any] = {}
+    if jd_review_json.strip():
+        try:
+            candidate = json.loads(jd_review_json)
+            if isinstance(candidate, dict):
+                review_payload = candidate
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"jd_review_json is invalid: {exc}") from exc
+
+    reviewed_fields = review_payload.get("fields") if isinstance(review_payload.get("fields"), dict) else {}
+    reviewed_markdown = str((review_payload.get("document") or {}).get("markdown", "")).strip()
+    if reviewed_markdown:
+        jd_text = reviewed_markdown
     duty_text_clean = str(duty_text or "").strip()
+    if not duty_text_clean:
+        duty_text_clean = "\n".join(str(x).strip() for x in (reviewed_fields.get("duties") or []) if str(x).strip())
+    qualification_text_clean = "\n".join(
+        str(x).strip() for x in (reviewed_fields.get("qualifications") or []) if str(x).strip()
+    )
     evaluation_text_clean = str(evaluation_text or "").strip()
     manual_sclass_final_terms = _parse_sclass_terms(manual_sclass)
     manual_sclass_add_terms = _parse_sclass_terms(manual_sclass_add)
@@ -1024,9 +1115,15 @@ async def jd_strategy_upload(
         duty_text=duty_text_clean,
         evaluation_text=evaluation_text_clean,
     )
+    if qualification_text_clean:
+        prompt_notice_text = (
+            f"{prompt_notice_text}\n지원자격:\n{qualification_text_clean}"
+        ).strip()
     notice_context = build_notice_context_from_jd(jd_text=jd_text, notice_text=prompt_notice_text, max_chars=5000)
 
-    ncs_source = "api-hrdk-sclass"
+    _require_ncs_mcp_url()
+    mcp_only = True
+    ncs_source = "ncs-mcp"
     ncs_error = ""
 
     jd_for_match = jd_text
@@ -1105,35 +1202,82 @@ async def jd_strategy_upload(
     if not ncs_query_terms:
         ncs_query_terms = [t for t in (reviewed_keywords or inferred_keywords or seeds[:8]) if t]
 
+    reviewed_detail_terms = [
+        str(value).strip()
+        for value in (reviewed_fields.get("ncs_detail_candidates") or [])
+        if str(value).strip()
+    ]
+    if not mcp_only and not reviewed_detail_terms:
+        reviewed_detail_terms = extract_detail_categories_from_jd(jd_text)
+
+    ncs_items: list[dict[str, Any]] = []
+    # The confirmed review payload is the gate for the authoritative NCS MCP
+    # lookup. It prevents an unreviewed OCR label from driving KSA selection.
+    if mcp_only:
+        if review_payload.get("review_confirmed") is not True:
+            raise HTTPException(
+                status_code=400,
+                detail="jd_review_json.review_confirmed must be true before NCS MCP lookup",
+            )
+        lookup_terms = reviewed_detail_terms
+        if not lookup_terms:
+            raise HTTPException(
+                status_code=422,
+                detail="reviewed NCS detail candidates are required for MCP lookup",
+            )
+        try:
+            ncs_items = search_units_by_detail(
+                lookup_terms,
+                max_units=max(20, run_top_k * 12),
+            )
+        except NcsMcpError as exc:
+            raise HTTPException(status_code=502, detail=f"NCS MCP lookup failed: {exc}") from exc
+        if not ncs_items:
+            raise HTTPException(
+                status_code=422,
+                detail=f"NCS MCP returned no competency units for reviewed detail terms: {lookup_terms[:8]}",
+            )
+        ncs_query_terms = lookup_terms
+    elif review_payload.get("review_confirmed") and reviewed_detail_terms:
+        try:
+            ncs_items = search_units_by_detail(
+                reviewed_detail_terms,
+                max_units=max(20, run_top_k * 12),
+            )
+            if ncs_items:
+                ncs_source = "ncs-mcp"
+                ncs_query_terms = reviewed_detail_terms
+        except NcsMcpError as exc:
+            ncs_error = f"NCS MCP 조회 실패: {exc}"
+
     # 4) 코드 기반 조회 후, 키워드 기반으로 순차 fallback
-    ncs_items = []
     max_sclass_verified = _clamp_sclass_limit(os.getenv("NCS_API_MAX_SCLASS_VERIFIED", "4"), default=4)
     max_sclass_name = _clamp_sclass_limit(os.getenv("NCS_API_MAX_SCLASS_NAME", "4"), default=4)
-    if verified_sclass:
+    if not mcp_only and verified_sclass:
         fetch_limit = min(max_sclass_verified, max(1, len(verified_sclass)))
         ncs_items = fetch_ncs_units_hrdk_by_verified_sclass(verified_sclass, max_sclass=fetch_limit)
         if ncs_items:
             ncs_source = "api-hrdk-sclass-verified"
 
-    if not ncs_items and ncs_query_terms:
+    if not mcp_only and not ncs_items and ncs_query_terms:
         fetch_limit = min(max_sclass_name, max(1, len(ncs_query_terms)))
         ncs_items = fetch_ncs_units_hrdk_by_sclass_names(ncs_query_terms, max_sclass=fetch_limit)
         if ncs_items:
             ncs_source = "api-hrdk-sclass-name"
 
-    if not ncs_items and ncs_query_terms:
+    if not mcp_only and not ncs_items and ncs_query_terms:
         ncs_items = fetch_ncs_units_hrdk_by_keywords(ncs_query_terms, max_items=60)
         if ncs_items:
             ncs_source = "api-hrdk-keyword"
 
-    if not ncs_items and seeds:
+    if not mcp_only and not ncs_items and seeds:
         ai_ncs_code_candidates = ai_extract_ncs_cl_codes(seed_terms=seeds[:18], jd_text=jd_for_match, max_items=8)
         if ai_ncs_code_candidates:
             ncs_items = fetch_ncs_units_hrdk_by_cl_codes(ai_ncs_code_candidates, max_items=40)
             if ncs_items:
                 ncs_source = "api-hrdk-clcode"
 
-    if not ncs_items:
+    if not mcp_only and not ncs_items:
         ncs_source = "fallback-local-map"
         ncs_error = "외부 NCS 조회가 불안정하여 로컬 매핑으로 대체했습니다."
 
@@ -1143,12 +1287,13 @@ async def jd_strategy_upload(
         duty_text=duty_text_clean,
         evaluation_text=evaluation_text_clean,
     )
-    if ncs_items and ncs_source in {"api-hrdk-code-first", "api-hrdk-clcode", "api-hrdk-keyword", "api-hrdk-sclass-verified", "api-hrdk-sclass-name"}:
+    if ncs_items and ncs_source in {"ncs-mcp", "api-hrdk-code-first", "api-hrdk-clcode", "api-hrdk-keyword", "api-hrdk-sclass-verified", "api-hrdk-sclass-name"}:
         ncs_matches, rerank_mode = rerank_ncs_matches(
             jd_text=unit_rank_query_text or jd_for_match,
             ncs_items=ncs_items,
             top_k=run_top_k,
             preferred_sclass=ncs_query_terms,
+            openai_api_key=request_openai_api_key,
         )
         if ncs_matches:
             ncs_source = f"{ncs_source}+ai-rerank" if rerank_mode == "ai" else f"{ncs_source}+rerank"
@@ -1207,7 +1352,7 @@ async def jd_strategy_upload(
         if ncs_matches:
             ncs_source = "api-soclass"
 
-    if not ncs_matches:
+    if not mcp_only and not ncs_matches:
         # 마지막 fallback: 내부 샘플 매퍼로 최소 매핑 확보
         local_items = map_ncs(category="R6000_MANAGEMENT", text=jd_for_match, top_k=8)
         for it in (local_items or [])[:8]:
@@ -1230,6 +1375,11 @@ async def jd_strategy_upload(
             ncs_error = "외부 NCS 매핑 실패로 로컬 매퍼를 사용했습니다."
         elif not ncs_error:
             ncs_error = f"NCS 매핑 결과가 없어 JD 기반 질문으로 대체합니다. query={ncs_query_terms[:8]}"
+    if mcp_only and not ncs_matches:
+        raise HTTPException(
+            status_code=422,
+            detail=f"NCS MCP units were found, but no NCS matches survived ranking: {ncs_query_terms[:8]}",
+        )
 
     # NCS 평가요소를 수집해 OpenAI 입력에 함께 전달한다.
     # 전체 KSA 후보를 넓게 수집한 뒤, JD 핵심 + 담당업무 텍스트 기준 TF-IDF로 상위만 선별한다.
@@ -1260,7 +1410,7 @@ async def jd_strategy_upload(
                 max_units=max(1, run_top_k),
             )
 
-        ncs_ksa_candidates = fetch_ncs_ksa_by_units(
+        ncs_ksa_candidates = _fetch_ncs_ksa_or_502(
             ncs_matches=ksa_units,
             max_units=len(ksa_units),
             max_factors_per_unit=ksa_candidate_per_unit,
@@ -1286,7 +1436,7 @@ async def jd_strategy_upload(
             ngram_max=4,
         )
         if not ncs_ksa:
-            ncs_ksa = fetch_ncs_ksa_by_units(
+            ncs_ksa = _fetch_ncs_ksa_or_502(
                 ncs_matches=ncs_matches[:run_top_k],
                 max_units=min(run_ksa_units, len(ncs_matches)),
                 max_factors_per_unit=run_ksa_factors,
@@ -1322,6 +1472,7 @@ async def jd_strategy_upload(
                 duty_text=duty_text_clean,
                 evaluation_text=evaluation_text_clean,
                 desired_job="",
+                api_key_override=request_openai_api_key,
             ),
         )
     except Exception as e:
@@ -1339,10 +1490,14 @@ async def jd_strategy_upload(
         "notice_text_preview": notice_text[:1200],
         "notice_context_preview": notice_context[:1200],
         "duty_text_preview": duty_text_clean[:1200],
+        "qualification_text_preview": qualification_text_clean[:1200],
         "evaluation_text_preview": evaluation_text_clean[:1200],
+        "jd_review_confirmed": review_payload.get("review_confirmed") is True,
+        "jd_review": review_payload if review_payload else None,
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,
+        "openai_key_source": "request" if request_openai_api_key else ("env" if settings.openai_key() else "missing"),
         "extracted_focus_terms": vision_terms,
         "subcategory_text_preview": subcategory_text[:800],
         "small_categories_extracted": extracted_small_categories,
@@ -1379,6 +1534,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
     notice_text = str(payload.get("notice_text", "")).strip()
     duty_text = str(payload.get("duty_text", "")).strip()
     evaluation_text = str(payload.get("evaluation_text", "")).strip()
+    request_openai_api_key = _sanitize_request_openai_key(payload.get("openai_api_key", ""))
     selected_ncs = payload.get("selected_ncs", [])
     knobs = payload.get("runtime_knobs", {}) if isinstance(payload.get("runtime_knobs", {}), dict) else {}
     run_top_k, run_ksa_units, run_ksa_factors = _clamp_runtime_knobs(
@@ -1390,6 +1546,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
         raise HTTPException(status_code=400, detail="notice_text is required")
     if not isinstance(selected_ncs, list) or not selected_ncs:
         raise HTTPException(status_code=400, detail="selected_ncs is required")
+    _require_ncs_mcp_url()
 
     ncs_matches: list[dict[str, Any]] = []
     seen_codes: set[str] = set()
@@ -1433,7 +1590,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
         secondary_units=None,
         max_units=min(ksa_rank_units, len(ncs_matches)),
     )
-    ncs_ksa_candidates = fetch_ncs_ksa_by_units(
+    ncs_ksa_candidates = _fetch_ncs_ksa_or_502(
         ncs_matches=ksa_units,
         max_units=len(ksa_units),
         max_factors_per_unit=ksa_candidate_per_unit,
@@ -1456,7 +1613,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
         ngram_max=4,
     )
     if not ncs_ksa:
-        ncs_ksa = fetch_ncs_ksa_by_units(
+        ncs_ksa = _fetch_ncs_ksa_or_502(
             ncs_matches=ncs_matches[:run_top_k],
             max_units=min(run_ksa_units, len(ncs_matches)),
             max_factors_per_unit=run_ksa_factors,
@@ -1491,6 +1648,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
                 duty_text=duty_text,
                 evaluation_text=evaluation_text,
                 desired_job="",
+                api_key_override=request_openai_api_key,
             ),
         )
     except Exception as e:
@@ -1513,6 +1671,7 @@ async def generate_questions_from_text(payload: dict) -> dict:
         "profile_used": False,
         "ncs_source": "manual-selected",
         "ncs_error": "",
+        "openai_key_source": "request" if request_openai_api_key else ("env" if settings.openai_key() else "missing"),
         "extracted_focus_terms": [],
         "subcategory_text_preview": "",
         "small_categories": [],

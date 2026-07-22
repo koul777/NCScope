@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>면접 질문 생성기</title>
+  <title>NCScope</title>
   <style>
     :root { --bg:#f3f6fb; --ink:#132238; --muted:#5f6f83; --line:#dbe3ee; --primary:#0b69ff; --card:#fff; --good:#1f9d55; --warn:#ca8a04; }
     * { box-sizing:border-box; }
@@ -57,7 +57,7 @@
     .build-tag { margin-top:4px; font-size:11px; opacity:.8; }
     @media (max-width:980px){ .grid { grid-template-columns:1fr; } }
 
-    /* 소분류 UI */
+    /* legacy small-category helper */
     .sclass-block { margin-top:10px; }
     .sclass-block label { margin-bottom:6px; }
     .sclass-extracting { font-size:12px; color:var(--muted); padding:6px 0; display:none; }
@@ -100,9 +100,9 @@
 <body>
   <div class="wrap">
     <section class="hero">
-      <h1>면접 질문 생성기</h1>
-      <p>직무기술서 파일 + 담당업무 텍스트를 입력하거나, 담당업무를 직접 입력하고 NCS 코드를 선택할 수 있습니다.</p>
-      <div class="build-tag">build: upload+manual-mode</div>
+      <h1>NCScope</h1>
+      <p>직무기술서에서 세분류를 검토·확정한 뒤 NCS_MCP의 공식 KSA로 구조화 면접 질문을 생성합니다.</p>
+      <div class="build-tag">build: kordoc-hitl-mcp</div>
     </section>
 
     <div class="grid">
@@ -117,13 +117,36 @@
           </select>
         </div>
 
-        <div id="uploadBlock">
-          <label for="jdFile">직무기술서 파일 (필수, PDF/TXT)</label>
-          <input id="jdFile" type="file" accept=".pdf,.txt" />
+        <label for="openaiApiKey">OpenAI API key (선택)</label>
+        <input id="openaiApiKey" type="password" placeholder="sk-... 또는 환경변수 OPENAI_API_KEY 사용" autocomplete="off" spellcheck="false" />
+        <div class="sub" style="margin-top:-4px; margin-bottom:10px;">
+          입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 비워두면 서버의 <code>OPENAI_API_KEY</code>를 사용합니다.
+        </div>
 
-          <!-- 소분류 자동 추출 + 편집 UI -->
+        <div id="uploadBlock">
+          <label for="jdFile">직무기술서 파일 (필수, PDF/HWP/HWPX/DOCX/이미지/TXT)</label>
+          <input id="jdFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.png,.jpg,.jpeg,.webp,.txt" />
+
+          <div id="jdReviewBlock" style="display:none; margin-top:14px; padding:12px; border:1px solid #cbd5e1; border-radius:10px; background:#f8fafc;">
+            <div style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
+              <label style="margin:0;">Kordoc 자동 추출 검토</label>
+              <span id="jdReviewStatus" class="sub">파일을 분석합니다...</span>
+            </div>
+            <p class="sub" style="margin:6px 0 10px;">자동 추출값을 확인·수정한 뒤 확정해야 MCP 조회와 면접 질문 생성을 진행합니다.</p>
+            <label for="reviewDuties">수행업무</label>
+            <textarea id="reviewDuties" rows="4" placeholder="Kordoc이 추출한 수행업무"></textarea>
+            <label for="reviewQualifications">지원자격</label>
+            <textarea id="reviewQualifications" rows="3" placeholder="Kordoc이 추출한 지원자격"></textarea>
+            <label for="reviewPreferences">우대사항</label>
+            <textarea id="reviewPreferences" rows="2" placeholder="Kordoc이 추출한 우대사항"></textarea>
+            <label for="reviewNcsDetail">확정할 세분류</label>
+            <textarea id="reviewNcsDetail" rows="2" placeholder="예: 경영기획"></textarea>
+            <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
+          </div>
+
+          <!-- Legacy small-category fallback helper. Hidden in the MCP-only flow. -->
           <div class="sclass-block" id="sclassBlock" style="display:none;">
-            <label>소분류 <span style="font-weight:400;color:var(--muted);">(추출됨 · × 로 제거)</span></label>
+            <label>레거시 소분류 보정 <span style="font-weight:400;color:var(--muted);">(MCP 미설정 개발 fallback용)</span></label>
             <div class="sclass-extracting" id="sclassExtracting">소분류 추출 중...</div>
             <div class="sclass-tags" id="sclassTags"></div>
 
@@ -136,7 +159,7 @@
             </div>
 
             <!-- 확정 버튼 -->
-            <button type="button" id="btnConfirmSclass" style="background:#1f9d55; margin-top:10px;">소분류 확정 → 면접 질문 생성</button>
+            <button type="button" id="btnConfirmSclass" style="background:#1f9d55; margin-top:10px;">레거시 보정 적용 → 면접 질문 생성</button>
           </div>
 
           <label for="noticeFile">공고문 파일 (선택, PDF/TXT)</label>
@@ -169,7 +192,7 @@
         </div>
 
 
-        <button id="btnRun" style="display:none;">면접 질문 생성</button>
+        <button id="btnRun" style="display:none;">MCP KSA 기반 면접 질문 생성</button>
       </section>
 
       <section class="card">
@@ -252,11 +275,18 @@
     const inputMode = document.getElementById('inputMode');
     const uploadBlock = document.getElementById('uploadBlock');
     const manualBlock = document.getElementById('manualBlock');
+    const openaiApiKey = document.getElementById('openaiApiKey');
     const jdFile = document.getElementById('jdFile');
     const noticeFile = document.getElementById('noticeFile');
     const dutyText = document.getElementById('dutyText');
     const evalText = document.getElementById('evalText');
     const evalTextManual = document.getElementById('evalTextManual');
+    const jdReviewBlock = document.getElementById('jdReviewBlock');
+    const jdReviewStatus = document.getElementById('jdReviewStatus');
+    const reviewDuties = document.getElementById('reviewDuties');
+    const reviewQualifications = document.getElementById('reviewQualifications');
+    const reviewPreferences = document.getElementById('reviewPreferences');
+    const reviewNcsDetail = document.getElementById('reviewNcsDetail');
 
     let ncsUnitOptions = [];
     let progressTimer = null;
@@ -271,6 +301,8 @@
     let sclassItems = [];
     let allNcsCats = [];   // 자동완성용 전체 NCS 소분류 목록
     let extractedSclassBase = []; // 파일에서 처음 추출된 소분류(삭제 계산 기준)
+    let jdReviewPayload = null;
+    let reviewConfirmed = false;
 
     function normSclassLabel(v) {
       return String(v || '').replace(/\s+/g, '').trim().toLowerCase();
@@ -286,6 +318,10 @@
         out.push(t);
       });
       return out;
+    }
+
+    function requestOpenAIKey() {
+      return (openaiApiKey && openaiApiKey.value ? openaiApiKey.value : '').trim();
     }
 
     // 페이지 로드 시 NCS 소분류 목록 미리 가져오기
@@ -304,8 +340,12 @@
         const tag = document.createElement('span');
         tag.className = 'sclass-tag' + (item.type === 'custom' ? ' custom' : '');
         const prefix = item.type === 'custom' ? '[직접] ' : '';
-        tag.innerHTML = `${prefix}${item.label} <button title="제거">×</button>`;
-        tag.querySelector('button').onclick = () => { sclassItems.splice(idx, 1); renderSclassTags(); };
+        tag.appendChild(document.createTextNode(`${prefix}${item.label} `));
+        const removeButton = document.createElement('button');
+        removeButton.title = '제거';
+        removeButton.textContent = '×';
+        removeButton.onclick = () => { sclassItems.splice(idx, 1); renderSclassTags(); };
+        tag.appendChild(removeButton);
         sclassTags.appendChild(tag);
       });
     }
@@ -342,11 +382,69 @@
       }
     }
 
+    async function parseJdForReview(file) {
+      jdReviewBlock.style.display = 'block';
+      jdReviewStatus.textContent = 'Kordoc 분석 중...';
+      reviewConfirmed = false;
+      jdReviewPayload = null;
+      btn.style.display = 'none';
+      try {
+        const fd = new FormData();
+        fd.append('jd_file', file);
+        const res = await fetch('/api/jd/parse-review', { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const fields = data.fields || {};
+        reviewDuties.value = (fields.duties || []).join('\n');
+        reviewQualifications.value = (fields.qualifications || []).join('\n');
+        reviewPreferences.value = (fields.preferences || []).join('\n');
+        reviewNcsDetail.value = (fields.ncs_detail_candidates || []).join('\n');
+        jdReviewPayload = data;
+        jdReviewStatus.textContent = '검토 필요';
+      } catch (e) {
+        jdReviewStatus.textContent = '자동 파싱 실패';
+        console.warn('Kordoc 검토 파싱 실패:', e);
+      }
+    }
+
+    document.getElementById('btnConfirmReview').addEventListener('click', () => {
+      if (!jdReviewPayload) {
+        jdReviewStatus.textContent = '검토할 자동 추출 결과가 없습니다.';
+        return;
+      }
+      jdReviewPayload.fields = jdReviewPayload.fields || {};
+      jdReviewPayload.fields.duties = reviewDuties.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
+      jdReviewPayload.fields.qualifications = reviewQualifications.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
+      jdReviewPayload.fields.preferences = reviewPreferences.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
+      jdReviewPayload.fields.ncs_detail_candidates = reviewNcsDetail.value.split(/[\n,;/|]+/).map(x => x.trim()).filter(Boolean);
+      if (!jdReviewPayload.fields.ncs_detail_candidates.length) {
+        jdReviewStatus.textContent = '세분류를 1개 이상 확인해야 합니다.';
+        reviewNcsDetail.focus();
+        return;
+      }
+      jdReviewPayload.review_confirmed = true;
+      reviewConfirmed = true;
+      jdReviewStatus.textContent = '확정됨 · MCP 조회 가능';
+      document.getElementById('btnConfirmReview').textContent = '검토 확정 완료';
+      document.getElementById('btnConfirmReview').style.background = '#15803d';
+      btn.style.display = 'block';
+      btn.textContent = 'MCP KSA 기반 면접 질문 생성';
+    });
+
     // 파일 선택 시 자동 추출
     document.getElementById('jdFile').addEventListener('change', e => {
       const file = e.target.files[0];
-      if (file) extractSclassFromFile(file);
-      else { sclassBlock.style.display = 'none'; sclassItems = []; extractedSclassBase = []; }
+      if (file) {
+        sclassBlock.style.display = 'none';
+        parseJdForReview(file);
+      } else {
+        sclassBlock.style.display = 'none';
+        jdReviewBlock.style.display = 'none';
+        sclassItems = [];
+        extractedSclassBase = [];
+        jdReviewPayload = null;
+        reviewConfirmed = false;
+      }
     });
 
 
@@ -362,7 +460,10 @@
       const already = new Set(sclassItems.map(i => i.label));
       const hits = allNcsCats.filter(c => !already.has(c) && c.toLowerCase().includes(q)).slice(0, 15);
       if (!hits.length) {
-        acBox.innerHTML = '<div class="ac-empty">일치하는 소분류가 없습니다</div>';
+        const empty = document.createElement('div');
+        empty.className = 'ac-empty';
+        empty.textContent = '일치하는 소분류가 없습니다';
+        acBox.appendChild(empty);
         acBox.style.display = 'block';
         return;
       }
@@ -372,7 +473,15 @@
         // 매칭 부분 볼드 표시
         const lo = cat.toLowerCase();
         const idx = lo.indexOf(q);
-        div.innerHTML = cat.substring(0, idx) + '<b>' + cat.substring(idx, idx + q.length) + '</b>' + cat.substring(idx + q.length);
+        if (idx >= 0) {
+          div.appendChild(document.createTextNode(cat.substring(0, idx)));
+          const strong = document.createElement('b');
+          strong.textContent = cat.substring(idx, idx + q.length);
+          div.appendChild(strong);
+          div.appendChild(document.createTextNode(cat.substring(idx + q.length)));
+        } else {
+          div.textContent = cat;
+        }
         div.addEventListener('mousedown', e => { e.preventDefault(); selectAutocomplete(cat); });
         acBox.appendChild(div);
       });
@@ -435,7 +544,10 @@
       const already = new Set(sclassItems.map(i => i.label));
       const cats = allNcsCats.filter(c => !already.has(c));
       if (!cats.length) {
-        acBox.innerHTML = '<div class="ac-empty">추가할 소분류가 없습니다</div>';
+        const empty = document.createElement('div');
+        empty.className = 'ac-empty';
+        empty.textContent = '추가할 소분류가 없습니다';
+        acBox.appendChild(empty);
       } else {
         cats.forEach(cat => {
           const div = document.createElement('div');
@@ -448,14 +560,14 @@
       acBox.classList.add('fulllist');
       acBox.style.display = 'block';
       fullListOpen = true;
-      btnShowAll.innerHTML = '&#9650; 닫기';
+      btnShowAll.textContent = '▲ 닫기';
     }
 
     function hideFullList() {
       acBox.style.display = 'none';
       acBox.classList.remove('fulllist');
       fullListOpen = false;
-      btnShowAll.innerHTML = '&#9660; 전체';
+      btnShowAll.textContent = '▼ 전체';
     }
 
     btnShowAll.addEventListener('click', () => {
@@ -465,11 +577,16 @@
     // 검색 입력 시 전체목록 모드 해제
     const _origShowAC = showAutocomplete;
     sclassCustomInput.addEventListener('input', () => {
-      if (fullListOpen) { fullListOpen = false; btnShowAll.innerHTML = '&#9660; 전체'; acBox.classList.remove('fulllist'); }
+      if (fullListOpen) { fullListOpen = false; btnShowAll.textContent = '▼ 전체'; acBox.classList.remove('fulllist'); }
     });
 
-    // 소분류 확정 버튼 → 실제 면접 질문 생성 실행
+    // 사람 검토·확정 후 실제 면접 질문 생성 실행
     document.getElementById('btnConfirmSclass').addEventListener('click', () => {
+      if (!reviewConfirmed) {
+        jdReviewStatus.textContent = '먼저 Kordoc 추출 결과를 검토·확정해 주세요.';
+        jdReviewBlock.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
       document.getElementById('btnRun').click();
     });
 
@@ -524,6 +641,8 @@
       const isUpload = mode !== 'manual';
       uploadBlock.classList.toggle('hidden', !isUpload);
       manualBlock.classList.toggle('hidden', isUpload);
+      btn.style.display = isUpload ? (reviewConfirmed ? 'block' : 'none') : 'block';
+      btn.textContent = isUpload ? 'MCP KSA 기반 면접 질문 생성' : '면접 질문 생성';
     }
 
     function collectRuntimeKnobs() {
@@ -553,6 +672,7 @@
       addMetaPill(meta, `공고문 글자수: ${(data.notice_text_preview || '').length}`);
       addMetaPill(meta, `담당업무 글자수: ${(data.duty_text_preview || '').length}`);
       addMetaPill(meta, `NCS 소스: ${data.ncs_source || '-'}`, 'pill good');
+      addMetaPill(meta, `OpenAI key: ${data.openai_key_source || '-'}`);
 
 
       if (data.ncs_error) {
@@ -573,7 +693,11 @@
       ];
       for (const [step, status, detail] of rows) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${step}</td><td>${status}</td><td>${detail}</td>`;
+        [step, status, detail].forEach((value) => {
+          const td = document.createElement('td');
+          td.textContent = String(value ?? '-');
+          tr.appendChild(td);
+        });
         body.appendChild(tr);
       }
       table.style.display = 'table';
@@ -624,16 +748,43 @@
         const fus = getFollowUps(q);
         const no = start + i + 1;
 
-        box.innerHTML = `
-          <div class="qhead"><strong>#${no}</strong><span>${type}</span><span>${comp}</span><span>${code}</span></div>
-          <div><strong>Q.</strong> ${q.question || '-'}</div>
-          <div class="followup-chain">
-            <div class="fu-step"><span class="fu-label">↳ 꼬리1</span> ${fus[0]}</div>
-            <div class="fu-step"><span class="fu-label">↳ 꼬리2</span> ${fus[1]}</div>
-            <div class="fu-step"><span class="fu-label">↳ 꼬리3</span> ${fus[2]}</div>
-          </div>
-          <div class="sub">평가 포인트: ${ev}</div>
-        `;
+        const head = document.createElement('div');
+        head.className = 'qhead';
+        const noEl = document.createElement('strong');
+        noEl.textContent = `#${no}`;
+        head.appendChild(noEl);
+        [type, comp, code].forEach((value) => {
+          const span = document.createElement('span');
+          span.textContent = String(value || '-');
+          head.appendChild(span);
+        });
+        box.appendChild(head);
+
+        const question = document.createElement('div');
+        const qLabel = document.createElement('strong');
+        qLabel.textContent = 'Q.';
+        question.appendChild(qLabel);
+        question.appendChild(document.createTextNode(` ${q.question || '-'}`));
+        box.appendChild(question);
+
+        const chain = document.createElement('div');
+        chain.className = 'followup-chain';
+        fus.forEach((fu, idx) => {
+          const step = document.createElement('div');
+          step.className = 'fu-step';
+          const label = document.createElement('span');
+          label.className = 'fu-label';
+          label.textContent = `↳ 꼬리${idx + 1}`;
+          step.appendChild(label);
+          step.appendChild(document.createTextNode(` ${fu || '-'}`));
+          chain.appendChild(step);
+        });
+        box.appendChild(chain);
+
+        const sub = document.createElement('div');
+        sub.className = 'sub';
+        sub.textContent = `평가 포인트: ${ev}`;
+        box.appendChild(sub);
         root.appendChild(box);
       }
       updateQNav();
@@ -653,7 +804,11 @@
       table.style.display = 'table';
       for (const m of matches) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${m.ncsClCd || '-'}</td><td>${m.compeUnitName || '-'}</td><td>${m.compeUnitLevel || '-'}</td><td>${m.score ?? '-'}</td>`;
+        [m.ncsClCd || '-', m.compeUnitName || '-', m.compeUnitLevel || '-', m.score ?? '-'].forEach((value) => {
+          const td = document.createElement('td');
+          td.textContent = String(value ?? '-');
+          tr.appendChild(td);
+        });
         body.appendChild(tr);
       }
     }
@@ -734,8 +889,14 @@
           const nFile = noticeFile.files && noticeFile.files[0];
           if (nFile) fd.append('notice_file', nFile);
           fd.append('strengths', '');
+          const requestKey = requestOpenAIKey();
+          if (requestKey) fd.append('openai_api_key', requestKey);
           fd.append('duty_text', (dutyText.value || '').trim());
           fd.append('evaluation_text', (evalText.value || '').trim());
+          if (!reviewConfirmed || !jdReviewPayload) {
+            throw new Error('Kordoc 추출 결과를 검토·확정한 뒤 실행해 주세요.');
+          }
+          fd.append('jd_review_json', JSON.stringify(jdReviewPayload));
           // 소분류 편집 결과 전달: 최종 목록 + 추가/삭제 delta
           const finalSclass = dedupSclassLabels(
             sclassItems
@@ -779,6 +940,7 @@
               evaluation_text: (evalTextManual.value || '').trim(),
               selected_ncs: selected,
               runtime_knobs: knobs,
+              openai_api_key: requestOpenAIKey(),
             }),
           });
         }
@@ -802,7 +964,7 @@
         stopProgress('실패');
       } finally {
         btn.disabled = false;
-        btn.textContent = '면접 질문 생성';
+        btn.textContent = (inputMode.value || 'upload') === 'upload' ? 'MCP KSA 기반 면접 질문 생성' : '면접 질문 생성';
       }
     };
 

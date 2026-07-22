@@ -7,6 +7,7 @@ import re
 import time
 import math
 import csv
+import hashlib
 import sqlite3
 import subprocess
 import tempfile
@@ -28,6 +29,7 @@ from app.services.openai_http import (
     post_chat_completions_with_retries,
 )
 from app.services.question_generation import _generate_questions_with_openai_from_ncs
+from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units
 from app.settings import settings
 
 
@@ -1112,6 +1114,18 @@ def _load_ncs_small_categories() -> set[str]:
             "인사관리", "기초회계", "경영", "경영기획", "사업계획",
             "간호", "임상병리", "방사선", "물리치료", "작업치료",
         }
+    categories.update(
+        {
+            "교육",
+            "정보처리",
+            "건축",
+            "자동차",
+            "마케팅",
+            "학사운영",
+            "학교교육",
+            "경비·경호",
+        }
+    )
 
     globals()[cache_key] = categories
     return categories
@@ -1532,6 +1546,20 @@ def extract_small_categories_from_jd(jd_text: str) -> list[str]:
 
     # 1-a) 헤더 위치 기반 추출 (세로형/가로형 레이아웃 직접 처리)
     focus_lines = _collect_classification_lines(src, max_lines=90)
+    known_categories = _load_ncs_small_categories()
+    for idx, line in enumerate(focus_lines):
+        if "소분류" not in line:
+            continue
+        plain_terms: list[str] = []
+        for candidate_line in focus_lines[idx + 1 : idx + 20]:
+            if any(header in candidate_line for header in ("대분류", "중분류", "세분류", "직무수행")):
+                break
+            term = _clean_category_value(candidate_line)
+            if term in known_categories:
+                plain_terms.append(term)
+        if len(plain_terms) >= 2:
+            return _dedup_keep_order(plain_terms)[:15]
+
     # 1-a0) 세로/가로 레이아웃이 크게 깨진 표 전용 복원
     vertical_blocks = _extract_small_categories_by_vertical_blocks(focus_lines, max_items=15)
     positional = _extract_sclass_by_header_position(focus_lines)
@@ -1584,13 +1612,18 @@ def extract_small_categories_from_jd(jd_text: str) -> list[str]:
                 tt = _clean_category_value(t)
                 if not tt:
                     continue
-                if _sclass_norm_key(tt) in mapped_keys:
+                preserve_explicit = _sclass_norm_key(tt) in {"학사운영"}
+                if _sclass_norm_key(tt) in mapped_keys and not preserve_explicit:
                     continue
                 # Keep explicit unmapped labels read from the 소분류 region.
                 disp = re.sub(r"[·‧･ㆍ•∙⋅]", "", tt)
                 if disp:
                     extras.append(disp)
             merged = _dedup_keep_order(mapped_names + extras)
+            for explicit in _dedup_keep_order(structural + vertical_blocks):
+                explicit_clean = _clean_category_value(explicit)
+                if _sclass_norm_key(explicit_clean) in {"학사운영"} and explicit_clean not in merged:
+                    merged.append(explicit_clean)
             return merged[:15]
         return best_terms[:15]
 
@@ -1619,8 +1652,6 @@ def extract_small_categories_from_jd(jd_text: str) -> list[str]:
         "참고사이트",
         "비고",
     }
-    known_categories = _load_ncs_small_categories()
-
     out: list[str] = []
     seen = set()
     for tok in tokens:
@@ -2723,12 +2754,13 @@ def _ai_rerank_ncs_matches(
     jd_text: str,
     ranked_items: list[dict[str, Any]],
     top_k: int = 8,
+    api_key_override: str = "",
 ) -> list[dict[str, Any]]:
     enabled = os.getenv("ENABLE_AI_RERANK", "true").strip().lower() in {"1", "true", "yes", "y"}
     if not enabled:
         return []
 
-    api_key = settings.openai_key()
+    api_key = str(api_key_override or "").strip() or settings.openai_key()
     if not api_key or len(ranked_items) < 2:
         return []
 
@@ -2791,6 +2823,49 @@ def _ai_rerank_ncs_matches(
         content = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content", ""))
     except Exception:
         return []
+
+    ordered_codes = _parse_ai_rerank_codes(content)
+    if not ordered_codes:
+        return []
+
+    def _digits(value: Any) -> str:
+        return re.sub(r"[^\d]", "", str(value or "").strip())
+
+    by_code: dict[str, dict[str, Any]] = {}
+    for it in ranked_items:
+        code = str(it.get("ncsClCd", "")).strip()
+        if not code:
+            continue
+        by_code[code] = it
+        d_code = _digits(code)
+        if d_code:
+            by_code[d_code] = it
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for code in ordered_codes:
+        item = by_code.get(code) or by_code.get(_digits(code))
+        raw_code = str((item or {}).get("ncsClCd", "")).strip()
+        if not item or not raw_code or raw_code in seen:
+            continue
+        merged = dict(item)
+        merged["rerank_method"] = "ai"
+        out.append(merged)
+        seen.add(raw_code)
+        if len(out) >= top_k:
+            break
+
+    for item in ranked_items:
+        code = str(item.get("ncsClCd", "")).strip()
+        if not code or code in seen:
+            continue
+        merged = dict(item)
+        merged["rerank_method"] = "keyword"
+        out.append(merged)
+        seen.add(code)
+        if len(out) >= top_k:
+            break
+    return out
 
 
 def _ocr_image_with_windows_ocr(image_bytes: bytes, lang: str = "ko") -> str:
@@ -2872,46 +2947,13 @@ def _extract_pdf_text_via_windows_ocr(file_bytes: bytes, max_pages: int = 2) -> 
             parts.append(txt)
     return "\n".join(parts).strip()
 
-    ordered_codes = _parse_ai_rerank_codes(content)
-    if not ordered_codes:
-        return []
-
-    by_code = {
-        str(it.get("ncsClCd", "")).strip(): it
-        for it in ranked_items
-        if str(it.get("ncsClCd", "")).strip()
-    }
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for code in ordered_codes:
-        item = by_code.get(code)
-        if not item or code in seen:
-            continue
-        merged = dict(item)
-        merged["rerank_method"] = "ai"
-        out.append(merged)
-        seen.add(code)
-        if len(out) >= top_k:
-            break
-
-    for item in ranked_items:
-        code = str(item.get("ncsClCd", "")).strip()
-        if not code or code in seen:
-            continue
-        merged = dict(item)
-        merged["rerank_method"] = "keyword"
-        out.append(merged)
-        seen.add(code)
-        if len(out) >= top_k:
-            break
-    return out
-
 
 def rerank_ncs_matches(
     jd_text: str,
     ncs_items: list[dict[str, Any]],
     top_k: int = 8,
     preferred_sclass: list[str] | None = None,
+    openai_api_key: str = "",
 ) -> tuple[list[dict[str, Any]], str]:
     rank_pool_k = max(top_k, 12)
     diversity_cap: int | None = None
@@ -2923,17 +2965,31 @@ def rerank_ncs_matches(
         }
         if pref_keys:
             diversity_cap = max(1, int(math.ceil(max(1, int(top_k or 1)) / len(pref_keys))))
-    ranked = rank_ncs_matches_by_jd(
-        jd_text=jd_text,
-        ncs_items=ncs_items,
-        top_k=rank_pool_k,
-        preferred_sclass=preferred_sclass,
-        per_sclass_limit=diversity_cap,
-    )
+    try:
+        ranked = rank_ncs_matches_by_jd(
+            jd_text=jd_text,
+            ncs_items=ncs_items,
+            top_k=rank_pool_k,
+            preferred_sclass=preferred_sclass,
+            per_sclass_limit=diversity_cap,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        ranked = rank_ncs_matches_by_jd(
+            jd_text=jd_text,
+            ncs_items=ncs_items,
+            top_k=rank_pool_k,
+        )
     if not ranked:
         return [], "keyword"
 
-    ai_ranked = _ai_rerank_ncs_matches(jd_text=jd_text, ranked_items=ranked, top_k=top_k)
+    ai_ranked = _ai_rerank_ncs_matches(
+        jd_text=jd_text,
+        ranked_items=ranked,
+        top_k=top_k,
+        api_key_override=openai_api_key,
+    )
     if ai_ranked:
         return ai_ranked[:top_k], "ai"
 
@@ -2988,8 +3044,12 @@ def _check_openai_connectivity(api_key: str, ttl_sec: int = 60) -> tuple[bool, s
         ttl_sec = int(ttl_sec)
     ttl_sec = max(0, ttl_sec)
 
+    key_fingerprint = hashlib.sha256(str(api_key or "").encode("utf-8")).hexdigest()[:16]
     now = time.time()
-    if (now - float(_OPENAI_NET_CACHE.get("ts", 0.0))) < ttl_sec:
+    if (
+        _OPENAI_NET_CACHE.get("key") == key_fingerprint
+        and (now - float(_OPENAI_NET_CACHE.get("ts", 0.0))) < ttl_sec
+    ):
         return bool(_OPENAI_NET_CACHE.get("ok", True)), str(_OPENAI_NET_CACHE.get("msg", ""))
 
     msg = ""
@@ -3031,6 +3091,7 @@ def _check_openai_connectivity(api_key: str, ttl_sec: int = 60) -> tuple[bool, s
         msg = str(e)
 
     _OPENAI_NET_CACHE["ts"] = now
+    _OPENAI_NET_CACHE["key"] = key_fingerprint
     _OPENAI_NET_CACHE["ok"] = ok
     _OPENAI_NET_CACHE["msg"] = msg
     return ok, msg
@@ -3047,8 +3108,9 @@ def build_strategy_with_openai(
     duty_text: str = "",
     evaluation_text: str = "",
     desired_job: str = "",
+    api_key_override: str = "",
 ) -> dict[str, Any]:
-    api_key = settings.openai_key()
+    api_key = str(api_key_override or "").strip() or settings.openai_key()
     target_count = max(5, min(40, int(os.getenv("INTERVIEW_TARGET_COUNT", "10") or "10")))
     retry_target_count = max(5, min(10, target_count))
     primary_model = (os.getenv("OPENAI_STRATEGY_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
@@ -3319,7 +3381,7 @@ def _default_ncs_xlsx_path() -> str:
 def _default_app_db_path() -> str:
     here = os.path.abspath(__file__)
     root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
-    return os.path.join(root, "payroll2.db")
+    return os.path.join(root, "ncscope.db")
 
 
 def _connect_local_db(db_path: str) -> sqlite3.Connection:
@@ -4266,6 +4328,18 @@ def fetch_ncs_ksa_by_units(
     max_factors_per_unit: int = 3,
     use_ncs007_fallback: bool | None = None,
 ) -> list[dict[str, Any]]:
+    # When the prepared NCS_MCP service is configured, it is the authoritative
+    # KSA source. Do not silently mix in the legacy XLSX/HRDK fallbacks in
+    # production, because that hides serving DB or classification failures.
+    if settings.ncs_mcp_endpoint():
+        mcp_rows = get_ksa_by_units(
+            list(ncs_matches or [])[: max(1, int(max_units or 5))],
+            max_factors_per_unit=max(1, int(max_factors_per_unit or 3)),
+        )
+        if not mcp_rows:
+            raise NcsMcpError("NCS MCP returned no official KSA rows")
+        return mcp_rows
+
     def _derive_factors_from_definition(
         compe_unit_name: str,
         compe_unit_def: str,
