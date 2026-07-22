@@ -1,14 +1,18 @@
 # NCScope Deployment
 
+`NCS_MCP` is the local read-only NCS DB search server used by NCScope. The
+NCScope app does not open the SQLite serving DB directly; it calls this local
+server through `NCS_MCP_URL`.
+
 This project deploys as two processes:
 
-1. NCS_MCP serving process with the compact SQLite serving DB.
-2. NCScope FastAPI app that calls NCS_MCP through `NCS_MCP_URL`.
+1. NCS_MCP local search process with the compact SQLite serving DB.
+2. NCScope FastAPI app that calls the local NCS_MCP server through `NCS_MCP_URL`.
 
-The app repository must not contain `NCS_DB.xlsx`, raw SQLite DBs, downloaded
-ALIO attachments, local logs, virtual environments, or `node_modules`.
+Large data files and runtime artifacts should be managed outside the app
+repository, such as Release assets or deployment storage.
 
-## 1. Prepare NCS_MCP
+## 1. Prepare local NCS DB search server (NCS_MCP)
 
 Download the compact serving DB from the public GitHub Release:
 
@@ -18,7 +22,7 @@ Download the compact serving DB from the public GitHub Release:
 - Manifest asset: `ncs_interview_serving_release.json`
 - DB SHA-256: `F9BB59B8853E8F69DC4698028EC347ED9BD74D26133FBCEB031B05FD90F89B23`
 
-Set NCS_MCP environment:
+Set the local NCS_MCP search server environment:
 
 ```powershell
 $env:NCS_DB_PATH="C:\data\ncs_interview_serving_release.db"
@@ -66,9 +70,8 @@ docker run --rm -p 8015:8000 `
   ncscope-app
 ```
 
-Note: Docker CLI was not available in the local development environment, so the
-Dockerfile was syntax-reviewed and dependency-pinned but not build-executed
-locally.
+The Docker image contains only the NCScope app. Run NCS_MCP separately and pass
+its URL with `NCS_MCP_URL`.
 
 ## 4. Production environment flags
 
@@ -111,10 +114,10 @@ Expected MVP behavior:
 
 - Uploading a JD returns reviewable Kordoc fields.
 - Generation requires `jd_review_json.review_confirmed=true`.
-- MCP lookup uses confirmed NCS detail classifications only.
+- Local NCS DB lookup through NCS_MCP uses confirmed NCS detail classifications only.
 - If exact detail-class matching fails, the app returns manual NCS unit suggestions instead of generating ungrounded questions.
 - KSA rows have `factorSource=ncs-mcp` and `ksaStatus=official`.
-- KSA lookup requires `NCS_MCP_URL`; no XLSX/HRDK/definition fallback is used for official KSA.
+- KSA lookup requires `NCS_MCP_URL` and uses the local NCS serving DB through NCS_MCP.
 - Legacy NCS API endpoints return 410 unless explicitly enabled.
 - In production, pass secrets through the platform environment. Do not rely on
   automatic `.env` loading unless `NCSCOPE_LOAD_DOTENV=true` is intentionally

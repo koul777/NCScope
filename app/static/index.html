@@ -146,7 +146,7 @@
         <div>
           <h1>NCScope</h1>
           <p>직무기술서에서 세분류 후보를 추출하고, 공고문 담당업무·평가항목을 검토한 뒤 KSA 근거 면접 질문을 생성합니다.</p>
-          <div class="build-tag">Original interface · Kordoc parsing · Human Review · NCS_MCP evidence</div>
+          <div class="build-tag">Original interface · Kordoc parsing · Human Review · Local NCS DB evidence</div>
         </div>
         <div class="hero-badges">
           <span class="badge">비공식 보조도구</span>
@@ -189,13 +189,13 @@
           </div>
           <div id="flowGenerate" class="flow-step">
             <strong>4. 질문 생성</strong>
-            <span>NCS_MCP KSA 기반 생성</span>
+            <span>NCS DB KSA 기반 생성</span>
           </div>
         </div>
 
         <div class="guardrail-box">
           <strong>운영 원칙</strong>
-          <span>공고문은 담당업무·평가항목을 추출해 검토용으로 채우고, 직무기술서의 세분류는 사람이 확정한 값만 MCP 조회에 사용합니다. 로고·공식 사이트 자산은 사용하지 않습니다.</span>
+          <span>공고문은 담당업무·평가항목을 추출해 검토용으로 채우고, 직무기술서의 세분류는 사람이 확정한 값만 로컬 NCS DB 조회에 사용합니다. 로고·공식 사이트 자산은 사용하지 않습니다.</span>
         </div>
 
         <div id="uploadBlock">
@@ -208,7 +208,7 @@
               <label style="margin:0;">Kordoc 자동 추출 검토</label>
               <span id="jdReviewStatus" class="sub">파일을 분석합니다...</span>
             </div>
-            <p class="sub" style="margin:6px 0 10px;">자동 추출값을 확인·수정한 뒤 확정해야 MCP 조회와 면접 질문 생성을 진행합니다.</p>
+            <p class="sub" style="margin:6px 0 10px;">자동 추출값을 확인·수정한 뒤 확정해야 로컬 NCS DB 조회와 면접 질문 생성을 진행합니다.</p>
             <label for="reviewDuties">수행업무</label>
             <textarea id="reviewDuties" rows="4" placeholder="Kordoc이 추출한 수행업무"></textarea>
             <label for="reviewQualifications">지원자격</label>
@@ -220,9 +220,9 @@
             <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
           </div>
 
-          <!-- Legacy small-category fallback helper. Hidden in the MCP-only flow. -->
+          <!-- Legacy small-category fallback helper. Hidden in the local NCS DB flow. -->
           <div class="sclass-block" id="sclassBlock" style="display:none;">
-            <label>레거시 소분류 보정 <span style="font-weight:400;color:var(--muted);">(MCP 미설정 개발 fallback용)</span></label>
+            <label>레거시 소분류 보정 <span style="font-weight:400;color:var(--muted);">(NCS DB 서버 미설정 개발 fallback용)</span></label>
             <div class="sclass-extracting" id="sclassExtracting">소분류 추출 중...</div>
             <div class="sclass-tags" id="sclassTags"></div>
 
@@ -277,7 +277,7 @@
         </div>
 
 
-        <button id="btnRun" style="display:none;">MCP KSA 기반 면접 질문 생성</button>
+        <button id="btnRun" style="display:none;">NCS DB KSA 기반 면접 질문 생성</button>
       </section>
 
       <section class="card">
@@ -575,11 +575,11 @@
       }
       jdReviewPayload.review_confirmed = true;
       reviewConfirmed = true;
-      jdReviewStatus.textContent = '확정됨 · MCP 조회 가능';
+      jdReviewStatus.textContent = '확정됨 · NCS DB 조회 가능';
       document.getElementById('btnConfirmReview').textContent = '검토 확정 완료';
       document.getElementById('btnConfirmReview').style.background = '#15803d';
       btn.style.display = 'block';
-      btn.textContent = 'MCP KSA 기반 면접 질문 생성';
+      btn.textContent = 'NCS DB KSA 기반 면접 질문 생성';
       updateWorkflowMenu();
     });
 
@@ -823,7 +823,7 @@
       uploadBlock.classList.toggle('hidden', !isUpload);
       manualBlock.classList.toggle('hidden', isUpload);
       btn.style.display = isUpload ? (reviewConfirmed ? 'block' : 'none') : 'block';
-      btn.textContent = isUpload ? 'MCP KSA 기반 면접 질문 생성' : '면접 질문 생성';
+      btn.textContent = isUpload ? 'NCS DB KSA 기반 면접 질문 생성' : '면접 질문 생성';
     }
 
     function collectRuntimeKnobs() {
@@ -1212,7 +1212,7 @@
         stopProgress('실패');
       } finally {
         btn.disabled = false;
-        btn.textContent = (inputMode.value || 'upload') === 'upload' ? 'MCP KSA 기반 면접 질문 생성' : '면접 질문 생성';
+        btn.textContent = (inputMode.value || 'upload') === 'upload' ? 'NCS DB KSA 기반 면접 질문 생성' : '면접 질문 생성';
       }
     };
 

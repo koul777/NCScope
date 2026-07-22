@@ -4,7 +4,7 @@
 
 공공기관 채용 공고문과 직무기술서를 올리면, NCS 세분류를 확인한 뒤 공식 KSA 근거로 구조화 면접 질문을 생성하는 프로그램입니다.
 
-NCScope는 직무기술서 파일을 Kordoc으로 파싱하고, 사람이 세분류를 최종 확인한 다음, NCS_MCP의 read-only serving DB에서 공식 능력단위·수행준거·KSA를 조회합니다. 이후 해당 근거를 바탕으로 주질문, 꼬리질문, 평가포인트가 포함된 구조화 면접 질문을 생성합니다.
+NCScope는 직무기술서 파일을 Kordoc으로 파싱하고, 사람이 세분류를 최종 확인한 다음, 로컬 NCS DB 검색 서버인 NCS_MCP를 통해 공식 능력단위·수행준거·KSA를 조회합니다. 이후 해당 근거를 바탕으로 주질문, 꼬리질문, 평가포인트가 포함된 구조화 면접 질문을 생성합니다.
 
 ![NCScope 화면](docs/images/ncscope-home.png)
 
@@ -17,7 +17,7 @@ NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 
 1. API 설정
 2. 직무기술서 세분류 검토
 3. 공고문 핵심텍스트 검토
-4. NCS_MCP KSA 기반 질문 생성
+4. 로컬 NCS DB KSA 기반 질문 생성
 
 ## 왜 필요한가
 
@@ -32,7 +32,7 @@ Kordoc 문서 파싱
         ↓
 사람이 NCS 세분류 확인
         ↓
-NCS_MCP에서 공식 능력단위·KSA 조회
+로컬 NCS DB 검색 서버에서 공식 능력단위·KSA 조회
         ↓
 구조화 면접 질문 생성
 ```
@@ -42,11 +42,11 @@ NCS_MCP에서 공식 능력단위·KSA 조회
 - PDF/HWP/HWPX/DOCX/TXT/이미지 직무기술서와 해당 파일을 담은 ZIP 파싱
 - 소분류가 아니라 세분류 기준 NCS 후보 추출
 - Human-in-the-loop 방식의 세분류 검토·확정
-- 확정된 세분류 기준 NCS_MCP 공식 능력단위 조회
+- 확정된 세분류 기준 로컬 NCS DB 검색 서버(NCS_MCP)에서 공식 능력단위 조회
 - 공식 수행준거·KSA 기반 면접 질문 생성
 - 주질문, 꼬리질문, 평가포인트, NCS 매칭 결과, 질문별 KSA 근거 제공
 - OpenAI API key를 화면에서 요청 단위로 입력 가능
-- 별도 NCS_MCP 연결 기반의 경량 배포 구조
+- 로컬 NCS DB 검색 서버 연결 기반의 경량 배포 구조
 - 공식 NCS 사이트 자산을 사용하지 않는 비공식 독자 인터페이스
 
 ## 사용 방법
@@ -94,9 +94,9 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 
 필요하면 직접 수정한 뒤 `추출 결과 검토·확정` 버튼을 누릅니다.
 
-이 단계가 중요한 이유는 NCScope가 소분류나 키워드가 아니라, 사람이 확정한 세분류를 기준으로 NCS_MCP를 조회하기 때문입니다.
+이 단계가 중요한 이유는 NCScope가 소분류나 키워드가 아니라, 사람이 확정한 세분류를 기준으로 로컬 NCS DB 검색 서버(NCS_MCP)를 조회하기 때문입니다.
 
-확정한 세분류가 현재 NCS_MCP serving DB와 정확히 매칭되지 않으면 NCScope는 근거 없는 질문을 자동 생성하지 않습니다. 대신 후보 NCS 능력단위를 보여주고, 담당자가 직접 선택하는 흐름으로 전환합니다.
+확정한 세분류가 현재 로컬 NCS serving DB와 정확히 매칭되지 않으면 NCScope는 근거 없는 질문을 자동 생성하지 않습니다. 대신 후보 NCS 능력단위를 보여주고, 담당자가 직접 선택하는 흐름으로 전환합니다.
 
 ### 5. 공고문과 평가항목 입력
 
@@ -117,7 +117,7 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 
 ### 6. 면접 질문 생성
 
-`MCP KSA 기반 면접 질문 생성`을 누릅니다.
+`NCS DB KSA 기반 면접 질문 생성`을 누릅니다.
 
 결과 영역에서 다음을 확인할 수 있습니다.
 
@@ -160,13 +160,13 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 
 ## 시스템 구조
 
-NCScope는 앱과 NCS_MCP를 분리해서 배포합니다.
+NCScope는 앱과 로컬 NCS DB 검색 서버(NCS_MCP)를 분리해서 배포합니다.
 
 | 구성요소 | 역할 |
 | --- | --- |
 | NCScope FastAPI 앱 | 화면, 업로드, 검토, 질문 생성 흐름 제어 |
 | Kordoc | PDF/HWP/HWPX/DOCX/TXT/이미지 및 ZIP 내부 지원 문서 파싱 |
-| NCS_MCP | 공식 NCS 능력단위·수행준거·KSA 조회 |
+| NCS_MCP | 로컬 NCS DB 검색 서버. 공식 NCS 능력단위·수행준거·KSA 조회 담당 |
 | serving DB | 약 117MB 경량 read-only SQLite DB |
 | OpenAI API | 구조화 면접 질문 생성 및 선택적 재정렬 |
 
@@ -178,7 +178,7 @@ NCScope UI
 FastAPI
   ├─ Kordoc 문서 파싱
   ├─ Human review gate
-  ├─ NCS_MCP_URL → 공식 NCS/KSA 조회
+  ├─ NCS_MCP_URL → 로컬 NCS DB 검색 서버에서 공식 NCS/KSA 조회
   └─ OpenAI API → 질문 생성
 ```
 
@@ -205,9 +205,9 @@ npm ci
 
 `npm ci`는 `scripts/kordoc_parse.mjs`에서 사용하는 Kordoc Node 패키지를 설치합니다.
 
-## NCS_MCP 준비
+## 로컬 NCS DB 검색 서버(NCS_MCP) 준비
 
-NCScope는 원본 NCS DB를 직접 들고 있지 않습니다. NCS_MCP를 별도 프로세스로 실행해야 합니다.
+NCScope 앱은 NCS SQLite DB를 직접 열지 않습니다. 경량 serving DB를 읽는 로컬 NCS DB 검색 서버(NCS_MCP)를 별도 프로세스로 실행해야 합니다.
 
 ```powershell
 $env:NCS_DB_PATH="C:\data\ncs_interview_serving_release.db"
@@ -215,7 +215,7 @@ $env:NCS_MCP_READ_ONLY="1"
 python -m ncs_mcp.server --transport streamable-http --host 127.0.0.1 --port 8778
 ```
 
-필수 MCP 도구:
+NCS_MCP 필수 도구:
 
 - `ncs_search`
 - `ncs_unit_detail`
@@ -255,7 +255,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | 변수 | 필수 여부 | 기본값 | 설명 |
 | --- | --- | --- | --- |
 | `NCSCOPE_LOAD_DOTENV` | 선택 | `false` | 앱 import 시 `.env` 자동 로드 여부. 배포/테스트 기본값은 비활성화 |
-| `NCS_MCP_URL` | 필수 | 없음 | NCS_MCP Streamable HTTP 주소 |
+| `NCS_MCP_URL` | 필수 | 없음 | 로컬 NCS DB 검색 서버(NCS_MCP) Streamable HTTP 주소 |
 | `OPENAI_API_KEY` | 선택 | 없음 | 서버 기본 OpenAI 키 |
 | `OPENAI_MODEL` | 선택 | `gpt-4o-mini` | 일반 모델 설정 |
 | `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
@@ -267,7 +267,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | `ENABLE_LEGACY_NCS_API` | 선택 | `false` | 레거시 NCS API 재활성화 |
 
 면접 생성 MVP 경로는 `NCS_MCP_URL`을 필수로 요구합니다.
-KSA 조회는 NCS_MCP 연결을 기준으로 동작하므로, 운영 전 NCS_MCP 주소가 정상 연결되는지 확인해야 합니다.
+KSA 조회는 로컬 NCS DB 검색 서버(NCS_MCP) 연결을 기준으로 동작하므로, 운영 전 `NCS_MCP_URL`이 정상 연결되는지 확인해야 합니다.
 
 ## API 요약
 
@@ -327,7 +327,7 @@ Form:
 }
 ```
 
-`review_confirmed`가 정확히 `true`가 아니거나 세분류가 비어 있으면 NCS_MCP 조회를 진행하지 않습니다.
+`review_confirmed`가 정확히 `true`가 아니거나 세분류가 비어 있으면 로컬 NCS DB 조회를 진행하지 않습니다.
 
 ### 직접 선택한 NCS 기준 질문 생성
 
@@ -384,7 +384,7 @@ python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
 - 최근 JOB-ALIO 공고 10건 검사
 - 문서 9건 파싱 성공
 - 세분류 후보가 추출된 문서 7건
-- 세분류는 추출됐지만 현재 MCP DB와 매칭되지 않은 문서 3건
+- 세분류는 추출됐지만 현재 로컬 NCS serving DB와 매칭되지 않은 문서 3건
 - 공고문 본문에서 담당업무 후보 10건, 평가항목 후보 9건 추출
 - exact 매칭 실패 문서 중 수동 NCS 후보가 제시된 문서 2건
 - ZIP 첨부 3건은 내부 지원 문서를 메모리에서 읽어 파싱
@@ -408,15 +408,15 @@ docker run --rm -p 8015:8000 `
   ncscope-app
 ```
 
-Docker 이미지에는 앱만 포함합니다. NCS 데이터 조회는 별도 NCS_MCP 프로세스를 통해 수행합니다.
+Docker 이미지에는 앱만 포함합니다. NCS 데이터 조회는 별도 로컬 NCS DB 검색 서버(NCS_MCP)를 통해 수행합니다.
 
 자세한 배포 절차는 `DEPLOYMENT.md`를 참고하세요.
 
 ## 데이터와 배포 구조
 
-NCScope는 화면, 문서 파싱, 사람 검토, 면접 질문 생성을 담당합니다. NCS 능력단위·수행준거·KSA 데이터는 NCS_MCP에서 조회합니다.
+NCScope는 화면, 문서 파싱, 사람 검토, 면접 질문 생성을 담당합니다. NCS 능력단위·수행준거·KSA 데이터는 로컬 NCS DB 검색 서버(NCS_MCP)에서 조회합니다.
 
-운영자는 NCS_MCP를 먼저 실행한 뒤 `NCS_MCP_URL`을 NCScope에 연결하면 됩니다. 자세한 서버 구성과 배포 절차는 `DEPLOYMENT.md`에 정리되어 있습니다.
+운영자는 경량 serving DB를 읽는 NCS_MCP를 먼저 실행한 뒤 `NCS_MCP_URL`을 NCScope에 연결하면 됩니다. 자세한 서버 구성과 배포 절차는 `DEPLOYMENT.md`에 정리되어 있습니다.
 
 ## 현재 지원 범위
 

@@ -290,7 +290,7 @@ def _fetch_ncs_ksa_or_502(
             max_factors_per_unit=max_factors_per_unit,
         )
     except NcsMcpError as exc:
-        raise HTTPException(status_code=502, detail=f"NCS MCP KSA lookup failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"로컬 NCS DB KSA 조회 실패(NCS_MCP): {exc}") from exc
 
 
 def _require_ncs_mcp_url() -> str:
@@ -300,8 +300,8 @@ def _require_ncs_mcp_url() -> str:
     raise HTTPException(
         status_code=503,
         detail=(
-            "NCS_MCP_URL is required for NCScope. Start the read-only NCS_MCP "
-            "server with the compact serving DB and set NCS_MCP_URL."
+            "NCS_MCP_URL is required for NCScope. Start NCS_MCP, the read-only "
+            "local NCS DB search server, with the compact serving DB and set NCS_MCP_URL."
         ),
     )
 
@@ -310,7 +310,7 @@ def _require_legacy_ncs_api_enabled() -> None:
     if not settings.enable_legacy_ncs_api():
         raise HTTPException(
             status_code=410,
-            detail="legacy NCS API endpoints are disabled; use NCS_MCP_URL-backed endpoints",
+            detail="legacy NCS API endpoints are disabled; use NCS_MCP_URL-backed local NCS DB endpoints",
         )
 
 
@@ -943,7 +943,7 @@ def ncs_unit_options(
             source = "ncs-mcp-suggest"
             message = "Exact detail-class match was not found. Review suggested NCS units manually."
     except NcsMcpError as exc:
-        raise HTTPException(status_code=502, detail=f"NCS MCP lookup failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"로컬 NCS DB 조회 실패(NCS_MCP): {exc}") from exc
     return {"count": len(items), "items": items, "source": source, "message": message}
 
 
@@ -1124,7 +1124,7 @@ def ncs_diagnose(sample_job_cd: str = Query(default="02020101")) -> dict:
             "provider": "ncs-mcp",
             "ok": ok,
             "ncs_mcp": status,
-            "message": "NCS MCP is ready" if ok else "NCS MCP is not ready",
+            "message": "NCS_MCP local NCS DB server is ready" if ok else "NCS_MCP local NCS DB server is not ready",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"diagnose failed: {e}") from e
@@ -1547,19 +1547,19 @@ async def jd_strategy_upload(
         reviewed_detail_terms = extract_detail_categories_from_jd(jd_text)
 
     ncs_items: list[dict[str, Any]] = []
-    # The confirmed review payload is the gate for the authoritative NCS MCP
+    # The confirmed review payload is the gate for the authoritative local NCS DB lookup through NCS_MCP.
     # lookup. It prevents an unreviewed OCR label from driving KSA selection.
     if mcp_only:
         if review_payload.get("review_confirmed") is not True:
             raise HTTPException(
                 status_code=400,
-                detail="jd_review_json.review_confirmed must be true before NCS MCP lookup",
+                detail="jd_review_json.review_confirmed must be true before local NCS DB lookup",
             )
         lookup_terms = reviewed_detail_terms
         if not lookup_terms:
             raise HTTPException(
                 status_code=422,
-                detail="reviewed NCS detail candidates are required for MCP lookup",
+                detail="reviewed NCS detail candidates are required for local NCS DB lookup",
             )
         try:
             ncs_items = search_units_by_detail(
@@ -1567,7 +1567,7 @@ async def jd_strategy_upload(
                 max_units=max(20, run_top_k * 12),
             )
         except NcsMcpError as exc:
-            raise HTTPException(status_code=502, detail=f"NCS MCP lookup failed: {exc}") from exc
+            raise HTTPException(status_code=502, detail=f"로컬 NCS DB 조회 실패(NCS_MCP): {exc}") from exc
         if not ncs_items:
             try:
                 suggested_units = suggest_units_by_text(lookup_terms, max_units=12)
@@ -1576,7 +1576,7 @@ async def jd_strategy_upload(
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "message": "NCS MCP returned no exact competency units for the reviewed detail-class terms.",
+                    "message": "Local NCS DB server(NCS_MCP) returned no exact competency units for the reviewed detail-class terms.",
                     "lookup_terms": lookup_terms[:8],
                     "suggested_ncs_units": suggested_units,
                     "next_step": (
@@ -1596,7 +1596,7 @@ async def jd_strategy_upload(
                 ncs_source = "ncs-mcp"
                 ncs_query_terms = reviewed_detail_terms
         except NcsMcpError as exc:
-            ncs_error = f"NCS MCP 조회 실패: {exc}"
+            ncs_error = f"로컬 NCS DB 조회 실패(NCS_MCP): {exc}"
 
     # 4) 코드 기반 조회 후, 키워드 기반으로 순차 fallback
     max_sclass_verified = _clamp_sclass_limit(os.getenv("NCS_API_MAX_SCLASS_VERIFIED", "4"), default=4)
@@ -1726,7 +1726,7 @@ async def jd_strategy_upload(
     if mcp_only and not ncs_matches:
         raise HTTPException(
             status_code=422,
-            detail=f"NCS MCP units were found, but no NCS matches survived ranking: {ncs_query_terms[:8]}",
+            detail=f"Local NCS DB units were found through NCS_MCP, but no NCS matches survived ranking: {ncs_query_terms[:8]}",
         )
 
     # NCS 평가요소를 수집해 OpenAI 입력에 함께 전달한다.
