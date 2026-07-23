@@ -82,6 +82,51 @@ def test_notice_parse_review_extracts_supplement_fields(mocker):
     assert "문제해결" in "\n".join(body["fields"]["evaluation"])
 
 
+def test_question_plan_filters_detail_terms_and_preserves_counts():
+    plan = main._parse_question_plan_json(
+        json.dumps(
+            {
+                "items": [
+                    {"detail": "경영기획", "enabled": True, "main_count": 2, "follow_up_count": 2},
+                    {"detail": "총무", "enabled": False, "main_count": 3, "follow_up_count": 4},
+                    {"detail": "사무행정", "enabled": True, "main_count": 1, "follow_up_count": 4},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        ["경영기획", "총무", "사무행정"],
+    )
+
+    assert plan["selected_terms"] == ["경영기획", "사무행정"]
+    assert plan["total_main_count"] == 3
+    assert [x["detail"] for x in plan["question_sequence"]] == ["경영기획", "경영기획", "사무행정"]
+    assert [x["follow_up_count"] for x in plan["question_sequence"]] == [2, 2, 4]
+
+
+def test_adjust_generated_questions_applies_methods_and_followup_counts():
+    strategy = {
+        "interview_questions": [
+            {"question": "Q1", "follow_ups": ["a", "b", "c", "d"]},
+            {"question": "Q2", "follow_ups": ["a"]},
+        ]
+    }
+    plan = {
+        "total_main_count": 2,
+        "follow_up_count": 3,
+        "question_sequence": [
+            {"detail": "경영기획", "follow_up_count": 2},
+            {"detail": "사무행정", "follow_up_count": 4},
+        ],
+    }
+
+    adjusted = main._adjust_generated_questions(strategy, plan, ["인바스켓면접"])
+    questions = adjusted["interview_questions"]
+
+    assert [q["method"] for q in questions] == ["인바스켓면접", "인바스켓면접"]
+    assert [q["ncs_detail"] for q in questions] == ["경영기획", "사무행정"]
+    assert [len(q["follow_ups"]) for q in questions] == [2, 4]
+
+
 def test_mcp_only_requires_human_review_confirmation(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)

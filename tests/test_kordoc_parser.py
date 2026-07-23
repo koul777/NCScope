@@ -89,6 +89,12 @@ def test_notice_evaluation_keeps_interview_section_only() -> None:
 직무역량 | 직무수행에 필요한 지식과 경험
 의사소통능력 | 조직 내 협업과 소통 역량
 발전가능성 | 직무역량 개발 계획과 잠재력
+### 전형 일정
+서류 전형: 2025년 11월 초순 예정
+필기 전형: 2025년 11월 22일 예정
+면접 전형: 2025년 12월 초순 예정
+임용 시기: 2026년 1월 1일
+최종 합격자에게 개별 통지함.
 """
 
     result = structure_job_description({"markdown": markdown}, filename="notice.pdf")
@@ -97,4 +103,28 @@ def test_notice_evaluation_keeps_interview_section_only() -> None:
         "직무역량 | 직무수행에 필요한 지식과 경험",
         "의사소통능력 | 조직 내 협업과 소통 역량",
         "발전가능성 | 직무역량 개발 계획과 잠재력",
+    ]
+
+
+def test_notice_evaluation_stops_before_schedule_and_attachment_rows() -> None:
+    markdown = """
+면접전형
+구분 | 전형방법
+평가방법(배점)
+◦【인성면접】40점
+◦【실무면접】30점
+※ 세부 전형별 면접위원 평균점수가 40% 이하인 경우 결격 처리
+1부.
+건설기술관련 가점 인정 학과 범위 1부.
+채용서류 반환 청구서 1부. 끝.
+면접심사 합격자 발표 | 2026.8.5.(수) 15:00 | 문자 개별통보
+면접심사 (2차) | ▪ 응시원서 및 직무수행계획서 등을 바탕으로 한 직무역량 면접
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="notice.pdf")
+
+    assert result["fields"]["evaluation"] == [
+        "◦【인성면접】40점",
+        "◦【실무면접】30점",
+        "※ 세부 전형별 면접위원 평균점수가 40% 이하인 경우 결격 처리",
     ]

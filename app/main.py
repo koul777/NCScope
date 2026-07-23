@@ -216,6 +216,244 @@ def _merge_review_text(*values: Any, max_chars: int = 3000) -> str:
     return "\n".join(out)[:max_chars].strip()
 
 
+def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dict[str, Any]:
+    fallback_terms = [
+        str(term).strip()
+        for term in (reviewed_detail_terms or [])
+        if str(term).strip()
+    ]
+    fallback_terms = _parse_sclass_terms("\n".join(fallback_terms))
+    default_items = [
+        {
+            "detail": term,
+            "enabled": True,
+            "main_count": 2,
+            "follow_up_count": 3,
+        }
+        for term in fallback_terms
+    ]
+    if not str(raw or "").strip():
+        items = default_items
+    else:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"question_plan_json is invalid: {exc}") from exc
+        if isinstance(parsed, dict):
+            candidates = parsed.get("items") or parsed.get("details") or []
+        elif isinstance(parsed, list):
+            candidates = parsed
+        else:
+            candidates = []
+        items = []
+        for row in candidates:
+            if not isinstance(row, dict):
+                continue
+            detail = str(row.get("detail") or row.get("name") or row.get("ncs_detail") or "").strip()
+            if not detail:
+                continue
+            enabled = row.get("enabled", True)
+            enabled_bool = not (enabled is False or str(enabled).strip().lower() in {"0", "false", "no", "n"})
+            try:
+                main_count = int(row.get("main_count", row.get("question_count", 2)) or 0)
+            except Exception:
+                main_count = 2
+            try:
+                follow_up_count = int(row.get("follow_up_count", row.get("followups", 3)) or 0)
+            except Exception:
+                follow_up_count = 3
+            items.append(
+                {
+                    "detail": detail,
+                    "enabled": enabled_bool,
+                    "main_count": max(0, min(10, main_count)),
+                    "follow_up_count": max(0, min(5, follow_up_count)),
+                }
+            )
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        key = _norm_sclass_key(str(item.get("detail", "")))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        enabled = bool(item.get("enabled", True)) and int(item.get("main_count", 0) or 0) > 0
+        normalized.append(
+            {
+                "detail": str(item.get("detail", "")).strip(),
+                "enabled": enabled,
+                "main_count": max(0, min(10, int(item.get("main_count", 0) or 0))),
+                "follow_up_count": max(0, min(5, int(item.get("follow_up_count", 3) or 0))),
+            }
+        )
+    selected = [item for item in normalized if item["enabled"]]
+    if not selected and fallback_terms:
+        selected = default_items
+        normalized = default_items
+    total_main = sum(int(item.get("main_count", 0) or 0) for item in selected)
+    total_main = max(1, min(40, total_main)) if selected else 0
+    selected_terms = [str(item.get("detail", "")).strip() for item in selected if str(item.get("detail", "")).strip()]
+    follow_up_count = max([int(item.get("follow_up_count", 3) or 0) for item in selected] or [3])
+    question_sequence: list[dict[str, Any]] = []
+    for item in selected:
+        for _ in range(max(0, int(item.get("main_count", 0) or 0))):
+            question_sequence.append(
+                {
+                    "detail": str(item.get("detail", "")).strip(),
+                    "follow_up_count": max(0, min(5, int(item.get("follow_up_count", 3) or 0))),
+                }
+            )
+    return {
+        "items": normalized,
+        "selected_items": selected,
+        "selected_terms": selected_terms,
+        "question_sequence": question_sequence[:40],
+        "total_main_count": total_main,
+        "follow_up_count": max(0, min(5, follow_up_count)),
+    }
+
+
+def _parse_interview_methods(raw: str) -> list[str]:
+    allowed = {
+        "behavior": "경험면접",
+        "behavioral": "경험면접",
+        "행동관찰면접": "경험면접",
+        "행동관찰": "경험면접",
+        "경험면접": "경험면접",
+        "experience": "경험면접",
+        "experiential": "경험면접",
+        "situation": "상황면접",
+        "situational": "상황면접",
+        "상황면접": "상황면접",
+        "presentation": "발표면접",
+        "pt": "발표면접",
+        "pt면접": "발표면접",
+        "발표": "발표면접",
+        "발표면접": "발표면접",
+        "discussion": "토론면접",
+        "debate": "토론면접",
+        "group_discussion": "토론면접",
+        "토론": "토론면접",
+        "토론면접": "토론면접",
+        "inbasket": "인바스켓면접",
+        "in-basket": "인바스켓면접",
+        "인바스켓": "인바스켓면접",
+        "인바스켓면접": "인바스켓면접",
+        "job_knowledge": "직무지식면접",
+        "knowledge": "직무지식면접",
+        "직무지식": "직무지식면접",
+        "직무지식면접": "직무지식면접",
+    }
+    values: list[str] = []
+    text = str(raw or "").strip()
+    if text:
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            values = [str(x).strip() for x in parsed]
+        elif isinstance(parsed, dict):
+            values = [str(x).strip() for x in (parsed.get("methods") or [])]
+        else:
+            values = [part.strip() for part in re.split(r"[\n,;/|]+", text) if part.strip()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        mapped = allowed.get(value) or allowed.get(value.lower())
+        if not mapped:
+            mapped = allowed.get(_norm_sclass_key(value))
+        if mapped and mapped not in seen:
+            seen.add(mapped)
+            out.append(mapped)
+    return out or ["경험면접", "상황면접", "발표면접", "토론면접"]
+
+
+def _adjust_generated_questions(
+    strategy: dict[str, Any],
+    question_plan: dict[str, Any],
+    interview_methods: list[str],
+) -> dict[str, Any]:
+    if not isinstance(strategy, dict):
+        return strategy
+    questions = strategy.get("interview_questions")
+    if not isinstance(questions, list):
+        return strategy
+    target_total = int(question_plan.get("total_main_count", 0) or 0)
+    if target_total > 0:
+        questions = questions[:target_total]
+    raw_follow_count = question_plan.get("follow_up_count", 3)
+    follow_up_count = int(raw_follow_count if raw_follow_count is not None else 3)
+    follow_up_count = max(0, min(5, follow_up_count))
+    fallback = [
+        "그 상황에서 본인이 맡은 구체적인 역할과 판단 근거를 말씀해 주세요.",
+        "그 과정에서 가장 어려웠던 부분은 무엇이고, 어떻게 해결하셨나요?",
+        "그 결과는 어땠고, 돌이켜보면 어떤 점을 다르게 하시겠습니까?",
+        "관련 이해관계자와 어떻게 소통했는지 구체적으로 설명해 주세요.",
+        "동일한 상황이 반복된다면 어떤 기준으로 재판단하겠습니까?",
+    ]
+    methods = interview_methods or ["경험면접", "상황면접", "발표면접", "토론면접"]
+    adjusted: list[dict[str, Any]] = []
+    sequence = [
+        item for item in (question_plan.get("question_sequence") or [])
+        if isinstance(item, dict)
+    ]
+    for idx, row in enumerate(questions):
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        planned = sequence[idx] if idx < len(sequence) else {}
+        target_detail = str(planned.get("detail", "")).strip()
+        if target_detail and not str(item.get("ncs_detail", "")).strip():
+            item["ncs_detail"] = target_detail
+        row_follow_count_raw = planned.get("follow_up_count", follow_up_count)
+        row_follow_count = max(0, min(5, int(row_follow_count_raw if row_follow_count_raw is not None else follow_up_count)))
+        method = str(item.get("method") or item.get("type") or "").strip()
+        if method not in methods:
+            method = methods[idx % len(methods)]
+        item["method"] = method
+        item["type"] = method
+        follow_ups = item.get("follow_ups")
+        if isinstance(follow_ups, list):
+            fus = [str(x).strip() for x in follow_ups if str(x).strip()]
+        else:
+            single = str(item.get("follow_up", "")).strip()
+            fus = [single] if single else []
+        for default in fallback:
+            if len(fus) >= row_follow_count:
+                break
+            fus.append(default)
+        fus = fus[:row_follow_count]
+        item["follow_ups"] = fus
+        item["follow_up"] = fus[0] if fus else ""
+        adjusted.append(item)
+    strategy["interview_questions"] = adjusted
+    strategy["interview_by_competency"] = _group_interview_questions_for_response(adjusted)
+    strategy["question_plan_used"] = question_plan
+    strategy["interview_methods_used"] = methods
+    return strategy
+
+
+def _group_interview_questions_for_response(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for q in questions or []:
+        comp = str((q or {}).get("competency", "")).strip() or "핵심 직무"
+        code = str((q or {}).get("ncsClCd", "")).strip()
+        key = (comp, code)
+        grouped.setdefault(key, []).append(
+            {
+                "question": str((q or {}).get("question", "")).strip(),
+                "follow_ups": list((q or {}).get("follow_ups", []) or []),
+                "evaluation_points": list((q or {}).get("evaluation_points", []) or []),
+                "method": str((q or {}).get("method") or (q or {}).get("type") or "").strip(),
+            }
+        )
+    return [
+        {"competency": comp, "ncsClCd": code, "questions": qset}
+        for (comp, code), qset in grouped.items()
+    ]
+
+
 def _repeat_count_from_weight(weight: float, default: int = 1, max_repeat: int = 6) -> int:
     try:
         v = int(round(float(weight)))
@@ -1116,6 +1354,8 @@ async def jd_strategy_upload(
     qualification_text: str = Form(default=""),
     preference_text: str = Form(default=""),
     evaluation_text: str = Form(default=""),
+    question_plan_json: str = Form(default=""),
+    interview_methods_json: str = Form(default=""),
     jd_review_json: str = Form(default=""),
 ) -> dict:
     # 최적값 고정 (사용자 노출 제거)
@@ -1296,6 +1536,10 @@ async def jd_strategy_upload(
         for value in (reviewed_fields.get("ncs_detail_candidates") or [])
         if str(value).strip()
     ]
+    question_plan = _parse_question_plan_json(question_plan_json, reviewed_detail_terms)
+    interview_methods = _parse_interview_methods(interview_methods_json)
+    if question_plan["selected_terms"]:
+        reviewed_detail_terms = list(question_plan["selected_terms"])
     if not mcp_only and not reviewed_detail_terms:
         reviewed_detail_terms = extract_detail_categories_from_jd(jd_text)
 
@@ -1566,15 +1810,21 @@ async def jd_strategy_upload(
                 evaluation_text=evaluation_text_clean,
                 desired_job="",
                 api_key_override=request_openai_api_key,
+                target_count_override=question_plan["total_main_count"],
+                follow_up_count=question_plan["follow_up_count"],
+                question_plan=question_plan,
+                interview_methods=interview_methods,
             ),
         )
+        strategy = _adjust_generated_questions(strategy, question_plan, interview_methods)
     except Exception as e:
         strategy = build_strategy_with_rule_fallback(
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
             error_message=f"model_generation_failed: {e}",
-            target_count=24,
+            target_count=question_plan["total_main_count"] or 24,
         )
+        strategy = _adjust_generated_questions(strategy, question_plan, interview_methods)
 
     return {
         "filename": jd_file.filename,
@@ -1588,6 +1838,8 @@ async def jd_strategy_upload(
         "evaluation_text_preview": evaluation_text_clean[:1200],
         "jd_review_confirmed": review_payload.get("review_confirmed") is True,
         "jd_review": review_payload if review_payload else None,
+        "question_plan": question_plan,
+        "interview_methods": interview_methods,
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,

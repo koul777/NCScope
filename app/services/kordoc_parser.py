@@ -161,6 +161,57 @@ def _split_items(text: str) -> list[str]:
     return output
 
 
+def _clean_evaluation_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = re.sub(r"<br\s*/?>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[*_`~]+", "", text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\s*\|\s*", " | ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" |\t\r\n:：-•")
+
+
+def _is_evaluation_header_item(value: str) -> bool:
+    key = _norm(value)
+    return key in {
+        "항목",
+        "비고",
+        "항목비고",
+        "전형사항평가기준",
+        "전형사항",
+        "평가기준",
+        "구분",
+        "전형방법",
+        "전형구분",
+        "평가방법",
+        "평가방법배점",
+        "배점",
+    }
+
+
+def _split_evaluation_items(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    cells = _split_table_row(raw)
+    if not cells and "|" in raw:
+        cells = [_clean_evaluation_text(part) for part in raw.strip("|").split("|")]
+    if cells:
+        cells = [_clean_evaluation_text(cell) for cell in cells if _clean_evaluation_text(cell)]
+        if not cells or _is_separator_row(cells):
+            return []
+        if all(_is_evaluation_header_item(cell) for cell in cells):
+            return []
+        item = " | ".join(cell for cell in cells if not _is_evaluation_header_item(cell))
+    else:
+        item = _clean_evaluation_text(raw)
+    item = re.sub(r"^(?:[-*•○●□■\xa1]|\d+[.)]|[가-힣][.)])\s*", "", item.strip())
+    if not item or _is_evaluation_header_item(item):
+        return []
+    return [item]
+
+
 def _section_for_label(label: str) -> str | None:
     key = _norm(label)
     if not key:
@@ -227,6 +278,143 @@ def _stage_from_line(line: str) -> str | None:
 def _generic_evaluation_label(line: str) -> bool:
     key = _norm(line)
     return bool(key) and any(_norm(pattern) in key for pattern in _GENERIC_EVALUATION_LABELS)
+
+
+def _looks_like_schedule_or_admin_line(line: str) -> bool:
+    text = _clean_text(line)
+    key = _norm(text)
+    if not key:
+        return False
+    strong_admin_markers = (
+        "전형일정",
+        "원서접수",
+        "접수기간",
+        "접수방법",
+        "제출서류",
+        "제출 서류",
+        "응시원서",
+        "응시 원서",
+        "입사지원서",
+        "입사 지원서",
+        "직무수행계획서",
+        "직무 수행 계획서",
+        "임용시기",
+        "임용제청",
+        "채용예정일",
+        "채용 예정일",
+        "합격자발표",
+        "합격자 발표",
+        "합격자",
+        "불합격자",
+        "개별통지",
+        "개별 통지",
+        "개별통보",
+        "개별 통보",
+        "문자개별통보",
+        "문자 개별통보",
+        "변경될수있",
+        "변경될 수 있",
+        "일반가점",
+        "일반 가점",
+        "가점사항",
+        "가점 사항",
+        "우대사항",
+        "우대 사항",
+        "취업지원대상자",
+        "취업 지원 대상자",
+        "장애인",
+        "채용심의위원회",
+        "채용점검위원회",
+        "채용서류반환",
+        "채용 서류 반환",
+        "반환청구서",
+        "반환 청구서",
+        "첨부서류",
+        "첨부 서류",
+    )
+    if any(_norm(marker) in key for marker in strong_admin_markers):
+        return True
+    if re.search(r"(?:20\d{2}\s*년|20\d{2}\s*[.\-/]\s*\d{1,2}|초순|중순|하순|예정)", text):
+        interview_markers = ("면접심사", "면접평가", "직무역량면접", "인성면접", "실무면접")
+        return not any(_norm(marker) in key for marker in interview_markers)
+    return False
+
+
+def _should_break_evaluation_section(line: str) -> bool:
+    text = _clean_text(line)
+    key = _norm(text)
+    if not key:
+        return False
+    if _looks_like_schedule_or_admin_line(text):
+        return True
+    break_markers = (
+        "첨부",
+        "붙임",
+        "별첨",
+        "서식",
+        "유의사항",
+        "기타사항",
+        "문의처",
+        "공고문",
+        "채용개요",
+        "근로조건",
+        "보수",
+        "근무장소",
+        "근무기간",
+        "복무",
+        "응시자격",
+        "지원자격",
+        "자격요건",
+    )
+    if any(_norm(marker) in key for marker in break_markers):
+        return True
+    if re.fullmatch(r"(?:\d+\s*)?부\.?", text) or text in {"끝", "끝."}:
+        return True
+    if re.fullmatch(r"\d+[.)]?\s*.+?\d+\s*부\.?(?:\s*끝\.?)?", text):
+        return True
+    return False
+
+
+def _should_skip_evaluation_row_without_closing(line: str) -> bool:
+    text = _clean_text(line)
+    key = _norm(text)
+    if not key:
+        return False
+    skip_markers = (
+        "우대사항",
+        "우대 사항",
+        "가점",
+        "가산",
+        "취업지원대상자",
+        "취업 지원 대상자",
+        "장애인",
+    )
+    if not any(_norm(marker) in key for marker in skip_markers):
+        return False
+    stripped = text.lstrip()
+    if stripped.startswith("#") or re.match(r"^\d+[.)]\s*", stripped):
+        return False
+    return True
+
+
+def _looks_like_attachment_or_tail_heading(line: str) -> bool:
+    text = _clean_text(line)
+    key = _norm(text)
+    if not key:
+        return False
+    if re.fullmatch(r"(?:#+\s*)?(?:붙임|첨부|별첨)\s*\d*", text):
+        return True
+    tail_markers = (
+        "붙임",
+        "첨부",
+        "별첨",
+        "서식",
+        "채용서류반환청구서",
+        "채용 서류 반환 청구서",
+        "개인정보수집이용동의서",
+        "개인정보 수집 이용 동의서",
+    )
+    return any(_norm(marker) in key for marker in tail_markers)
 
 
 def _section_value_from_inline_label(line: str) -> tuple[str, str] | None:
@@ -424,12 +612,15 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     stage_context: str | None = None
 
     def add(section: str, text: str, block: dict[str, Any] | None = None, line: int = 0) -> None:
-        for item in _split_items(text):
+        items = _split_evaluation_items(text) if section == "evaluation" else _split_items(text)
+        for item in items:
             if not item:
                 continue
             if section == "evaluation" and stage_context == "non_interview":
                 continue
             if section == "evaluation" and _stage_from_line(item) == "non_interview":
+                continue
+            if section == "evaluation" and _looks_like_schedule_or_admin_line(item):
                 continue
             if any(_norm(existing.get("text")) == _norm(item) for existing in sections[section]):
                 continue
@@ -440,11 +631,20 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         line = raw_line.strip()
         if not line:
             continue
+        if _looks_like_attachment_or_tail_heading(line):
+            current = None
+            stage_context = None
+            continue
         line_stage = _stage_from_line(line)
         if line_stage:
             stage_context = line_stage
             if stage_context == "non_interview" and current == "evaluation":
                 current = None
+        if current == "evaluation" and _should_break_evaluation_section(line):
+            if _should_skip_evaluation_row_without_closing(line):
+                continue
+            current = None
+            continue
         cells = _split_table_row(line)
         if cells:
             if _is_separator_row(cells):
@@ -453,6 +653,9 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             if label_index >= 0:
                 current = _section_for_label(cells[label_index])
                 if current == "evaluation" and stage_context == "non_interview":
+                    current = None
+                    continue
+                if current == "evaluation" and _should_break_evaluation_section(line):
                     current = None
                     continue
                 if current and len(cells) > label_index + 1:
@@ -464,18 +667,27 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             if current == "evaluation" and stage_context == "non_interview":
                 current = None
                 continue
+            if current == "evaluation" and _looks_like_schedule_or_admin_line(line):
+                current = None
+                continue
             add(current, value, line=line_no)
             continue
         heading_text = re.sub(r"^#{1,6}\s*", "", line)
         heading_text = re.sub(r"^(?:\d+[.)]|[가-힣][.)])\s*", "", heading_text)
         heading = _section_for_label(heading_text)
-        if not heading and _generic_evaluation_label(heading_text):
+        if not heading and _generic_evaluation_label(heading_text) and (
+            stage_context == "interview" or _stage_from_line(heading_text) == "interview"
+        ):
             heading = "evaluation"
         if heading:
             current = heading
             if current == "evaluation" and stage_context == "non_interview":
                 current = None
                 continue
+            if current == "evaluation" and _should_break_evaluation_section(line):
+                if not (_generic_evaluation_label(heading_text) and _stage_from_line(line) == "interview"):
+                    current = None
+                    continue
             remainder = re.sub(
                 r"^.*?(?:수행업무|직무수행내용|주요업무|담당업무|직무내용|수행내용|담당직무|"
                 r"주요직무|직무개요|담당\s*예정\s*업무|채용직무|직무분야|주요\s*수행업무|주요\s*담당업무|"
@@ -486,7 +698,9 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                 "",
                 line,
             )
-            if _norm(remainder) != _norm(line):
+            if _norm(remainder) != _norm(line) and not (
+                heading == "evaluation" and _should_break_evaluation_section(remainder)
+            ):
                 add(heading, remainder, line=line_no)
             continue
         if line.startswith("#"):
@@ -511,6 +725,9 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                     if label_index >= 0:
                         section = _section_for_label(values[label_index])
                         if section:
+                            row_text = " | ".join(value for value in values if value)
+                            if section == "evaluation" and _should_break_evaluation_section(row_text):
+                                continue
                             add(section, " ".join(values[label_index + 1 :]), block=block)
         for child_key in ("children", "blocks", "rows", "cells"):
             children = block.get(child_key)

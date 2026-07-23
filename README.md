@@ -14,6 +14,9 @@ NCScope는 공공기관 채용 직무기술서와 공고문을 활용해 NCS 기
 - 공고문에서 직무기술서에 없는 담당업무, 지원자격, 우대사항, 면접 평가항목 보완
 - 확정 세분류 기준 로컬 NCS DB 조회 서버에서 공식 능력단위·수행준거·KSA 조회
 - KSA 근거 기반 구조화 면접 질문, 꼬리질문, 평가 포인트 생성
+- 세분류별 주질문 수, 주질문별 꼬리질문 수 커스터마이징
+- NCS 공식 예시문항 체계에 맞춘 경험면접, 상황면접, 발표면접, 토론면접 선택
+- 인바스켓면접, 직무지식면접 추가 선택
 - 요청 단위 OpenAI API key 입력 지원
 
 ## 사용 흐름
@@ -29,8 +32,10 @@ NCScope는 공공기관 채용 직무기술서와 공고문을 활용해 NCS 기
 6. 세분류를 확정합니다.
 7. 공고문 파일이 있으면 업로드합니다.
 8. 공고문에서 추출된 보완 텍스트를 확인·수정합니다.
-9. `로컬 NCS DB KSA 기반 면접 질문 생성` 버튼을 누릅니다.
-10. NCS 매칭 결과, KSA 항목, 구조화 면접 질문을 확인합니다.
+9. 세분류별 질문 수와 꼬리질문 수를 지정합니다.
+10. 면접기법을 선택합니다.
+11. `로컬 NCS DB KSA 기반 면접 질문 생성` 버튼을 누릅니다.
+12. NCS 매칭 결과, KSA 항목, 구조화 면접 질문을 확인합니다.
 
 ## 직무기술서와 공고문 적용 기준
 
@@ -43,6 +48,24 @@ NCScope의 기준 문서는 직무기술서입니다.
 - 면접 평가항목: 공고문에서 면접전형·면접평가 구간을 우선 추출
 
 공고문은 기관마다 형식이 크게 다릅니다. 따라서 공고문 추출값은 확정값이 아니라 검토 후보입니다. 사용자가 수정한 최종 보완 텍스트만 질문 생성 맥락에 반영됩니다.
+
+## 질문 생성 옵션
+
+세분류 확정 후 질문 생성 전에 다음 항목을 조정할 수 있습니다.
+
+- 사용할 세분류 선택
+- 세분류별 주질문 개수
+- 주질문 1개당 꼬리질문 개수
+- 면접기법 선택
+
+면접기법 기본값은 NCS 공정채용의 면접문항 예시 체계에 맞춰 다음 4개로 설정되어 있습니다.
+
+- 경험면접
+- 상황면접
+- 발표면접
+- 토론면접
+
+추가로 인바스켓면접과 직무지식면접을 선택할 수 있습니다. `행동관찰면접`이라는 표현으로 입력해도 내부에서는 NCS 공식 예시문항 용어에 가까운 `경험면접`으로 처리합니다.
 
 ## 실행 방법
 
@@ -66,7 +89,7 @@ $env:MAX_UPLOAD_MB="30"
 $env:OPENAI_API_KEY="sk-..."   # 선택
 ```
 
-현재 코드의 환경변수명은 `NCS_MCP_URL`입니다. 실제 역할은 로컬 NCS DB 조회 서버 주소입니다.
+현재 코드의 환경변수명은 호환성 때문에 `NCS_MCP_URL`을 유지합니다. 실제 역할은 원격 MCP 의존이 아니라 로컬 NCS DB 조회 서버 주소입니다.
 
 ### 3. 앱 실행
 
@@ -137,12 +160,35 @@ POST /api/jd/strategy/upload
 - `qualification_text`
 - `preference_text`
 - `evaluation_text`
+- `question_plan_json`
+- `interview_methods_json`
 - `openai_api_key`
+
+`question_plan_json` 예시:
+
+```json
+{
+  "items": [
+    {
+      "detail": "인사",
+      "enabled": true,
+      "main_count": 3,
+      "follow_up_count": 2
+    }
+  ]
+}
+```
+
+`interview_methods_json` 예시:
+
+```json
+["경험면접", "상황면접", "발표면접", "토론면접"]
+```
 
 ## 검증
 
 ```powershell
-python -m py_compile app\main.py app\services\kordoc_parser.py app\services\question_generation.py
+python -m py_compile app\main.py app\services\kordoc_parser.py app\services\jd_strategy.py scripts\benchmark_alio_notice.py
 python -m pytest -q
 ```
 
@@ -153,9 +199,25 @@ $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
 python scripts\benchmark_alio_jd.py --limit 5 --include-ksa
 ```
 
+ALIO 공고문 벤치마크:
+
+```powershell
+python scripts\benchmark_alio_notice.py --limit 12
+```
+
+최근 검증 결과:
+
+- 샘플 시도: 10건
+- 면접평가항목 정상 추출: 2건
+- 면접평가항목 없음으로 보수 처리: 8건
+- 서류전형·필기전형·전형일정 오염: 0건
+
+상세 결과는 `reports/alio_notice_benchmark_20260723_090837.md`를 참고하세요.
+
 ## Kordoc 사용
 
 NCScope의 문서 파싱은 Kordoc을 사용합니다.
 
 - Kordoc: https://github.com/koul777/kordoc
 - 관련 프로젝트: https://github.com/koul777
+- NCS 공정채용 면접문항 예시문항: https://www.ncs.go.kr/blind/blp/bbs_lib_list.do?libDstinCd=56
