@@ -119,20 +119,6 @@
       <section class="card">
         <h2 class="title">1) 입력</h2>
 
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
-          <label for="inputMode" style="margin:0; white-space:nowrap; font-size:13px; font-weight:700;">입력 방식</label>
-          <select id="inputMode" class="dropdown" style="flex:1;">
-            <option value="upload" selected>📄 파일 업로드</option>
-            <option value="manual">✏️ 공고문 직접입력</option>
-          </select>
-        </div>
-
-        <label for="openaiApiKey">OpenAI API key (선택)</label>
-        <input id="openaiApiKey" type="password" placeholder="sk-... 또는 환경변수 OPENAI_API_KEY 사용" autocomplete="off" spellcheck="false" />
-        <div class="sub" style="margin-top:-4px; margin-bottom:10px;">
-          입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 비워두면 서버의 <code>OPENAI_API_KEY</code>를 사용합니다.
-        </div>
-
         <div id="uploadBlock">
           <label for="jdFile">직무기술서 파일 (필수, PDF/HWP/HWPX/DOCX/이미지/TXT)</label>
           <input id="jdFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.png,.jpg,.jpeg,.webp,.txt" />
@@ -152,6 +138,43 @@
             <label for="reviewNcsDetail">확정할 세분류</label>
             <textarea id="reviewNcsDetail" rows="2" placeholder="예: 경영기획"></textarea>
             <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; margin:12px 0 4px;">
+          <label for="inputMode" style="margin:0; white-space:nowrap; font-size:13px; font-weight:700;">입력 방식</label>
+          <select id="inputMode" class="dropdown" style="flex:1;">
+            <option value="upload" selected>📄 직무기술서 파일 업로드</option>
+            <option value="manual">✏️ 공고문 직접입력</option>
+          </select>
+        </div>
+
+        <label for="openaiApiKey">OpenAI API key (선택)</label>
+        <input id="openaiApiKey" type="password" placeholder="sk-... 또는 환경변수 OPENAI_API_KEY 사용" autocomplete="off" spellcheck="false" />
+        <div class="sub" style="margin-top:-4px; margin-bottom:10px;">
+          입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 비워두면 서버의 <code>OPENAI_API_KEY</code>를 사용합니다.
+        </div>
+
+        <div id="uploadSupplementBlock">
+
+          <div id="questionOptionBlock" class="option-card">
+            <label style="margin-top:0;">질문 생성 커스터마이징</label>
+            <p class="sub" style="margin:4px 0 8px;">확정 세분류 중 면접에서 볼 항목과 문항 수를 지정합니다.</p>
+            <div id="questionPlanEmpty" class="sub" style="margin:8px 0;">세분류를 확정하면 세분류별 주질문/꼬리질문 수를 조정할 수 있습니다.</div>
+            <div id="questionPlanHead" class="plan-head" style="display:none;">
+              <span></span><span>세분류</span><span>주질문</span><span>꼬리</span>
+            </div>
+            <div id="questionPlanRows"></div>
+
+            <label style="margin-top:12px;">면접 기법</label>
+            <div class="method-grid">
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="경험면접" checked /> 경험면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="상황면접" checked /> 상황면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="발표면접" checked /> 발표면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="토론면접" checked /> 토론면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="인바스켓면접" /> 인바스켓면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="직무지식면접" /> 직무지식면접</label>
+            </div>
           </div>
 
           <!-- Legacy small-category fallback helper. Hidden in the MCP-only flow. -->
@@ -196,24 +219,6 @@
           <label for="evalText">면접 평가항목 텍스트 (선택)</label>
           <textarea id="evalText" placeholder="예: 인성, 조직적합도, 청렴수준, 안전역량"></textarea>
 
-          <div id="questionOptionBlock" class="option-card" style="display:none;">
-            <label style="margin-top:0;">질문 생성 커스터마이징</label>
-            <p class="sub" style="margin:4px 0 8px;">확정 세분류 중 면접에서 볼 항목과 문항 수를 지정합니다.</p>
-            <div class="plan-head">
-              <span></span><span>세분류</span><span>주질문</span><span>꼬리</span>
-            </div>
-            <div id="questionPlanRows"></div>
-
-            <label style="margin-top:12px;">면접 기법</label>
-            <div class="method-grid">
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="경험면접" checked /> 경험면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="상황면접" checked /> 상황면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="발표면접" checked /> 발표면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="토론면접" checked /> 토론면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="인바스켓면접" /> 인바스켓면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="직무지식면접" /> 직무지식면접</label>
-            </div>
-          </div>
         </div>
 
         <div id="manualBlock" class="hidden">
@@ -318,6 +323,7 @@
     const qIndicator = document.getElementById('qIndicator');
     const inputMode = document.getElementById('inputMode');
     const uploadBlock = document.getElementById('uploadBlock');
+    const uploadSupplementBlock = document.getElementById('uploadSupplementBlock');
     const manualBlock = document.getElementById('manualBlock');
     const openaiApiKey = document.getElementById('openaiApiKey');
     const jdFile = document.getElementById('jdFile');
@@ -338,6 +344,8 @@
     const noticeReviewStatus = document.getElementById('noticeReviewStatus');
     const btnConfirmNotice = document.getElementById('btnConfirmNotice');
     const questionOptionBlock = document.getElementById('questionOptionBlock');
+    const questionPlanEmpty = document.getElementById('questionPlanEmpty');
+    const questionPlanHead = document.getElementById('questionPlanHead');
     const questionPlanRows = document.getElementById('questionPlanRows');
 
     let ncsUnitOptions = [];
@@ -385,10 +393,14 @@
       const details = currentReviewedDetails();
       questionPlanRows.innerHTML = '';
       if (!details.length) {
-        questionOptionBlock.style.display = 'none';
+        questionOptionBlock.style.display = 'block';
+        questionPlanEmpty.style.display = 'block';
+        questionPlanHead.style.display = 'none';
         return;
       }
       questionOptionBlock.style.display = 'block';
+      questionPlanEmpty.style.display = 'none';
+      questionPlanHead.style.display = 'grid';
       details.forEach((detail, idx) => {
         const row = document.createElement('div');
         row.className = 'detail-plan-row';
@@ -881,6 +893,7 @@
     function setInputMode(mode) {
       const isUpload = mode !== 'manual';
       uploadBlock.classList.toggle('hidden', !isUpload);
+      uploadSupplementBlock.classList.toggle('hidden', !isUpload);
       manualBlock.classList.toggle('hidden', isUpload);
       btn.style.display = isUpload ? (reviewConfirmed ? 'block' : 'none') : 'block';
       btn.textContent = isUpload ? '로컬 NCS DB KSA 기반 면접 질문 생성' : '면접 질문 생성';
