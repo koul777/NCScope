@@ -324,6 +324,8 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
             files=_upload_files(),
             data={
                 "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "qualification_text": "\uc9c0\uc6d0\uc790\uaca9: \uad00\ub828 \ubd84\uc57c \uc2e4\ubb34\uacbd\ub825 3\ub144 \uc774\uc0c1",
+                "preference_text": "\uc6b0\ub300\uc0ac\ud56d: \uacf5\uacf5\uae30\uad00 \uc0ac\uc5c5\uad00\ub9ac \uacbd\ud5d8",
                 "openai_api_key": request_key,
             },
         )
@@ -336,6 +338,8 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert build_strategy.call_args.kwargs["api_key_override"] == request_key
     assert request_key not in resp.text
     assert body["jd_review_confirmed"] is True
+    assert "\uc2e4\ubb34\uacbd\ub825" in body["qualification_text_preview"]
+    assert "\uc0ac\uc5c5\uad00\ub9ac" in body["preference_text_preview"]
     assert body["ncs_source"].startswith("ncs-mcp")
     assert body["ncs_ksa"][0]["factorSource"] == "ncs-mcp"
     assert body["ncs_ksa"][0]["ksaStatus"] == "official"

@@ -136,6 +136,21 @@
     .sclass-autocomplete .ac-item.active { background:#e8f0fe; color:#1a4ab8; }
     .sclass-autocomplete .ac-item b { color:#1a4ab8; font-weight:700; }
     .sclass-autocomplete .ac-empty { padding:8px 10px; font-size:12px; color:#9ca3af; }
+    .option-card { margin-top:12px; padding:12px; border:1px solid #d8e2ef; border-radius:14px; background:#fbfdff; }
+    .method-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+    .method-item { display:flex; align-items:center; gap:7px; padding:8px 9px; border:1px solid #e3ebf5; border-radius:10px; background:#fff; font-size:12.5px; font-weight:800; }
+    .method-item input { width:auto; margin:0; }
+    .default-plan-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; }
+    .default-plan-grid label { margin:0 0 4px; font-size:12px; color:var(--muted); }
+    .default-plan-grid input { height:36px; padding:6px 8px; }
+    .detail-plan-row { display:grid; grid-template-columns:auto 1fr 74px 74px; gap:6px; align-items:center; padding:7px 0; border-bottom:1px dashed #e1e8f2; }
+    .detail-plan-row:last-child { border-bottom:0; }
+    .detail-plan-row input[type="checkbox"] { width:auto; margin:0; }
+    .detail-plan-row input[type="number"] { height:34px; padding:5px 7px; font-size:13px; }
+    .detail-name { font-size:13px; font-weight:800; }
+    .plan-head { display:grid; grid-template-columns:auto 1fr 74px 74px; gap:6px; color:var(--muted); font-size:11px; margin-top:8px; }
+    .notice-apply-block { margin-top:10px; padding:12px; border:1px solid #d8e7f5; border-radius:14px; background:#f8fbff; }
+    .notice-apply-block button { margin-top:0; }
   </style>
 </head>
 <body>
@@ -145,7 +160,7 @@
       <div class="hero-main">
         <div>
           <h1>NCScope</h1>
-          <p>직무기술서에서 세분류 후보를 추출하고, 공고문 담당업무·평가항목을 검토한 뒤 KSA 근거 면접 질문을 생성합니다.</p>
+          <p>직무기술서에서 세분류 후보를 추출하고, 공고문 담당업무·평가항목을 보완한 뒤 KSA 근거 구조화면접 초안을 생성합니다.</p>
           <div class="build-tag">Original interface · Kordoc parsing · Human Review · Local NCS DB evidence</div>
         </div>
         <div class="hero-badges">
@@ -185,7 +200,7 @@
           </div>
           <div id="flowNotice" class="flow-step">
             <strong>3. 공고문 핵심텍스트</strong>
-            <span>담당업무·평가항목 검토</span>
+            <span>부족한 담당업무·자격·우대·평가항목 보완</span>
           </div>
           <div id="flowGenerate" class="flow-step">
             <strong>4. 질문 생성</strong>
@@ -195,7 +210,7 @@
 
         <div class="guardrail-box">
           <strong>운영 원칙</strong>
-          <span>Kordoc 문서 파싱 결과는 검토 후보로만 사용합니다. 공고문은 담당업무·평가항목을 추출해 검토용으로 채우고, 직무기술서의 세분류는 사람이 확정한 값만 로컬 NCS DB 조회에 사용합니다. 로고·공식 사이트 자산은 사용하지 않습니다.</span>
+          <span>Kordoc 문서 파싱 결과는 검토 후보로만 사용합니다. 직무기술서의 세분류는 사람이 확정한 값만 로컬 NCS DB 조회에 사용하고, 공고문은 부족한 담당업무·자격·우대·평가항목을 보완하는 용도입니다. 생성 결과는 공식 면접문항 확정안이 아니며, 블라인드 채용 기준과 기관 내부 기준에 따라 최종 검토해야 합니다.</span>
         </div>
 
         <div id="uploadBlock">
@@ -220,6 +235,71 @@
             <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
           </div>
 
+          <div id="questionOptionBlock" class="option-card">
+            <label style="margin-top:0;">질문 생성 커스터마이징</label>
+            <p class="sub" style="margin:4px 0 8px;">면접에서 볼 세분류, 주질문 수, 꼬리질문 수를 지정합니다.</p>
+            <div class="default-plan-grid">
+              <div>
+                <label for="defaultMainCount">기본 주질문 수</label>
+                <input id="defaultMainCount" type="number" min="1" max="10" value="3" />
+              </div>
+              <div>
+                <label for="defaultFollowCount">주질문당 기본 꼬리질문 수</label>
+                <input id="defaultFollowCount" type="number" min="0" max="5" value="3" />
+              </div>
+            </div>
+            <div id="questionPlanEmpty" class="sub" style="margin:8px 0;">직무기술서에서 세분류가 추출되거나 직접 입력되면, 여기에서 어떤 세분류의 면접질문을 생성할지 선택할 수 있습니다.</div>
+            <label id="questionPlanLabel" style="display:none; margin-top:10px;">질문 대상 세분류 선택</label>
+            <div id="questionPlanHead" class="plan-head" style="display:none;">
+              <span></span><span>세분류</span><span>주질문</span><span>꼬리</span>
+            </div>
+            <div id="questionPlanRows"></div>
+
+            <label style="margin-top:12px;">면접 기법</label>
+            <div class="method-grid">
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="경험면접" checked /> 경험(행동)면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="상황면접" checked /> 상황면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="발표면접" checked /> 발표면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="토론면접" checked /> 토론면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="인바스켓면접" /> 인바스켓면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="직무지식면접" /> 직무지식면접</label>
+            </div>
+          </div>
+
+          <div id="runActionBlock">
+            <button id="btnRun" type="button">직무기술서 선택 후 면접 질문 생성</button>
+            <div id="runHint" class="sub">직무기술서를 선택하고 Kordoc 추출 결과를 검토·확정하면 로컬 NCS DB KSA 기반 질문 생성을 실행합니다.</div>
+          </div>
+
+          <label for="noticeFile">공고문 파일 (선택)</label>
+          <div class="sub" style="margin:-2px 0 6px;">PDF/HWP/HWPX/DOCX/TXT 또는 지원 문서를 담은 ZIP</div>
+          <input id="noticeFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.txt,.zip" />
+          <div id="noticeReviewBlock" class="review-panel" style="display:none;">
+            <div class="review-panel-head">
+              <label style="margin:0;">공고문 핵심 텍스트 검토</label>
+              <span id="noticeReviewStatus" class="sub">공고문에서 담당업무, 지원자격, 우대사항, 평가항목을 추출합니다...</span>
+            </div>
+            <p class="sub" style="margin:6px 0 10px;">공고문에서 끌어온 담당업무·지원자격·우대사항·면접평가 항목을 확인하고 필요하면 수정하세요.</p>
+            <button type="button" id="btnConfirmNoticeReview" style="background:#005bac; margin-top:8px;">공고문 핵심 텍스트 검토·적용</button>
+          </div>
+
+          <label for="dutyText">담당업무 텍스트 (권장)</label>
+          <textarea id="dutyText" placeholder="공고문 또는 직무기술서의 담당업무/직무수행내용을 붙여넣으세요."></textarea>
+
+          <label for="qualificationText">지원자격 텍스트 (선택)</label>
+          <textarea id="qualificationText" rows="3" placeholder="공고문 또는 직무기술서의 지원자격/응시자격을 붙여넣으세요."></textarea>
+
+          <label for="preferenceText">우대사항 텍스트 (선택)</label>
+          <textarea id="preferenceText" rows="3" placeholder="공고문 또는 직무기술서의 우대사항/가점사항을 붙여넣으세요."></textarea>
+
+          <label for="evalText">면접 평가항목 텍스트 (선택)</label>
+          <textarea id="evalText" placeholder="예: 인성, 조직적합도, 청렴수준, 안전역량"></textarea>
+
+          <div class="notice-apply-block">
+            <button type="button" id="btnConfirmNoticeReviewBottom" style="background:#005bac;">공고문·보완 텍스트 검토·적용</button>
+            <div id="noticeApplyHint" class="sub">위 텍스트를 질문 생성에 포함하려면 적용 버튼을 누르세요. 적용하지 않은 공고문/보완 텍스트는 최종 생성 요청에서 제외됩니다.</div>
+          </div>
+
           <!-- Legacy small-category fallback helper. Hidden in the local NCS DB flow. -->
           <div class="sclass-block" id="sclassBlock" style="display:none;">
             <label>레거시 소분류 보정 <span style="font-weight:400;color:var(--muted);">(NCS DB 서버 미설정 개발 fallback용)</span></label>
@@ -237,24 +317,6 @@
             <!-- 확정 버튼 -->
             <button type="button" id="btnConfirmSclass" style="background:#1f9d55; margin-top:10px;">레거시 보정 적용 → 면접 질문 생성</button>
           </div>
-
-          <label for="noticeFile">공고문 파일 (선택)</label>
-          <div class="sub" style="margin:-2px 0 6px;">PDF/HWP/HWPX/DOCX/TXT 또는 지원 문서를 담은 ZIP</div>
-          <input id="noticeFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.txt,.zip" />
-          <div id="noticeReviewBlock" class="review-panel" style="display:none;">
-            <div class="review-panel-head">
-              <label style="margin:0;">공고문 핵심 텍스트 검토</label>
-              <span id="noticeReviewStatus" class="sub">공고문에서 담당업무와 평가항목을 추출합니다...</span>
-            </div>
-            <p class="sub" style="margin:6px 0 10px;">공고문에서 끌어온 담당업무·면접평가 항목을 확인하고 필요하면 수정하세요.</p>
-            <button type="button" id="btnConfirmNoticeReview" style="background:#005bac; margin-top:8px;">공고문 핵심 텍스트 검토·적용</button>
-          </div>
-
-          <label for="dutyText">담당업무 텍스트 (권장)</label>
-          <textarea id="dutyText" placeholder="공고문의 담당업무/직무수행내용을 붙여넣으세요."></textarea>
-
-          <label for="evalText">면접 평가항목 텍스트 (선택)</label>
-          <textarea id="evalText" placeholder="예: 인성, 조직적합도, 청렴수준, 안전역량"></textarea>
         </div>
 
         <div id="manualBlock" class="hidden">
@@ -276,8 +338,6 @@
           <div class="sub" id="selectedCount">선택된 NCS 코드: 0</div>
         </div>
 
-
-        <button id="btnRun" style="display:none;">NCS DB KSA 기반 면접 질문 생성</button>
       </section>
 
       <section class="card">
@@ -306,7 +366,7 @@
           </div>
 
           <div class="section">
-            <h3>면접 질문 (페이지당 5개)</h3>
+            <h3 id="questionHeading">면접 질문 (총 0개 / 페이지당 5개)</h3>
             <div class="qnav">
               <button id="btnPrevQ" class="qnav-btn" type="button">이전</button>
               <span id="qIndicator" class="qnav-ind">0 / 0</span>
@@ -360,10 +420,13 @@
     const inputMode = document.getElementById('inputMode');
     const uploadBlock = document.getElementById('uploadBlock');
     const manualBlock = document.getElementById('manualBlock');
+    const runActionBlock = document.getElementById('runActionBlock');
     const openaiApiKey = document.getElementById('openaiApiKey');
     const jdFile = document.getElementById('jdFile');
     const noticeFile = document.getElementById('noticeFile');
     const dutyText = document.getElementById('dutyText');
+    const qualificationText = document.getElementById('qualificationText');
+    const preferenceText = document.getElementById('preferenceText');
     const evalText = document.getElementById('evalText');
     const evalTextManual = document.getElementById('evalTextManual');
     const jdReviewBlock = document.getElementById('jdReviewBlock');
@@ -376,6 +439,15 @@
     const noticeReviewStatus = document.getElementById('noticeReviewStatus');
     const btnConfirmReview = document.getElementById('btnConfirmReview');
     const btnConfirmNoticeReview = document.getElementById('btnConfirmNoticeReview');
+    const btnConfirmNoticeReviewBottom = document.getElementById('btnConfirmNoticeReviewBottom');
+    const noticeApplyHint = document.getElementById('noticeApplyHint');
+    const runHint = document.getElementById('runHint');
+    const questionPlanEmpty = document.getElementById('questionPlanEmpty');
+    const questionPlanLabel = document.getElementById('questionPlanLabel');
+    const questionPlanHead = document.getElementById('questionPlanHead');
+    const questionPlanRows = document.getElementById('questionPlanRows');
+    const defaultMainCount = document.getElementById('defaultMainCount');
+    const defaultFollowCount = document.getElementById('defaultFollowCount');
     const flowApi = document.getElementById('flowApi');
     const flowJd = document.getElementById('flowJd');
     const flowNotice = document.getElementById('flowNotice');
@@ -422,6 +494,128 @@
       return (openaiApiKey && openaiApiKey.value ? openaiApiKey.value : '').trim();
     }
 
+    function currentReviewedDetails() {
+      return dedupSclassLabels(
+        (reviewNcsDetail.value || '')
+          .split(/[\n,;/|]+/)
+          .map(x => x.trim())
+          .filter(Boolean)
+      );
+    }
+
+    function renderQuestionPlanRows() {
+      const details = currentReviewedDetails();
+      const previous = new Map(
+        Array.from(questionPlanRows.querySelectorAll('.detail-plan-row')).map(row => [
+          normSclassLabel(row.dataset.detail || ''),
+          {
+            enabled: !!row.querySelector('.plan-enabled')?.checked,
+            main_count: Number(row.querySelector('.plan-main')?.value || 0),
+            follow_up_count: Number(row.querySelector('.plan-follow')?.value || 0),
+          },
+        ])
+      );
+      const defaultMain = Math.max(1, Math.min(10, Number(defaultMainCount?.value || 3)));
+      const defaultFollow = Math.max(0, Math.min(5, Number(defaultFollowCount?.value || 3)));
+      questionPlanRows.innerHTML = '';
+      if (!details.length) {
+        questionPlanEmpty.style.display = 'block';
+        questionPlanLabel.style.display = 'none';
+        questionPlanHead.style.display = 'none';
+        return;
+      }
+      questionPlanEmpty.style.display = 'none';
+      questionPlanLabel.style.display = 'block';
+      questionPlanHead.style.display = 'grid';
+      details.forEach((detail) => {
+        const saved = previous.get(normSclassLabel(detail));
+        const row = document.createElement('div');
+        row.className = 'detail-plan-row';
+        row.dataset.detail = detail;
+
+        const enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.checked = saved ? !!saved.enabled : true;
+        enabled.className = 'plan-enabled';
+        row.appendChild(enabled);
+
+        const name = document.createElement('div');
+        name.className = 'detail-name';
+        name.textContent = detail;
+        row.appendChild(name);
+
+        const main = document.createElement('input');
+        main.type = 'number';
+        main.min = '0';
+        main.max = '10';
+        main.value = String(saved ? saved.main_count : defaultMain);
+        main.className = 'plan-main';
+        row.appendChild(main);
+
+        const follow = document.createElement('input');
+        follow.type = 'number';
+        follow.min = '0';
+        follow.max = '5';
+        follow.value = String(saved ? saved.follow_up_count : defaultFollow);
+        follow.className = 'plan-follow';
+        row.appendChild(follow);
+
+        questionPlanRows.appendChild(row);
+      });
+    }
+
+    function collectQuestionPlan() {
+      const rows = Array.from(questionPlanRows.querySelectorAll('.detail-plan-row'));
+      const defaultMain = Math.max(1, Math.min(10, Number(defaultMainCount?.value || 3)));
+      const defaultFollow = Math.max(0, Math.min(5, Number(defaultFollowCount?.value || 3)));
+      const items = rows.map(row => ({
+        detail: row.dataset.detail || '',
+        enabled: !!row.querySelector('.plan-enabled')?.checked,
+        main_count: Math.max(0, Math.min(10, Number(row.querySelector('.plan-main')?.value || defaultMain))),
+        follow_up_count: Math.max(0, Math.min(5, Number(row.querySelector('.plan-follow')?.value || defaultFollow))),
+      })).filter(x => x.detail);
+      if (!items.length) {
+        return currentReviewedDetails().map(detail => ({
+          detail,
+          enabled: true,
+          main_count: defaultMain,
+          follow_up_count: defaultFollow,
+        }));
+      }
+      return items;
+    }
+
+    function collectInterviewMethods() {
+      const checked = Array.from(document.querySelectorAll('input[name="interviewMethod"]:checked'))
+        .map(x => x.value)
+        .filter(Boolean);
+      return checked.length ? checked : ['경험면접', '상황면접', '발표면접', '토론면접'];
+    }
+
+    function refreshRunButtonState() {
+      const mode = inputMode.value || 'upload';
+      const isUpload = mode !== 'manual';
+      btn.style.display = 'block';
+      if (!isUpload) {
+        btn.textContent = '면접 질문 생성';
+        runHint.textContent = '직접 입력한 공고문 텍스트와 선택한 NCS 코드로 질문을 생성합니다.';
+        return;
+      }
+      const hasFile = !!(jdFile.files && jdFile.files[0]);
+      if (!hasFile) {
+        btn.textContent = '직무기술서 선택 후 면접 질문 생성';
+        runHint.textContent = '직무기술서 파일을 먼저 선택하세요. 선택하면 Kordoc 자동 추출 검토 단계가 열립니다.';
+        return;
+      }
+      if (!reviewConfirmed) {
+        btn.textContent = '검토 확정 후 면접 질문 생성';
+        runHint.textContent = '수행업무·지원자격·우대사항·세분류를 확인하고 「추출 결과 검토·확정」을 누르면 실행할 수 있습니다.';
+        return;
+      }
+      btn.textContent = '로컬 NCS DB KSA 기반 면접 질문 생성';
+      runHint.textContent = '실행 가능: 확정 세분류, 질문 수, 면접기법 설정을 반영해 면접 질문을 생성합니다.';
+    }
+
     function setFlowStep(el, state, detail) {
       if (!el) return;
       el.classList.remove('active', 'done');
@@ -436,16 +630,21 @@
         requestOpenAIKey() ? 'done' : 'active',
         requestOpenAIKey() ? '요청 단위 키 입력됨' : '서버 환경변수 또는 입력 키 사용'
       );
+      const hasNoticeText = Boolean(
+        (dutyText.value || '').trim()
+        || (qualificationText.value || '').trim()
+        || (preferenceText.value || '').trim()
+        || (evalText.value || '').trim()
+      );
       setFlowStep(
         flowJd,
         reviewConfirmed ? 'done' : (jdReviewPayload ? 'active' : ''),
         reviewConfirmed ? '세분류 확정 완료' : (jdReviewPayload ? '세분류 검토 필요' : '직무기술서 업로드 대기')
       );
-      const hasNoticeText = Boolean((dutyText.value || '').trim() || (evalText.value || '').trim());
       setFlowStep(
         flowNotice,
         noticeReviewConfirmed ? 'done' : (hasNoticeText ? 'active' : ''),
-        noticeReviewConfirmed ? '공고문 핵심텍스트 적용됨' : (hasNoticeText ? '담당업무·평가항목 검토 필요' : '공고문 또는 직접입력 대기')
+        noticeReviewConfirmed ? '공고문 핵심텍스트 적용됨' : (hasNoticeText ? '공고문 핵심텍스트 검토 필요' : '공고문은 선택 보완 항목')
       );
       setFlowStep(
         flowGenerate,
@@ -526,6 +725,84 @@
       }
     }
 
+    function mergeTextareaValue(el, incoming) {
+      if (!el) return;
+      const text = String(incoming || '').trim();
+      if (!text) return;
+      const current = String(el.value || '').trim();
+      if (!current) {
+        el.value = text;
+        return;
+      }
+      const currentKey = current.replace(/\s+/g, '');
+      const textKey = text.replace(/\s+/g, '');
+      if (currentKey.includes(textKey) || textKey.includes(currentKey)) return;
+      el.value = `${current}\n${text}`;
+    }
+
+    function noticeConfirmButtons() {
+      return [btnConfirmNoticeReview, btnConfirmNoticeReviewBottom].filter(Boolean);
+    }
+
+    function setNoticeConfirmButtons(text, background, disabled = false) {
+      noticeConfirmButtons().forEach((button) => {
+        button.textContent = text;
+        button.style.background = background;
+        button.disabled = disabled;
+      });
+    }
+
+    function hasNoticeSupplementText() {
+      return Boolean(
+        (dutyText.value || '').trim()
+        || (qualificationText.value || '').trim()
+        || (preferenceText.value || '').trim()
+        || (evalText.value || '').trim()
+      );
+    }
+
+    function markNoticeReviewDirty(reason = '') {
+      noticeReviewConfirmed = false;
+      setNoticeConfirmButtons('공고문·보완 텍스트 검토·적용', '#005bac');
+      if (noticeApplyHint) {
+        noticeApplyHint.textContent = reason || '위 텍스트를 질문 생성에 포함하려면 적용 버튼을 누르세요. 적용하지 않은 공고문/보완 텍스트는 최종 생성 요청에서 제외됩니다.';
+      }
+      if (noticeReviewStatus && hasNoticeSupplementText()) {
+        noticeReviewStatus.textContent = '공고문 핵심텍스트 검토 필요';
+      }
+      updateWorkflowMenu();
+    }
+
+    function applyNoticeReview() {
+      if (noticeParsing) {
+        noticeReviewStatus.textContent = '공고문 분석 중입니다. 완료될 때까지 기다려 주세요.';
+        return;
+      }
+      if (!hasNoticeSupplementText()) {
+        const jdDuties = (reviewDuties.value || '').trim();
+        const jdQualifications = (reviewQualifications.value || '').trim();
+        const jdPreferences = (reviewPreferences.value || '').trim();
+        if (jdDuties || jdQualifications || jdPreferences) {
+          mergeTextareaValue(dutyText, jdDuties);
+          mergeTextareaValue(qualificationText, jdQualifications);
+          mergeTextareaValue(preferenceText, jdPreferences);
+          noticeReviewStatus.textContent = '공고문 추출값이 없어 직무기술서의 업무·자격·우대사항을 보완 텍스트로 적용했습니다.';
+        } else {
+          noticeReviewStatus.textContent = '추출된 공고문 핵심 텍스트가 없습니다. 공고문 단계는 생략됩니다.';
+        }
+      } else {
+        noticeReviewStatus.textContent = '적용됨 · 질문 생성에 포함';
+      }
+      noticeReviewConfirmed = true;
+      setNoticeConfirmButtons('공고문·보완 텍스트 적용 완료', '#15803d');
+      if (noticeApplyHint) {
+        noticeApplyHint.textContent = hasNoticeSupplementText()
+          ? '적용 완료: 담당업무·지원자격·우대사항·평가항목 보완 텍스트가 질문 생성 요청에 포함됩니다.'
+          : '적용 완료: 공고문 보완 텍스트 없이 직무기술서 기준으로 질문을 생성합니다.';
+      }
+      updateWorkflowMenu();
+    }
+
     async function parseJdForReview(file) {
       jdReviewBlock.style.display = 'block';
       jdReviewStatus.textContent = 'Kordoc 분석 중...';
@@ -535,7 +812,9 @@
       btnConfirmReview.disabled = true;
       btnConfirmReview.textContent = 'Kordoc 분석 중...';
       btnConfirmReview.style.background = '#64748b';
-      btn.style.display = 'none';
+      btn.disabled = true;
+      btn.textContent = '직무기술서 분석 중...';
+      runHint.textContent = 'Kordoc이 직무기술서에서 세분류 후보와 검토 텍스트를 추출하고 있습니다.';
       errorBox.style.display = 'none';
       raw.textContent = `직무기술서 파싱 시작: ${file.name}`;
       startProgress(PARSE_PROGRESS_STEPS, {
@@ -555,7 +834,12 @@
         reviewQualifications.value = (fields.qualifications || []).join('\n');
         reviewPreferences.value = (fields.preferences || []).join('\n');
         reviewNcsDetail.value = (fields.ncs_detail_candidates || []).join('\n');
+        mergeTextareaValue(dutyText, (fields.duties || []).join('\n'));
+        mergeTextareaValue(qualificationText, (fields.qualifications || []).join('\n'));
+        mergeTextareaValue(preferenceText, (fields.preferences || []).join('\n'));
+        markNoticeReviewDirty('직무기술서에서 가져온 보완 텍스트가 있습니다. 질문 생성에 포함하려면 아래 적용 버튼을 누르세요.');
         jdReviewPayload = data;
+        renderQuestionPlanRows();
         const detailCount = (fields.ncs_detail_candidates || []).length;
         jdReviewStatus.textContent = detailCount
           ? `검토 필요 · 세분류 후보 ${detailCount}개`
@@ -585,11 +869,13 @@
         updateWorkflowMenu();
       } finally {
         jdParsing = false;
+        btn.disabled = false;
         if (!jdReviewPayload) {
           btnConfirmReview.disabled = false;
           btnConfirmReview.textContent = '다시 분석';
           btnConfirmReview.style.background = '#b7791f';
         }
+        refreshRunButtonState();
       }
     }
 
@@ -598,9 +884,8 @@
       noticeReviewStatus.textContent = '공고문 분석 중...';
       noticeReviewConfirmed = false;
       noticeParsing = true;
-      btnConfirmNoticeReview.disabled = true;
-      btnConfirmNoticeReview.textContent = '공고문 분석 중...';
-      btnConfirmNoticeReview.style.background = '#64748b';
+      setNoticeConfirmButtons('공고문 분석 중...', '#64748b', true);
+      if (noticeApplyHint) noticeApplyHint.textContent = '공고문에서 보완 텍스트 후보를 추출하고 있습니다.';
       errorBox.style.display = 'none';
       raw.textContent = `공고문 파싱 시작: ${file.name}`;
       startProgress(NOTICE_PROGRESS_STEPS, {
@@ -616,18 +901,23 @@
         if (!res.ok) throw new Error(readableApiError(text));
         const data = JSON.parse(text);
         const fields = data.fields || {};
-        if (fields.duty_text) dutyText.value = fields.duty_text;
-        if (fields.evaluation_text) evalText.value = fields.evaluation_text;
-        noticeReviewStatus.textContent = (fields.duty_text || fields.evaluation_text)
+        mergeTextareaValue(dutyText, fields.duty_text);
+        mergeTextareaValue(qualificationText, fields.qualification_text);
+        mergeTextareaValue(preferenceText, fields.preference_text);
+        mergeTextareaValue(evalText, fields.evaluation_text);
+        noticeReviewStatus.textContent = (fields.duty_text || fields.qualification_text || fields.preference_text || fields.evaluation_text)
           ? '검토 필요'
           : '추출 후보 없음 · 직접 입력 또는 생략 가능';
-        btnConfirmNoticeReview.disabled = false;
-        btnConfirmNoticeReview.textContent = '공고문 핵심 텍스트 검토·적용';
-        btnConfirmNoticeReview.style.background = '#005bac';
+        setNoticeConfirmButtons('공고문·보완 텍스트 검토·적용', '#005bac');
+        if (noticeApplyHint) {
+          noticeApplyHint.textContent = '추출된 공고문 텍스트를 확인·수정한 뒤 적용 버튼을 눌러야 질문 생성에 포함됩니다.';
+        }
         raw.textContent = JSON.stringify({
           status: '공고문 파싱 완료',
           filename: data.filename || file.name,
           duty_text_chars: (fields.duty_text || '').length,
+          qualification_text_chars: (fields.qualification_text || '').length,
+          preference_text_chars: (fields.preference_text || '').length,
           evaluation_text_chars: (fields.evaluation_text || '').length,
         }, null, 2);
         stopProgress('파싱 완료', '공고문 핵심 텍스트를 확인하고 필요하면 수정하세요.');
@@ -641,10 +931,12 @@
         console.warn('공고문 검토 파싱 실패:', e);
       } finally {
         noticeParsing = false;
-        btnConfirmNoticeReview.disabled = false;
-        if (!((dutyText.value || '').trim() || (evalText.value || '').trim())) {
-          btnConfirmNoticeReview.textContent = '공고문 단계 생략';
-          btnConfirmNoticeReview.style.background = '#475569';
+        setNoticeConfirmButtons(
+          hasNoticeSupplementText() ? '공고문·보완 텍스트 검토·적용' : '공고문 단계 생략',
+          hasNoticeSupplementText() ? '#005bac' : '#475569'
+        );
+        if (!((dutyText.value || '').trim() || (qualificationText.value || '').trim() || (preferenceText.value || '').trim() || (evalText.value || '').trim())) {
+          if (noticeApplyHint) noticeApplyHint.textContent = '공고문에서 추출된 보완 텍스트가 없습니다. 필요하면 직접 입력 후 적용하세요.';
         }
         updateWorkflowMenu();
       }
@@ -670,6 +962,7 @@
       jdReviewPayload.fields.qualifications = reviewQualifications.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       jdReviewPayload.fields.preferences = reviewPreferences.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       jdReviewPayload.fields.ncs_detail_candidates = reviewNcsDetail.value.split(/[\n,;/|]+/).map(x => x.trim()).filter(Boolean);
+      renderQuestionPlanRows();
       if (!jdReviewPayload.fields.ncs_detail_candidates.length) {
         jdReviewStatus.textContent = '세분류를 1개 이상 확인해야 합니다.';
         reviewNcsDetail.focus();
@@ -680,36 +973,12 @@
       jdReviewStatus.textContent = '확정됨 · NCS DB 조회 가능';
       document.getElementById('btnConfirmReview').textContent = '검토 확정 완료';
       document.getElementById('btnConfirmReview').style.background = '#15803d';
-      btn.style.display = 'block';
-      btn.textContent = 'NCS DB KSA 기반 면접 질문 생성';
+      refreshRunButtonState();
       updateWorkflowMenu();
     });
 
-    btnConfirmNoticeReview.addEventListener('click', () => {
-      if (noticeParsing) {
-        noticeReviewStatus.textContent = '공고문 분석 중입니다. 완료될 때까지 기다려 주세요.';
-        return;
-      }
-      if (!(dutyText.value || '').trim() && !(evalText.value || '').trim()) {
-        const jdDuties = (reviewDuties.value || '').trim();
-        if (jdDuties) {
-          dutyText.value = jdDuties;
-          noticeReviewStatus.textContent = '공고문 추출값이 없어 직무기술서 수행업무를 사용합니다.';
-        } else {
-          noticeReviewStatus.textContent = '추출된 공고문 핵심 텍스트가 없습니다. 공고문 단계는 선택 항목입니다.';
-        }
-        noticeReviewConfirmed = true;
-        btnConfirmNoticeReview.textContent = '공고문 단계 확인 완료';
-        btnConfirmNoticeReview.style.background = '#15803d';
-        updateWorkflowMenu();
-        return;
-      }
-      noticeReviewConfirmed = true;
-      noticeReviewStatus.textContent = '적용됨';
-      btnConfirmNoticeReview.textContent = '공고문 핵심 텍스트 적용 완료';
-      btnConfirmNoticeReview.style.background = '#15803d';
-      updateWorkflowMenu();
-    });
+    btnConfirmNoticeReview.addEventListener('click', applyNoticeReview);
+    btnConfirmNoticeReviewBottom.addEventListener('click', applyNoticeReview);
 
     // 파일 선택 시 자동 추출
     document.getElementById('jdFile').addEventListener('change', e => {
@@ -724,6 +993,7 @@
         extractedSclassBase = [];
         jdReviewPayload = null;
         reviewConfirmed = false;
+        refreshRunButtonState();
         updateWorkflowMenu();
       }
     });
@@ -740,8 +1010,33 @@
     });
 
     openaiApiKey.addEventListener('input', updateWorkflowMenu);
-    dutyText.addEventListener('input', () => { noticeReviewConfirmed = false; updateWorkflowMenu(); });
-    evalText.addEventListener('input', () => { noticeReviewConfirmed = false; updateWorkflowMenu(); });
+    reviewNcsDetail.addEventListener('input', () => {
+      reviewConfirmed = false;
+      renderQuestionPlanRows();
+      refreshRunButtonState();
+      updateWorkflowMenu();
+    });
+    defaultMainCount.addEventListener('input', () => {
+      const next = Math.max(1, Math.min(10, Number(defaultMainCount.value || 3)));
+      questionPlanRows.querySelectorAll('.plan-main').forEach((input) => {
+        if (!input.dataset.touched) input.value = String(next);
+      });
+    });
+    defaultFollowCount.addEventListener('input', () => {
+      const next = Math.max(0, Math.min(5, Number(defaultFollowCount.value || 3)));
+      questionPlanRows.querySelectorAll('.plan-follow').forEach((input) => {
+        if (!input.dataset.touched) input.value = String(next);
+      });
+    });
+    questionPlanRows.addEventListener('input', (event) => {
+      if (event.target && event.target.matches && event.target.matches('.plan-main, .plan-follow')) {
+        event.target.dataset.touched = '1';
+      }
+    });
+    dutyText.addEventListener('input', () => markNoticeReviewDirty());
+    qualificationText.addEventListener('input', () => markNoticeReviewDirty());
+    preferenceText.addEventListener('input', () => markNoticeReviewDirty());
+    evalText.addEventListener('input', () => markNoticeReviewDirty());
 
 
     // ── 자동완성 드롭다운 ──────────────────────────────────────────────
@@ -956,10 +1251,14 @@
 
     function setInputMode(mode) {
       const isUpload = mode !== 'manual';
+      if (isUpload && runActionBlock.parentElement !== uploadBlock) {
+        uploadBlock.insertBefore(runActionBlock, sclassBlock);
+      } else if (!isUpload && runActionBlock.parentElement !== manualBlock) {
+        manualBlock.appendChild(runActionBlock);
+      }
       uploadBlock.classList.toggle('hidden', !isUpload);
       manualBlock.classList.toggle('hidden', isUpload);
-      btn.style.display = isUpload ? (reviewConfirmed ? 'block' : 'none') : 'block';
-      btn.textContent = isUpload ? 'NCS DB KSA 기반 면접 질문 생성' : '면접 질문 생성';
+      refreshRunButtonState();
     }
 
     function collectRuntimeKnobs() {
@@ -988,6 +1287,8 @@
       addMetaPill(meta, `입력방식: ${mode}`, 'pill good');
       addMetaPill(meta, `공고문 글자수: ${(data.notice_text_preview || '').length}`);
       addMetaPill(meta, `담당업무 글자수: ${(data.duty_text_preview || '').length}`);
+      addMetaPill(meta, `지원자격 글자수: ${(data.qualification_text_preview || '').length}`);
+      addMetaPill(meta, `우대사항 글자수: ${(data.preference_text_preview || '').length}`);
       addMetaPill(meta, `NCS 소스: ${data.ncs_source || '-'}`, 'pill good');
       addMetaPill(meta, `OpenAI key: ${data.openai_key_source || '-'}`);
 
@@ -1024,10 +1325,14 @@
     function renderQuestionList(items) {
       const root = document.getElementById('questionList');
       const empty = document.getElementById('questionEmpty');
+      const heading = document.getElementById('questionHeading');
       currentQuestions = Array.isArray(items) ? items : [];
       const totalPages = Math.max(1, Math.ceil(currentQuestions.length / QUESTION_PAGE_SIZE));
       if (currentQPage >= totalPages) currentQPage = 0;
       root.innerHTML = '';
+      if (heading) {
+        heading.textContent = `면접 질문 (총 ${currentQuestions.length}개 / 페이지당 ${QUESTION_PAGE_SIZE}개)`;
+      }
       if (!currentQuestions.length) {
         empty.style.display = 'block';
         updateQNav();
@@ -1042,16 +1347,9 @@
         const fus = Array.isArray((q || {}).follow_ups)
           ? (q || {}).follow_ups.filter(x => String(x || '').trim())
           : [];
-        if (fus.length >= 3) return fus.slice(0, 3);
         const single = String((q || {}).follow_up || '').trim();
         if (single && !fus.includes(single)) fus.unshift(single);
-        const fallback = [
-          '그 상황에서 본인이 맡은 구체적인 역할과 판단 근거를 말씀해 주세요.',
-          '그 과정에서 가장 어려웠던 부분은 무엇이고, 어떻게 해결하셨나요?',
-          '그 결과는 어땠고, 돌이켜보면 어떤 점을 다르게 하시겠습니까?',
-        ];
-        while (fus.length < 3) fus.push(fallback[fus.length]);
-        return fus.slice(0, 3);
+        return fus;
       };
 
       for (const [i, q] of pageItems.entries()) {
@@ -1264,12 +1562,21 @@
           const knobs = collectRuntimeKnobs();
           fd.append('jd_file', file);
           const nFile = noticeFile.files && noticeFile.files[0];
-          if (nFile) fd.append('notice_file', nFile);
           fd.append('strengths', '');
           const requestKey = requestOpenAIKey();
           if (requestKey) fd.append('openai_api_key', requestKey);
-          fd.append('duty_text', (dutyText.value || '').trim());
-          fd.append('evaluation_text', (evalText.value || '').trim());
+          if ((nFile || hasNoticeSupplementText()) && !noticeReviewConfirmed) {
+            throw new Error('공고문/보완 텍스트를 질문에 포함하려면 먼저 「공고문·보완 텍스트 검토·적용」 버튼을 눌러 주세요.');
+          }
+          if (noticeReviewConfirmed) {
+            if (nFile) fd.append('notice_file', nFile);
+            fd.append('duty_text', (dutyText.value || '').trim());
+            fd.append('qualification_text', (qualificationText.value || '').trim());
+            fd.append('preference_text', (preferenceText.value || '').trim());
+            fd.append('evaluation_text', (evalText.value || '').trim());
+          }
+          fd.append('question_plan_json', JSON.stringify({ items: collectQuestionPlan() }));
+          fd.append('interview_methods_json', JSON.stringify(collectInterviewMethods()));
           if (!reviewConfirmed || !jdReviewPayload) {
             throw new Error('Kordoc 추출 결과를 검토·확정한 뒤 실행해 주세요.');
           }
@@ -1348,7 +1655,7 @@
         stopProgress('실패');
       } finally {
         btn.disabled = false;
-        btn.textContent = (inputMode.value || 'upload') === 'upload' ? 'NCS DB KSA 기반 면접 질문 생성' : '면접 질문 생성';
+        refreshRunButtonState();
       }
     };
 

@@ -3109,10 +3109,17 @@ def build_strategy_with_openai(
     evaluation_text: str = "",
     desired_job: str = "",
     api_key_override: str = "",
+    target_count_override: int | None = None,
+    follow_up_count: int = 3,
+    question_plan: dict[str, Any] | None = None,
+    interview_methods: list[str] | None = None,
 ) -> dict[str, Any]:
     api_key = str(api_key_override or "").strip() or settings.openai_key()
-    target_count = max(5, min(40, int(os.getenv("INTERVIEW_TARGET_COUNT", "10") or "10")))
+    default_target = max(5, min(40, int(os.getenv("INTERVIEW_TARGET_COUNT", "10") or "10")))
+    target_count = int(target_count_override or default_target)
+    target_count = max(1, min(40, target_count))
     retry_target_count = max(5, min(10, target_count))
+    follow_up_count = max(0, min(5, int(follow_up_count if follow_up_count is not None else 3)))
     primary_model = (os.getenv("OPENAI_STRATEGY_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
     retry_model = (os.getenv("OPENAI_STRATEGY_RETRY_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
     force_fallback = (os.getenv("OPENAI_FORCE_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "y"})
@@ -3164,6 +3171,32 @@ def build_strategy_with_openai(
         if strengths
         else "개인특성 모드: 개인 강점 입력이 없으므로 JD/NCS 기준으로만 생성하세요."
     )
+    plan_items: list[dict[str, Any]] = []
+    if isinstance(question_plan, dict):
+        plan_items = [
+            x for x in (question_plan.get("selected_items") or [])
+            if isinstance(x, dict)
+        ]
+    method_names = [str(x).strip() for x in (interview_methods or []) if str(x).strip()]
+    if not method_names:
+        method_names = ["경험면접", "상황면접", "발표면접", "토론면접"]
+    custom_plan_rules = ""
+    if plan_items:
+        custom_plan_rules = (
+            "[사용자 지정 질문 계획]\n"
+            "- 아래 세분류만 질문 생성 대상으로 사용하세요.\n"
+            "- 각 세분류별 main_count만큼 주질문을 생성하세요.\n"
+            "- 각 주질문에는 follow_ups를 지정 개수만큼 생성하세요.\n"
+            f"{json.dumps(plan_items, ensure_ascii=False)}\n"
+            f"[선택 면접기법]{', '.join(method_names)}\n"
+            "- 각 질문의 type과 method에는 선택 면접기법 중 하나를 넣으세요.\n"
+            "- 경험면접: 과거 행동·경험의 실제 행동증거를 묻는 STAR형 질문.\n"
+            "- 상황면접: 직무상황을 제시하고 판단·대응 과정을 묻는 질문.\n"
+            "- 발표면접: 직무 주제·자료를 제시하고 핵심 분석, 대안, 실행계획을 구조화해 발표하게 하는 질문.\n"
+            "- 토론면접: 이해관계가 갈리는 직무 이슈를 제시하고 근거 제시, 경청, 조정, 결론 도출을 보는 질문.\n"
+            "- 인바스켓면접: 제한된 시간, 다수 문서·요청·우선순위 충돌 상황을 제시하고 처리 순서와 근거를 묻는 질문.\n"
+            "- 직무지식면접: 직무 절차·기준·법령·도구에 대한 이해와 적용을 묻는 질문.\n\n"
+        )
 
     # STRUCTURED_INTERVIEW_GUIDE.md 핵심 섹션만 추출 (토큰 절약)
     _guide_path = os.path.join(os.path.dirname(__file__), "..", "..", "STRUCTURED_INTERVIEW_GUIDE.md")
@@ -3179,7 +3212,7 @@ def build_strategy_with_openai(
     except Exception:
         _guide_summary = (
             "원칙: 주질문1개+꼬리질문3개(사례구체화/어려움대처/결과교훈). "
-            "type=경험50%/상황30%/직무지식20%. STAR프레임. 개방형 단일의도."
+            "type=경험면접/상황면접/발표면접/토론면접 중 선택. STAR프레임. 개방형 단일의도."
         )
 
     prompt = (
@@ -3187,16 +3220,17 @@ def build_strategy_with_openai(
         "목표: NCS 능력단위 기반 구조화 면접 질문 생성\n"
         "언어: 모든 문자열은 한국어\n"
         "출력 스키마: {"
-        '"interview_questions":[{"type":"경험|상황|직무지식","competency":"능력단위명","ncsClCd":"코드","question":"주질문(1개)","follow_ups":["꼬리질문1","꼬리질문2","꼬리질문3"],"evaluation_points":["평가항목1","평가항목2","평가항목3","평가항목4"]}],'
+        '"interview_questions":[{"type":"경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접","competency":"능력단위명","ncsClCd":"코드","question":"주질문(1개)","follow_ups":["꼬리질문1","꼬리질문2","꼬리질문3"],"evaluation_points":["평가항목1","평가항목2","평가항목3","평가항목4"]}],'
         '"ncs_link":[{"ncsClCd":"...","compeUnitName":"...","why":"..."}]'
         "}\n\n"
         "[구조화 면접 원칙]\n"
         f"{_guide_summary}\n\n"
+        f"{custom_plan_rules}"
         f"{priority_rules}"
         "생성 규칙:\n"
         f"- interview_questions {target_count}개 생성\n"
-        "- 각 항목: 주질문 1개 + follow_ups 꼬리질문 정확히 3개\n"
-        "- type 비율: 경험 40% / 상황 30% / 직무지식 20% / 가치·태도 10%\n"
+        f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 정확히 {follow_up_count}개\n"
+        f"- type/method는 선택 면접기법({', '.join(method_names)}) 중 하나만 사용\n"
         "- 지원자가 해당 업무를 직접 맡아보지 않았을 수 있음을 전제로, 유사 경험 또는 가정형 답변이 가능하도록 질문할 것\n"
         "\n"
         "[주질문 작성 필수 기준]\n"
@@ -3209,7 +3243,7 @@ def build_strategy_with_openai(
         "4. 가치·태도형: 규정과 현실이 충돌하는 상황에서의 판단 기준을 확인\n"
         "\n"
         "[꼬리질문 작성 기준]\n"
-        "- 꼬리물기 구조: 주질문 → 꼬리1 → 꼬리2 → 꼬리3, 앞 답변을 전제로 더 깊이 파고드는 질문\n"
+        "- 꼬리물기 구조: 주질문 → 꼬리질문, 앞 답변을 전제로 더 깊이 파고드는 질문\n"
         "- 꼬리1·2·3은 각각 evaluation_points의 서로 다른 항목을 검증\n"
         "- 같은 내용을 반복하거나 독립적인 질문 나열 금지\n"
         "- 주질문은 개방형 단일 의도, '네/아니오'로 답할 수 없는 문장\n"
@@ -3269,13 +3303,13 @@ def build_strategy_with_openai(
             "목표: NCS 능력단위 기반 구조화 면접 질문 생성\n"
             "언어: 한국어\n"
             "스키마: {"
-            '"interview_questions":[{"type":"경험|상황|직무지식","competency":"...","ncsClCd":"...","question":"주질문1개","follow_ups":["꼬리질문1","꼬리질문2","꼬리질문3"],"evaluation_points":["..."]}],'
+            '"interview_questions":[{"type":"경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접","competency":"...","ncsClCd":"...","question":"주질문1개","follow_ups":["꼬리질문1","꼬리질문2","꼬리질문3"],"evaluation_points":["..."]}],'
             '"ncs_link":[{"ncsClCd":"...","compeUnitName":"...","why":"..."}]'
             "}\n"
             "규칙:\n"
             f"- interview_questions {retry_target_count}개 생성\n"
-            "- 각 항목: 주질문 1개 + follow_ups 꼬리질문 3개 (꼬리물기: 앞 답변을 받아 더 깊이 파고드는 구조, 서로 다른 평가항목 검증)\n"
-            "- type: '경험' 50% / '상황' 30% / '직무지식' 20%\n"
+            f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 {follow_up_count}개 (꼬리물기: 앞 답변을 받아 더 깊이 파고드는 구조, 서로 다른 평가항목 검증)\n"
+            f"- 선택 면접기법: {', '.join(method_names)}\n"
             "- 각 질문은 compeUnitDef(능력단위 정의) 직접 반영\n"
             "- evaluation_points는 NCS 수행준거 기반 4~6개\n"
             "- 지원자가 직접 수행한 경험이 없을 수 있으므로, 유사 사례/가정형 답변이 가능하도록 질문할 것\n"

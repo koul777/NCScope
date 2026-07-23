@@ -142,16 +142,16 @@ if (Test-Path -LiteralPath $envFile) {
 # Kill existing process on 8015 if any
 $lines = netstat -ano | Select-String ":8015"
 if ($lines) {
-  $pids = @()
+  $processIds = @()
   foreach ($ln in $lines) {
     $parts = ($ln.ToString().Trim() -split "\s+") | Where-Object { $_ }
     if ($parts.Length -ge 5 -and $parts[4] -match "^\d+$" -and $parts[4] -ne "0") {
-      $pids += [int]$parts[4]
+      $processIds += [int]$parts[4]
     }
   }
-  $pids = $pids | Select-Object -Unique
-  foreach ($pid in $pids) {
-    try { Stop-Process -Id $pid -Force } catch {}
+  $processIds = $processIds | Select-Object -Unique
+  foreach ($processId in $processIds) {
+    try { Stop-Process -Id $processId -Force } catch {}
   }
 }
 
@@ -171,3 +171,4 @@ try {
     try { Stop-Process -Id $startedMcpProcess.Id -Force } catch {}
   }
 }
+

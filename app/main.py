@@ -188,6 +188,435 @@ def _merge_sclass_terms(
     return [x for x in out if _norm_sclass_key(x) not in remove_keys]
 
 
+def _merge_review_text(*values: Any, max_chars: int = 3000) -> str:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        parts = value if isinstance(value, list) else re.split(r"\n+", str(value or ""))
+        for part in parts:
+            text = str(part or "").strip()
+            key = re.sub(r"\s+", "", text).lower()
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+    return "\n".join(out)[:max_chars].strip()
+
+
+def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dict[str, Any]:
+    fallback_terms = _parse_sclass_terms("\n".join(str(term).strip() for term in (reviewed_detail_terms or []) if str(term).strip()))
+    default_items = [
+        {"detail": term, "enabled": True, "main_count": 3, "follow_up_count": 3}
+        for term in fallback_terms
+    ]
+    if not str(raw or "").strip():
+        items = default_items
+    else:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"question_plan_json is invalid: {exc}") from exc
+        candidates = parsed.get("items") if isinstance(parsed, dict) else parsed if isinstance(parsed, list) else []
+        items = []
+        for row in candidates or []:
+            if not isinstance(row, dict):
+                continue
+            detail = str(row.get("detail") or row.get("name") or row.get("ncs_detail") or "").strip()
+            if not detail:
+                continue
+            enabled = row.get("enabled", True)
+            enabled_bool = not (enabled is False or str(enabled).strip().lower() in {"0", "false", "no", "n"})
+            try:
+                main_count = int(row.get("main_count", row.get("question_count", 3)) or 0)
+            except Exception:
+                main_count = 3
+            try:
+                follow_up_count = int(row.get("follow_up_count", row.get("followups", 3)) or 0)
+            except Exception:
+                follow_up_count = 3
+            items.append(
+                {
+                    "detail": detail,
+                    "enabled": enabled_bool,
+                    "main_count": max(0, min(10, main_count)),
+                    "follow_up_count": max(0, min(5, follow_up_count)),
+                }
+            )
+
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        key = _norm_sclass_key(str(item.get("detail", "")))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        main_count = max(0, min(10, int(item.get("main_count", 0) or 0)))
+        normalized.append(
+            {
+                "detail": str(item.get("detail", "")).strip(),
+                "enabled": bool(item.get("enabled", True)) and main_count > 0,
+                "main_count": main_count,
+                "follow_up_count": max(0, min(5, int(item.get("follow_up_count", 3) or 0))),
+            }
+        )
+    selected = [item for item in normalized if item["enabled"]]
+    if not selected and fallback_terms:
+        selected = default_items
+        normalized = default_items
+    total_main = sum(int(item.get("main_count", 0) or 0) for item in selected)
+    total_main = max(1, min(40, total_main)) if selected else 0
+    selected_terms = [str(item.get("detail", "")).strip() for item in selected if str(item.get("detail", "")).strip()]
+    follow_up_count = max([int(item.get("follow_up_count", 3) or 0) for item in selected] or [3])
+    question_sequence: list[dict[str, Any]] = []
+    for item in selected:
+        for _ in range(max(0, int(item.get("main_count", 0) or 0))):
+            question_sequence.append(
+                {
+                    "detail": str(item.get("detail", "")).strip(),
+                    "follow_up_count": max(0, min(5, int(item.get("follow_up_count", 3) or 0))),
+                }
+            )
+    return {
+        "items": normalized,
+        "selected_items": selected,
+        "selected_terms": selected_terms,
+        "question_sequence": question_sequence[:40],
+        "total_main_count": total_main,
+        "follow_up_count": max(0, min(5, follow_up_count)),
+    }
+
+
+def _parse_interview_methods(raw: str) -> list[str]:
+    allowed = {
+        "behavior": "경험면접",
+        "behavioral": "경험면접",
+        "행동관찰면접": "경험면접",
+        "행동관찰": "경험면접",
+        "경험면접": "경험면접",
+        "experience": "경험면접",
+        "situation": "상황면접",
+        "situational": "상황면접",
+        "상황면접": "상황면접",
+        "presentation": "발표면접",
+        "pt": "발표면접",
+        "pt면접": "발표면접",
+        "발표": "발표면접",
+        "발표면접": "발표면접",
+        "discussion": "토론면접",
+        "debate": "토론면접",
+        "토론": "토론면접",
+        "토론면접": "토론면접",
+        "inbasket": "인바스켓면접",
+        "in-basket": "인바스켓면접",
+        "인바스켓": "인바스켓면접",
+        "인바스켓면접": "인바스켓면접",
+        "job_knowledge": "직무지식면접",
+        "knowledge": "직무지식면접",
+        "직무지식": "직무지식면접",
+        "직무지식면접": "직무지식면접",
+    }
+    text = str(raw or "").strip()
+    values: list[str] = []
+    if text:
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            values = [str(x).strip() for x in parsed]
+        elif isinstance(parsed, dict):
+            values = [str(x).strip() for x in (parsed.get("methods") or [])]
+        else:
+            values = [part.strip() for part in re.split(r"[\n,;/|]+", text) if part.strip()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        mapped = allowed.get(value) or allowed.get(value.lower()) or allowed.get(_norm_sclass_key(value))
+        if mapped and mapped not in seen:
+            seen.add(mapped)
+            out.append(mapped)
+    return out or ["경험면접", "상황면접", "발표면접", "토론면접"]
+
+
+def _group_interview_questions_for_response(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for q in questions or []:
+        comp = str((q or {}).get("competency", "")).strip() or "핵심 직무"
+        code = str((q or {}).get("ncsClCd", "")).strip()
+        grouped.setdefault((comp, code), []).append(
+            {
+                "question": str((q or {}).get("question", "")).strip(),
+                "follow_ups": list((q or {}).get("follow_ups", []) or []),
+                "evaluation_points": list((q or {}).get("evaluation_points", []) or []),
+                "method": str((q or {}).get("method") or (q or {}).get("type") or "").strip(),
+            }
+        )
+    return [
+        {"competency": comp, "ncsClCd": code, "questions": qset}
+        for (comp, code), qset in grouped.items()
+    ]
+
+
+def _clean_question_text(value: Any, max_chars: int = 90) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:max_chars].strip() if text else ""
+
+
+def _ksa_terms_for_question(
+    ncs_ksa: list[dict[str, Any]] | None,
+    ncs_code: str,
+    fallback_terms: list[str] | None = None,
+    limit: int = 5,
+) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        text = _clean_question_text(value, max_chars=60)
+        key = _ksa_key(text)
+        if text and key and key not in seen:
+            seen.add(key)
+            out.append(text)
+
+    for row in ncs_ksa or []:
+        if isinstance(row, dict) and ncs_code and str(row.get("ncsClCd", "")).strip() == ncs_code:
+            add(row.get("factorName"))
+            if len(out) >= limit:
+                return out[:limit]
+    for row in ncs_ksa or []:
+        if isinstance(row, dict):
+            add(row.get("factorName"))
+            if len(out) >= limit:
+                return out[:limit]
+    for term in fallback_terms or []:
+        add(term)
+    return out[:limit]
+
+
+def _pick_unit_for_detail(
+    target_detail: str,
+    offset: int,
+    ncs_matches: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    rows = [x for x in (ncs_matches or []) if isinstance(x, dict)]
+    if not rows:
+        return {}
+    detail_key = _norm_sclass_key(target_detail)
+    exact: list[dict[str, Any]] = []
+    if detail_key:
+        for row in rows:
+            sclass = _norm_sclass_key(str(row.get("ncsSclasCdnm", "")))
+            matched = [
+                _norm_sclass_key(x)
+                for x in (row.get("matched_keywords") or [])
+                if str(x).strip()
+            ] if isinstance(row.get("matched_keywords"), list) else []
+            if sclass == detail_key or detail_key in matched:
+                exact.append(row)
+    pool = exact or rows
+    return dict(pool[offset % len(pool)])
+
+
+def _method_evaluation_points(method: str, ksa_terms: list[str]) -> list[str]:
+    guide = {
+        "경험면접": ["구체적 상황 설명", "본인 역할과 행동", "접근 방법의 타당성", "성과와 학습"],
+        "상황면접": ["판단 기준", "행동 의도와 근거", "위험요인 인식", "이해관계자 대응"],
+        "발표면접": ["자료 분석력", "논리적 구조화", "대안의 실행가능성", "의사소통 명확성"],
+        "토론면접": ["근거 제시", "경청과 상호작용", "갈등 조정", "합의안 도출"],
+        "인바스켓면접": ["우선순위 판단", "문서·요청 분류", "시간관리", "리스크 대응"],
+        "직무지식면접": ["절차·기준 이해", "직무지식 적용", "예외상황 판단", "산출물 품질"],
+    }
+    points = list(guide.get(method, guide["경험면접"]))
+    for term in ksa_terms:
+        if term not in points:
+            points.append(term)
+        if len(points) >= 6:
+            break
+    return points[:6]
+
+
+def _question_for_method(
+    method: str,
+    subject: str,
+    focus: str,
+    detail: str,
+    comp_def: str,
+) -> str:
+    label = subject or detail or "해당 직무"
+    focus = focus or "핵심 수행기준"
+    definition_hint = f" ({_clean_question_text(comp_def, max_chars=70)})" if comp_def else ""
+    if method == "발표면접":
+        return (
+            f"[발표과제] {label} 업무에서 '{focus}'를 높이기 위한 개선안을 5분 발표해 주세요. "
+            f"발표에는 현황 진단, 원인 분석, 대안 2가지, 실행 우선순위, 성과지표를 포함하세요{definition_hint}."
+        )
+    if method == "토론면접":
+        return (
+            f"[토론과제] {label} 업무에서 '{focus}' 추진을 두고 효율성 우선 입장과 규정·리스크 관리 우선 입장이 충돌합니다. "
+            "본인의 초기 입장과 집단토론에서 합의안을 도출할 방식을 제시해 주세요."
+        )
+    if method == "인바스켓면접":
+        return (
+            f"[인바스켓과제] 제한시간 30분 안에 {label} 관련 메일, 보고 요청, 민원, 일정 충돌 문서가 동시에 들어왔습니다. "
+            f"'{focus}'를 기준으로 처리 우선순위와 첫 조치 계획을 제시해 주세요."
+        )
+    if method == "상황면접":
+        return (
+            f"{label} 업무 중 '{focus}'와 관련해 규정상 절차와 현장 요구가 충돌하는 상황입니다. "
+            "어떤 기준으로 판단하고 어떤 순서로 행동하시겠습니까?"
+        )
+    if method == "직무지식면접":
+        return (
+            f"{label}에서 '{focus}'를 적용하기 위해 확인해야 할 절차, 기준, 산출물을 설명하고 "
+            "실제 업무에 적용할 때의 유의점을 말씀해 주세요."
+        )
+    return (
+        f"{label} 수행 과정에서 '{focus}'를 적용해 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. "
+        "당시 상황, 본인 행동, 결과를 포함해 설명해 주세요."
+    )
+
+
+def _followups_for_method(method: str, subject: str, focus: str, count: int) -> list[str]:
+    if count <= 0:
+        return []
+    label = subject or "해당 업무"
+    focus = focus or "핵심 수행기준"
+    banks = {
+        "경험면접": [
+            "당시 상황과 본인이 맡은 역할을 구체적으로 설명해 주세요.",
+            f"'{focus}'를 적용하기 위해 실제로 취한 행동은 무엇이었습니까?",
+            "가장 어려웠던 지점과 이를 해결한 방법은 무엇이었습니까?",
+            "성과를 어떤 기준이나 지표로 확인했습니까?",
+            "같은 상황이 다시 주어진다면 어떤 점을 개선하시겠습니까?",
+        ],
+        "상황면접": [
+            "판단 전에 먼저 확인해야 할 사실과 기준은 무엇입니까?",
+            "그 행동을 선택한 이유와 예상되는 위험요인은 무엇입니까?",
+            "관련 이해관계자에게 어떤 순서와 방식으로 설명하시겠습니까?",
+            "결과가 기대와 다르게 나오면 어떤 후속 조치를 하시겠습니까?",
+            "같은 문제가 반복되지 않도록 어떤 예방 장치를 두시겠습니까?",
+        ],
+        "발표면접": [
+            "발표에서 제시한 진단의 핵심 근거 자료는 무엇입니까?",
+            "대안 중 우선순위를 가장 높게 둔 방안과 그 이유는 무엇입니까?",
+            "면접위원이 반대 의견을 제시한다면 어떤 근거로 답변하시겠습니까?",
+            "실행 일정, 필요 자원, 성과지표를 어떻게 설정하겠습니까?",
+            f"{label} 현장에 적용할 때 가장 큰 리스크와 보완책은 무엇입니까?",
+        ],
+        "토론면접": [
+            "본인의 초기 입장을 뒷받침하는 핵심 근거는 무엇입니까?",
+            "반대 의견 중 수용할 수 있는 부분과 수용하기 어려운 부분은 무엇입니까?",
+            "논의가 감정적 대립으로 흐를 때 어떻게 조정하시겠습니까?",
+            "최종 합의안에 반드시 포함되어야 할 기준은 무엇입니까?",
+            "토론 이후 실행 책임과 후속 점검은 어떻게 정리하시겠습니까?",
+        ],
+        "인바스켓면접": [
+            "여러 문서와 요청을 어떤 기준으로 분류하겠습니까?",
+            "가장 먼저 처리할 항목과 보류할 항목을 각각 무엇으로 보겠습니까?",
+            "상급자 보고, 위임, 직접 처리 중 어떤 방식을 선택하겠습니까?",
+            "마감 지연이나 민원 확대 가능성은 어떻게 통제하겠습니까?",
+            "30분 이후 후속 확인과 기록은 어떻게 남기겠습니까?",
+        ],
+        "직무지식면접": [
+            f"'{focus}'와 관련해 반드시 확인해야 할 기준이나 규정은 무엇입니까?",
+            "그 기준을 실제 업무에 적용할 때 자주 발생하는 예외상황은 무엇입니까?",
+            "관련 산출물의 품질을 어떻게 점검하겠습니까?",
+            "잘못 적용했을 때 발생할 수 있는 리스크와 보완책은 무엇입니까?",
+            "신규 담당자에게 이 절차를 설명한다면 어떤 순서로 교육하겠습니까?",
+        ],
+    }
+    bank = banks.get(method, banks["경험면접"])
+    return bank[: max(0, min(5, count))]
+
+
+def _adjust_generated_questions(
+    strategy: dict[str, Any],
+    question_plan: dict[str, Any],
+    interview_methods: list[str],
+    ncs_matches: list[dict[str, Any]] | None = None,
+    ncs_ksa: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(strategy, dict):
+        return strategy
+    questions = strategy.get("interview_questions")
+    if not isinstance(questions, list):
+        questions = []
+    target_total = int(question_plan.get("total_main_count", 0) or 0)
+    default_follow_count = max(0, min(5, int(question_plan.get("follow_up_count", 3) or 0)))
+    methods = interview_methods or ["경험면접", "상황면접", "발표면접", "토론면접"]
+    sequence = [item for item in (question_plan.get("question_sequence") or []) if isinstance(item, dict)]
+    if sequence:
+        target_total = len(sequence)
+    elif target_total <= 0:
+        target_total = len([q for q in questions if isinstance(q, dict)])
+
+    source_questions = [dict(q) for q in questions if isinstance(q, dict)]
+    while len(source_questions) < target_total:
+        source_questions.append({})
+    source_questions = source_questions[:target_total] if target_total > 0 else source_questions
+
+    adjusted: list[dict[str, Any]] = []
+    detail_offsets: dict[str, int] = {}
+    for idx, row in enumerate(source_questions):
+        item = dict(row)
+        planned = sequence[idx] if idx < len(sequence) else {}
+        target_detail = str(planned.get("detail", "")).strip()
+        detail_key = _norm_sclass_key(target_detail)
+        offset = detail_offsets.get(detail_key, 0)
+        unit = _pick_unit_for_detail(target_detail, offset, ncs_matches)
+        detail_offsets[detail_key] = offset + 1
+
+        if unit:
+            item["ncsClCd"] = str(unit.get("ncsClCd", "")).strip() or str(item.get("ncsClCd", "")).strip()
+            item["competency"] = str(unit.get("compeUnitName", "")).strip() or str(item.get("competency", "")).strip()
+            item["compeUnitDef"] = str(unit.get("compeUnitDef", "")).strip() or str(item.get("compeUnitDef", "")).strip()
+            item["ncsSubdCdnm"] = str(unit.get("ncsSubdCdnm", "")).strip() or str(item.get("ncsSubdCdnm", "")).strip()
+            item["ncs_detail"] = str(unit.get("ncsSclasCdnm", "")).strip() or target_detail or str(item.get("ncs_detail", "")).strip()
+        elif target_detail:
+            item["ncs_detail"] = target_detail
+            if not str(item.get("competency", "")).strip():
+                item["competency"] = target_detail
+
+        row_follow_count = max(0, min(5, int(planned.get("follow_up_count", default_follow_count) or 0)))
+        method = methods[idx % len(methods)]
+        item["method"] = method
+        item["type"] = method
+
+        ncs_code = str(item.get("ncsClCd", "")).strip()
+        subject = str(item.get("competency", "")).strip() or target_detail or "해당 직무"
+        existing_refs = list(item.get("ksa_refs", []) or []) if isinstance(item.get("ksa_refs"), list) else []
+        ksa_terms = _ksa_terms_for_question(
+            ncs_ksa=ncs_ksa,
+            ncs_code=ncs_code,
+            fallback_terms=existing_refs,
+        )
+        focus = ksa_terms[idx % len(ksa_terms)] if ksa_terms else _clean_question_text(item.get("competency") or target_detail or "핵심 수행기준")
+        raw_question = str(item.get("question", "")).strip()
+        item["model_question_raw"] = raw_question
+        item["question"] = _question_for_method(
+            method=method,
+            subject=subject,
+            focus=focus,
+            detail=target_detail,
+            comp_def=str(item.get("compeUnitDef", "")).strip(),
+        )
+        item["follow_ups"] = _followups_for_method(
+            method=method,
+            subject=subject,
+            focus=focus,
+            count=row_follow_count,
+        )
+        item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
+        item["evaluation_points"] = _method_evaluation_points(method, ksa_terms)
+        adjusted.append(item)
+    strategy["interview_questions"] = adjusted
+    strategy["interview_by_competency"] = _group_interview_questions_for_response(adjusted)
+    strategy["question_plan_used"] = question_plan
+    strategy["interview_methods_used"] = methods
+    strategy["question_customization_policy"] = "guidebook_method_templates_and_exact_counts"
+    return strategy
+
+
 def _repeat_count_from_weight(weight: float, default: int = 1, max_repeat: int = 6) -> int:
     try:
         v = int(round(float(weight)))
@@ -199,15 +628,23 @@ def _repeat_count_from_weight(weight: float, default: int = 1, max_repeat: int =
 def _build_priority_notice_text(
     notice_text: str,
     duty_text: str = "",
+    qualification_text: str = "",
+    preference_text: str = "",
     evaluation_text: str = "",
 ) -> str:
     notice = str(notice_text or "").strip()
     duty = str(duty_text or "").strip()
+    qualification = str(qualification_text or "").strip()
+    preference = str(preference_text or "").strip()
     evaluation = str(evaluation_text or "").strip()
 
     parts: list[str] = []
     if duty:
         parts.append(f"[담당업무-우선]\n{duty[:2500]}")
+    if qualification:
+        parts.append(f"[지원자격-우선]\n{qualification[:1800]}")
+    if preference:
+        parts.append(f"[우대사항-우선]\n{preference[:1800]}")
     if evaluation:
         parts.append(f"[면접평가항목-우선]\n{evaluation[:1800]}")
     if notice:
@@ -218,23 +655,35 @@ def _build_priority_notice_text(
 def _build_priority_query_text(
     base_text: str,
     duty_text: str = "",
+    qualification_text: str = "",
+    preference_text: str = "",
     evaluation_text: str = "",
 ) -> str:
     base = str(base_text or "").strip()[:5000]
     duty = str(duty_text or "").strip()[:2500]
+    qualification = str(qualification_text or "").strip()[:1600]
+    preference = str(preference_text or "").strip()[:1600]
     evaluation = str(evaluation_text or "").strip()[:1500]
 
     base_w = _to_float_or(os.getenv("JD_BASE_TEXT_WEIGHT", "1.0"), 1.0)
     duty_w = _to_float_or(os.getenv("DUTY_TEXT_WEIGHT", "3.0"), 3.0)
+    qualification_w = _to_float_or(os.getenv("QUALIFICATION_TEXT_WEIGHT", "1.4"), 1.4)
+    preference_w = _to_float_or(os.getenv("PREFERENCE_TEXT_WEIGHT", "1.2"), 1.2)
     eval_w = _to_float_or(os.getenv("EVALUATION_TEXT_WEIGHT", "2.5"), 2.5)
 
     base_rep = _repeat_count_from_weight(base_w, default=1, max_repeat=4)
     duty_rep = _repeat_count_from_weight(duty_w, default=3, max_repeat=6)
+    qualification_rep = _repeat_count_from_weight(qualification_w, default=1, max_repeat=3)
+    preference_rep = _repeat_count_from_weight(preference_w, default=1, max_repeat=3)
     eval_rep = _repeat_count_from_weight(eval_w, default=2, max_repeat=6)
 
     chunks: list[str] = []
     if duty:
         chunks.extend([f"[담당업무]{duty}"] * duty_rep)
+    if qualification:
+        chunks.extend([f"[지원자격]{qualification}"] * qualification_rep)
+    if preference:
+        chunks.extend([f"[우대사항]{preference}"] * preference_rep)
     if evaluation:
         chunks.extend([f"[면접평가항목]{evaluation}"] * eval_rep)
     if base:
@@ -1384,7 +1833,11 @@ async def jd_strategy_upload(
     manual_sclass_add: str = Form(default=""),
     manual_sclass_remove: str = Form(default=""),
     duty_text: str = Form(default=""),
+    qualification_text: str = Form(default=""),
+    preference_text: str = Form(default=""),
     evaluation_text: str = Form(default=""),
+    question_plan_json: str = Form(default=""),
+    interview_methods_json: str = Form(default=""),
     jd_review_json: str = Form(default=""),
 ) -> dict:
     # 최적값 고정 (사용자 노출 제거)
@@ -1423,11 +1876,20 @@ async def jd_strategy_upload(
     reviewed_markdown = str((review_session or {}).get("markdown") or "").strip()
     if reviewed_markdown:
         jd_text = reviewed_markdown
-    duty_text_clean = str(duty_text or "").strip()
-    if not duty_text_clean:
-        duty_text_clean = "\n".join(str(x).strip() for x in (reviewed_fields.get("duties") or []) if str(x).strip())
-    qualification_text_clean = "\n".join(
-        str(x).strip() for x in (reviewed_fields.get("qualifications") or []) if str(x).strip()
+    duty_text_clean = _merge_review_text(
+        duty_text,
+        reviewed_fields.get("duties") or [],
+        max_chars=3000,
+    )
+    qualification_text_clean = _merge_review_text(
+        qualification_text,
+        reviewed_fields.get("qualifications") or [],
+        max_chars=2400,
+    )
+    preference_text_clean = _merge_review_text(
+        preference_text,
+        reviewed_fields.get("preferences") or [],
+        max_chars=2400,
     )
     evaluation_text_clean = str(evaluation_text or "").strip()
     manual_sclass_final_terms = _parse_sclass_terms(manual_sclass)
@@ -1449,12 +1911,10 @@ async def jd_strategy_upload(
     prompt_notice_text = _build_priority_notice_text(
         notice_text=notice_text,
         duty_text=duty_text_clean,
+        qualification_text=qualification_text_clean,
+        preference_text=preference_text_clean,
         evaluation_text=evaluation_text_clean,
     )
-    if qualification_text_clean:
-        prompt_notice_text = (
-            f"{prompt_notice_text}\n지원자격:\n{qualification_text_clean}"
-        ).strip()
     notice_context = build_notice_context_from_jd(jd_text=jd_text, notice_text=prompt_notice_text, max_chars=5000)
 
     _require_ncs_mcp_url()
@@ -1543,6 +2003,10 @@ async def jd_strategy_upload(
         for value in (reviewed_fields.get("ncs_detail_candidates") or [])
         if str(value).strip()
     ]
+    question_plan = _parse_question_plan_json(question_plan_json, reviewed_detail_terms)
+    interview_methods = _parse_interview_methods(interview_methods_json)
+    if question_plan["selected_terms"]:
+        reviewed_detail_terms = list(question_plan["selected_terms"])
     if not mcp_only and not reviewed_detail_terms:
         reviewed_detail_terms = extract_detail_categories_from_jd(jd_text)
 
@@ -1633,6 +2097,8 @@ async def jd_strategy_upload(
     unit_rank_query_text = _build_priority_query_text(
         base_text=jd_for_match,
         duty_text=duty_text_clean,
+        qualification_text=qualification_text_clean,
+        preference_text=preference_text_clean,
         evaluation_text=evaluation_text_clean,
     )
     if ncs_items and ncs_source in {"ncs-mcp", "api-hrdk-code-first", "api-hrdk-clcode", "api-hrdk-keyword", "api-hrdk-sclass-verified", "api-hrdk-sclass-name"}:
@@ -1736,6 +2202,8 @@ async def jd_strategy_upload(
     ksa_query_text = _build_priority_query_text(
         base_text=jd_text,
         duty_text=duty_text_clean,
+        qualification_text=qualification_text_clean,
+        preference_text=preference_text_clean,
         evaluation_text=evaluation_text_clean,
     )
     if ncs_matches:
@@ -1821,14 +2289,32 @@ async def jd_strategy_upload(
                 evaluation_text=evaluation_text_clean,
                 desired_job="",
                 api_key_override=request_openai_api_key,
+                target_count_override=question_plan["total_main_count"],
+                follow_up_count=question_plan["follow_up_count"],
+                question_plan=question_plan,
+                interview_methods=interview_methods,
             ),
+        )
+        strategy = _adjust_generated_questions(
+            strategy,
+            question_plan,
+            interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
         )
     except Exception as e:
         strategy = build_strategy_with_rule_fallback(
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
             error_message=f"model_generation_failed: {e}",
-            target_count=24,
+            target_count=question_plan["total_main_count"] or 24,
+        )
+        strategy = _adjust_generated_questions(
+            strategy,
+            question_plan,
+            interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
         )
     strategy = _attach_ksa_evidence_to_strategy(strategy, ncs_ksa)
 
@@ -1848,6 +2334,7 @@ async def jd_strategy_upload(
         "notice_context_preview": notice_context[:1200],
         "duty_text_preview": duty_text_clean[:1200],
         "qualification_text_preview": qualification_text_clean[:1200],
+        "preference_text_preview": preference_text_clean[:1200],
         "evaluation_text_preview": evaluation_text_clean[:1200],
         "jd_review_confirmed": review_payload.get("review_confirmed") is True,
         "jd_review_session_id": (review_session or {}).get("id", ""),
@@ -1860,6 +2347,12 @@ async def jd_strategy_upload(
             }
             if review_payload
             else None
+        ),
+        "question_plan": question_plan,
+        "interview_methods": interview_methods,
+        "operational_notice": (
+            "NCScope output is a KSA-grounded structured-interview draft. "
+            "A human reviewer must confirm final questions against blind-hiring rules and institution-specific evaluation standards."
         ),
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
