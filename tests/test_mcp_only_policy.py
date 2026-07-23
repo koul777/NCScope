@@ -342,6 +342,7 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     mocker.patch("app.main.search_units_by_detail", return_value=[unit])
     rerank = mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    rank_ksa = mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     build_strategy = mocker.patch(
         "app.main.build_jd_strategy_with_openai",
@@ -367,8 +368,10 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
             files=_upload_files(),
             data={
                 "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "duty_text": "duty: stakeholder workshop planning",
                 "qualification_text": "\uc9c0\uc6d0\uc790\uaca9: \uad00\ub828 \ubd84\uc57c \uc2e4\ubb34\uacbd\ub825 3\ub144 \uc774\uc0c1",
                 "preference_text": "\uc6b0\ub300\uc0ac\ud56d: \uacf5\uacf5\uae30\uad00 \uc0ac\uc5c5\uad00\ub9ac \uacbd\ud5d8",
+                "evaluation_text": "evaluation: issue framing",
                 "openai_api_key": request_key,
             },
         )
@@ -377,6 +380,13 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert resp.status_code == 200
     rerank.assert_called_once()
     assert rerank.call_args.kwargs["openai_api_key"] == request_key
+    rank_ksa.assert_called_once()
+    ksa_query_text = rank_ksa.call_args.kwargs["query_text"]
+    assert "duty: stakeholder workshop planning" in ksa_query_text
+    assert "\uc2e4\ubb34\uacbd\ub825" in ksa_query_text
+    assert "\uc0ac\uc5c5\uad00\ub9ac" in ksa_query_text
+    assert "evaluation: issue framing" in ksa_query_text
+    assert "\uacbd\uc601\uae30\ud68d" in ksa_query_text
     build_strategy.assert_called_once()
     assert build_strategy.call_args.kwargs["api_key_override"] == request_key
     assert request_key not in resp.text
@@ -428,6 +438,7 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
         "ksaStatus": "official",
     }
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    rank_ksa = mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
     request_key = "sk-test-manual-request-key"
@@ -437,6 +448,7 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
             "/api/questions/generate-from-text",
             json={
                 "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
+                "duty_text": "duty: board reporting and KPI dashboard",
                 "evaluation_text": "\ubb38\uc81c\ud574\uacb0\ub2a5\ub825",
                 "selected_ncs": [unit],
                 "question_plan": {
@@ -455,6 +467,11 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
     assert body["question_plan"]["total_main_count"] == 2
     assert body["question_plan"]["follow_up_count"] == 4
     assert body["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"]
+    rank_ksa.assert_called_once()
+    ksa_query_text = rank_ksa.call_args.kwargs["query_text"]
+    assert "duty: board reporting and KPI dashboard" in ksa_query_text
+    assert "\ubb38\uc81c\ud574\uacb0\ub2a5\ub825" in ksa_query_text
+    assert "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34" in ksa_query_text
     build_strategy.assert_called_once()
     kwargs = build_strategy.call_args.kwargs
     assert kwargs["api_key_override"] == request_key

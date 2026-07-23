@@ -3139,6 +3139,8 @@ def _model_question_gate_contract() -> str:
         "- 상황면접 follow_ups[1]에는 반드시 F와 required_job_context를 모두 쓰세요. follow_ups[1]을 '그 판단 기준은 무엇입니까?'처럼 쓰면 실패입니다.\n"
         "- 상황면접은 모델이 자주 F를 빠뜨리므로 follow_ups[0]이나 follow_ups[1] 중 최소 1개는 반드시 F 원문으로 시작하고, 같은 문장에 required_job_context를 함께 넣으세요.\n"
         "- required_factorName이 있으면 의미가 비슷한 대체어, 능력단위명, 세분류명을 factorName 대신 쓰지 마세요. 원문 불일치는 실패입니다.\n"
+        "- 토론면접 question은 반드시 '[토론과제]'로 시작하고, F 관련 두 입장이 충돌한다는 구조를 써야 합니다. '입장발표의 근거는 무엇입니까?'를 주질문으로 쓰면 실패입니다.\n"
+        "- 인바스켓면접 follow_ups 중 최소 1개는 F와 required_job_context를 포함하면서 문서·요청 우선순위와 보고·위임·직접처리 판단을 함께 물어야 합니다.\n"
         "- follow_ups는 최소 3개이며 서로 중복되면 안 됩니다. 최소 1개는 직무/NCS/KSA 핵심어를 직접 포함해야 합니다.\n"
         "- follow_ups도 기법별로 달라야 합니다: 경험=상황·역할·행동·성과, 상황=확인·기준·위험·후속, 발표=근거자료·대안·반대의견·질의응답·성과지표, 토론=입장발표·반대·조정·합의, 인바스켓=문서분류·우선순위·보고/위임/직접처리, 직무지식=기준·예외·산출물·품질, 창의적 문제해결력=미래예측·문제정의·원인가설·검증·대안·실현가능성·의사결정.\n"
         "- follow_ups[0]은 상황/자료/문서/기준 확인 질문, follow_ups[1]은 판단 이유·행동·우선순위 질문, follow_ups[2]는 결과·후속점검·리스크 보완 질문으로 쓰세요.\n"
@@ -3244,7 +3246,7 @@ def _planned_followup_focus_example_for_prompt(method: str, job_context: str, fa
     if method == "토론면접":
         return f"{factor_name}을 토론 쟁점으로 볼 때 {context} 입장발표의 근거는 무엇입니까?"
     if method == "인바스켓면접":
-        return f"{factor_name}을 처리 기준으로 삼아 {context} 우선순위를 정한 이유는 무엇입니까?"
+        return f"{factor_name}을 처리 기준으로 삼아 {context} 문서·요청 우선순위와 보고·위임·직접처리 판단을 어떻게 정하겠습니까?"
     if method == "직무지식면접":
         return f"{factor_name}와 관련한 기준으로 {context} 절차를 어떻게 확인하겠습니까?"
     if method == "창의적 문제해결력면접":
@@ -3254,6 +3256,30 @@ def _planned_followup_focus_example_for_prompt(method: str, job_context: str, fa
     if method == "상황면접":
         return f"{factor_name}와 관련해 {context} 상황의 판단 기준과 위험 통제 이유는 무엇입니까?"
     return f"{factor_name}와 관련해 {context} 판단이나 행동을 선택한 이유는 무엇입니까?"
+
+
+def _planned_question_example_for_prompt(method: str, job_context: str, factor_name: str) -> str:
+    method = str(method or "").strip()
+    job_context = str(job_context or "").strip()
+    factor_name = str(factor_name or "").strip()
+    if not factor_name:
+        return ""
+    context = job_context or "해당 직무"
+    if method == "경험면접":
+        return f"{context}에서 {factor_name}을 적용했던 경험을 말씀해 주세요. 당시 상황, 본인 역할, 선택한 행동, 결과와 학습을 포함해 설명해 주세요."
+    if method == "상황면접":
+        return f"{context} 중 {factor_name}와 관련한 구체적 상황입니다. 어떤 판단 기준으로 위험을 통제하고, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까?"
+    if method == "발표면접":
+        return f"[발표과제] {context}에서 {factor_name} 관련 자료가 주어졌다고 가정하고 준비시간 20분 후 현황을 진단하고 대안 2가지, 실행계획, 성과지표를 5분 발표하고 5분 질의응답 답변을 포함해 주세요."
+    if method == "토론면접":
+        return f"[토론과제] {context}에서 {factor_name} 적용을 강화해야 한다는 입장과 업무 효율·자원 제약을 우선해야 한다는 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 반대 의견 검토, 조정 방식, 최종 합의안을 토론해 주세요."
+    if method == "인바스켓면접":
+        return f"[인바스켓과제] 제한시간 안에 {context} 관련 여러 문서와 요청이 들어왔습니다. {factor_name}을 기준으로 우선순위, 보고, 위임, 직접처리 판단을 제시해 주세요."
+    if method == "직무지식면접":
+        return f"{context}에서 {factor_name}와 관련해 확인해야 할 절차, 기준, 산출물, 예외상황 대응과 품질 점검 방법을 설명해 주세요."
+    if method == "창의적 문제해결력면접":
+        return f"[창의적 문제해결력과제] {context}에서 {factor_name} 관련 복합 문제가 발생했습니다. 미래예측 관점에서 핵심 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법, 실현가능성, 의사결정 기준, 실행계획과 성과지표를 제시해 주세요."
+    return ""
 
 
 def _planned_question_sequence_for_prompt(
@@ -3301,6 +3327,11 @@ def _planned_question_sequence_for_prompt(
                     "ncsSubdCdnm": ncs_sub_detail,
                     "required_job_context": required_context,
                     "required_factorName": required_factor,
+                    "required_question_example": _planned_question_example_for_prompt(
+                        method,
+                        required_context,
+                        required_factor,
+                    ),
                     "required_followup_focus_slot": _planned_followup_focus_slot_for_prompt(method),
                     "required_followup_focus_example": _planned_followup_focus_example_for_prompt(
                         method,
@@ -3427,7 +3458,10 @@ def build_strategy_with_openai(
                 "- required_factorName이 있으면 question과 지정 follow_up slot에 반드시 원문 그대로 1회 이상 반복하세요.\n"
                 "- 각 index의 required_factorName 값을 F라고 보고, 지정 follow_up slot 문장은 반드시 F 원문으로 시작하거나 F 원문을 직접 포함해야 합니다.\n"
                 "- 각 index의 required_job_context 값을 J라고 보고, follow_ups 중 최소 1개는 J 원문을 직접 포함해야 합니다.\n"
+                "- 각 index에 required_question_example이 있으면 question은 그 예시와 같은 면접기법 구조를 따르고 F와 J를 모두 포함하세요.\n"
                 "- 각 index의 required_followup_focus_slot 값이 0이면 follow_ups[0], 1이면 follow_ups[1]을 지정 slot으로 보고, required_followup_focus_example과 같은 구조로 F와 J를 모두 넣으세요.\n"
+                "- type=토론면접이면 required_question_example처럼 '[토론과제]'로 시작하고 두 입장 충돌, 토론시간, 입장발표, 반대 의견, 조정, 합의를 모두 포함하세요.\n"
+                "- type=인바스켓면접이면 required_followup_focus_example처럼 지정 follow_up slot에 문서·요청 우선순위와 보고·위임·직접처리 판단을 함께 쓰세요.\n"
                 "- required_factorName이 있으면 다른 factorName, 능력단위명, 세분류명을 required_factorName 대신 쓰지 마세요.\n"
                 "- 각 index의 type은 반드시 [질문별 생성 순서]의 type과 같아야 합니다. 이전 index의 직무 표현을 다음 index로 재사용하지 마세요.\n"
                 "- index별 detail/type이 맞지 않으면 해당 모델 질문은 템플릿으로 교체됩니다.\n"

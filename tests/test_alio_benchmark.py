@@ -297,7 +297,7 @@ def test_detail_diagnostics_records_exact_and_suggestion(monkeypatch: pytest.Mon
     assert detail_rows[1]["suggestion_count"] == 1
     assert "건축공사감리" in detail_rows[1]["top_suggestion"]
     assert detail_rows[0]["match_diagnostic"] == "exact_detail"
-    assert detail_rows[1]["match_diagnostic"] == "semantic_suggestion_unverified"
+    assert detail_rows[1]["match_diagnostic"] == "known_manual_review_catalog_gap"
 
 
 def test_detail_diagnostics_records_unit_name_suggestion_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -355,6 +355,21 @@ def test_detail_diagnostics_records_canonical_detail_exact_suggestion(monkeypatc
     assert detail_rows[0]["match_diagnostic"] == "catalog_gap_verified_source_label"
     assert detail_rows[0]["unit_name_match"] is False
     assert detail_rows[0]["review_action"] == "manual_review_canonical_detail"
+
+
+def test_detail_diagnostics_marks_known_manual_review_catalog_gap_without_suggestions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_alio_jd, "search_units_by_detail", lambda details, max_units: [])
+    monkeypatch.setattr(benchmark_alio_jd, "suggest_units_by_text", lambda details, max_units: [])
+
+    detail_rows, units = diagnose_detail_mcp_matches(["문화・관광정책"])
+
+    assert units == []
+    assert detail_rows[0]["exact_match"] is False
+    assert detail_rows[0]["match_diagnostic"] == "known_manual_review_catalog_gap"
+    assert detail_rows[0]["review_action"] == "manual_review_known_catalog_gap"
+    assert "manual-review-only" in detail_rows[0]["review_reason"]
 
 
 @pytest.mark.parametrize(

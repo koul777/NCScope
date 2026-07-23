@@ -30,13 +30,13 @@ NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 
 v1.1은 ALIO 실공고 직무기술서와 NCS 블라인드 채용 공식 샘플을 기준으로 세분류 추출, 면접기법별 질문 품질, 검증 리포트를 강화한 버전입니다.
 
 - ALIO 최근 공고 기반 세분류 벤치마크를 28건으로 확장하고, 후보별 원문 위치·추출 근거·MCP 매칭 유형을 진단 CSV에 기록합니다.
-- 세분류가 exact로 확정되지 않는 경우를 `unit_name_only`, `specialized_healthcare_label_unserved_by_mcp`, `catalog_gap_or_nonstandard_source_label`, `parsed_no_detail`, `skipped_by_max_details_per_doc`처럼 분리해 과대 매칭을 막습니다.
-- 질문 품질 리포트에 `coverage_blocker_type`, `resolved_parent_detail`, `review_action`, `coverage_blocker_reason` 컬럼을 추가해 어떤 세분류 때문에 strict coverage가 막혔는지 추적합니다.
+- 세분류가 exact로 확정되지 않는 경우를 `unit_name_only`, `specialized_healthcare_label_unserved_by_mcp`, `known_manual_review_catalog_gap`, `catalog_gap_verified_source_label`, `parsed_no_detail`, `skipped_by_max_details_per_doc`처럼 분리해 과대 매칭을 막습니다.
+- 질문 품질 리포트에 `checked_detail_count`, `coverage_blocker_type`, `coverage_blocker_details`, `resolved_parent_detail`, `review_action`, `coverage_blocker_reason` 컬럼을 추가해 어떤 세분류 때문에 strict coverage가 막혔는지 추적합니다.
 - 모델 원문 질문 품질을 template fallback과 분리해 집계하고, `--min-full-model-rate`, `--min-evaluated-doc-rate`, `--fail-on-repaired-followups`, `--fail-on-model-replacements`, `--fail-on-template-insertions` 게이트를 추가했습니다.
 - NCS 블라인드 채용 `채용모델 면접문항`과 `전형별 평가샘플`을 함께 프로파일링해 경험·상황·발표·토론·인바스켓·창의적 문제해결력면접 형식 신호를 검증합니다.
 - 공식 샘플에서 직무지식면접 사례가 관찰되지 않은 부분은 절차·기준·산출물·예외상황 중심의 내부 품질 게이트와 회귀 테스트로 보강했습니다.
 - 직접 입력 경로도 업로드 경로와 동일하게 면접기법 선택, 질문 계획, KSA 보강, 모델 산출물 보정 로직을 적용합니다.
-- 현재 기준 전체 회귀 테스트는 `353 passed, 2 warnings`입니다.
+- 현재 기준 전체 회귀 테스트는 `363 passed, 2 warnings`입니다.
 
 ## 왜 필요한가
 
@@ -450,9 +450,9 @@ python -m py_compile app\main.py app\settings.py app\repository.py app\models.py
 python -m pytest -q
 ```
 
-현재 검증 결과(2026-07-24 05:24 KST 세션 기준):
+현재 검증 결과(2026-07-24 08:20 KST 세션 기준):
 
-- `python -m pytest -q` → 353 passed, 2 warnings
+- `python -m pytest -q` → 363 passed, 2 warnings
 - `py_compile` → passed
 - `app/static/index.html` inline script parse → `scripts_ok=1`
 - `git diff --check` → CRLF 변환 경고만 확인, whitespace error 없음
@@ -515,7 +515,7 @@ python scripts\evaluate_alio_question_quality.py --benchmark-mode model --min-ev
 - 총 세분류 후보 17개, `exact_detail=15`, `unit_name_only=2`, unmatched 0개
 - `parsed_no_detail` 카테고리: `declared_no_ncs_mapping=2`, `no_explicit_ncs_detail=2`
 
-최신 질문 품질 리포트:
+템플릿 질문 품질 리포트:
 
 - `reports/alio_question_quality_20260724_032847.md`
 - `reports/alio_question_quality_20260724_032847.csv`
@@ -547,17 +547,19 @@ python scripts\evaluate_alio_question_quality.py --benchmark-mode model --min-ev
 
 모델 원문 품질 집계 대표 샘플:
 
-- `reports/alio_question_quality_20260724_045154.md`
-- `reports/alio_question_quality_20260724_045154.csv`
-- `reports/alio_question_quality_items_20260724_045154.csv`
-- ALIO 최근 공고 8건 중 4건, 총 24문항 평가
-- 최종 질문 24/24 ready, model-origin ready 24/24
-- 완전 모델 보존 24문항, 본질문 보존+후속질문 초점어 보정 0문항, 본질문 보존+후속질문 템플릿 보정 0문항
+- `reports/alio_question_quality_20260724_055305.md`
+- `reports/alio_question_quality_20260724_055305.csv`
+- `reports/alio_question_quality_items_20260724_055305.csv`
+- ALIO 최근 공고 8건 시도, 4건 질문 품질 평가, 총 28문항 평가
+- 최종 질문 28/28 ready, model-origin ready 28/28
+- 완전 모델 보존 28문항, 본질문 보존+후속질문 초점어 보정 0문항, 본질문 보존+후속질문 템플릿 보정 0문항
 - 최신 리포트는 `--min-model-ready-rate 1.0`, `--min-full-model-rate 1.0`, `--fail-on-repaired-followups`, `--fail-on-model-replacements`, `--fail-on-template-insertions` 조건을 함께 통과했습니다.
-- model-origin 품질 통과 문서 4건, strict source-explicit coverage까지 함께 통과한 문서 2건
+- 7기법 경험면접, 상황면접, 발표면접, 토론면접, 인바스켓면접, 직무지식면접, 창의적 문제해결력면접 모두 4/4 ready입니다.
+- model-origin 품질 통과 문서 4건, strict source-explicit coverage까지 함께 통과한 문서 2건입니다.
+- strict coverage blocker는 `known_manual_review_catalog_gap=2`, `parsed_no_detail=2`, `specialized_healthcare_label_unserved_by_mcp=2`, `unit_name_only=2`로 남기며, 자동 승격하지 않습니다.
 - `template_fallback` 교체 0문항
 - 새 `--min-evaluated-doc-rate` 게이트는 세분류 미매칭/parsed-no-detail 때문에 질문 평가까지 간 문서 수가 너무 적은 실행을 실패 처리합니다. 예: `reports/alio_question_quality_20260724_052328.md`는 model-origin 6/6 ready였지만 1/4 문서만 평가되어 `evaluated_doc_rate 0.25 below minimum 0.75`로 실패 처리했습니다.
-- 새 coverage blocker 컬럼(`coverage_blocker_type`, `resolved_parent_detail`, `review_action`, `coverage_blocker_reason`) 적용 후 스모크: `reports/alio_question_quality_20260724_052004.md`
+- 새 coverage blocker 상세 컬럼(`checked_detail_count`, `coverage_blocker_type`, `coverage_blocker_details`, `resolved_parent_detail`, `review_action`, `coverage_blocker_reason`) 적용 후 스모크: `reports/alio_question_quality_20260724_055305.md`
 
 NCS 공식 블라인드 채용 면접과제·평가양식 샘플 프로파일링 결과:
 

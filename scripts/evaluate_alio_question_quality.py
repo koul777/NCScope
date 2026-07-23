@@ -234,6 +234,35 @@ def _format_detail_resolution(records: list[dict[str, Any]], field: str) -> str:
     return " | ".join(parts)
 
 
+def _format_coverage_blocker_details(records: list[dict[str, Any]]) -> str:
+    blockers: list[dict[str, str]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        status = str(record.get("coverage_status") or "").strip()
+        blocker = str(record.get("coverage_blocker_type") or "").strip()
+        if status == "exact" and not blocker:
+            continue
+        detail = str(record.get("detail") or "").strip()
+        if not detail and not blocker:
+            continue
+        item = {
+            key: value
+            for key, value in {
+                "detail": detail,
+                "coverage_status": status,
+                "coverage_blocker_type": blocker,
+                "resolved_parent_detail": str(record.get("resolved_parent_detail") or "").strip(),
+                "review_action": str(record.get("review_action") or "").strip(),
+                "coverage_blocker_reason": str(record.get("coverage_blocker_reason") or "").strip(),
+            }.items()
+            if value
+        }
+        if item:
+            blockers.append(item)
+    return json.dumps(blockers, ensure_ascii=False) if blockers else ""
+
+
 def _detail_resolution_records(
     details: list[str],
     max_units_per_detail: int,
@@ -263,6 +292,15 @@ def _detail_resolution_records(
             )
         else:
             suggestions = suggest_units_by_text([term], max_units=max_units_per_detail)
+            canonical_detail_matches = [
+                row
+                for row in suggestions
+                if isinstance(row, dict)
+                and (
+                    row.get("isExactDetailMatch")
+                    or _norm_detail_key(row.get("canonicalDetailName") or row.get("ncsSubdCdnm")) == _norm_detail_key(term)
+                )
+            ]
             unit_matches = [
                 row
                 for row in suggestions
@@ -275,6 +313,7 @@ def _detail_resolution_records(
             gap = classify_unmatched_detail_gap(
                 term,
                 suggestions=suggestions,
+                canonical_detail_matches=canonical_detail_matches,
                 unit_name_matches=unit_matches,
             )
             if gap["match_diagnostic"] == "unit_name_only":
@@ -298,7 +337,9 @@ def _detail_resolution_records(
             else:
                 unmatched.append(term)
                 parent_detail = ""
-                if suggestions:
+                if canonical_detail_matches:
+                    parent_detail = _parent_detail_from_unit(canonical_detail_matches[0])
+                elif suggestions:
                     parent_detail = _parent_detail_from_unit(suggestions[0])
                 records.append(
                     {
@@ -351,6 +392,9 @@ def evaluate_cached_document(
         "strategy_warning": "",
         "detail_count": 0,
         "detail_source": "",
+        "checked_detail_count": 0,
+        "max_details_per_doc": max_details_per_doc,
+        "max_units_per_detail": max_units_per_detail,
         "exact_detail_count": 0,
         "unit_name_detail_count": 0,
         "unmatched_detail_count": 0,
@@ -383,6 +427,7 @@ def evaluate_cached_document(
         "unmatched_details": "",
         "skipped_details": "",
         "coverage_blocker_type": "",
+        "coverage_blocker_details": "",
         "resolved_parent_detail": "",
         "review_action": "",
         "coverage_blocker_reason": "",
@@ -402,6 +447,17 @@ def evaluate_cached_document(
         if not details:
             row["status"] = "parsed_no_detail"
             row["coverage_blocker_type"] = "parsed_no_detail"
+            row["coverage_blocker_details"] = _format_coverage_blocker_details(
+                [
+                    {
+                        "detail": "",
+                        "coverage_status": "parsed_no_detail",
+                        "coverage_blocker_type": "parsed_no_detail",
+                        "review_action": "manual_review_parse_or_source_mapping",
+                        "coverage_blocker_reason": str(fields.get("ncs_detail_absence_reason") or "").strip(),
+                    }
+                ]
+            )
             row["review_action"] = "manual_review_parse_or_source_mapping"
             absence_reason = str(fields.get("ncs_detail_absence_reason") or "").strip()
             if absence_reason:
@@ -412,6 +468,7 @@ def evaluate_cached_document(
         detail_members = detail_member_map(parsed, fallback_member=path.name, details=details)
         checked_details = details[:max_details_per_doc]
         skipped_details = details[max_details_per_doc:]
+        row["checked_detail_count"] = len(checked_details)
         exact_details, unit_name_details, units, unmatched, resolution_records = _detail_resolution_records(
             checked_details,
             max_units_per_detail,
@@ -442,6 +499,7 @@ def evaluate_cached_document(
             [record for record in resolution_records if str(record.get("coverage_blocker_type") or "").strip()],
             "coverage_blocker_type",
         )
+        row["coverage_blocker_details"] = _format_coverage_blocker_details(resolution_records)
         row["resolved_parent_detail"] = _format_detail_resolution(
             [record for record in resolution_records if str(record.get("resolved_parent_detail") or "").strip()],
             "resolved_parent_detail",
@@ -497,6 +555,17 @@ def evaluate_cached_document(
         coverage_passed = bool(exact_coverage_complete and explicit_detail_source)
         if coverage_complete and contextual_detail_source and not str(row.get("coverage_blocker_type") or "").strip():
             row["coverage_blocker_type"] = "detail_source: contextual_detail_source_not_strict"
+            row["coverage_blocker_details"] = _format_coverage_blocker_details(
+                [
+                    {
+                        "detail": "; ".join(covered_details),
+                        "coverage_status": "contextual_detail_source_not_strict",
+                        "coverage_blocker_type": "detail_source: contextual_detail_source_not_strict",
+                        "review_action": "detail_source: manual_review_contextual_detail_source",
+                        "coverage_blocker_reason": "All extracted details were covered, but the detail source was inferred contextually rather than explicit in the JD.",
+                    }
+                ]
+            )
             row["review_action"] = "detail_source: manual_review_contextual_detail_source"
             row["coverage_blocker_reason"] = (
                 "All extracted details were covered, but the detail source was inferred contextually rather than explicit in the JD."
@@ -682,6 +751,9 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "strategy_warning",
         "detail_count",
         "detail_source",
+        "checked_detail_count",
+        "max_details_per_doc",
+        "max_units_per_detail",
         "exact_detail_count",
         "unit_name_detail_count",
         "unmatched_detail_count",
@@ -714,6 +786,7 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "unmatched_details",
         "skipped_details",
         "coverage_blocker_type",
+        "coverage_blocker_details",
         "resolved_parent_detail",
         "review_action",
         "coverage_blocker_reason",
@@ -788,6 +861,13 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
     manual_suggestion_rows = sum(1 for row in rows if str(row.get("manual_review_suggestions") or "").strip())
     explicit_detail_rows = sum(1 for row in rows if row.get("detail_source") == "explicit")
     contextual_detail_rows = sum(1 for row in rows if row.get("detail_source") == "contextual")
+    checked_detail_total = sum(int(row.get("checked_detail_count") or 0) for row in rows)
+    max_details_values = sorted(
+        {str(row.get("max_details_per_doc") or "") for row in rows if str(row.get("max_details_per_doc") or "").strip()}
+    )
+    max_units_values = sorted(
+        {str(row.get("max_units_per_detail") or "") for row in rows if str(row.get("max_units_per_detail") or "").strip()}
+    )
     resolved_mode_counts: dict[str, int] = {}
     method_config_counts: dict[str, int] = {}
     coverage_blocker_counts: dict[str, int] = {}
@@ -896,6 +976,8 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         f"- Unit-name resolved detail labels: {sum(int(row.get('unit_name_detail_count') or 0) for row in rows)}",
         f"- Explicit detail-source documents: {explicit_detail_rows}",
         f"- Contextual detail-source documents: {contextual_detail_rows}",
+        f"- Checked detail labels: {checked_detail_total}",
+        f"- Detail check limits: max_details_per_doc={', '.join(max_details_values) or 'unknown'}; max_units_per_detail={', '.join(max_units_values) or 'unknown'}",
         f"- Unmatched detail labels: {sum(int(row.get('unmatched_detail_count') or 0) for row in rows)}",
         f"- Skipped detail labels due to per-doc limit: {sum(int(row.get('skipped_detail_count') or 0) for row in rows)}",
         f"- Coverage blocker types: {', '.join(f'{key}={value}' for key, value in sorted(coverage_blocker_counts.items())) or 'none'}",
@@ -919,13 +1001,14 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "> This report distinguishes template-fallback compliance from model-origin generation quality. "
         "If `Model-origin questions evaluated` is 0, method readiness below measures deterministic fallback templates, not LLM output.",
         "",
-        "| idx | status | model pass | full pass | template pass | mode | source | details | exact | unit-name | unmatched | skipped | adjusted q | ready | model cand | model-origin | full model | repaired fu | template fu | model repl | inserted | fallback q | tpl score | strict score | unresolved details |",
-        "| --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| idx | status | model pass | full pass | template pass | mode | source | details | checked | exact | unit-name | unmatched | skipped | adjusted q | ready | model cand | model-origin | full model | repaired fu | template fu | model repl | inserted | fallback q | tpl score | strict score | strict blockers | unresolved details |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for row in rows:
         unmatched = str(row.get("unmatched_details") or "").replace("|", "/")
         skipped = str(row.get("skipped_details") or "").replace("|", "/")
         unresolved = "; ".join(part for part in (unmatched, skipped) if part)
+        strict_blockers = str(row.get("coverage_blocker_type") or "").replace("|", "/")
         lines.append(
             f"| {row.get('idx')} | {row.get('status')} | "
             f"{row.get('model_quality_passed') is True} | {row.get('passed') is True} | "
@@ -933,6 +1016,7 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
             f"{row.get('resolved_benchmark_mode') or ''} | "
             f"{row.get('detail_source') or ''} | "
             f"{row.get('detail_count') or 0} | "
+            f"{row.get('checked_detail_count') or 0} | "
             f"{row.get('exact_detail_count') or 0} | {row.get('unit_name_detail_count') or 0} | "
             f"{row.get('unmatched_detail_count') or 0} | {row.get('skipped_detail_count') or 0} | "
             f"{row.get('generated_questions') or 0} | "
@@ -943,7 +1027,7 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
             f"{row.get('model_replaced_by_template_questions') or 0} | "
             f"{row.get('template_inserted_questions') or 0} | {row.get('template_fallback_questions') or 0} | "
             f"{row.get('average_score') or 0} | "
-            f"{row.get('coverage_adjusted_score') or 0} | {unresolved} |"
+            f"{row.get('coverage_adjusted_score') or 0} | {strict_blockers} | {unresolved} |"
         )
     suggestion_rows = [row for row in rows if str(row.get("manual_review_suggestions") or "").strip()]
     if method_stats:

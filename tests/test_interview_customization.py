@@ -1288,7 +1288,7 @@ def test_question_quality_report_marks_ready_method_grounded_question() -> None:
                 "competency": "문서작성",
                 "ncsClCd": "0202030201_25v3",
                 "ncs_detail": "사무행정",
-                "question": "[인바스켓과제] 제한시간 30분 안에 여러 문서와 보고 요청이 들어왔습니다. 문서 요구사항 파악을 기준으로 처리 우선순위와 보고, 위임, 직접처리 판단 및 첫 조치 계획을 제시해 주세요.",
+                "question": "[인바스켓과제] 제한시간 30분 안에 사무행정 문서작성 관련 여러 문서와 보고 요청이 들어왔습니다. 문서 요구사항 파악을 기준으로 처리 우선순위와 보고, 위임, 직접처리 판단 및 첫 조치 계획을 제시해 주세요.",
                 "follow_ups": [
                     "여러 문서와 요청을 어떤 기준으로 분류하겠습니까?",
                     "가장 먼저 처리할 항목과 보류할 항목은 무엇입니까?",
@@ -1602,6 +1602,21 @@ def test_main_question_shape_requires_official_sample_procedure_terms() -> None:
         "창의적 문제해결력면접",
         "[창의적 문제해결력과제] 문제를 정의하고 창의적 대안, 검증 방법, 실행계획을 제시해 주세요.",
     ) is False
+    assert _method_shape_ok(
+        "인바스켓면접",
+        "[인바스켓과제] 제한시간 30분 안에 문서 우선순위 보고 위임 직접처리 기준을 설명해 주세요.",
+    ) is False
+    assert _method_shape_ok(
+        "직무지식면접",
+        "문서작성에서 절차, 기준, 산출물, 예외상황을 적용했던 경험을 말씀해 주세요. 당시 상황, 본인 역할, 선택한 행동을 포함해 설명해 주세요.",
+    ) is False
+
+
+def test_job_knowledge_shape_allows_procedural_action_order_language() -> None:
+    assert _method_shape_ok(
+        "직무지식면접",
+        "문서관리에서 문서 보존 기준과 관련해 확인해야 할 절차, 기준, 산출물, 예외상황 발생 시 행동 순서와 품질 점검 방법을 설명해 주세요.",
+    ) is True
 
 
 def test_question_quality_report_rejects_vague_evaluation_points_even_with_one_anchor() -> None:
@@ -1715,6 +1730,43 @@ def test_question_quality_report_requires_job_specific_context_tokens() -> None:
     assert "job_specific_context" in item["issues"]
 
 
+def test_question_quality_report_requires_visible_primary_job_context_not_only_ksa_terms() -> None:
+    strategy = {
+        "interview_questions": [
+            {
+                "type": "상황면접",
+                "competency": "문서작성",
+                "ncsClCd": "0202030201_25v3",
+                "ncs_detail": "사무행정",
+                "question_focus": "문서 요구사항 파악",
+                "question": "문서 요구사항 파악 상황에서 오류가 발생하면 어떤 판단 기준과 순서로 행동하고 위험을 통제하겠습니까?",
+                "follow_ups": [
+                    "문서 요구사항 중 먼저 살펴볼 사실은 무엇입니까?",
+                    "문서 요구사항 파악을 기준으로 그 행동을 선택한 이유는 무엇입니까?",
+                    "후속 위험을 어떻게 점검하고 예방하겠습니까?",
+                ],
+                "evaluation_points": ["핵심 사실 확인", "판단 기준", "행동 순서와 첫 조치", "위험요인 인식"],
+                "ksa_evidence": [
+                    {
+                        "ncsClCd": "0202030201_25v3",
+                        "compeUnitName": "문서작성",
+                        "factorName": "문서 요구사항 파악",
+                        "factorSource": "ncs-mcp",
+                        "ksaStatus": "official",
+                    }
+                ],
+            }
+        ]
+    }
+
+    item = _attach_question_quality_report(strategy)["question_quality_report"]["items"][0]
+
+    assert item["checks"]["ksa_grounded"] is True
+    assert item["checks"]["job_specific_context"] is False
+    assert item["ready"] is False
+    assert "job_specific_context" in item["issues"]
+
+
 def test_question_quality_report_requires_method_specific_followups() -> None:
     strategy = {
         "interview_questions": [
@@ -1747,6 +1799,86 @@ def test_question_quality_report_requires_method_specific_followups() -> None:
     item = _attach_question_quality_report(strategy)["question_quality_report"]["items"][0]
 
     assert item["checks"]["follow_up_depth"] is True
+    assert item["checks"]["follow_up_quality"] is False
+    assert item["ready"] is False
+    assert "follow_up_quality" in item["issues"]
+
+
+def test_question_quality_report_requires_inbasket_followups_to_probe_routing_decision() -> None:
+    strategy = {
+        "interview_questions": [
+            {
+                "type": "인바스켓면접",
+                "competency": "문서작성",
+                "ncsClCd": "0202030201_25v3",
+                "ncs_detail": "사무행정",
+                "question": (
+                    "[인바스켓과제] 제한시간 30분 안에 사무행정 문서작성 관련 문서와 요청이 동시에 들어왔습니다. "
+                    "문서 요구사항 파악을 기준으로 처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 첫 조치 계획을 제시해 주세요."
+                ),
+                "follow_ups": [
+                    "문서와 요청을 어떤 기준으로 분류하겠습니까?",
+                    "가장 먼저 처리할 항목과 보류할 항목은 무엇입니까?",
+                    "제한시간 안에 우선순위를 정할 때 어떤 기준을 적용하겠습니까?",
+                ],
+                "evaluation_points": ["우선순위 판단", "문서·요청 분류", "시간관리", "리스크 대응"],
+                "ksa_evidence": [
+                    {
+                        "ncsClCd": "0202030201_25v3",
+                        "compeUnitName": "문서작성",
+                        "factorName": "문서 요구사항 파악",
+                        "factorSource": "ncs-mcp",
+                        "ksaStatus": "official",
+                    }
+                ],
+            }
+        ]
+    }
+
+    item = _attach_question_quality_report(strategy)["question_quality_report"]["items"][0]
+
+    assert item["checks"]["main_question_method_shape"] is True
+    assert item["checks"]["official_sample_format"] is True
+    assert item["checks"]["follow_up_quality"] is False
+    assert item["ready"] is False
+    assert "follow_up_quality" in item["issues"]
+
+
+def test_question_quality_report_requires_job_knowledge_followups_to_probe_output_or_exception() -> None:
+    strategy = {
+        "interview_questions": [
+            {
+                "type": "직무지식면접",
+                "competency": "문서작성",
+                "ncsClCd": "0202030201_25v3",
+                "ncs_detail": "사무행정",
+                "question": (
+                    "사무행정 문서작성에서 문서 요구사항 파악을 적용하기 위해 확인해야 할 절차, 기준, 산출물을 설명하고 "
+                    "예외상황에서 오류를 예방하는 직무지식 적용 방안을 제시해 주세요."
+                ),
+                "follow_ups": [
+                    "문서 요구사항 파악 관련 기준이나 규정은 무엇입니까?",
+                    "그 기준을 적용하는 순서는 어떻게 정하겠습니까?",
+                    "신규 담당자에게 관련 규정을 어떤 순서로 교육하겠습니까?",
+                ],
+                "evaluation_points": ["절차·기준 이해", "직무지식 적용", "예외상황 판단", "산출물 품질"],
+                "ksa_evidence": [
+                    {
+                        "ncsClCd": "0202030201_25v3",
+                        "compeUnitName": "문서작성",
+                        "factorName": "문서 요구사항 파악",
+                        "factorSource": "ncs-mcp",
+                        "ksaStatus": "official",
+                    }
+                ],
+            }
+        ]
+    }
+
+    item = _attach_question_quality_report(strategy)["question_quality_report"]["items"][0]
+
+    assert item["checks"]["main_question_method_shape"] is True
+    assert item["checks"]["official_sample_format"] is True
     assert item["checks"]["follow_up_quality"] is False
     assert item["ready"] is False
     assert "follow_up_quality" in item["issues"]
@@ -1861,6 +1993,89 @@ def test_question_quality_report_rejects_unrelated_ksa_for_same_ncs_code() -> No
                         "factorSource": "ncs-mcp",
                         "ksaStatus": "official",
                     },
+                ],
+            }
+        ]
+    }
+
+    item = _attach_question_quality_report(strategy)["question_quality_report"]["items"][0]
+
+    assert item["checks"]["job_specific_context"] is True
+    assert item["checks"]["ksa_grounded"] is False
+    assert item["ready"] is False
+    assert "ksa_grounded" in item["issues"]
+
+
+def test_question_quality_report_rejects_ksa_grounding_when_factor_only_in_metadata() -> None:
+    strategy = {
+        "interview_questions": [
+            {
+                "type": "상황면접",
+                "competency": "문서작성",
+                "ncsClCd": "0202030201_25v3",
+                "ncs_detail": "사무행정",
+                "question_focus": "민원 응대 기준",
+                "question": "사무행정 문서작성 상황에서 자료 오류와 마감 지연이 동시에 발생했습니다. 어떤 판단 기준과 순서로 행동하고 위험을 통제하겠습니까?",
+                "follow_ups": [
+                    "문서작성 자료에서 먼저 살펴볼 사실은 무엇입니까?",
+                    "사무행정 담당자로서 그 행동을 선택한 이유와 예상되는 위험요인은 무엇입니까?",
+                    "관련 부서에는 어떤 순서와 방식으로 설명하시겠습니까?",
+                ],
+                "evaluation_points": ["핵심 사실 확인", "판단 기준", "행동 순서와 첫 조치", "위험요인 인식"],
+                "ksa_refs": ["민원 응대 기준"],
+                "ksa_evidence": [
+                    {
+                        "ncsClCd": "0202030201_25v3",
+                        "compeUnitName": "문서작성",
+                        "factorName": "민원 응대 기준",
+                        "factorSource": "ncs-mcp",
+                        "ksaStatus": "official",
+                    }
+                ],
+            }
+        ]
+    }
+
+    item = _attach_question_quality_report(strategy)["question_quality_report"]["items"][0]
+
+    assert item["checks"]["job_specific_context"] is True
+    assert item["checks"]["ksa_grounded"] is False
+    assert item["ready"] is False
+    assert "ksa_grounded" in item["issues"]
+
+
+def test_question_quality_report_rejects_ksa_grounding_when_factor_only_in_evaluation_points() -> None:
+    strategy = {
+        "interview_questions": [
+            {
+                "type": "상황면접",
+                "competency": "문서작성",
+                "ncsClCd": "0202030201_25v3",
+                "ncs_detail": "사무행정",
+                "question_focus": "고객 불만 응대 기준",
+                "question": (
+                    "사무행정 문서작성 상황에서 자료 오류와 마감 지연이 동시에 발생했습니다. "
+                    "어떤 판단 기준과 순서로 행동하고 위험을 통제하시겠습니까?"
+                ),
+                "follow_ups": [
+                    "문서작성 자료에서 먼저 확인할 사실은 무엇입니까?",
+                    "사무행정 담당자로서 그 행동 순서를 선택한 이유는 무엇입니까?",
+                    "후속 위험을 예방하기 위해 어떤 점검을 하시겠습니까?",
+                ],
+                "evaluation_points": [
+                    "고객 불만 응대 기준",
+                    "사실 확인",
+                    "판단 기준",
+                    "행동 순서와 위험 통제",
+                ],
+                "ksa_evidence": [
+                    {
+                        "ncsClCd": "0202030201_25v3",
+                        "compeUnitName": "문서작성",
+                        "factorName": "고객 불만 응대 기준",
+                        "factorSource": "ncs-mcp",
+                        "ksaStatus": "official",
+                    }
                 ],
             }
         ]

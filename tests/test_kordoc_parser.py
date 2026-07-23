@@ -3,6 +3,25 @@ from __future__ import annotations
 from app.services.kordoc_parser import _loads_kordoc_json, structure_job_description, structure_job_notice
 
 
+def _evidence_by_detail(result: dict) -> dict[str, dict]:
+    return {
+        row["detail"]: row
+        for row in result["fields"].get("ncs_detail_candidate_evidence", [])
+    }
+
+
+def _assert_contextual_evidence_uses_source_snippet(result: dict) -> None:
+    candidates = result["fields"]["ncs_detail_candidates"]
+    evidence_rows = result["fields"]["ncs_detail_candidate_evidence"]
+
+    assert len(evidence_rows) == len(candidates)
+    for candidate, evidence in zip(candidates, evidence_rows):
+        assert evidence["detail"] == candidate
+        assert evidence["source"] == "contextual"
+        assert evidence["snippet"]
+        assert evidence["snippet"] != candidate
+
+
 def test_structure_job_description_extracts_detail_from_html_table() -> None:
     markdown = """
 <table>
@@ -239,6 +258,13 @@ def test_structure_job_description_expands_composite_cooking_detail_candidate() 
         "복어조리",
     ]
 
+    evidence_by_detail = _evidence_by_detail(result)
+    for candidate in result["fields"]["ncs_detail_candidates"]:
+        evidence = evidence_by_detail[candidate]
+        assert evidence["source"] in {"markdown", "kordoc"}
+        assert evidence["snippet"]
+        assert evidence["snippet"] != candidate
+
 
 def test_structure_job_description_splits_comma_and_slash_detail_candidates() -> None:
     markdown = """
@@ -390,13 +416,16 @@ def test_structure_job_description_marks_filtered_detail_candidate_state() -> No
 | --- | --- |
 | 채용분야 | 자료 취합 및 문서 관리 업무를 수행하고 대내외 보고자료 작성 및 부대업무를 담당 |
 | 직무수행내용 | 자료 취합 및 문서 관리 |
+| 2026 | 1234 |
 """
 
     result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
 
     assert result["fields"]["ncs_detail_candidates"] == []
     assert result["fields"]["ncs_detail_absence_reason"] == "ncs_detail_candidate_filtered"
-    assert result["fields"]["ncs_detail_absence_filtered_candidate_reason"] == "value_too_long"
+    filtered_reasons = result["fields"]["ncs_detail_absence_filtered_candidate_reason"].split("; ")
+    assert "filtered_candidate_not_detail_like" in filtered_reasons
+    assert "value_too_long" in filtered_reasons
     assert "filtered_candidate_reason=value_too_long" in result["fields"]["ncs_detail_absence_state"]
 
 

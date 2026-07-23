@@ -317,7 +317,7 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
     key = _norm(text)
     states: list[str] = []
     evidence: list[str] = []
-    filtered_reason = ""
+    filtered_reasons: list[str] = []
     base_reason = _ncs_detail_absence_reason(markdown)
     pipe_detail_index: int | None = None
 
@@ -330,15 +330,18 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
         if snippet and snippet not in evidence:
             evidence.append(snippet)
 
+    def add_filtered_reason(reason: str) -> None:
+        if reason and reason not in filtered_reasons:
+            filtered_reasons.append(reason)
+
     def note_detail_value(value: Any, source: Any) -> None:
-        nonlocal filtered_reason
         reason = _detail_candidate_filter_reason(value)
         if reason == "declared_no_mapping":
             add_state("declared_no_mapping")
         elif reason == "blank_or_dash_detail_cell":
             add_state("blank_or_dash_detail_cell")
         elif not _looks_like_detail_candidate(str(value or "")):
-            filtered_reason = filtered_reason or reason
+            add_filtered_reason(reason)
             add_state(f"filtered_candidate_reason={reason}")
         add_evidence(source)
 
@@ -435,6 +438,28 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
                     value = cells[cell_idx] if 0 <= cell_idx < len(cells) else ""
                     note_detail_value(value, row_text)
 
+    if base_reason == "multi_role_healthcare_document_without_explicit_ncs_detail":
+        healthcare_role_markers = (
+            "媛꾪샇吏?",
+            "?섎즺湲곗닠吏?",
+            "?쎈Т吏?",
+            "?낅Т?묐젰吏?",
+            "?꾩긽援먯닔",
+            "?꾩긽蹂묐━",
+            "?곸긽?섑븰",
+            "?섎즺?ы쉶蹂듭?",
+            "?섎Т湲곕줉",
+        )
+        matched_healthcare_markers = [
+            marker
+            for marker in healthcare_role_markers
+            if _norm(marker) and _norm(marker) in key
+        ]
+        if matched_healthcare_markers:
+            add_state("multi_role_healthcare_markers_without_ncs_detail")
+            add_state(f"healthcare_marker_count={len(matched_healthcare_markers)}")
+            add_evidence("healthcare markers: " + ", ".join(matched_healthcare_markers[:8]))
+
     if base_reason and not states:
         if base_reason == "translation_role_without_explicit_ncs_detail":
             add_state("translation_role_markers_without_ncs_detail")
@@ -450,7 +475,7 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
         reason = "no_ncs_mapping_declared"
     elif "blank_or_dash_detail_cell" in states:
         reason = "ncs_detail_cell_blank_or_dash"
-    elif filtered_reason:
+    elif filtered_reasons:
         reason = "ncs_detail_candidate_filtered"
     elif "saw_ncs_table" in states and "saw_detail_header" in states:
         reason = "ncs_detail_header_without_candidate"
@@ -463,7 +488,7 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
         "reason": reason,
         "state": "; ".join(states),
         "evidence": " | ".join(evidence)[:500],
-        "filtered_candidate_reason": filtered_reason,
+        "filtered_candidate_reason": "; ".join(filtered_reasons),
         "saw_ncs_table": "saw_ncs_table" in states,
         "saw_detail_header": "saw_detail_header" in states,
         "blank_or_dash_detail_cell": "blank_or_dash_detail_cell" in states,
@@ -754,6 +779,62 @@ def _dedup_detail_candidates(values: list[str]) -> list[str]:
     return output
 
 
+def _row_has_detail_evidence_context(line: str) -> bool:
+    cells = _split_table_row(line)
+    if cells:
+        if _row_has_ncs_classification_context(cells):
+            return True
+        if any(_section_for_label(cell) == "ncs_detail" for cell in cells):
+            return True
+    key = _norm(line)
+    return bool(key and "ncs" in key and "?몃텇瑜?" in key)
+
+
+def _line_expands_to_detail(line: str, detail: str) -> bool:
+    detail_key = _norm(detail)
+    if not detail_key:
+        return False
+    cells = _split_table_row(line) or [_clean_text(line)]
+    for cell in cells:
+        expanded = _expand_composite_detail_candidate(cell)
+        if any(_norm(item) == detail_key for item in expanded):
+            return True
+    return False
+
+
+def _contextual_evidence_snippet(markdown: str) -> str:
+    scored: list[tuple[int, int, str]] = []
+    fallback: list[tuple[int, str]] = []
+    for line_no, raw_line in enumerate(str(markdown or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        cells = _split_table_row(line)
+        if cells and _is_separator_row(cells):
+            continue
+        snippet = _clean_text(line)
+        if not snippet:
+            continue
+        fallback.append((line_no, snippet))
+        score = 0
+        if cells and _row_has_ncs_classification_context(cells):
+            score += 4
+        if cells:
+            sections = {_section_for_label(cell) for cell in cells}
+            if sections.intersection({"duties", "knowledge", "skills", "attitudes"}):
+                score += 3
+            if sections.intersection({"ncs_detail"}):
+                score += 2
+        if any(marker in _norm(snippet) for marker in ("吏곷Т", "?낅Т", "?섑뻾", "?꾩슂", "洹쇰Т")):
+            score += 1
+        if score:
+            scored.append((score, line_no, snippet))
+    if scored:
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return " | ".join(snippet for _score, _line_no, snippet in scored[:3])[:240]
+    return " | ".join(snippet for _line_no, snippet in fallback[:3])[:240]
+
+
 def _detail_candidate_evidence(
     detail_candidates: list[str],
     sections: dict[str, list[dict[str, Any]]],
@@ -776,7 +857,7 @@ def _detail_candidate_evidence(
         }
         for item in sections.get("ncs_detail", []):
             item_text = str(item.get("text") or "").strip()
-            if key and key in _norm(item_text):
+            if key and (key in _norm(item_text) or _line_expands_to_detail(item_text, text)):
                 evidence.update(
                     {
                         "source": str(item.get("source") or "kordoc"),
@@ -787,19 +868,31 @@ def _detail_candidate_evidence(
                 )
                 break
         if not evidence["snippet"]:
+            matching_lines: list[tuple[int, str, bool]] = []
             for line_no, line in lines:
-                if key and key in _norm(line):
-                    evidence.update(
-                        {
-                            "source": "markdown",
-                            "snippet": _clean_text(line)[:240],
-                            "line": line_no,
-                        }
-                    )
-                    break
+                if key and (key in _norm(line) or _line_expands_to_detail(line, text)):
+                    matching_lines.append((line_no, line, _row_has_detail_evidence_context(line)))
+            for line_no, line, _preferred in sorted(matching_lines, key=lambda item: (not item[2], item[0])):
+                evidence.update(
+                    {
+                        "source": "markdown",
+                        "snippet": _clean_text(line)[:240],
+                        "line": line_no,
+                    }
+                )
+                break
         if not evidence["snippet"] and detail_source == "contextual":
-            evidence["source"] = "contextual"
-            evidence["snippet"] = text
+            snippet = _contextual_evidence_snippet(markdown)
+            if snippet:
+                evidence.update(
+                    {
+                        "source": "contextual",
+                        "snippet": snippet,
+                    }
+                )
+            else:
+                evidence["source"] = "contextual"
+                evidence["snippet"] = text
         evidence_rows.append(evidence)
     return evidence_rows
 

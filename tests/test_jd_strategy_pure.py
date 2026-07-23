@@ -234,6 +234,47 @@ def test_planned_question_sequence_for_prompt_sets_method_specific_followup_focu
     assert "Situation Unit" in result[3]["required_followup_focus_example"]
 
 
+def test_planned_question_sequence_for_prompt_includes_strict_method_examples():
+    plan = {
+        "question_sequence": [
+            {"detail": "Office Admin"},
+            {"detail": "Office Admin"},
+        ]
+    }
+    ncs_matches = [
+        {"ncsClCd": "U1", "compeUnitName": "Discussion Unit", "ncsSubdCdnm": "Office Admin"},
+        {"ncsClCd": "U2", "compeUnitName": "Inbasket Unit", "ncsSubdCdnm": "Office Admin"},
+    ]
+    ncs_ksa = [
+        {"ncsClCd": "U1", "factorName": "Position Rationale"},
+        {"ncsClCd": "U2", "factorName": "Document Priority"},
+    ]
+
+    result = _planned_question_sequence_for_prompt(
+        plan,
+        ["토론면접", "인바스켓면접"],
+        2,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+
+    debate_question = result[0]["required_question_example"]
+    assert debate_question.startswith("[토론과제]")
+    assert "충돌" in debate_question
+    assert "토론시간" in debate_question
+    assert "입장발표" in debate_question
+    assert "반대" in debate_question
+    assert "합의" in debate_question
+    assert "Position Rationale" in debate_question
+    assert "Discussion Unit" in debate_question
+
+    inbasket_followup = result[1]["required_followup_focus_example"]
+    assert "Document Priority" in inbasket_followup
+    assert "Inbasket Unit" in inbasket_followup
+    assert "문서·요청 우선순위" in inbasket_followup
+    assert "보고·위임·직접처리 판단" in inbasket_followup
+
+
 class TestCountHangul:
     """Test Hangul character counting."""
 

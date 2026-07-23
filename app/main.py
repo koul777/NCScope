@@ -962,8 +962,8 @@ def _inject_focus_into_follow_up(method: str, focus: str, follow_up: str, job_co
         "상황면접": f"{_quoted_with_josa(focus, '과', '와')} 관련해{context_part}",
         "발표면접": f"{_quoted_with_josa(focus, '을', '를')} 발표 쟁점으로 볼 때{context_part}",
         "토론면접": f"{_quoted_with_josa(focus, '을', '를')} 토론 쟁점으로 볼 때{context_part}",
-        "인바스켓면접": f"{_quoted_with_josa(focus, '을', '를')} 처리 기준으로 삼을 때{context_part}",
-        "직무지식면접": f"{_quoted_with_josa(focus, '과', '와')} 관련한 기준으로{context_part}",
+        "인바스켓면접": f"{_quoted_with_josa(focus, '을', '를')} 처리 기준으로 삼고 보고·위임·직접처리 판단까지 포함할 때{context_part}",
+        "직무지식면접": f"{_quoted_with_josa(focus, '과', '와')} 관련한 기준과 예외상황·산출물 품질까지 포함해{context_part}",
         "창의적 문제해결력면접": f"{_quoted_with_josa(focus, '과', '와')} 관련한 원인과 대안 관점에서{context_part}",
     }
     prefix = prefix_by_method.get(method, f"{_quoted_with_josa(focus, '과', '와')} 관련해{context_part}")
@@ -1758,6 +1758,17 @@ _FOLLOW_UP_METHOD_ANCHORS: dict[str, tuple[str, ...]] = {
     "창의적 문제해결력면접": ("미래예측", "문제정의", "문제", "정의", "가설", "검증", "대안", "실현가능성", "의사결정", "실행계획", "우선순위", "리스크", "보완책", "성과지표", "후속점검"),
 }
 
+_FOLLOW_UP_REQUIRED_ANCHOR_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "인바스켓면접": (
+        ("문서", "요청", "분류", "우선순위", "먼저처리", "첫조치", "보류"),
+        ("보고", "위임", "직접처리", "기록", "통제", "후속점검"),
+    ),
+    "직무지식면접": (
+        ("절차", "기준", "규정", "순서"),
+        ("예외상황", "산출물", "품질", "오류", "리스크", "보완책"),
+    ),
+}
+
 _FOLLOW_UP_FOCUS_SLOT_INDEX: dict[str, int] = {
     "경험면접": 1,
     "상황면접": 1,
@@ -1915,7 +1926,19 @@ def _method_shape_ok(method: str, text: str) -> bool:
     required = _METHOD_MAIN_QUESTION_REQUIRED_TERMS.get(method)
     if not required:
         return False
-    return all(term in compact for term in required)
+    if not all(term in compact for term in required):
+        return False
+    if method == "인바스켓면접" and not any(
+        marker in compact
+        for marker in ("동시", "여러", "요청", "메일", "보고요청", "일정충돌", "첫조치", "보류", "마감")
+    ):
+        return False
+    if method == "직무지식면접":
+        if any(marker in compact for marker in ("경험을말씀", "당시상황", "본인역할")):
+            return False
+        if not any(marker in compact for marker in ("설명", "확인", "적용", "점검", "예방", "제시")):
+            return False
+    return True
 
 
 def _main_question_task_marker_ok(method: str, text: str) -> bool:
@@ -2063,10 +2086,18 @@ def _job_context_terms(q: dict[str, Any]) -> list[str]:
 
 
 def _job_specific_context_ok(q: dict[str, Any], question: str, follow_ups: list[str]) -> bool:
-    terms = _job_context_terms(q)
-    if not terms:
+    primary_terms = _primary_job_context_terms(q)
+    if not primary_terms:
         return False
     compact_text = re.sub(r"\s+", "", "\n".join([question, *follow_ups])).lower()
+    primary_hits = [
+        term
+        for term in primary_terms
+        if re.sub(r"\s+", "", term).lower() in compact_text
+    ]
+    if not primary_hits:
+        return False
+    terms = _job_context_terms(q)
     hits = [term for term in terms if re.sub(r"\s+", "", term).lower() in compact_text]
     required = 1 if len(terms) == 1 else 2
     return len(hits) >= required
@@ -2123,6 +2154,10 @@ def _follow_ups_quality_ok(method: str, q: dict[str, Any], follow_ups: list[str]
     }
     if len(anchor_hits) < 2:
         return False
+    required_groups = _FOLLOW_UP_REQUIRED_ANCHOR_GROUPS.get(method, ())
+    for group in required_groups:
+        if not any(anchor in compact for anchor in group for compact in compact_items):
+            return False
 
     open_prompt_hits = sum(
         1
@@ -2185,18 +2220,23 @@ def _ksa_evidence_relevance_ok(
 ) -> bool:
     if not matching_ksa_evidence:
         return False
-    evidence_text = "\n".join(
+    placeholder_text = "\n".join(
         [
             str(question or ""),
             *[str(x or "") for x in follow_ups],
             *[str(x or "") for x in evaluation_points],
-            str(q.get("question_focus") or ""),
         ]
     )
-    if _UNRESOLVED_KSA_PLACEHOLDER_RE.search(evidence_text):
+    if _UNRESOLVED_KSA_PLACEHOLDER_RE.search(placeholder_text):
         return False
+    visible_prompt_text = "\n".join(
+        [
+            str(question or ""),
+            *[str(x or "") for x in follow_ups],
+        ]
+    )
     return any(
-        _ksa_factor_relevant_to_text(str(row.get("factorName") or ""), evidence_text)
+        _ksa_factor_relevant_to_text(str(row.get("factorName") or ""), visible_prompt_text)
         for row in matching_ksa_evidence
         if isinstance(row, dict)
     )
@@ -2226,7 +2266,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     questions = strategy.get("interview_questions")
     if not isinstance(questions, list):
         strategy["question_quality_report"] = {
-            "policy": "main_question_method_shape_ksa_official_sample_eval_followup_job_context_gate_v6",
+            "policy": "main_question_method_shape_ksa_official_sample_eval_followup_job_context_gate_v9_visible_ksa",
             "passed": False,
             "summary": {
                 "question_count": 0,
@@ -2317,7 +2357,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     count_matches_plan = expected_count <= 0 or len(items) == expected_count
     passed = bool(count_matches_plan and items and ready_count == len(items))
     strategy["question_quality_report"] = {
-        "policy": "main_question_method_shape_ksa_official_sample_eval_followup_job_context_gate_v6",
+        "policy": "main_question_method_shape_ksa_official_sample_eval_followup_job_context_gate_v9_visible_ksa",
         "passed": passed,
         "summary": {
             "question_count": len(items),

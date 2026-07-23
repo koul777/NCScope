@@ -117,6 +117,12 @@ def classify_unmatched_detail_gap(
             "review_action": "manual_review_unit_name",
             "review_reason": "No exact detail match; suggestion matched a capability unit name only.",
         }
+    if normalize_detail_key(term) in MANUAL_REVIEW_SUGGESTIONS_BY_KEY:
+        return {
+            "match_diagnostic": "known_manual_review_catalog_gap",
+            "review_action": "manual_review_known_catalog_gap",
+            "review_reason": MANUAL_REVIEW_SUGGESTIONS_BY_KEY[normalize_detail_key(term)],
+        }
     if suggestions:
         return {
             "match_diagnostic": "semantic_suggestion_unverified",

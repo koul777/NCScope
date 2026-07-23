@@ -156,6 +156,9 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
     main_csv = csv_path.read_text(encoding="utf-8-sig")
     assert "manual_review_suggestions" in main_csv
     assert "detail_source" in main_csv
+    assert "checked_detail_count" in main_csv
+    assert "max_details_per_doc" in main_csv
+    assert "max_units_per_detail" in main_csv
     assert "interview_methods" in main_csv
     assert "model_candidate_questions" in main_csv
     assert "model_full_questions" in main_csv
@@ -164,13 +167,51 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
     assert "model_origin_ready_questions" in main_csv
     assert "model_replaced_by_template_questions" in main_csv
     assert "coverage_blocker_type" in main_csv
+    assert "coverage_blocker_details" in main_csv
     assert "resolved_parent_detail" in main_csv
     assert "review_action" in main_csv
     assert "coverage_blocker_reason" in main_csv
     assert "Documents question-ready with contextual detail recovery" in md_text
+    assert "Checked detail labels" in md_text
+    assert "Detail check limits" in md_text
     assert "## Method Quality" in md_text
     assert "## Question Source" in md_text
     assert "사무행정" in item_csv
+
+
+def test_write_quality_reports_shows_strict_blockers_in_markdown(tmp_path: Path) -> None:
+    rows = [
+        {
+            "idx": "303039",
+            "attachment": "직무기술서.zip",
+            "status": "template_ready_unit_name_resolved",
+            "resolved_benchmark_mode": "template",
+            "detail_source": "explicit",
+            "detail_count": 2,
+            "exact_detail_count": 1,
+            "unit_name_detail_count": 1,
+            "unmatched_detail_count": 0,
+            "skipped_detail_count": 0,
+            "generated_questions": 6,
+            "ready_questions": 6,
+            "coverage_blocker_type": "카지노 고객 지원: unit_name_only",
+            "coverage_blocker_details": '[{"detail":"카지노 고객 지원","coverage_blocker_type":"unit_name_only"}]',
+            "resolved_parent_detail": "카지노 고객 지원: 카지노운영관리",
+            "review_action": "카지노 고객 지원: manual_review_unit_name",
+            "coverage_adjusted_score": 0.0,
+            "average_score": 1.0,
+        }
+    ]
+
+    md_path, csv_path, _item_csv_path = runner.write_quality_reports(rows, [], tmp_path)
+
+    md_text = md_path.read_text(encoding="utf-8")
+    csv_text = csv_path.read_text(encoding="utf-8-sig")
+
+    assert "strict blockers" in md_text
+    assert "카지노 고객 지원: unit_name_only" in md_text
+    assert "unresolved details" in md_text
+    assert "coverage_blocker_details" in csv_text
 
 
 def test_write_quality_reports_emits_model_replacement_reason_summary(tmp_path: Path) -> None:
@@ -1014,6 +1055,9 @@ def test_evaluate_cached_document_separates_skipped_details_from_unmatched(tmp_p
 
     assert row["status"] == "template_ready_partial_detail_coverage"
     assert row["passed"] is False
+    assert row["checked_detail_count"] == 1
+    assert row["max_details_per_doc"] == 1
+    assert row["max_units_per_detail"] == 8
     assert "skipped_by_max_details_per_doc" in row["coverage_blocker_type"]
     assert "increase_max_details_per_doc_or_manual_select" in row["review_action"]
     assert row["unmatched_detail_count"] == 0
@@ -1088,11 +1132,13 @@ def test_evaluate_cached_document_aggregates_mixed_coverage_blockers(tmp_path: P
     assert row["unmatched_detail_count"] == 2
     assert row["skipped_detail_count"] == 1
     assert "카지노 고객 지원: unit_name_only" in row["coverage_blocker_type"]
-    assert "문화・관광정책: catalog_gap_or_nonstandard_source_label" in row["coverage_blocker_type"]
+    assert "문화・관광정책: known_manual_review_catalog_gap" in row["coverage_blocker_type"]
     assert "간호수행: specialized_healthcare_label_unserved_by_mcp" in row["coverage_blocker_type"]
     assert "B: skipped_by_max_details_per_doc" in row["coverage_blocker_type"]
+    assert "known_manual_review_catalog_gap" in row["coverage_blocker_details"]
     assert "카지노 고객 지원: 카지노운영관리" in row["resolved_parent_detail"]
     assert "카지노 고객 지원: manual_review_unit_name" in row["review_action"]
+    assert "문화・관광정책: manual_review_known_catalog_gap" in row["review_action"]
     assert "간호수행: manual_review_healthcare_specialized_label" in row["review_action"]
     assert "B: increase_max_details_per_doc_or_manual_select" in row["review_action"]
     assert len(question_rows) == 3
@@ -1236,6 +1282,52 @@ def test_exact_units_by_detail_keeps_canonical_detail_suggestion_for_manual_revi
     assert unit_name_details == []
     assert units == []
     assert unmatched == ["문화・관광정책"]
+
+    _exact_details, _unit_name_details, _units, _unmatched, records = runner._detail_resolution_records(
+        ["문화・관광정책"],
+        max_units_per_detail=8,
+    )
+
+    assert records[0]["coverage_status"] == "unmatched"
+    assert records[0]["coverage_blocker_type"] == "catalog_gap_verified_source_label"
+    assert records[0]["resolved_parent_detail"] == "문화·관광정책"
+    assert records[0]["review_action"] == "manual_review_canonical_detail"
+
+
+def test_detail_resolution_uses_later_canonical_suggestion_parent(monkeypatch) -> None:
+    monkeypatch.setattr(runner, "search_units_by_detail", lambda details, max_units: [])
+
+    def fake_suggest_units_by_text(details, max_units):
+        return [
+            {
+                "ncsClCd": "9999999999",
+                "compeUnitName": "Unrelated Unit",
+                "ncsSubdCdnm": "other-parent",
+                "canonicalDetailName": "other-parent",
+                "isExactDetailMatch": False,
+                "isExactUnitNameMatch": False,
+            },
+            {
+                "ncsClCd": "1204020101_23v2",
+                "compeUnitName": "Culture Policy Unit",
+                "ncsSubdCdnm": "culture-policy-parent",
+                "canonicalDetailName": "culture-policy-parent",
+                "matchedDetailName": details[0],
+                "isExactDetailMatch": True,
+                "isExactUnitNameMatch": False,
+            },
+        ]
+
+    monkeypatch.setattr(runner, "suggest_units_by_text", fake_suggest_units_by_text)
+
+    _exact_details, _unit_name_details, _units, _unmatched, records = runner._detail_resolution_records(
+        ["culture-policy-parent"],
+        max_units_per_detail=8,
+    )
+
+    assert records[0]["coverage_status"] == "unmatched"
+    assert records[0]["coverage_blocker_type"] == "catalog_gap_verified_source_label"
+    assert records[0]["resolved_parent_detail"] == "culture-policy-parent"
 
 
 def test_exact_units_by_detail_rejects_clinical_false_friend_suggestions(monkeypatch) -> None:
