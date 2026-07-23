@@ -465,6 +465,8 @@ def _looks_like_new_notice_section(line: str) -> bool:
     text = _clean_text(line)
     if not text:
         return False
+    if text.startswith("#"):
+        return True
     text = re.sub(r"^#{1,6}\s*", "", text).strip()
     if re.match(r"^(?:#{1,6}\s*)?(?:\d+[.)]|[가-힣][.)]|[IVX]+[.)])\s*\S{2,30}\s*$", text):
         return True
@@ -509,6 +511,58 @@ def _extract_notice_windows(markdown: str, aliases: tuple[str, ...], max_lines: 
     return out[:4]
 
 
+def _strip_notice_marker(line: str) -> str:
+    text = re.sub(r"^#{1,6}\s*", "", _clean_text(line)).strip()
+    text = re.sub(r"^(?:[-*•·‧○◦▪□■\uf000-\uf8ff]\s*)+", "", text).strip()
+    text = re.sub(r"^(?:[가-힣]\.|\d+[.)]|[IVX]+[.)])\s*", "", text, flags=re.IGNORECASE).strip()
+    return text
+
+
+def _looks_like_interview_section_start(line: str) -> bool:
+    text = _strip_notice_marker(line)
+    key = _norm(text)
+    if not key or "면접" not in key:
+        return False
+    if "면접전형시" in key or "면접시" in key:
+        return False
+    if "예정" in key and "평가" not in key and "심사" not in key and "기준" not in key:
+        return False
+    section_keys = (
+        "면접전형",
+        "면접시험",
+        "면접심사",
+        "면접평가",
+        "면접평가기준",
+        "면접평가항목",
+    )
+    return any(key.startswith(section_key) for section_key in section_keys)
+
+
+def _extract_interview_notice_windows(markdown: str, max_chars: int = 1800) -> list[str]:
+    lines = [_clean_text(line) for line in str(markdown or "").splitlines()]
+    lines = [line for line in lines if line]
+    out: list[str] = []
+    seen: set[str] = set()
+    for idx, line in enumerate(lines):
+        if not _looks_like_interview_section_start(line):
+            continue
+        window: list[str] = [line]
+        for next_line in lines[idx + 1 :]:
+            if _looks_like_new_notice_section(next_line) and len(window) > 1:
+                break
+            if _looks_like_interview_section_start(next_line) and len(window) > 1:
+                break
+            window.append(next_line)
+            if len("\n".join(window)) >= max_chars:
+                break
+        value = "\n".join(window)[:max_chars].strip()
+        key = _norm(value)
+        if value and key not in seen:
+            seen.add(key)
+            out.append(value)
+    return out[:3]
+
+
 def structure_job_notice(parsed: dict[str, Any], filename: str = "") -> dict[str, Any]:
     """Return reviewable duty/evaluation text candidates from a broader job notice.
 
@@ -524,7 +578,10 @@ def structure_job_notice(parsed: dict[str, Any], filename: str = "") -> dict[str
     duty_candidates = list(fields.get("duties") or []) + _extract_notice_windows(
         markdown, _NOTICE_REVIEW_ALIASES["duty_text"]
     )
-    evaluation_candidates = _extract_notice_windows(markdown, _NOTICE_REVIEW_ALIASES["evaluation_text"])
+    interview_candidates = _extract_interview_notice_windows(markdown)
+    evaluation_candidates = interview_candidates or _extract_notice_windows(
+        markdown, _NOTICE_REVIEW_ALIASES["evaluation_text"]
+    )
     qualification_candidates = list(fields.get("qualifications") or []) + _extract_notice_windows(
         markdown, _NOTICE_REVIEW_ALIASES["qualification_text"]
     )
