@@ -2638,6 +2638,7 @@ def rank_ncs_matches_by_jd(
                 "compeUnitLevel": str(row.get("compeUnitLevel", "")).strip(),
                 "ncsSclasCdnm": sclass_nm,
                 "ncsSubdCdnm": str(row.get("ncsSubdCdnm", "")).strip(),
+                "matchedDetailName": str(row.get("matchedDetailName", "")).strip(),
                 "compeUnitDef": str(row.get("compeUnitDef", "")).strip(),
                 "score": round(final_score, 6),
                 "matched_keywords": hit,
@@ -3097,6 +3098,49 @@ def _check_openai_connectivity(api_key: str, ttl_sec: int = 60) -> tuple[bool, s
     return ok, msg
 
 
+def _fallback_structured_interview_guide_summary() -> str:
+    return (
+        "원칙: 주질문1개+꼬리질문3개(사례구체화/어려움대처/결과교훈). "
+        "type=경험면접/상황면접/발표면접/토론면접/인바스켓면접/직무지식면접 중 선택. "
+        "경험면접은 STAR 행동증거, 상황면접은 판단 기준과 행동 순서, 발표면접은 분석·대안·실행계획, "
+        "토론면접은 근거·경청·조정·합의, 인바스켓면접은 제한시간 내 우선순위와 첫 조치, "
+        "직무지식면접은 절차·기준·산출물·예외상황 적용을 검증. 개방형 단일의도."
+    )
+
+
+def _structured_interview_guide_path() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "STRUCTURED_INTERVIEW_GUIDE.md"))
+
+
+def _model_question_gate_contract() -> str:
+    return (
+        "[모델 질문 보존 게이트]\n"
+        "- 아래 필수어는 주질문(question)에 직접 포함하세요. 빠지면 템플릿으로 교체되어 model-origin 품질 실패로 기록됩니다.\n"
+        "- 경험면접 question 필수어: 경험, 상황, 본인, 행동, 결과. evaluation_points에는 구체적 상황 설명 또는 본인 역할과 행동 또는 성과와 학습 포함.\n"
+        "- 상황면접 question 필수어: 상황, 판단, 기준, 순서, 위험. evaluation_points에는 판단 기준 또는 위험요인 인식 또는 이해관계자 대응 포함.\n"
+        "- 발표면접 question 필수어: 발표, 진단, 대안, 실행, 성과지표. evaluation_points에는 자료 분석력 또는 논리적 구조화 또는 대안의 실행가능성 포함.\n"
+        "- 토론면접 question 필수어: 토론, 충돌, 입장, 반대, 합의. evaluation_points에는 근거 제시 또는 경청과 상호작용 또는 갈등 조정 포함.\n"
+        "- 인바스켓면접 question 필수어: 인바스켓, 제한시간, 문서, 우선순위, 보고, 위임, 직접처리. evaluation_points에는 우선순위 판단 또는 문서·요청 분류 또는 시간관리 포함.\n"
+        "- 직무지식면접 question 필수어: 절차, 기준, 산출물, 예외상황. evaluation_points에는 절차·기준 이해 또는 직무지식 적용 또는 산출물 품질 포함.\n"
+        "- type과 question의 형식이 충돌하면 안 됩니다. 예: type=발표면접이면 question은 반드시 발표과제여야 합니다.\n"
+        "- follow_ups는 최소 3개이며 서로 중복되면 안 됩니다. 최소 1개는 직무/NCS/KSA 핵심어를 직접 포함해야 합니다.\n"
+        "- follow_ups도 기법별로 달라야 합니다: 경험=상황·역할·행동·성과, 상황=확인·기준·위험·후속, 발표=근거자료·대안·반대의견·성과지표, 토론=입장·반대·조정·합의, 인바스켓=문서분류·우선순위·보고/위임/직접처리, 직무지식=기준·예외·산출물·품질.\n"
+    )
+
+
+def _load_structured_interview_guide_summary(max_chars: int = 1400) -> str:
+    try:
+        with open(_structured_interview_guide_path(), "r", encoding="utf-8") as f:
+            guide_full = f.read()
+        match = re.search(r"(## 3\. 질문 유형별 작성 기법.*?)(?=\n## [4-9]\.|\Z)", guide_full, re.DOTALL)
+        guide_summary = (match.group(1) if match else guide_full).strip()
+        if guide_summary:
+            return guide_summary[: max(200, int(max_chars))]
+    except Exception:
+        pass
+    return _fallback_structured_interview_guide_summary()
+
+
 def build_strategy_with_openai(
     jd_text: str,
     notice_text: str,
@@ -3179,7 +3223,7 @@ def build_strategy_with_openai(
         ]
     method_names = [str(x).strip() for x in (interview_methods or []) if str(x).strip()]
     if not method_names:
-        method_names = ["경험면접", "상황면접", "발표면접", "토론면접"]
+        method_names = ["경험면접", "상황면접", "발표면접", "토론면접", "인바스켓면접", "직무지식면접"]
     custom_plan_rules = ""
     if plan_items:
         custom_plan_rules = (
@@ -3198,22 +3242,8 @@ def build_strategy_with_openai(
             "- 직무지식면접: 직무 절차·기준·법령·도구에 대한 이해와 적용을 묻는 질문.\n\n"
         )
 
-    # STRUCTURED_INTERVIEW_GUIDE.md 핵심 섹션만 추출 (토큰 절약)
-    _guide_path = os.path.join(os.path.dirname(__file__), "..", "..", "STRUCTURED_INTERVIEW_GUIDE.md")
-    _guide_summary = ""
-    try:
-        with open(_guide_path, "r", encoding="utf-8") as _f:
-            _guide_full = _f.read()
-        # "## 2. 핵심 원칙" ~ "## 3." 구간만 추출
-        import re as _re2
-        # 3-1~3-5 질문 유형별 작성 기법 섹션만 추출 (가장 실용적인 부분)
-        _m = _re2.search(r"(## 3\. 질문 유형별 작성 기법.*?)(?=## \d\.|\Z)", _guide_full, _re2.DOTALL)
-        _guide_summary = _m.group(1).strip()[:1400] if _m else _guide_full[:600]
-    except Exception:
-        _guide_summary = (
-            "원칙: 주질문1개+꼬리질문3개(사례구체화/어려움대처/결과교훈). "
-            "type=경험면접/상황면접/발표면접/토론면접 중 선택. STAR프레임. 개방형 단일의도."
-        )
+    _guide_summary = _load_structured_interview_guide_summary()
+    _gate_contract = _model_question_gate_contract()
 
     prompt = (
         "JSON만 출력하세요.\n"
@@ -3225,6 +3255,7 @@ def build_strategy_with_openai(
         "}\n\n"
         "[구조화 면접 원칙]\n"
         f"{_guide_summary}\n\n"
+        f"{_gate_contract}\n"
         f"{custom_plan_rules}"
         f"{priority_rules}"
         "생성 규칙:\n"
@@ -3234,13 +3265,12 @@ def build_strategy_with_openai(
         "- 지원자가 해당 업무를 직접 맡아보지 않았을 수 있음을 전제로, 유사 경험 또는 가정형 답변이 가능하도록 질문할 것\n"
         "\n"
         "[주질문 작성 필수 기준]\n"
-        "1. 경험형: '~한 경험 중 가장 도전적이었던 사례를 말씀해 주세요.' — 막연한 질문 금지, 직무 맥락 포함\n"
-        "2. 상황형: 실제 직무에서 발생 가능한 구체적 시나리오를 제시 후 대처를 질문\n"
-        "   예) '예산 외 지출을 상사가 구두로 지시한 경우 어떻게 하시겠습니까?'\n"
-        "   예) '담당 비품이 분실됐는데 책임자를 특정하기 어려운 상황이라면?'\n"
-        "3. 직무지식형: 절차·법규·기준을 묻고 실제 적용 경험까지 연결\n"
-        "   예) '물품관리법상 불용처분 절차를 설명하고, 적용 경험이 있다면 함께 말씀해 주세요.'\n"
-        "4. 가치·태도형: 규정과 현실이 충돌하는 상황에서의 판단 기준을 확인\n"
+        "1. 경험면접: 직무 맥락이 분명한 과거 행동·유사경험을 STAR 방식으로 질문\n"
+        "2. 상황면접: 실제 직무에서 발생 가능한 구체적 시나리오를 제시하고 판단 기준·행동 순서를 질문\n"
+        "3. 발표면접: 분석할 자료나 과제를 제시하고 현황진단·대안·실행계획·성과지표를 발표하게 질문\n"
+        "4. 토론면접: 이해관계가 갈리는 직무 이슈를 제시하고 근거 제시·경청·조정·합의 형성을 확인\n"
+        "5. 인바스켓면접: 제한시간 내 다수 문서·요청·일정 충돌을 제시하고 우선순위와 첫 조치를 질문\n"
+        "6. 직무지식면접: 절차·법규·기준·산출물과 예외상황 적용을 질문\n"
         "\n"
         "[꼬리질문 작성 기준]\n"
         "- 꼬리물기 구조: 주질문 → 꼬리질문, 앞 답변을 전제로 더 깊이 파고드는 질문\n"
@@ -3310,6 +3340,7 @@ def build_strategy_with_openai(
             f"- interview_questions {retry_target_count}개 생성\n"
             f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 {follow_up_count}개 (꼬리물기: 앞 답변을 받아 더 깊이 파고드는 구조, 서로 다른 평가항목 검증)\n"
             f"- 선택 면접기법: {', '.join(method_names)}\n"
+            f"{_gate_contract}"
             "- 각 질문은 compeUnitDef(능력단위 정의) 직접 반영\n"
             "- evaluation_points는 NCS 수행준거 기반 4~6개\n"
             "- 지원자가 직접 수행한 경험이 없을 수 있으므로, 유사 사례/가정형 답변이 가능하도록 질문할 것\n"

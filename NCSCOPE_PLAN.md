@@ -79,6 +79,27 @@ Release asset or external artifact and is consumed only through `NCS_MCP_URL`.
    download public job-description attachments, parse them with Kordoc, and
    record detail-classification extraction plus NCS_MCP unit/KSA coverage.
 
+7. Detail-classification quality loop
+
+   Separate `ncs_detail_candidates` by source: `explicit` when the JD names a
+   detail class, `contextual` only for narrow high-confidence recovery, and
+   blank/manual review when the label is absent or unsafe. The parser must not
+   promote small categories, duty rows, business descriptions, ability units, or
+   KSA text into detail classes. Benchmarks must keep unmatched labels visible
+   instead of silently borrowing broad NCS suggestions.
+
+8. Interview-method fidelity
+
+   Question generation must preserve the expected shape of each method:
+   experience interviews ask for past behavior and evidence; situation
+   interviews present a job-relevant scenario and decision constraints;
+   presentation interviews define an analysis/output task; discussion interviews
+   create a compare-and-defend issue; in-basket interviews require prioritizing
+   multiple work items; job-knowledge interviews probe NCS unit knowledge and
+   performance criteria. Quality gates should check method shape, follow-up
+   depth, evaluation points, blind-hiring compliance, NCS code grounding, and
+   KSA evidence.
+
 ## Verification Checklist
 
 - Kordoc parses at least one sample JD and returns detail classification
@@ -102,5 +123,10 @@ Release asset or external artifact and is consumed only through `NCS_MCP_URL`.
 - Official KSA is fetched through `NCS_MCP_URL`.
 - Recent JOB-ALIO attachments can be benchmarked without committing downloaded
   files.
+- ALIO quality reports distinguish exact detail matches, exact unit-name
+  recovery, partial catalog coverage, contextual detail recovery, and manual
+  review gaps.
+- Generated questions cover the selected interview methods with method-specific
+  prompts, follow-ups, evaluation points, NCS code, and KSA evidence.
 - The project is clean enough to publish on GitHub with a separate DB artifact
   policy.

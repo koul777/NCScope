@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.services.question_generation import (
     _build_question_generation_prompt,
+    _contains_blind_hiring_cue,
     _parse_openai_response,
 )
 
@@ -37,6 +38,28 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
     assert "\ufffd" not in prompt
 
 
+def test_prompt_describes_all_supported_interview_methods():
+    prompt = _build_question_generation_prompt(
+        ncs_matches=[],
+        ncs_ksa=[],
+        mode="diverse",
+        target_count=6,
+        extra_context="",
+    )
+
+    for method in ["경험면접", "상황면접", "발표면접", "토론면접", "인바스켓면접", "직무지식면접"]:
+        assert method in prompt
+    assert "STAR 방식" in prompt
+    assert "제한시간 안에 여러 문서" in prompt
+    assert "절차, 기준, 산출물" in prompt
+    assert "[주질문 필수어]" in prompt
+    assert "경험, 상황, 본인, 행동, 결과" in prompt
+    assert "인바스켓, 제한시간, 문서, 우선순위, 보고, 위임, 직접처리" in prompt
+    assert "[꼬리질문 품질 기준]" in prompt
+    assert "최소 1개는 직무/NCS/KSA 핵심어" in prompt
+    assert '"type": "경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접"' in prompt
+
+
 def test_parse_valid_interview_questions_object():
     response = """
     {
@@ -57,7 +80,7 @@ def test_parse_valid_interview_questions_object():
     questions = _parse_openai_response(response)
 
     assert len(questions) == 1
-    assert questions[0]["type"] == "\uc9c1\ubb34\uc9c0\uc2dd"
+    assert questions[0]["type"] == "\uc9c1\ubb34\uc9c0\uc2dd\uba74\uc811"
     assert questions[0]["ncsClCd"] == "0201010103_22v2"
     assert len(questions[0]["evaluation_points"]) == 4
     assert len(questions[0]["follow_ups"]) == 3
@@ -68,7 +91,7 @@ def test_parse_normalizes_missing_fields_with_clean_defaults():
     questions = _parse_openai_response('[{"question": "\uc9c8\ubb38\ub9cc \uc788\ub294 \uacbd\uc6b0"}]')
 
     assert len(questions) == 1
-    assert questions[0]["type"] == "\uacbd\ud5d8"
+    assert questions[0]["type"] == "\uacbd\ud5d8\uba74\uc811"
     assert questions[0]["competency"] == ""
     assert len(questions[0]["evaluation_points"]) == 4
     assert len(questions[0]["follow_ups"]) == 3
@@ -109,3 +132,60 @@ def test_parse_deduplicates_identical_questions():
     questions = _parse_openai_response(response)
 
     assert len(questions) == 1
+
+
+def test_parse_falls_back_for_unsupported_interview_type():
+    questions = _parse_openai_response('[{"question": "절차를 어떻게 확인하겠습니까?", "type": "가치·태도형"}]')
+
+    assert len(questions) == 1
+    assert questions[0]["type"] == "경험면접"
+
+
+def test_parse_drops_blind_hiring_cues():
+    response = """
+    [
+      {"question": "출신학교와 가족 배경을 포함해 설명해 주세요.", "type": "경험면접"},
+      {"question": "문서 요구사항을 어떻게 확인하겠습니까?", "type": "직무지식형"}
+    ]
+    """
+
+    questions = _parse_openai_response(response)
+
+    assert len(questions) == 1
+    assert questions[0]["question"] == "문서 요구사항을 어떻게 확인하겠습니까?"
+    assert questions[0]["type"] == "직무지식면접"
+
+
+def test_parse_drops_extended_blind_hiring_cues():
+    blocked = [
+        "생년월일을 말씀해 주세요.",
+        "현재 몇 살인지 설명해 주세요.",
+        "군필 여부와 미필 사유를 말씀해 주세요.",
+        "기혼 여부를 포함해 설명해 주세요.",
+    ]
+    response = [
+        {"question": question, "type": "경험면접"}
+        for question in blocked
+    ] + [
+        {"question": "문서 요구사항을 확인하는 절차를 설명해 주세요.", "type": "직무지식면접"}
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert all(_contains_blind_hiring_cue(question) for question in blocked)
+    assert len(questions) == 1
+    assert questions[0]["question"] == "문서 요구사항을 확인하는 절차를 설명해 주세요."
+
+
+def test_blind_hiring_filter_does_not_match_key_syllable_inside_ordinary_words():
+    response = """
+    [
+      {"question": "고객요구를 만족시키기 위해 어떤 기준을 확인하겠습니까?", "type": "상황면접"},
+      {"question": "키가 큰 지원자가 유리한 이유를 설명해 주세요.", "type": "경험면접"}
+    ]
+    """
+
+    questions = _parse_openai_response(response)
+
+    assert len(questions) == 1
+    assert "만족시키기" in questions[0]["question"]

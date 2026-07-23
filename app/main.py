@@ -104,8 +104,27 @@ _QUESTION_HISTORY_BY_CODE: dict[str, list[str]] = {}
 _QUESTION_HISTORY_LIMIT = 300
 # 면접 질문 생성 최적 고정값 (10개 기준)
 FAST_NCS_TOP_K = 4          # NCS 매칭 상위 4개
-FAST_KSA_UNITS = 2          # KSA 수집 능력단위 2개 (타임아웃 방지)
+FAST_KSA_UNITS = 6          # KSA 수집 능력단위 6개 (기본 6개 면접기법 커버)
 FAST_KSA_FACTORS_PER_UNIT = 2  # 단위당 KSA 2개 (총 6개)
+SUPPORTED_INTERVIEW_METHODS = (
+    "경험면접",
+    "상황면접",
+    "발표면접",
+    "토론면접",
+    "인바스켓면접",
+    "직무지식면접",
+)
+_BLIND_HIRING_CUE_RE = re.compile(
+    r"(가족|부모|형제|배우자|자녀|나이|연령|출신\s*학교|학교명|학벌|출신\s*지역|출신지역|고향|"
+    r"생년\s*월일|출생\s*(?:연도|년도|일|지)|몇\s*살|만\s*\d+\s*세|"
+    r"혼인|결혼|기혼|미혼|결혼\s*여부|혼인\s*상태|임신|출산|자녀\s*계획|출산\s*계획|"
+    r"외모|용모|(?:키|신장)\s*(?:가|는|를|와|및|/|,|:|：|\d)|체중|성별|종교|정치\s*성향|"
+    r"병역|군필|미필|군\s*복무|복무\s*기간|전역|혈액형)"
+)
+
+
+def _contains_blind_hiring_cue(value: Any) -> bool:
+    return bool(_BLIND_HIRING_CUE_RE.search(str(value or "")))
 
 
 def _clamp_runtime_knobs(
@@ -166,6 +185,37 @@ def _parse_sclass_terms(raw: str | None) -> list[str]:
         seen.add(key)
         out.append(term)
     return out
+
+
+def _norm_detail_coverage_key(value: Any) -> str:
+    return re.sub(r"[\s\-\_/|(),.·・]+", "", str(value or "")).strip().lower()
+
+
+def _detail_lookup_coverage(
+    lookup_terms: list[str],
+    ncs_items: list[dict[str, Any]] | None,
+) -> tuple[list[str], list[str]]:
+    requested: dict[str, str] = {}
+    for term in lookup_terms or []:
+        text = str(term or "").strip()
+        key = _norm_detail_coverage_key(text)
+        if text and key and key not in requested:
+            requested[key] = text
+    if not requested:
+        return [], []
+
+    covered_keys: set[str] = set()
+    for row in ncs_items or []:
+        if not isinstance(row, dict):
+            continue
+        for field in ("matchedDetailName", "reviewed_detail", "confirmed_detail", "ncs_detail", "ncsSubdCdnm"):
+            key = _norm_detail_coverage_key(row.get(field))
+            if key in requested:
+                covered_keys.add(key)
+
+    matched = [term for key, term in requested.items() if key in covered_keys]
+    unmatched = [term for key, term in requested.items() if key not in covered_keys]
+    return matched, unmatched
 
 
 def _merge_sclass_terms(
@@ -290,30 +340,43 @@ def _parse_interview_methods(raw: str) -> list[str]:
     allowed = {
         "behavior": "경험면접",
         "behavioral": "경험면접",
+        "행동형": "경험면접",
         "행동관찰면접": "경험면접",
         "행동관찰": "경험면접",
+        "경험형": "경험면접",
         "경험면접": "경험면접",
         "experience": "경험면접",
         "situation": "상황면접",
         "situational": "상황면접",
+        "상황형": "상황면접",
         "상황면접": "상황면접",
         "presentation": "발표면접",
         "pt": "발표면접",
         "pt면접": "발표면접",
         "발표": "발표면접",
+        "발표형": "발표면접",
         "발표면접": "발표면접",
         "discussion": "토론면접",
         "debate": "토론면접",
         "토론": "토론면접",
+        "토론형": "토론면접",
         "토론면접": "토론면접",
+        "토의": "토론면접",
+        "토의형": "토론면접",
+        "토의면접": "토론면접",
         "inbasket": "인바스켓면접",
         "in-basket": "인바스켓면접",
         "인바스켓": "인바스켓면접",
+        "인바스켓형": "인바스켓면접",
         "인바스켓면접": "인바스켓면접",
         "job_knowledge": "직무지식면접",
         "knowledge": "직무지식면접",
         "직무지식": "직무지식면접",
+        "직무지식형": "직무지식면접",
         "직무지식면접": "직무지식면접",
+        "지식": "직무지식면접",
+        "지식형": "직무지식면접",
+        "지식면접": "직무지식면접",
     }
     text = str(raw or "").strip()
     values: list[str] = []
@@ -335,7 +398,7 @@ def _parse_interview_methods(raw: str) -> list[str]:
         if mapped and mapped not in seen:
             seen.add(mapped)
             out.append(mapped)
-    return out or ["경험면접", "상황면접", "발표면접", "토론면접"]
+    return out or list(SUPPORTED_INTERVIEW_METHODS)
 
 
 def _group_interview_questions_for_response(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -368,12 +431,16 @@ def _ksa_terms_for_question(
     fallback_terms: list[str] | None = None,
     limit: int = 5,
 ) -> list[str]:
+    if not str(ncs_code or "").strip():
+        return []
     out: list[str] = []
     seen: set[str] = set()
 
     def add(value: Any) -> None:
         text = _clean_question_text(value, max_chars=60)
         key = _ksa_key(text)
+        if _contains_blind_hiring_cue(text):
+            return
         if text and key and key not in seen:
             seen.add(key)
             out.append(text)
@@ -383,13 +450,10 @@ def _ksa_terms_for_question(
             add(row.get("factorName"))
             if len(out) >= limit:
                 return out[:limit]
-    for row in ncs_ksa or []:
-        if isinstance(row, dict):
-            add(row.get("factorName"))
-            if len(out) >= limit:
-                return out[:limit]
-    for term in fallback_terms or []:
-        add(term)
+    if ncs_code:
+        for term in fallback_terms or []:
+            add(term)
+        return out[:limit]
     return out[:limit]
 
 
@@ -403,8 +467,20 @@ def _pick_unit_for_detail(
         return {}
     detail_key = _norm_sclass_key(target_detail)
     exact: list[dict[str, Any]] = []
+    fallback: list[dict[str, Any]] = []
     if detail_key:
         for row in rows:
+            authoritative_detail_keys = {
+                _norm_sclass_key(str(row.get("matchedDetailName", ""))),
+                _norm_sclass_key(str(row.get("reviewed_detail", ""))),
+                _norm_sclass_key(str(row.get("confirmed_detail", ""))),
+                _norm_sclass_key(str(row.get("ncs_detail", ""))),
+                _norm_sclass_key(str(row.get("ncsSubdCdnm", ""))),
+            }
+            authoritative_detail_keys.discard("")
+            if detail_key in authoritative_detail_keys:
+                exact.append(row)
+                continue
             sclass = _norm_sclass_key(str(row.get("ncsSclasCdnm", "")))
             matched = [
                 _norm_sclass_key(x)
@@ -412,27 +488,195 @@ def _pick_unit_for_detail(
                 if str(x).strip()
             ] if isinstance(row.get("matched_keywords"), list) else []
             if sclass == detail_key or detail_key in matched:
-                exact.append(row)
-    pool = exact or rows
+                fallback.append(row)
+    pool = exact or fallback or rows
     return dict(pool[offset % len(pool)])
 
 
 def _method_evaluation_points(method: str, ksa_terms: list[str]) -> list[str]:
     guide = {
-        "경험면접": ["구체적 상황 설명", "본인 역할과 행동", "접근 방법의 타당성", "성과와 학습"],
-        "상황면접": ["판단 기준", "행동 의도와 근거", "위험요인 인식", "이해관계자 대응"],
-        "발표면접": ["자료 분석력", "논리적 구조화", "대안의 실행가능성", "의사소통 명확성"],
-        "토론면접": ["근거 제시", "경청과 상호작용", "갈등 조정", "합의안 도출"],
-        "인바스켓면접": ["우선순위 판단", "문서·요청 분류", "시간관리", "리스크 대응"],
-        "직무지식면접": ["절차·기준 이해", "직무지식 적용", "예외상황 판단", "산출물 품질"],
+        "경험면접": ["구체적 상황 설명", "본인 역할과 행동", "판단 근거와 협업", "결과 지표와 학습"],
+        "상황면접": ["핵심 사실 확인", "판단 기준", "행동 순서와 첫 조치", "위험요인 인식", "이해관계자 대응"],
+        "발표면접": ["자료 분석력", "논리적 구조화", "대안의 실행가능성", "실행계획 구체성", "성과지표 설계", "질의응답 대응"],
+        "토론면접": ["초기 입장의 근거", "경청과 상호작용", "갈등 조정", "합의안 도출", "반대 의견 처리"],
+        "인바스켓면접": ["우선순위 판단", "문서·요청 분류", "보고·위임·직접처리 판단", "시간관리", "리스크 대응", "기록·후속점검"],
+        "직무지식면접": ["절차·기준 이해", "직무지식 적용", "예외상황 판단", "산출물 품질", "오류 예방"],
     }
     points = list(guide.get(method, guide["경험면접"]))
+    ksa_points: list[str] = []
     for term in ksa_terms:
-        if term not in points:
-            points.append(term)
-        if len(points) >= 6:
+        if _contains_blind_hiring_cue(term):
+            continue
+        point = f"{term} 적용 근거"
+        if point not in points and point not in ksa_points:
+            ksa_points.append(point)
+        if len(ksa_points) >= 2:
             break
+    if ksa_points:
+        points = points[: max(0, 6 - len(ksa_points))] + ksa_points
     return points[:6]
+
+
+def _domain_context_pack(detail: str, subject: str, focus: str, comp_def: str) -> dict[str, str]:
+    source = " ".join(str(x or "") for x in (detail, subject, focus, comp_def))
+    key = re.sub(r"\s+", "", source).lower()
+    default = {
+        "evidence": "실적자료, 민원·오류 사례, 업무 기준",
+        "situation": "자료 오류, 일정 지연, 이해관계자 요청",
+        "inbasket": "긴급 민원, 상급자 보고 요청, 자료 오류 정정, 일정 충돌 문서",
+        "debate": "관련 기준을 강화하는 입장과 운영 효율을 우선하는 입장",
+        "stakeholders": "상급자, 협업 부서, 민원인",
+    }
+    packs: list[tuple[tuple[str, ...], dict[str, str]]] = [
+        (
+            ("조리", "식음료", "메뉴", "식재료", "스톡", "영업장"),
+            {
+                "evidence": "메뉴별 판매량, 식재료 재고표, 위생점검 결과, 고객 불만 사례",
+                "situation": "식재료 수급 차질, 위생 기준 이슈, 조리 일정 지연",
+                "inbasket": "식재료 재고표, 위생점검 요청, 고객 불만 접수, 조리 일정 변경 문서",
+                "debate": "위생·품질 기준을 강화하는 입장과 조리 속도·영업 효율을 우선하는 입장",
+                "stakeholders": "조리장, 홀 담당자, 위생 담당자, 고객",
+            },
+        ),
+        (
+            ("청소", "환경미화", "미화", "품질검증"),
+            {
+                "evidence": "구역별 청소 점검표, 민원 접수 내역, 오염도 확인 사진, 작업 배치표",
+                "situation": "청소 범위 변경, 반복 민원, 안전사고 위험 구역 발견",
+                "inbasket": "구역별 작업지시서, 민원 접수 문서, 안전주의 요청, 인력 배치 변경 문서",
+                "debate": "청소 품질 기준을 강화하는 입장과 제한된 인력·시간 내 처리 효율을 우선하는 입장",
+                "stakeholders": "현장 관리자, 이용자, 협업 근무자, 안전 담당자",
+            },
+        ),
+        (
+            ("화물", "운송", "운임", "화주", "배차", "차량"),
+            {
+                "evidence": "운송 의뢰서, 배차표, 운임 산정 자료, 화주 요청 변경 내역",
+                "situation": "화주 요청 변경, 배차 지연, 운임 산정 오류",
+                "inbasket": "운송 의뢰서, 배차 변경 요청, 화주 불만 접수, 운임 검토 문서",
+                "debate": "운송 기준과 안전·정확성을 강화하는 입장과 납기·비용 효율을 우선하는 입장",
+                "stakeholders": "화주, 운전 담당자, 배차 담당자, 협력 운송사",
+            },
+        ),
+        (
+            ("사회복지", "사례관리", "대상자", "욕구", "상담"),
+            {
+                "evidence": "초기상담 기록, 욕구 사정표, 서비스 연계 현황, 대상자 동의 기록",
+                "situation": "대상자 욕구 변경, 보호자 요청, 서비스 연계 일정 지연",
+                "inbasket": "상담 기록지, 서비스 연계 요청서, 대상자 긴급 연락, 기관 회신 문서",
+                "debate": "대상자 자기결정권을 우선하는 입장과 기관 자원 배분 기준을 우선하는 입장",
+                "stakeholders": "대상자, 보호자, 사례관리자, 연계기관 담당자",
+            },
+        ),
+        (
+            ("병원", "간호", "요양", "보건", "환자", "진료", "의료", "산업보건"),
+            {
+                "evidence": "환자 안내 기록, 보건교육 계획서, 건강상담 기록, 안전보건 점검 결과",
+                "situation": "환자·근로자 문의 증가, 교육 일정 변경, 건강정보 기록 오류",
+                "inbasket": "교육 일정표, 상담 기록지, 점검 요청 문서, 긴급 안내 요청",
+                "debate": "건강·안전 기준을 엄격히 적용하는 입장과 현장 수용성·업무 연속성을 우선하는 입장",
+                "stakeholders": "대상자, 의료진, 안전보건 담당자, 부서 관리자",
+            },
+        ),
+        (
+            ("정보기술", "it프로젝트", "it비즈니스", "시스템", "장애티켓", "sla"),
+            {
+                "evidence": "요구사항 정의서, 장애 티켓, SLA 현황, 비용편익분석표, 일정·리스크 등록부",
+                "situation": "요구사항 변경, 장애 재발, SLA 위반 위험",
+                "inbasket": "변경 요청서, 장애 재발 보고, 사용자 문의, 일정 조정 문서",
+                "debate": "IT 거버넌스와 표준 준수를 우선하는 입장과 현업 요청 처리 속도를 우선하는 입장",
+                "stakeholders": "현업 부서, IT PM, 개발 담당자, 운영 담당자, 공급업체, 보안 담당자",
+            },
+        ),
+        (
+            ("화력발전", "원자력발전", "발전설비", "전기제어", "환경설비", "보호계전기", "원자로"),
+            {
+                "evidence": "운전일지, 설비 알람 로그, 정비이력, 절차서, 작업허가서, 장애 티켓",
+                "situation": "설비 이상 징후, 절차서와 현장 상태 불일치, 환경·안전 기준 접근",
+                "inbasket": "교대조 인수인계 문서, 정비 우선순위 요청, 장애 재발 보고, 변경관리 승인 문서",
+                "debate": "안전보수성을 우선하는 입장과 가동률·사업 일정 준수를 우선하는 입장",
+                "stakeholders": "운전원, 정비팀, 안전품질팀, 환경팀, 규제기관, 현업부서",
+            },
+        ),
+        (
+            ("하수", "상수", "관로", "수질", "누수", "블록시스템"),
+            {
+                "evidence": "수질측정값, 설비 운전 로그, 관망도, 유량·수압 기록, 안전점검표",
+                "situation": "수질 경보, 계측기 이상값, 현장 작업 일정 충돌",
+                "inbasket": "약품투입 기록 정정 요청, 계측기 교정 요청, 누수 신고, 법정보고자료 제출 문서",
+                "debate": "수질·안전 기준을 보수적으로 적용하는 입장과 처리 효율·주민 불편 최소화를 우선하는 입장",
+                "stakeholders": "주민, 관제실, 수질 담당자, 현장 작업자, 지자체, 감독기관",
+            },
+        ),
+        (
+            ("객실", "유원", "스포츠", "레저", "어트랙션", "체크인", "체크 인"),
+            {
+                "evidence": "예약·운영 현황, 시설 점검표, 안전관리 기록, 이용객 민원 내역",
+                "situation": "예약 변경, 시설 점검 지연, 이용객 안전 안내 필요 상황",
+                "inbasket": "예약 현황표, 시설 점검 요청, 이용객 민원, 안전 안내 문서",
+                "debate": "고객 안전·서비스 기준을 강화하는 입장과 회전율·운영 효율을 우선하는 입장",
+                "stakeholders": "이용객, 프론트 담당자, 현장 운영자, 시설 담당자, 안전 담당자",
+            },
+        ),
+        (
+            ("발전", "설비", "정비", "관로", "하수", "상수", "시설", "건설", "건축", "해체"),
+            {
+                "evidence": "설비 점검 기록, 도면, 작업허가서, 이상 징후 로그, 안전점검 결과",
+                "situation": "설비 이상 징후, 작업 일정 충돌, 안전 기준 미충족 가능성",
+                "inbasket": "점검 기록표, 작업허가 요청, 장애 신고, 안전조치 확인 문서",
+                "debate": "안전·품질 기준을 강화하는 입장과 공정 일정·운영 연속성을 우선하는 입장",
+                "stakeholders": "현장 작업자, 안전 담당자, 설비 운영자, 협력업체",
+            },
+        ),
+        (
+            ("보안", "경비", "순찰"),
+            {
+                "evidence": "순찰 기록, 출입 통제 로그, 경비 배치표, 이상 상황 보고서",
+                "situation": "출입 통제 예외 요청, 순찰 공백 가능성, 이상 상황 신고",
+                "inbasket": "순찰 기록표, 출입 승인 요청, 이상 상황 보고서, 근무 배치 변경 문서",
+                "debate": "보안 통제 기준을 강화하는 입장과 방문객 편의·운영 효율을 우선하는 입장",
+                "stakeholders": "방문객, 현장 경비원, 시설 담당자, 보안 책임자",
+            },
+        ),
+        (
+            ("객실", "유원", "스포츠", "시설운영", "레저"),
+            {
+                "evidence": "이용객 민원 내역, 시설 점검표, 예약·운영 현황, 안전관리 기록",
+                "situation": "이용객 불만, 시설 점검 지연, 안전 안내 필요 상황",
+                "inbasket": "예약 현황표, 시설 점검 요청, 이용객 민원, 안전 안내 문서",
+                "debate": "고객 안전·서비스 기준을 강화하는 입장과 회전율·운영 효율을 우선하는 입장",
+                "stakeholders": "이용객, 현장 운영자, 시설 담당자, 안전 담당자",
+            },
+        ),
+        (
+            ("사무", "총무", "문서", "부동산", "행정", "프로젝트", "정보기술", "it"),
+            {
+                "evidence": "요구사항 목록, 결재 문서, 회의록, 일정표, 이해관계자 요청 내역",
+                "situation": "요구사항 변경, 결재 지연, 문서 기준 불일치",
+                "inbasket": "결재 대기 문서, 회의 요청, 요구사항 변경 메일, 마감 임박 업무 목록",
+                "debate": "문서·절차 기준을 강화하는 입장과 처리 속도·협업 효율을 우선하는 입장",
+                "stakeholders": "요청 부서, 결재권자, 협업 담당자, 외부 관계자",
+            },
+        ),
+    ]
+    for keywords, pack in packs:
+        if any(keyword.lower() in key for keyword in keywords):
+            return {**default, **pack}
+    return default
+
+
+def _has_korean_final_consonant(text: str) -> bool:
+    cleaned = re.sub(r"[\s\]\)\}\"'.,!?…:;]+$", "", str(text or ""))
+    for ch in reversed(cleaned):
+        code = ord(ch)
+        if 0xAC00 <= code <= 0xD7A3:
+            return ((code - 0xAC00) % 28) != 0
+    return False
+
+
+def _with_josa(text: str, final_consonant_josa: str, no_final_consonant_josa: str) -> str:
+    value = str(text or "").strip()
+    return value + (final_consonant_josa if _has_korean_final_consonant(value) else no_final_consonant_josa)
 
 
 def _question_for_method(
@@ -442,37 +686,42 @@ def _question_for_method(
     detail: str,
     comp_def: str,
 ) -> str:
-    label = subject or detail or "해당 직무"
+    if subject and detail and _norm_sclass_key(subject) != _norm_sclass_key(detail):
+        label = f"{detail} 세분류의 {subject}"
+    else:
+        label = subject or detail or "해당 직무"
     focus = focus or "핵심 수행기준"
     definition_hint = f" ({_clean_question_text(comp_def, max_chars=70)})" if comp_def else ""
+    context = _domain_context_pack(detail=detail, subject=subject, focus=focus, comp_def=comp_def)
     if method == "발표면접":
         return (
-            f"[발표과제] {label} 업무에서 '{focus}'를 높이기 위한 개선안을 5분 발표해 주세요. "
-            f"발표에는 현황 진단, 원인 분석, 대안 2가지, 실행 우선순위, 성과지표를 포함하세요{definition_hint}."
+            f"[발표과제] {label} 업무에서 '{focus}'와 관련된 {_with_josa(context['evidence'], '이', '가')} 주어졌다고 가정하고 "
+            "현황 문제를 진단하고 개선안을 5분 발표해 주세요. "
+            f"발표에는 현황 진단, 원인 분석, 대안 2가지, 실행 우선순위, 성과지표, 예상 질의 답변을 포함하세요{definition_hint}."
         )
     if method == "토론면접":
         return (
-            f"[토론과제] {label} 업무에서 '{focus}' 추진을 두고 효율성 우선 입장과 규정·리스크 관리 우선 입장이 충돌합니다. "
-            "본인의 초기 입장과 집단토론에서 합의안을 도출할 방식을 제시해 주세요."
+            f"[토론과제] {label} 업무에서 '{focus}' 관련 {_with_josa(context['debate'], '이', '가')} 충돌합니다. "
+            "20분 집단토론에서 반대 의견의 타당한 부분을 확인하고, 본인의 초기 입장과 근거, 쟁점 조정 방식, 합의안 도출 방식을 제시해 주세요."
         )
     if method == "인바스켓면접":
         return (
-            f"[인바스켓과제] 제한시간 30분 안에 {label} 관련 메일, 보고 요청, 민원, 일정 충돌 문서가 동시에 들어왔습니다. "
-            f"'{focus}'를 기준으로 처리 우선순위와 첫 조치 계획을 제시해 주세요."
+            f"[인바스켓과제] 제한시간 30분 안에 {label} 관련 {_with_josa(context['inbasket'], '이', '가')} 동시에 들어왔습니다. "
+            f"'{focus}'를 기준으로 처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 첫 15분 행동을 제시해 주세요."
         )
     if method == "상황면접":
         return (
-            f"{label} 업무 중 '{focus}'와 관련해 규정상 절차와 현장 요구가 충돌하는 상황입니다. "
-            "어떤 기준으로 판단하고 어떤 순서로 행동하시겠습니까?"
+            f"{label} 업무 중 '{focus}'와 관련해 {_with_josa(context['situation'], '이', '가')} 동시에 발생한 상황입니다. "
+            "어떤 기준으로 판단하고 위험요인을 어떻게 통제하며, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까?"
         )
     if method == "직무지식면접":
         return (
-            f"{label}에서 '{focus}'를 적용하기 위해 확인해야 할 절차, 기준, 산출물을 설명하고 "
-            "실제 업무에 적용할 때의 유의점을 말씀해 주세요."
+            f"{label}에서 '{focus}'와 관련해 확인해야 할 절차, 기준, 관련 근거, 산출물을 설명하고 "
+            "실제 업무에 적용할 때의 예외상황, 품질 점검 방법, 오류 예방 유의점을 말씀해 주세요."
         )
     return (
         f"{label} 수행 과정에서 '{focus}'를 적용해 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. "
-        "당시 상황, 본인 행동, 결과를 포함해 설명해 주세요."
+        "당시 상황과 과제, 본인 역할, 선택한 행동, 결과 지표와 학습을 포함해 설명해 주세요."
     )
 
 
@@ -481,39 +730,40 @@ def _followups_for_method(method: str, subject: str, focus: str, count: int) -> 
         return []
     label = subject or "해당 업무"
     focus = focus or "핵심 수행기준"
+    context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
     banks = {
         "경험면접": [
             "당시 상황과 본인이 맡은 역할을 구체적으로 설명해 주세요.",
             f"'{focus}'를 적용하기 위해 실제로 취한 행동은 무엇이었습니까?",
-            "가장 어려웠던 지점과 이를 해결한 방법은 무엇이었습니까?",
+            "다른 선택지와 비교해 그 행동을 선택한 기준은 무엇이었습니까?",
             "성과를 어떤 기준이나 지표로 확인했습니까?",
             "같은 상황이 다시 주어진다면 어떤 점을 개선하시겠습니까?",
         ],
         "상황면접": [
             "판단 전에 먼저 확인해야 할 사실과 기준은 무엇입니까?",
-            "그 행동을 선택한 이유와 예상되는 위험요인은 무엇입니까?",
-            "관련 이해관계자에게 어떤 순서와 방식으로 설명하시겠습니까?",
+            f"'{focus}'와 관련해 그 행동을 선택한 이유와 예상되는 위험요인은 무엇입니까?",
+            f"{context['stakeholders']} 등 이해관계자에게 어떤 순서와 방식으로 설명하시겠습니까?",
             "결과가 기대와 다르게 나오면 어떤 후속 조치를 하시겠습니까?",
             "같은 문제가 반복되지 않도록 어떤 예방 장치를 두시겠습니까?",
         ],
         "발표면접": [
-            "발표에서 제시한 진단의 핵심 근거 자료는 무엇입니까?",
+            f"'{focus}' 쟁점을 발표에서 진단할 때 핵심 근거 자료는 무엇입니까?",
             "대안 중 우선순위를 가장 높게 둔 방안과 그 이유는 무엇입니까?",
             "면접위원이 반대 의견을 제시한다면 어떤 근거로 답변하시겠습니까?",
             "실행 일정, 필요 자원, 성과지표를 어떻게 설정하겠습니까?",
             f"{label} 현장에 적용할 때 가장 큰 리스크와 보완책은 무엇입니까?",
         ],
         "토론면접": [
-            "본인의 초기 입장을 뒷받침하는 핵심 근거는 무엇입니까?",
+            f"'{focus}' 쟁점에서 본인의 초기 입장을 뒷받침하는 핵심 근거는 무엇입니까?",
             "반대 의견 중 수용할 수 있는 부분과 수용하기 어려운 부분은 무엇입니까?",
             "논의가 감정적 대립으로 흐를 때 어떻게 조정하시겠습니까?",
             "최종 합의안에 반드시 포함되어야 할 기준은 무엇입니까?",
             "토론 이후 실행 책임과 후속 점검은 어떻게 정리하시겠습니까?",
         ],
         "인바스켓면접": [
-            "여러 문서와 요청을 어떤 기준으로 분류하겠습니까?",
+            f"'{focus}' 기준으로 여러 문서와 요청을 어떻게 분류하겠습니까?",
             "가장 먼저 처리할 항목과 보류할 항목을 각각 무엇으로 보겠습니까?",
-            "상급자 보고, 위임, 직접 처리 중 어떤 방식을 선택하겠습니까?",
+            f"{context['stakeholders']} 중 누구에게 보고, 위임, 직접 처리할지 어떻게 선택하겠습니까?",
             "마감 지연이나 민원 확대 가능성은 어떻게 통제하겠습니까?",
             "30분 이후 후속 확인과 기록은 어떻게 남기겠습니까?",
         ],
@@ -527,6 +777,42 @@ def _followups_for_method(method: str, subject: str, focus: str, count: int) -> 
     }
     bank = banks.get(method, banks["경험면접"])
     return bank[: max(0, min(5, count))]
+
+
+def _clean_question_items(values: Any, limit: int) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _clean_question_text(value, max_chars=140)
+        key = normalize_question_dedup_key(text)
+        if not text or not key or key in seen:
+            continue
+        if _contains_blind_hiring_cue(text):
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _merge_question_items(primary: list[str], fallback: list[str], limit: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in primary + fallback:
+        text = _clean_question_text(value, max_chars=140)
+        key = normalize_question_dedup_key(text)
+        if not text or not key or key in seen:
+            continue
+        if _contains_blind_hiring_cue(text):
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _adjust_generated_questions(
@@ -543,7 +829,7 @@ def _adjust_generated_questions(
         questions = []
     target_total = int(question_plan.get("total_main_count", 0) or 0)
     default_follow_count = max(0, min(5, int(question_plan.get("follow_up_count", 3) or 0)))
-    methods = interview_methods or ["경험면접", "상황면접", "발표면접", "토론면접"]
+    methods = interview_methods or list(SUPPORTED_INTERVIEW_METHODS)
     sequence = [item for item in (question_plan.get("question_sequence") or []) if isinstance(item, dict)]
     if sequence:
         target_total = len(sequence)
@@ -571,7 +857,15 @@ def _adjust_generated_questions(
             item["competency"] = str(unit.get("compeUnitName", "")).strip() or str(item.get("competency", "")).strip()
             item["compeUnitDef"] = str(unit.get("compeUnitDef", "")).strip() or str(item.get("compeUnitDef", "")).strip()
             item["ncsSubdCdnm"] = str(unit.get("ncsSubdCdnm", "")).strip() or str(item.get("ncsSubdCdnm", "")).strip()
-            item["ncs_detail"] = str(unit.get("ncsSclasCdnm", "")).strip() or target_detail or str(item.get("ncs_detail", "")).strip()
+            item["ncsSclasCdnm"] = str(unit.get("ncsSclasCdnm", "")).strip() or str(item.get("ncsSclasCdnm", "")).strip()
+            item["matchedDetailName"] = str(unit.get("matchedDetailName", "")).strip() or target_detail
+            item["ncs_detail"] = (
+                target_detail
+                or str(unit.get("matchedDetailName", "")).strip()
+                or str(unit.get("ncsSubdCdnm", "")).strip()
+                or str(unit.get("ncsSclasCdnm", "")).strip()
+                or str(item.get("ncs_detail", "")).strip()
+            )
         elif target_detail:
             item["ncs_detail"] = target_detail
             if not str(item.get("competency", "")).strip():
@@ -591,29 +885,64 @@ def _adjust_generated_questions(
             fallback_terms=existing_refs,
         )
         focus = ksa_terms[idx % len(ksa_terms)] if ksa_terms else _clean_question_text(item.get("competency") or target_detail or "핵심 수행기준")
+        item["question_focus"] = focus
         raw_question = str(item.get("question", "")).strip()
         item["model_question_raw"] = raw_question
-        item["question"] = _question_for_method(
+        raw_followups = _clean_question_items(item.get("follow_ups"), limit=5)
+        if not raw_followups and str(item.get("follow_up", "")).strip():
+            raw_followups = _clean_question_items([item.get("follow_up")], limit=1)
+        raw_evaluation_points = _clean_question_items(item.get("evaluation_points"), limit=6)
+        raw_merged = "\n".join([raw_question, *raw_followups, *raw_evaluation_points])
+        model_replacement_reasons: list[str] = []
+        if not raw_question:
+            model_replacement_reasons.append("no_model_question")
+        else:
+            if _contains_blind_hiring_cue(raw_merged):
+                model_replacement_reasons.append("blind_hiring_cue")
+            if not _method_shape_ok(method, raw_question):
+                model_replacement_reasons.append("main_question_method_shape")
+            context_item = dict(item)
+            context_item["ksa_refs"] = ksa_terms or existing_refs
+            if not _follow_ups_quality_ok(method, context_item, raw_followups):
+                model_replacement_reasons.append("follow_up_quality")
+        use_model_question = bool(raw_question and not model_replacement_reasons)
+
+        template_question = _question_for_method(
             method=method,
             subject=subject,
             focus=focus,
             detail=target_detail,
             comp_def=str(item.get("compeUnitDef", "")).strip(),
         )
-        item["follow_ups"] = _followups_for_method(
+        template_followups = _followups_for_method(
             method=method,
             subject=subject,
             focus=focus,
             count=row_follow_count,
         )
+        method_eval_points = _method_evaluation_points(method, ksa_terms)
+
+        item["question"] = raw_question if use_model_question else template_question
+        item["question_source"] = "model" if use_model_question else "template_fallback"
+        item["model_question_preserved"] = bool(use_model_question)
+        item["model_replacement_reasons"] = [] if use_model_question else model_replacement_reasons
+        item["follow_ups"] = (
+            _merge_question_items(raw_followups, template_followups, row_follow_count)
+            if use_model_question
+            else template_followups
+        )
         item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
-        item["evaluation_points"] = _method_evaluation_points(method, ksa_terms)
+        item["evaluation_points"] = (
+            _merge_question_items(raw_evaluation_points, method_eval_points, 6)
+            if use_model_question
+            else method_eval_points
+        )
         adjusted.append(item)
     strategy["interview_questions"] = adjusted
     strategy["interview_by_competency"] = _group_interview_questions_for_response(adjusted)
     strategy["question_plan_used"] = question_plan
     strategy["interview_methods_used"] = methods
-    strategy["question_customization_policy"] = "guidebook_method_templates_and_exact_counts"
+    strategy["question_customization_policy"] = "model_preserve_with_guidebook_template_fallback_followup_gate"
     return strategy
 
 
@@ -740,6 +1069,88 @@ def _fetch_ncs_ksa_or_502(
         )
     except NcsMcpError as exc:
         raise HTTPException(status_code=502, detail=f"로컬 NCS DB KSA 조회 실패(NCS_MCP): {exc}") from exc
+
+
+def _dedupe_units_by_code(units: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in units or []:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("ncsClCd", "")).strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        out.append(dict(row))
+    return out
+
+
+def _select_units_for_question_plan(
+    question_plan: dict[str, Any],
+    ncs_matches: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(question_plan, dict):
+        return []
+    sequence = [item for item in (question_plan.get("question_sequence") or []) if isinstance(item, dict)]
+    if not sequence:
+        return _dedupe_units_by_code(ncs_matches)
+
+    selected: list[dict[str, Any]] = []
+    detail_offsets: dict[str, int] = {}
+    for planned in sequence:
+        target_detail = str(planned.get("detail", "")).strip()
+        detail_key = _norm_sclass_key(target_detail)
+        offset = detail_offsets.get(detail_key, 0)
+        unit = _pick_unit_for_detail(target_detail, offset, ncs_matches)
+        detail_offsets[detail_key] = offset + 1
+        if unit:
+            selected.append(unit)
+    return _dedupe_units_by_code(selected)
+
+
+def _merge_ksa_rows(existing: list[dict[str, Any]] | None, added: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in (existing or []) + (added or []):
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("ncsClCd", "")).strip()
+        factor = str(row.get("factorName", "")).strip()
+        key = (code, _ksa_key(factor))
+        if not code or not factor or key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(row))
+    return out
+
+
+def _supplement_ksa_for_question_plan(
+    question_plan: dict[str, Any],
+    ncs_matches: list[dict[str, Any]] | None,
+    ncs_ksa: list[dict[str, Any]] | None,
+    max_factors_per_unit: int,
+) -> list[dict[str, Any]]:
+    selected_units = _select_units_for_question_plan(question_plan, ncs_matches)
+    if not selected_units:
+        return list(ncs_ksa or [])
+    covered_codes = {
+        str(row.get("ncsClCd", "")).strip()
+        for row in (ncs_ksa or [])
+        if isinstance(row, dict) and str(row.get("ncsClCd", "")).strip() and str(row.get("factorName", "")).strip()
+    }
+    missing_units = [
+        unit
+        for unit in selected_units
+        if str(unit.get("ncsClCd", "")).strip() and str(unit.get("ncsClCd", "")).strip() not in covered_codes
+    ]
+    if not missing_units:
+        return list(ncs_ksa or [])
+    fetched = _fetch_ncs_ksa_or_502(
+        ncs_matches=missing_units,
+        max_units=len(missing_units),
+        max_factors_per_unit=max_factors_per_unit,
+    )
+    return _merge_ksa_rows(ncs_ksa, fetched)
 
 
 def _require_ncs_mcp_url() -> str:
@@ -1021,6 +1432,454 @@ def _clean_ksa_evidence_row(row: dict[str, Any]) -> dict[str, str]:
     }
 
 
+_METHOD_MAIN_QUESTION_REQUIRED_TERMS: dict[str, tuple[str, ...]] = {
+    "경험면접": ("경험", "상황", "본인", "행동", "결과"),
+    "상황면접": ("상황", "판단", "기준", "순서", "위험"),
+    "발표면접": ("발표", "진단", "대안", "실행", "성과지표"),
+    "토론면접": ("토론", "충돌", "입장", "반대", "합의"),
+    "인바스켓면접": ("인바스켓", "제한시간", "문서", "우선순위", "보고", "위임", "직접처리"),
+    "직무지식면접": ("절차", "기준", "산출물", "예외상황"),
+}
+
+_METHOD_EVALUATION_ANCHORS: dict[str, tuple[str, ...]] = {
+    "경험면접": ("구체적상황", "본인역할", "행동", "결과", "성과", "학습", "판단근거"),
+    "상황면접": ("사실확인", "판단기준", "행동순서", "위험요인", "이해관계자", "첫조치"),
+    "발표면접": ("자료분석", "논리적구조화", "대안", "실행계획", "성과지표", "질의응답"),
+    "토론면접": ("초기입장", "근거", "경청", "상호작용", "갈등조정", "합의안", "반대의견"),
+    "인바스켓면접": ("우선순위", "문서", "요청분류", "보고", "위임", "직접처리", "시간관리", "리스크", "후속점검"),
+    "직무지식면접": ("절차", "기준", "직무지식", "예외상황", "산출물", "품질", "오류예방"),
+}
+
+_FOLLOW_UP_METHOD_ANCHORS: dict[str, tuple[str, ...]] = {
+    "경험면접": ("상황", "역할", "행동", "선택", "기준", "성과", "개선", "학습"),
+    "상황면접": ("확인", "기준", "이유", "위험", "이해관계자", "순서", "후속", "예방"),
+    "발표면접": ("근거자료", "대안", "우선순위", "반대의견", "답변", "일정", "자원", "성과지표", "리스크"),
+    "토론면접": ("초기입장", "근거", "반대의견", "수용", "조정", "합의안", "실행책임", "후속점검"),
+    "인바스켓면접": ("문서", "요청", "분류", "먼저처리", "보류", "보고", "위임", "직접처리", "통제", "기록"),
+    "직무지식면접": ("기준", "규정", "예외상황", "산출물", "품질", "리스크", "보완책", "교육", "순서"),
+}
+
+_ASSESSABLE_EVALUATION_TERMS = (
+    "상황",
+    "역할",
+    "행동",
+    "결과",
+    "성과",
+    "판단",
+    "기준",
+    "근거",
+    "위험",
+    "대응",
+    "분석",
+    "구조",
+    "대안",
+    "실행",
+    "지표",
+    "소통",
+    "합의",
+    "조정",
+    "분류",
+    "우선순위",
+    "보고",
+    "위임",
+    "처리",
+    "시간",
+    "절차",
+    "산출물",
+    "품질",
+    "예외",
+    "점검",
+    "자료",
+    "문서",
+    "요청",
+    "계획",
+    "오류",
+    "기록",
+    "검토",
+    "확인",
+    "적용",
+    "파악",
+)
+
+_VAGUE_EVALUATION_POINT_KEYS = {
+    "성실성",
+    "태도",
+    "열정",
+    "자신감",
+    "인성",
+    "적극성",
+    "책임감",
+    "표현력",
+}
+
+_JOB_CONTEXT_STOPWORDS = {
+    "해당",
+    "직무",
+    "업무",
+    "관련",
+    "기준",
+    "핵심",
+    "수행",
+    "상황",
+    "질문",
+    "설명",
+    "제시",
+    "과정",
+    "본인",
+    "결과",
+    "경험",
+    "절차",
+    "적용",
+    "근거",
+    "능력",
+    "단위",
+    "관리",
+}
+
+_KSA_RELEVANCE_STOPWORDS = _JOB_CONTEXT_STOPWORDS | {
+    "지식",
+    "기술",
+    "능력",
+    "태도",
+    "자세",
+    "의지",
+    "관련",
+    "해당",
+    "정확히",
+    "성실하고",
+    "꼼꼼한",
+    "바른",
+    "적극적",
+    "객관적",
+}
+
+
+def _method_shape_ok(method: str, text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    required = _METHOD_MAIN_QUESTION_REQUIRED_TERMS.get(method)
+    if not required:
+        return False
+    return all(term in compact for term in required)
+
+
+def _evaluation_points_quality_ok(method: str, evaluation_points: list[str]) -> bool:
+    if len(evaluation_points) < 4:
+        return False
+    compact_points = [re.sub(r"\s+", "", str(point or "")) for point in evaluation_points]
+    if any(point in _VAGUE_EVALUATION_POINT_KEYS for point in compact_points):
+        return False
+    anchors = _METHOD_EVALUATION_ANCHORS.get(method, ())
+    anchor_hits = {
+        anchor
+        for anchor in anchors
+        if any(anchor in compact for compact in compact_points)
+    }
+    foreign_anchor_counts = {
+        other_method: sum(
+            1
+            for anchor in other_anchors
+            if any(anchor in compact for compact in compact_points)
+        )
+        for other_method, other_anchors in _METHOD_EVALUATION_ANCHORS.items()
+        if other_method != method
+    }
+    if any(count >= 2 and count >= len(anchor_hits) for count in foreign_anchor_counts.values()):
+        return False
+    assessable_count = sum(
+        1
+        for compact in compact_points
+        if any(term in compact for term in _ASSESSABLE_EVALUATION_TERMS)
+    )
+    return len(anchor_hits) >= 2 and assessable_count >= 3
+
+
+def _job_context_terms(q: dict[str, Any]) -> list[str]:
+    raw_values: list[str] = [
+        str(q.get("competency") or ""),
+        str(q.get("ncs_detail") or ""),
+        str(q.get("ncsSubdCdnm") or ""),
+        str(q.get("ncsSclasCdnm") or ""),
+        str(q.get("question_focus") or ""),
+    ]
+    if isinstance(q.get("ksa_refs"), list):
+        raw_values.extend(str(x or "") for x in q.get("ksa_refs") or [])
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        for token in re.findall(r"[가-힣A-Za-z0-9]{2,}", value):
+            token = token.strip()
+            key = token.lower()
+            if key in _JOB_CONTEXT_STOPWORDS or len(token) < 2:
+                continue
+            if key not in seen:
+                seen.add(key)
+                terms.append(token)
+    return terms[:8]
+
+
+def _job_specific_context_ok(q: dict[str, Any], question: str, follow_ups: list[str]) -> bool:
+    terms = _job_context_terms(q)
+    if not terms:
+        return False
+    compact_text = re.sub(r"\s+", "", "\n".join([question, *follow_ups])).lower()
+    hits = [term for term in terms if re.sub(r"\s+", "", term).lower() in compact_text]
+    required = 1 if len(terms) == 1 else 2
+    return len(hits) >= required
+
+
+def _follow_ups_quality_ok(method: str, q: dict[str, Any], follow_ups: list[str]) -> bool:
+    clean = [str(item or "").strip() for item in follow_ups if str(item or "").strip()]
+    if len(clean) < 3:
+        return False
+    keys = [normalize_question_dedup_key(item) for item in clean]
+    if any(not key for key in keys) or len(set(keys)) != len(keys):
+        return False
+
+    compact_items = [re.sub(r"\s+", "", item) for item in clean]
+    merged = "\n".join(compact_items).lower()
+    anchors = _FOLLOW_UP_METHOD_ANCHORS.get(method, ())
+    anchor_hits = {
+        anchor
+        for anchor in anchors
+        if any(anchor in compact for compact in compact_items)
+    }
+    if len(anchor_hits) < 2:
+        return False
+
+    open_prompt_hits = sum(
+        1
+        for item in clean[:3]
+        if re.search(r"(무엇|어떤|어떻게|왜|기준|이유|설명|말씀|제시|확인|선택|평가|점검|정리)", item)
+    )
+    if open_prompt_hits < 3:
+        return False
+
+    context_terms = _job_context_terms(q)
+    if context_terms:
+        context_hits = [
+            term
+            for term in context_terms
+            if re.sub(r"\s+", "", term).lower() in merged
+        ]
+        if not context_hits:
+            return False
+    return True
+
+
+def _ksa_factor_relevant_to_text(factor_name: str, text: str) -> bool:
+    factor = str(factor_name or "").strip()
+    if not factor:
+        return False
+    compact_factor = re.sub(r"\s+", "", factor).lower()
+    compact_text = re.sub(r"\s+", "", str(text or "")).lower()
+    if compact_factor and compact_factor in compact_text:
+        return True
+
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[가-힣A-Za-z0-9]{2,}", factor):
+        key = token.lower()
+        if key in _KSA_RELEVANCE_STOPWORDS:
+            continue
+        if key not in seen:
+            seen.add(key)
+            tokens.append(token)
+    if not tokens:
+        return False
+    hits = [
+        token
+        for token in tokens
+        if re.sub(r"\s+", "", token).lower() in compact_text
+    ]
+    required = 1 if len(tokens) == 1 else 2
+    return len(hits) >= required
+
+
+def _ksa_evidence_relevance_ok(
+    question: str,
+    follow_ups: list[str],
+    evaluation_points: list[str],
+    q: dict[str, Any],
+    matching_ksa_evidence: list[dict[str, Any]],
+) -> bool:
+    if not matching_ksa_evidence:
+        return False
+    evidence_text = "\n".join(
+        [
+            str(question or ""),
+            *[str(x or "") for x in follow_ups],
+            *[str(x or "") for x in evaluation_points],
+            str(q.get("question_focus") or ""),
+        ]
+    )
+    return any(
+        _ksa_factor_relevant_to_text(str(row.get("factorName") or ""), evidence_text)
+        for row in matching_ksa_evidence
+        if isinstance(row, dict)
+    )
+
+
+def _official_sample_format_ok(
+    method: str,
+    question: str,
+    follow_ups: list[str],
+    evaluation_points: list[str],
+) -> bool:
+    task_text = re.sub(r"\s+", "", "\n".join([str(question or ""), *follow_ups]))
+    eval_text = re.sub(r"\s+", "", "\n".join(evaluation_points))
+    rules = {
+        "경험면접": {
+            "task_any": ("경험", "사례"),
+            "task_all": ("상황", "본인", "행동", "결과"),
+            "eval_any": ("본인역할과행동", "성과와학습", "구체적상황설명"),
+        },
+        "상황면접": {
+            "task_any": ("상황",),
+            "task_all": ("판단", "기준", "순서", "위험"),
+            "eval_any": ("판단기준", "위험요인인식", "이해관계자대응"),
+        },
+        "발표면접": {
+            "task_any": ("[발표과제]", "발표과제"),
+            "task_all": ("발표", "진단", "대안", "실행", "성과지표"),
+            "eval_any": ("자료분석력", "논리적구조화", "대안의실행가능성"),
+        },
+        "토론면접": {
+            "task_any": ("[토론과제]", "토론과제"),
+            "task_all": ("충돌", "입장", "반대", "합의"),
+            "eval_any": ("근거제시", "경청과상호작용", "갈등조정"),
+        },
+        "인바스켓면접": {
+            "task_any": ("[인바스켓과제]", "인바스켓과제"),
+            "task_all": ("제한시간", "문서", "우선순위", "보고", "위임", "직접처리"),
+            "eval_any": ("우선순위판단", "문서·요청분류", "시간관리"),
+        },
+        "직무지식면접": {
+            "task_any": ("절차", "기준"),
+            "task_all": ("절차", "기준", "산출물", "예외상황"),
+            "eval_any": ("절차·기준이해", "직무지식적용", "산출물품질"),
+        },
+    }
+    rule = rules.get(method)
+    if not rule:
+        return False
+    return (
+        any(term in task_text for term in rule["task_any"])
+        and all(term in task_text for term in rule["task_all"])
+        and any(term in eval_text for term in rule["eval_any"])
+    )
+
+
+def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(strategy, dict):
+        strategy = {}
+    questions = strategy.get("interview_questions")
+    if not isinstance(questions, list):
+        strategy["question_quality_report"] = {
+            "policy": "main_question_method_shape_ksa_official_sample_eval_followup_job_context_gate_v6",
+            "passed": False,
+            "summary": {
+                "question_count": 0,
+                "expected_question_count": 0,
+                "count_matches_plan": False,
+                "average_score": 0.0,
+                "ready_count": 0,
+                "needs_review_count": 0,
+            },
+            "items": [],
+        }
+        return strategy
+
+    plan = strategy.get("question_plan_used") if isinstance(strategy.get("question_plan_used"), dict) else {}
+    try:
+        expected_count = int(plan.get("total_main_count") or 0)
+    except Exception:
+        expected_count = 0
+
+    question_keys = [
+        normalize_question_dedup_key(str((q or {}).get("question") or ""))
+        for q in questions
+        if isinstance(q, dict)
+    ]
+    duplicate_keys = {key for key in question_keys if key and question_keys.count(key) > 1}
+
+    items: list[dict[str, Any]] = []
+    ready_count = 0
+    for idx, raw in enumerate(questions, start=1):
+        q = raw if isinstance(raw, dict) else {}
+        method = str(q.get("type") or q.get("method") or "").strip()
+        question = str(q.get("question") or "").strip()
+        follow_ups = [str(x).strip() for x in (q.get("follow_ups") or []) if str(x).strip()] if isinstance(q.get("follow_ups"), list) else []
+        evaluation_points = [
+            str(x).strip()
+            for x in (q.get("evaluation_points") or [])
+            if str(x).strip()
+        ] if isinstance(q.get("evaluation_points"), list) else []
+        ksa_refs = [str(x).strip() for x in (q.get("ksa_refs") or []) if str(x).strip()] if isinstance(q.get("ksa_refs"), list) else []
+        ksa_evidence = q.get("ksa_evidence") if isinstance(q.get("ksa_evidence"), list) else []
+        ncs_code = str(q.get("ncsClCd") or "").strip()
+        matching_ksa_evidence = [
+            row
+            for row in ksa_evidence
+            if isinstance(row, dict) and str(row.get("ncsClCd") or "").strip() == ncs_code
+        ] if ncs_code else []
+        merged = "\n".join([question, *follow_ups, *evaluation_points, *ksa_refs])
+        q_key = normalize_question_dedup_key(question)
+        has_specific_context = not any(marker in question for marker in ("해당 직무", "핵심 수행기준"))
+        checks = {
+            "supported_method": method in SUPPORTED_INTERVIEW_METHODS,
+            "method_shape": _method_shape_ok(method, merged),
+            "main_question_method_shape": _method_shape_ok(method, question),
+            "follow_up_depth": len(follow_ups) >= 3,
+            "follow_up_quality": _follow_ups_quality_ok(method, q, follow_ups),
+            "evaluation_points": len(evaluation_points) >= 4,
+            "evaluation_points_quality": _evaluation_points_quality_ok(method, evaluation_points),
+            "ncs_grounded": bool(ncs_code and str(q.get("competency") or "").strip()),
+            "detail_grounded": bool(str(q.get("ncs_detail") or q.get("ncsSclasCdnm") or "").strip()),
+            "ksa_grounded": _ksa_evidence_relevance_ok(question, follow_ups, evaluation_points, q, matching_ksa_evidence),
+            "official_sample_format": _official_sample_format_ok(method, question, follow_ups, evaluation_points),
+            "blind_hiring_safe": not _contains_blind_hiring_cue(merged),
+            "unique_question": bool(q_key and q_key not in duplicate_keys),
+            "specific_context": has_specific_context,
+            "job_specific_context": _job_specific_context_ok(q, question, follow_ups),
+        }
+        issues = [name for name, passed in checks.items() if not passed]
+        score = round(sum(1 for passed in checks.values() if passed) / max(1, len(checks)), 2)
+        ready = not issues
+        if ready:
+            ready_count += 1
+        items.append(
+            {
+                "index": idx,
+                "type": method,
+                "competency": str(q.get("competency") or "").strip(),
+                "ncsClCd": str(q.get("ncsClCd") or "").strip(),
+                "ncs_detail": str(q.get("ncs_detail") or q.get("ncsSclasCdnm") or "").strip(),
+                "score": score,
+                "ready": ready,
+                "checks": checks,
+                "issues": issues,
+            }
+        )
+
+    avg = round(sum(float(item.get("score") or 0.0) for item in items) / max(1, len(items)), 2)
+    count_matches_plan = expected_count <= 0 or len(items) == expected_count
+    passed = bool(count_matches_plan and items and ready_count == len(items))
+    strategy["question_quality_report"] = {
+        "policy": "main_question_method_shape_ksa_official_sample_eval_followup_job_context_gate_v6",
+        "passed": passed,
+        "summary": {
+            "question_count": len(items),
+            "expected_question_count": expected_count,
+            "count_matches_plan": count_matches_plan,
+            "average_score": avg,
+            "ready_count": ready_count,
+            "needs_review_count": len(items) - ready_count,
+        },
+        "items": items,
+    }
+    return strategy
+
+
 def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dict[str, Any]] | None) -> dict[str, Any]:
     if not isinstance(strategy, dict):
         strategy = {}
@@ -1042,7 +1901,7 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
         seen_rows.add(key)
         evidence_rows.append(row)
     if not evidence_rows:
-        return strategy
+        return _attach_question_quality_report(strategy)
 
     def _pick_for_question(question: dict[str, Any]) -> list[dict[str, str]]:
         code = str(question.get("ncsClCd", "")).strip()
@@ -1061,7 +1920,9 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
             picked.append(row)
 
         preferred = [row for row in evidence_rows if code and row["ncsClCd"] == code]
-        fallback = preferred or evidence_rows
+        if not code or not preferred:
+            return []
+        fallback = preferred
 
         for ref_key in ref_keys:
             if not ref_key:
@@ -1100,7 +1961,7 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
         enriched.append(q)
     strategy["interview_questions"] = enriched
     strategy["question_evidence_policy"] = "ncs_mcp_ksa_attached_by_code_and_ref"
-    return strategy
+    return _attach_question_quality_report(strategy)
 
 
 def _select_verified_sclass_candidates(
@@ -2049,6 +2910,26 @@ async def jd_strategy_upload(
                     ),
                 },
             )
+        matched_lookup_terms, unmatched_lookup_terms = _detail_lookup_coverage(lookup_terms, ncs_items)
+        if unmatched_lookup_terms:
+            try:
+                suggested_units = suggest_units_by_text(unmatched_lookup_terms, max_units=12)
+            except NcsMcpError:
+                suggested_units = []
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Local NCS DB server(NCS_MCP) returned only partial exact coverage for the reviewed detail-class terms.",
+                    "lookup_terms": lookup_terms[:8],
+                    "matched_detail_terms": matched_lookup_terms[:8],
+                    "unmatched_detail_terms": unmatched_lookup_terms[:8],
+                    "suggested_ncs_units": suggested_units,
+                    "next_step": (
+                        "Resolve unmatched detail-class terms before generation. Use manual text mode only after a human "
+                        "selects the closest official NCS units; non-authoritative suggestions do not count as exact coverage."
+                    ),
+                },
+            )
         ncs_query_terms = lookup_terms
     elif review_payload.get("review_confirmed") and reviewed_detail_terms:
         try:
@@ -2257,6 +3138,12 @@ async def jd_strategy_upload(
                 max_units=min(run_ksa_units, len(ncs_matches)),
                 max_factors_per_unit=run_ksa_factors,
             )
+        ncs_ksa = _supplement_ksa_for_question_plan(
+            question_plan=question_plan,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
+            max_factors_per_unit=run_ksa_factors,
+        )
     ncs_factor_sources = sorted(
         {
             str(x.get("factorSource", "")).strip()

@@ -279,6 +279,49 @@ def test_mcp_only_returns_manual_suggestions_when_detail_has_no_exact_match(monk
     assert "exact competency units" in body["detail"]["message"]
 
 
+def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    matched_unit = {
+        "ncsClCd": "0201010103_22v2",
+        "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
+        "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
+        "matchedDetailName": "\uacbd\uc601\uae30\ud68d",
+        "source": "ncs-mcp",
+    }
+    mocker.patch("app.main.search_units_by_detail", return_value=[matched_unit])
+    suggestion = {
+        "ncsClCd": "0601010801_23v3",
+        "compeUnitName": "\uc9c4\ub8cc\uc9c0\uc6d0\ubcf4\uc870",
+        "ncsSubdCdnm": "\uc694\uc591\uc9c0\uc6d0",
+        "source": "ncs-mcp-suggest",
+    }
+    suggest = mocker.patch("app.main.suggest_units_by_text", return_value=[suggestion])
+    review = _confirmed_review_payload(
+        {
+            "ncs_detail_candidates": [
+                "\uacbd\uc601\uae30\ud68d",
+                "\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870",
+            ]
+        }
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+        )
+
+    body = resp.json()
+    assert resp.status_code == 422
+    suggest.assert_called_once_with(["\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870"], max_units=12)
+    assert body["detail"]["matched_detail_terms"] == ["\uacbd\uc601\uae30\ud68d"]
+    assert body["detail"]["unmatched_detail_terms"] == ["\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870"]
+    assert body["detail"]["suggested_ncs_units"] == [suggestion]
+    assert "partial exact coverage" in body["detail"]["message"]
+
+
 def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     _patch_mcp_upload_common(mocker)
@@ -433,6 +476,26 @@ def test_mcp_search_matches_detail_not_small_category(mocker):
     assert [row["ncsClCd"] for row in rows] == ["sub-match"]
 
 
+def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                {
+                    "id": "dot-match",
+                    "text": "일식 복어조리",
+                    "path": {"small": "음식조리", "sub": "일식·복어조리"},
+                }
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail(["일식· 복어・조리"])
+
+    assert [row["ncsClCd"] for row in rows] == ["dot-match"]
+
+
 def test_mcp_suggest_units_by_text_keeps_non_exact_candidates(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     mocker.patch(
@@ -454,6 +517,32 @@ def test_mcp_suggest_units_by_text_keeps_non_exact_candidates(mocker):
     assert rows[0]["ncsClCd"] == "suggested-unit"
     assert rows[0]["source"] == "ncs-mcp-suggest"
     assert rows[0]["isExactDetailMatch"] is False
+    assert rows[0]["isExactUnitNameMatch"] is False
+    assert rows[0]["canonicalDetailName"] == "\uc218\uc758\uc11c\ube44\uc2a4"
+
+
+def test_mcp_suggest_units_by_text_marks_exact_unit_name_match(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                {
+                    "id": "unit-name-match",
+                    "text": "\uce74\uc9c0\ub178 \uace0\uac1d \uc9c0\uc6d0",
+                    "path": {"small": "\uad00\uad11\ub808\uc800\uc11c\ube44\uc2a4", "sub": "\uce74\uc9c0\ub178\uc6b4\uc601\uad00\ub9ac"},
+                    "score": 0.0,
+                }
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.suggest_units_by_text(["\uce74\uc9c0\ub178 \uace0\uac1d \uc9c0\uc6d0"], max_units=5)
+
+    assert rows[0]["ncsClCd"] == "unit-name-match"
+    assert rows[0]["isExactDetailMatch"] is False
+    assert rows[0]["isExactUnitNameMatch"] is True
+    assert rows[0]["canonicalDetailName"] == "\uce74\uc9c0\ub178\uc6b4\uc601\uad00\ub9ac"
 
 
 def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):

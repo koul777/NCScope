@@ -27,6 +27,96 @@ _DEFAULT_EVALUATION_POINTS = [
     "성과와 학습 내용을 사실에 기반해 제시하는가",
 ]
 
+SUPPORTED_INTERVIEW_TYPES = (
+    "경험면접",
+    "상황면접",
+    "발표면접",
+    "토론면접",
+    "인바스켓면접",
+    "직무지식면접",
+)
+
+_INTERVIEW_TYPE_ALIASES = {
+    "경험": "경험면접",
+    "경험형": "경험면접",
+    "경험면접": "경험면접",
+    "행동": "경험면접",
+    "행동형": "경험면접",
+    "행동면접": "경험면접",
+    "행동관찰": "경험면접",
+    "행동관찰면접": "경험면접",
+    "behavior": "경험면접",
+    "behavioral": "경험면접",
+    "experience": "경험면접",
+    "상황": "상황면접",
+    "상황형": "상황면접",
+    "상황면접": "상황면접",
+    "situation": "상황면접",
+    "situational": "상황면접",
+    "발표": "발표면접",
+    "발표형": "발표면접",
+    "발표면접": "발표면접",
+    "pt": "발표면접",
+    "pt면접": "발표면접",
+    "presentation": "발표면접",
+    "토론": "토론면접",
+    "토론형": "토론면접",
+    "토론면접": "토론면접",
+    "토의": "토론면접",
+    "토의형": "토론면접",
+    "토의면접": "토론면접",
+    "discussion": "토론면접",
+    "debate": "토론면접",
+    "인바스켓": "인바스켓면접",
+    "인바스켓형": "인바스켓면접",
+    "인바스켓면접": "인바스켓면접",
+    "inbasket": "인바스켓면접",
+    "in-basket": "인바스켓면접",
+    "직무지식": "직무지식면접",
+    "직무지식형": "직무지식면접",
+    "직무지식면접": "직무지식면접",
+    "지식": "직무지식면접",
+    "지식형": "직무지식면접",
+    "지식면접": "직무지식면접",
+    "knowledge": "직무지식면접",
+    "job_knowledge": "직무지식면접",
+}
+
+_BLIND_HIRING_CUE_RE = re.compile(
+    r"(가족|부모|형제|배우자|자녀|나이|연령|출신\s*학교|학교명|학벌|출신\s*지역|출신지역|고향|"
+    r"생년\s*월일|출생\s*(?:연도|년도|일|지)|몇\s*살|만\s*\d+\s*세|"
+    r"혼인|결혼|기혼|미혼|결혼\s*여부|혼인\s*상태|임신|출산|자녀\s*계획|출산\s*계획|"
+    r"외모|용모|(?:키|신장)\s*(?:가|는|를|와|및|/|,|:|：|\d)|체중|성별|종교|정치\s*성향|"
+    r"병역|군필|미필|군\s*복무|복무\s*기간|전역|혈액형)"
+)
+
+
+def _interview_type_key(value: str) -> str:
+    return re.sub(r"[\s_\-./|()]+", "", str(value or "")).strip().lower()
+
+
+def _canonical_interview_type(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "경험면접"
+    mapped = (
+        _INTERVIEW_TYPE_ALIASES.get(raw)
+        or _INTERVIEW_TYPE_ALIASES.get(raw.lower())
+        or _INTERVIEW_TYPE_ALIASES.get(_interview_type_key(raw))
+    )
+    return mapped if mapped in SUPPORTED_INTERVIEW_TYPES else "경험면접"
+
+
+def _contains_blind_hiring_cue(*values: Any) -> bool:
+    for value in values:
+        if isinstance(value, list):
+            if _contains_blind_hiring_cue(*value):
+                return True
+            continue
+        if _BLIND_HIRING_CUE_RE.search(str(value or "")):
+            return True
+    return False
+
 
 def _render_question_generation_prompt(
     ncs_lines: list[str],
@@ -51,24 +141,45 @@ def _render_question_generation_prompt(
         f"생성 개수: {target_count}\n\n"
         "[규칙]\n"
         "- 반드시 한국어로 작성합니다.\n"
-        "- 질문은 STAR 답변을 유도해야 합니다.\n"
+        "- 질문은 선택된 면접 기법의 목적과 답변 방식을 분명히 반영해야 합니다.\n"
         "- 각 질문은 하나의 역량만 검증합니다.\n"
         "- 각 질문마다 follow_ups 3개를 포함합니다.\n"
         "- follow_ups는 주질문, 구체화, 판단 근거, 결과/교훈 순서로 깊어져야 합니다.\n"
+        "- follow_ups 3개는 선택 면접기법의 평가 행동을 각각 다르게 파고들고, 최소 1개는 직무/NCS/KSA 핵심어를 직접 포함합니다.\n"
         "- 질문끼리 내용이 겹치면 안 됩니다.\n"
         "- evaluation_points는 4~6개의 측정 가능한 문장으로 작성합니다.\n"
         "- ksa_refs에는 해당 질문과 직접 연결되는 KSA 키워드 2~4개를 넣습니다.\n"
         "- 민감하거나 차별적인 질문은 생성하지 않습니다.\n\n"
-        "[질문 유형 비율]\n"
-        "- 경험: 50%\n"
-        "- 상황: 30%\n"
-        "- 직무지식: 20%\n\n"
+        "[면접 기법]\n"
+        "- 경험면접: 과거 행동 또는 유사 경험을 STAR 방식으로 확인합니다.\n"
+        "- 상황면접: 가상의 직무 상황에서 판단 기준, 행동 순서, 위험 대응을 확인합니다.\n"
+        "- 발표면접: 자료 분석, 대안 구성, 실행계획, 성과지표를 발표 과제로 확인합니다.\n"
+        "- 토론면접: 상충되는 입장 속에서 근거 제시, 경청, 조정, 합의 형성을 확인합니다.\n"
+        "- 인바스켓면접: 제한시간 안에 여러 문서와 요청의 우선순위와 첫 조치를 확인합니다.\n"
+        "- 직무지식면접: 절차, 기준, 산출물, 예외상황 적용 능력을 확인합니다.\n\n"
+        "[주질문 필수어]\n"
+        "- 경험면접: question에 경험, 상황, 본인, 행동, 결과를 직접 포함합니다.\n"
+        "- 상황면접: question에 상황, 판단, 기준, 순서, 위험을 직접 포함합니다.\n"
+        "- 발표면접: question에 발표, 진단, 대안, 실행, 성과지표를 직접 포함합니다.\n"
+        "- 토론면접: question에 토론, 충돌, 입장, 반대, 합의를 직접 포함합니다.\n"
+        "- 인바스켓면접: question에 인바스켓, 제한시간, 문서, 우선순위, 보고, 위임, 직접처리를 직접 포함합니다.\n"
+        "- 직무지식면접: question에 절차, 기준, 산출물, 예외상황을 직접 포함합니다.\n\n"
+        "[꼬리질문 품질 기준]\n"
+        "- 경험면접: 상황, 역할, 행동, 기준, 성과/개선을 순차적으로 확인합니다.\n"
+        "- 상황면접: 확인할 사실, 판단 기준, 위험요인, 이해관계자 대응 또는 후속 조치를 확인합니다.\n"
+        "- 발표면접: 진단 근거자료, 대안 우선순위, 반대 의견 답변, 실행 일정이나 성과지표를 확인합니다.\n"
+        "- 토론면접: 초기 입장 근거, 반대 의견 수용 범위, 조정 방식, 합의안 기준을 확인합니다.\n"
+        "- 인바스켓면접: 문서·요청 분류, 먼저 처리/보류 판단, 보고·위임·직접처리 선택을 확인합니다.\n"
+        "- 직무지식면접: 기준·규정, 예외상황, 산출물 품질, 오류 리스크 또는 교육 순서를 확인합니다.\n\n"
+        "[기법 선택]\n"
+        "- 추가 컨텍스트에 선택 기법이 있으면 그 기법만 사용합니다.\n"
+        "- 선택 기법이 없으면 경험면접, 상황면접, 직무지식면접을 기본으로 섞습니다.\n\n"
         "[출력 형식]\n"
         "JSON 객체 하나만 출력:\n"
         "{\n"
         '  "interview_questions": [\n'
         "    {\n"
-        '      "type": "경험|상황|직무지식",\n'
+        '      "type": "경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접",\n'
         '      "competency": "능력단위명",\n'
         '      "ncsClCd": "코드",\n'
         '      "question": "주질문",\n'
@@ -271,9 +382,12 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
     ksa = item.get("ksa_refs")
     ksa_refs = [str(x).strip() for x in (ksa or []) if str(x).strip()] if isinstance(ksa, list) else []
 
+    if _contains_blind_hiring_cue(question, follow_ups, evaluation_points):
+        return None
+
     return {
         "question": question,
-        "type": str(item.get("type", "경험")).strip() or "경험",
+        "type": _canonical_interview_type(item.get("type", "경험면접")),
         "competency": str(item.get("competency", "")).strip(),
         "ncsClCd": str(item.get("ncsClCd", "")).strip(),
         "evaluation_points": evaluation_points,

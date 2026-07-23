@@ -8,6 +8,7 @@ the extracted 세분류.  ``ncs_unit_detail`` is the authoritative KSA path.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -143,7 +144,7 @@ def _path_value(path: Any, *keys: str) -> str:
 
 
 def _norm(value: Any) -> str:
-    return "".join(str(value or "").split()).lower()
+    return re.sub(r"[\s·‧･ㆍ•∙⋅・\-\_/|(),.]+", "", str(value or "")).lower()
 
 
 def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list[dict[str, Any]]:
@@ -235,10 +236,12 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
                     "ncsMclasCdnm": _path_value(path, "middle", "middle_name"),
                     "ncsSclasCdnm": small_name,
                     "ncsSubdCdnm": sub_name,
+                    "canonicalDetailName": sub_name,
                     "matchedDetailName": query,
                     "source": "ncs-mcp-suggest",
                     "matchScore": row.get("score", 0.0),
                     "isExactDetailMatch": _norm(sub_name) == _norm(query),
+                    "isExactUnitNameMatch": _norm(str(row.get("text") or row.get("unit_name") or "")) == _norm(query),
                 }
             )
             if len(output) >= limit:

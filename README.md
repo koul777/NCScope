@@ -55,6 +55,9 @@ Kordoc 문서 파싱 및 세분류 후보 추출
 - 세분류별 주질문 수, 주질문당 꼬리질문 수, 면접기법 선택
 - 경험(행동)면접, 상황면접, 발표면접, 토론면접, 인바스켓면접, 직무지식면접 유형별 질문 생성
 - 주질문, 꼬리질문, 평가포인트, NCS 매칭 결과, 질문별 KSA 근거 제공
+- 면접기법별 주질문 형식, 꼬리질문 깊이, 평가포인트, KSA 근거, 직무 맥락 품질 게이트 적용
+- ALIO 실문서 기반 질문 품질 리포트와 모델 원문/템플릿 보정 분리 측정
+- NCS 블라인드 채용 면접과제·평가양식 샘플 프로파일링으로 면접기법별 형식 검증
 - OpenAI API key를 화면에서 요청 단위로 입력 가능
 - 로컬 NCS DB 검색 서버 연결 기반의 경량 배포 구조
 - 공식 NCS 사이트 자산을 사용하지 않는 비공식 독자 인터페이스
@@ -145,7 +148,7 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 - 인바스켓면접: 실제 직무 조건을 반영한 문서·요청·우선순위 처리 과제를 제시합니다.
 - 직무지식면접: 절차, 기준, 산출물, 예외상황 대응 지식을 확인합니다.
 
-면접기법별 질문 방식은 `['24년 능력중심 채용모델] 평가위원 가이드북`의 구조화 면접 원칙과 면접유형 설명을 반영했습니다.
+면접기법별 질문 방식은 `['24년 능력중심 채용모델] 평가위원 가이드북`의 구조화 면접 원칙과 NCS 블라인드 채용 면접과제·평가양식 샘플에서 관찰되는 과제·평가 양식 구조를 반영했습니다.
 
 ### 6. 공고문 업로드와 핵심 텍스트 보완
 
@@ -187,6 +190,19 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 
 세분류 exact 매칭이 실패한 경우에는 직접입력 모드로 전환됩니다. 이때 표시되는 후보 NCS 능력단위는 자동 확정값이 아니며, 담당자가 공식 NCS 명칭과 직무기술서를 비교해 선택해야 합니다.
 
+## 면접 질문 품질 관리
+
+NCScope는 질문 생성 결과를 그대로 통과시키지 않고 면접기법별 품질 게이트로 다시 점검합니다.
+
+- 주질문이 선택한 면접기법의 형식을 따르는지 확인합니다.
+- 꼬리질문이 단순 추가 질문이 아니라 판단 근거, 행동, 우선순위, 반대 의견, 자료 해석 등 기법별 후속 탐침 역할을 하는지 확인합니다.
+- 평가포인트가 다른 면접기법의 루브릭으로 오염되지 않았는지 확인합니다.
+- 질문, 꼬리질문, 평가포인트, 질문 초점 중 하나 이상에 선택된 NCS/KSA 근거가 실제로 반영되는지 확인합니다.
+- 직무기술서 세분류에 따라 조리, 보건, 복지, 물류, 보안, 시설, 에너지, 수질, 정보기술 등 현장 자료와 이해관계자 표현을 다르게 구성합니다.
+- 모델이 만든 원문 질문이 기준을 통과하지 못하면 템플릿 기반 보정 질문으로 교체하고, 교체 사유를 리포트에 남깁니다.
+
+현재 로컬 검증 환경에서는 `OPENAI_API_KEY`가 없어 모델 원문 질문 품질은 측정하지 않았습니다. 대신 템플릿 보정 경로가 ALIO 실문서에서 면접기법·KSA·직무맥락 기준을 만족하는지 분리해 측정합니다.
+
 ## 결과물 예시
 
 생성 결과는 다음 구조를 가집니다.
@@ -195,9 +211,10 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 {
   "interview_questions": [
     {
-      "type": "경험",
+      "type": "경험면접",
       "competency": "경영계획 수립",
       "ncsClCd": "0201010103_22v2",
+      "question_source": "model_generated 또는 template_fallback",
       "question": "사업 목표를 수립하거나 조정한 경험 중 가장 어려웠던 사례를 말씀해 주세요.",
       "follow_ups": [
         "당시 목표 설정의 근거는 무엇이었습니까?",
@@ -413,41 +430,58 @@ JSON:
 ## 검증 방법
 
 ```powershell
-python -m py_compile app\main.py app\settings.py app\repository.py app\models.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py
+python -m py_compile app\main.py app\settings.py app\repository.py app\models.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py scripts\evaluate_alio_question_quality.py scripts\benchmark_ncs_official_interview_samples.py
 python -m pytest -q
 ```
 
-현재 검증 결과:
+현재 검증 결과(2026-07-23):
 
-- `python -m pytest -q` → 168 passed
+- `python -m pytest -q` → 261 passed, 2 warnings
 - `py_compile` → passed
 - `npm ci` → passed
 - Kordoc 최신 npm 버전 `4.2.7` 확인
 
-## JOB-ALIO 실문서 벤치마크
+## ALIO·NCS 공식 샘플 벤치마크
 
-실제 공공기관 채용공고의 직무기술서를 내려받아 파싱 성능을 확인할 수 있습니다.
+실제 공공기관 채용공고의 직무기술서를 내려받아 세분류 추출과 질문 품질을 확인할 수 있습니다.
 
 ```powershell
 $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
 python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
+python scripts\evaluate_alio_question_quality.py --limit 28 --questions-per-doc 6 --follow-up-count 3
+python scripts\benchmark_ncs_official_interview_samples.py --limit 5
 ```
 
-최신 리포트:
+모델 원문 질문까지 강하게 검증하려면 OpenAI 키를 설정한 뒤 다음처럼 실행합니다.
 
-- `reports/alio_jd_benchmark_20260723_053926.md`
-- `reports/alio_jd_benchmark_20260723_053926.csv`
+```powershell
+$env:OPENAI_API_KEY="..."
+$env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
+python scripts\evaluate_alio_question_quality.py --benchmark-mode model --min-model-ready-rate 0.80 --fail-on-model-replacements --fail-on-template-insertions
+```
+
+최신 질문 품질 리포트:
+
+- `reports/alio_question_quality_20260723_233134.md`
+- `reports/alio_question_quality_20260723_233134.csv`
+- `reports/alio_question_quality_items_20260723_233134.csv`
 
 관찰 결과:
 
-- 최근 JOB-ALIO 공고 10건 검사
-- 문서 9건 파싱 성공
-- 세분류 후보가 추출된 문서 7건
-- 세분류는 추출됐지만 현재 로컬 NCS serving DB와 매칭되지 않은 문서 3건
-- 공고문 본문에서 담당업무 후보 10건, 평가항목 후보 9건 추출
-- exact 매칭 실패 문서 중 수동 NCS 후보가 제시된 문서 2건
-- ZIP 첨부 3건은 내부 지원 문서를 메모리에서 읽어 파싱
-- `간호수행`, `간호행정관리`, `임상병리`처럼 serving DB exact 세분류 매칭이 없는 경우는 수동 NCS 선택 후보 흐름으로 회수
+- 최근 ALIO 공고 28건 시도, 19건 질문 품질 평가
+- 템플릿 보정 질문 114개 중 114개 ready
+- 경험면접, 상황면접, 발표면접, 토론면접, 인바스켓면접, 직무지식면접 모두 19/19 ready
+- 세분류 strict source-explicit coverage와 질문 ready를 동시에 만족한 문서 11건
+- unit-name 회수 1건, 문맥 기반 세분류 회수 4건
+- 모델 후보 질문 수신 0건. 현재 수치는 LLM 원문 품질이 아니라 deterministic fallback 품질 기준입니다.
+- serving DB exact 매칭이 없는 `문화〮관광정책`, `간호수행`, `간호행정관리`, `임상병리` 등은 자동 확정하지 않고 수동 검토 대상으로 남깁니다.
+
+NCS 공식 블라인드 채용 면접과제·평가양식 샘플 프로파일링 결과:
+
+- `reports/ncs_official_interview_samples_20260723_232331.md`
+- 샘플 5건 프로파일링
+- 과제·평가양식 pair 5/5 확인
+- 관찰된 면접기법: 경험면접, 발표면접, 상황면접, 토론면접
 
 ## Docker 배포
 

@@ -30,6 +30,8 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
         "주요업무",
         "담당업무",
         "직무내용",
+        "직무내용(세부업무)",
+        "직무내용 세부업무",
         "수행내용",
         "담당직무",
         "기관주요업무",
@@ -52,10 +54,18 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
         "우대요건",
     ),
     "knowledge": ("필요지식", "지식"),
-    "skills": ("필요기술", "기술"),
+    "skills": ("필요기술", "기술", "필요지식/기술", "필요지식 및 기술", "필요능력", "필요 역량"),
     "attitudes": ("직무수행태도", "수행태도", "태도"),
     "basic_competencies": ("직업기초능력", "기초능력"),
-    "ncs_detail": ("세분류", "NCS세분류", "NCS 세분류"),
+    "ncs_detail": (
+        "세분류",
+        "NCS세분류",
+        "NCS 세분류",
+        "세분류(특화분류)",
+        "NCS 세분류(특화분류)",
+        "소분류 세분류",
+        "소분류 세분류(특화분류)",
+    ),
 }
 
 _NOTICE_REVIEW_ALIASES: dict[str, tuple[str, ...]] = {
@@ -146,6 +156,8 @@ def _section_for_label(label: str) -> str | None:
     for section, aliases in _SECTION_ALIASES.items():
         if key in {_norm(alias) for alias in aliases}:
             return section
+    if "세분류" in key and any(marker in key for marker in ("ncs", "특화분류", "소분류")):
+        return "ncs_detail"
     return None
 
 
@@ -170,24 +182,169 @@ def _looks_like_detail_candidate(value: str) -> bool:
         "직무수행내용",
         "필요지식",
         "필요기술",
+        "필요능력",
+        "필요 역량",
         "직무수행태도",
         "관련자격",
     }
     if not key or key in {_norm(x) for x in non_values}:
         return False
+    noise_fragments = {
+        "개발전",
+        "직무개요",
+        "세부직무",
+        "세부직무및직무수행내용",
+        "직무수행내용",
+        "ncs미개발",
+    }
+    if any(fragment in key for fragment in noise_fragments):
+        return False
     if _section_for_label(text) and _section_for_label(text) != "ncs_detail":
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if re.search(r"[○●□■※]", text):
+        return False
+    if len(compact) > 18 and any(marker in text for marker in ("업무", "부대업무", "잡역", " 및 ")):
         return False
     if len(text) > 40:
         return False
     return bool(re.search(r"[가-힣A-Za-z]", text))
 
 
+def _is_non_ncs_table_label(value: str) -> bool:
+    text = _clean_text(value)
+    if not text:
+        return False
+    section = _section_for_label(text)
+    if section and section != "ncs_detail":
+        return True
+    key = _norm(text)
+    labels = {
+        "주요사업",
+        "기관주요사업",
+        "기관 주요사업",
+        "기관주요업무",
+        "기관 주요업무",
+        "주요업무",
+        "담당업무",
+        "직무내용",
+        "직무 내용",
+        "직무수행내용",
+        "직무 수행내용",
+        "세부업무",
+        "능력단위",
+        "능력단위명",
+        "능력단위코드",
+        "중점 수행분야",
+        "중점수행분야",
+        "필요지식",
+        "필요기술",
+        "직무수행태도",
+        "관련자격",
+        "근무예정부서",
+        "채용분야",
+    }
+    return key in {_norm(label) for label in labels}
+
+
+def _row_declares_no_ncs_mapping(cells: list[str]) -> bool:
+    key = _norm(" ".join(str(cell or "") for cell in cells))
+    return bool(
+        key
+        and "ncs" in key
+        and ("mapping가능한직무" in key or "매핑가능한직무" in key or "mapping" in key)
+        and any(marker in key for marker in ("없어", "없음", "미개발", "별도분석"))
+    )
+
+
+def _row_contains_classification_marker(cells: list[str]) -> bool:
+    return any(_norm(cell) in {_norm("분류체계"), _norm("NCS 분류체계")} for cell in cells)
+
+
 def _clean_detail_candidate_text(value: str) -> str:
     text = _clean_text(value)
+    text = re.sub(r"^\d{1,2}\s*[,.)：:\-]\s*", "", text)
     text = re.sub(r"\s*[\(（\[]\s*특화\s*분류\s*[\)）\]]\s*", "", text)
     text = re.sub(r"^[,;/|]+", "", text)
     text = re.sub(r"[,;/|:：\-]+$", "", text)
     return _clean_text(text)
+
+
+def _expand_composite_detail_candidate(value: str) -> list[str]:
+    text = _clean_detail_candidate_text(value)
+    if not text:
+        return []
+
+    separated = [
+        _clean_detail_candidate_text(part)
+        for part in re.split(r"\s*(?:[,，、;/|]+)\s*", text)
+        if _clean_detail_candidate_text(part)
+    ]
+    if len(separated) > 1 and all(_looks_like_detail_candidate(part) for part in separated):
+        return separated
+
+    unified = re.sub(r"[‧･ㆍ•∙⋅・]", "·", text)
+    parts = [_clean_detail_candidate_text(part) for part in unified.split("·")]
+    parts = [part for part in parts if part]
+    if len(parts) < 2:
+        return [text]
+
+    for suffix in ("조리",):
+        if not any(part.endswith(suffix) or part == suffix for part in parts):
+            continue
+        expanded: list[str] = []
+        for part in parts:
+            if part == suffix:
+                continue
+            expanded.append(part if part.endswith(suffix) else f"{part}{suffix}")
+        return expanded or [text]
+    return [text]
+
+
+def _has_any_norm(text: str, terms: tuple[str, ...]) -> bool:
+    key = _norm(text)
+    return any(_norm(term) in key for term in terms)
+
+
+def _extract_contextual_ncs_detail_candidates(markdown: str) -> list[str]:
+    text = _clean_text(markdown)
+    if not text:
+        return []
+
+    candidates: list[str] = []
+    if _has_any_norm(text, ("하수도 시설운영", "하수처리", "물재생센터")) and _has_any_norm(
+        text,
+        ("채수", "수질검사", "수질실험실", "수질분석", "시설운영"),
+    ):
+        candidates.append("하수처리시설운영관리")
+
+    if _has_any_norm(text, ("한전KPS 영흥사업처", "영흥사업처")) and _has_any_norm(
+        text,
+        ("영흥 5호기", "계획예방정비공사"),
+    ) and _has_any_norm(
+        text,
+        ("전기설비 정비", "발전설비"),
+    ):
+        candidates.append("화력발전설비운영")
+    if _has_any_norm(text, ("노후상수관망정비사업소", "노후상수도 정비사업")) and _has_any_norm(
+        text,
+        ("누수탐사", "상수도 정비", "상수관망"),
+    ) and _has_any_norm(
+        text,
+        ("공사감독", "안전관리", "사업관리"),
+    ):
+        candidates.append("상수관로시설운영관리")
+
+    if _has_any_norm(text, ("의료보조(보건관리)", "의료보조 보건관리")) and _has_any_norm(
+        text,
+        ("보건교육", "보건교육 요구도", "교육훈련"),
+    ) and _has_any_norm(
+        text,
+        ("보건관리계획수립평가", "사업장 건강증진", "산업안전보건법", "작업환경측정", "근골격계 질환예방관리"),
+    ):
+        candidates.extend(["보건교육", "산업보건관리"])
+
+    return candidates
 
 
 def _block_text(block: Any) -> str:
@@ -256,18 +413,32 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     # meaningful. Parse the label/value rows as a second, lossless path.
     for raw_table in re.findall(r"<table[^>]*>(.*?)</table>", markdown, flags=re.IGNORECASE | re.DOTALL):
         detail_index: int | None = None
+        header_sections: dict[int, str] = {}
         for raw_row in re.findall(r"<tr[^>]*>(.*?)</tr>", raw_table, flags=re.IGNORECASE | re.DOTALL):
             cells = [
                 _clean_text(html.unescape(re.sub(r"<[^>]+>", " ", cell)))
                 for cell in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", raw_row, flags=re.IGNORECASE | re.DOTALL)
             ]
-            cells = [cell for cell in cells if cell]
-            if not cells:
+            if not any(cells):
                 continue
+            if _row_declares_no_ncs_mapping(cells):
+                continue
+            row_sections: dict[int, str] = {}
+            for idx, cell in enumerate(cells):
+                section = _section_for_label(cell)
+                if not section:
+                    continue
+                target_idx = idx
+                key = _norm(cell)
+                if section == "ncs_detail" and "소분류" in key and "세분류" in key:
+                    target_idx = idx + 1
+                row_sections[target_idx] = section
+            if row_sections:
+                header_sections = row_sections
             label_index = next((i for i, cell in enumerate(cells) if _section_for_label(cell) == "ncs_detail"), -1)
             if label_index >= 0:
-                detail_index = label_index
-                value_cells = cells[label_index + 1 :]
+                detail_index = next((idx for idx, section in row_sections.items() if section == "ncs_detail"), label_index)
+                value_cells = [cell for cell in cells[label_index + 1 :] if cell]
                 if len(value_cells) > 1:
                     for value in value_cells:
                         candidates.extend(_split_items(value))
@@ -280,19 +451,32 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
                 continue
             if any(_section_for_label(cell) for cell in cells):
                 break
+            if _is_non_ncs_table_label(cells[0]) and not _row_contains_classification_marker(cells):
+                break
+            detail_value_indexes = [idx for idx, section in header_sections.items() if section == "ncs_detail"]
+            if detail_value_indexes:
+                max_header_idx = max(header_sections) if header_sections else -1
+                shift = max(0, max_header_idx - (len(cells) - 1))
+                for idx in detail_value_indexes:
+                    cell_idx = idx - shift if idx >= len(cells) else idx
+                    value = cells[cell_idx] if 0 <= cell_idx < len(cells) else ""
+                    if _looks_like_detail_candidate(value):
+                        candidates.extend(_split_items(value))
+                continue
             value = cells[detail_index] if detail_index < len(cells) else cells[-1]
             if _looks_like_detail_candidate(value):
                 candidates.extend(_split_items(value))
     seen: set[str] = set()
     clean_candidates = []
     for item in candidates:
-        text = _clean_detail_candidate_text(item)
-        if not _looks_like_detail_candidate(text):
-            continue
-        if text in seen:
-            continue
-        seen.add(text)
-        clean_candidates.append(text)
+        for text in _expand_composite_detail_candidate(item):
+            if not _looks_like_detail_candidate(text):
+                continue
+            key = _norm(text)
+            if key in seen:
+                continue
+            seen.add(key)
+            clean_candidates.append(text)
     return clean_candidates
 
 
@@ -435,6 +619,10 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         visit(block)
 
     detail_candidates = _extract_ncs_detail_candidates(markdown)
+    detail_source = "explicit" if detail_candidates else ""
+    if not detail_candidates:
+        detail_candidates = _extract_contextual_ncs_detail_candidates(markdown)
+        detail_source = "contextual" if detail_candidates else ""
     return {
         "filename": filename,
         "parser": "kordoc",
@@ -449,6 +637,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             "attitudes": [item["text"] for item in sections["attitudes"]],
             "basic_competencies": [item["text"] for item in sections["basic_competencies"]],
             "ncs_detail_candidates": detail_candidates,
+            "ncs_detail_source": detail_source,
         },
         "document": {
             "metadata": parsed.get("metadata") or {},

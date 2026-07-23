@@ -1,17 +1,84 @@
 """Tests for pure functions in app.services.jd_strategy module."""
 
 import json
+import os
 from xml.etree import ElementTree as ET
 
 from app.services.jd_strategy import (
     _count_hangul,
+    _load_structured_interview_guide_summary,
+    _model_question_gate_contract,
     _repair_mojibake,
+    _structured_interview_guide_path,
     extract_subcategory_text,
     extract_small_categories_from_jd,
     build_notice_context_from_jd,
     _parse_items,
     MOJIBAKE_ALIAS,
 )
+
+
+def test_structured_interview_guide_file_is_loaded():
+    assert os.path.exists(_structured_interview_guide_path())
+
+    summary = _load_structured_interview_guide_summary(max_chars=6000)
+
+    assert "## 3. 질문 유형별 작성 기법" in summary
+    assert "경험면접" in summary
+    assert "상황면접" in summary
+    assert "발표면접" in summary
+    assert "토론면접" in summary
+    assert "인바스켓면접" in summary
+    assert "직무지식면접" in summary
+
+
+def test_model_question_gate_contract_matches_quality_gate_terms():
+    contract = _model_question_gate_contract()
+
+    required_terms = [
+        "경험면접",
+        "경험",
+        "상황",
+        "본인",
+        "행동",
+        "결과",
+        "상황면접",
+        "판단",
+        "기준",
+        "순서",
+        "위험",
+        "발표면접",
+        "발표",
+        "진단",
+        "대안",
+        "실행",
+        "성과지표",
+        "토론면접",
+        "토론",
+        "충돌",
+        "입장",
+        "반대",
+        "합의",
+        "인바스켓면접",
+        "인바스켓",
+        "제한시간",
+        "문서",
+        "우선순위",
+        "보고",
+        "위임",
+        "직접처리",
+        "직무지식면접",
+        "절차",
+        "산출물",
+        "예외상황",
+    ]
+    for term in required_terms:
+        assert term in contract
+
+    assert "템플릿으로 교체" in contract
+    assert "model-origin 품질 실패" in contract
+    assert "follow_ups" in contract
+    assert "직무/NCS/KSA 핵심어" in contract
 
 
 class TestCountHangul:

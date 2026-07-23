@@ -91,6 +91,8 @@
     .fu-label { font-weight:700; color:#1a4ab8; margin-right:4px; }
     .evidence-list { margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; }
     .evidence-pill { border:1px solid #c8def7; background:#f3f8ff; border-radius:999px; padding:5px 9px; font-size:11.5px; color:#17345c; }
+    .quality-summary { display:flex; flex-wrap:wrap; gap:7px; margin:0 0 10px; }
+    .quality-summary .pill { margin:0; }
     .qnav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .qnav-btn { width:auto; margin:0; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; }
     .qnav-ind { font-size:13px; color:var(--muted); }
@@ -261,8 +263,8 @@
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="상황면접" checked /> 상황면접</label>
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="발표면접" checked /> 발표면접</label>
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="토론면접" checked /> 토론면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="인바스켓면접" /> 인바스켓면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="직무지식면접" /> 직무지식면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="인바스켓면접" checked /> 인바스켓면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="직무지식면접" checked /> 직무지식면접</label>
             </div>
           </div>
 
@@ -355,6 +357,7 @@
           </div>
 
           <div id="meta" class="meta"></div>
+          <div id="qualitySummary" class="quality-summary" style="display:none;"></div>
 
           <div class="section">
             <h3>파이프라인 진단</h3>
@@ -414,6 +417,7 @@
     const progressTime = document.getElementById('progressTime');
     const progressFill = document.getElementById('progressFill');
     const progressNote = document.getElementById('progressNote');
+    const qualitySummary = document.getElementById('qualitySummary');
     const btnPrevQ = document.getElementById('btnPrevQ');
     const btnNextQ = document.getElementById('btnNextQ');
     const qIndicator = document.getElementById('qIndicator');
@@ -1467,6 +1471,30 @@
       }
     }
 
+    function renderQualityReport(report) {
+      if (!qualitySummary) return;
+      qualitySummary.innerHTML = '';
+      const summary = report && typeof report === 'object' && report.summary && typeof report.summary === 'object'
+        ? report.summary
+        : null;
+      if (!summary) {
+        qualitySummary.style.display = 'none';
+        return;
+      }
+      const add = (text, cls = '') => {
+        const span = document.createElement('span');
+        span.className = `pill ${cls}`.trim();
+        span.textContent = text;
+        qualitySummary.appendChild(span);
+      };
+      add(report.passed ? '품질 게이트 통과' : '품질 검토 필요', report.passed ? 'good' : 'warn');
+      add(`Ready ${summary.ready_count || 0}/${summary.question_count || 0}`);
+      add(`평균 ${summary.average_score ?? '-'}`);
+      if (summary.needs_review_count) add(`검토 ${summary.needs_review_count}`, 'warn');
+      if (report.policy) add(String(report.policy));
+      qualitySummary.style.display = 'flex';
+    }
+
     function render(data) {
       errorBox.style.display = 'none';
       errorBox.textContent = '';
@@ -1479,6 +1507,7 @@
       }
 
       renderMeta(data);
+      renderQualityReport(s.question_quality_report);
       renderPipelineDiag(data, qList);
       currentQPage = 0;
       renderQuestionList(qList);
@@ -1510,13 +1539,19 @@
     function handleStructuredError(detail) {
       const payload = detail && typeof detail === 'object' ? detail : {};
       const lookupTerms = Array.isArray(payload.lookup_terms) ? payload.lookup_terms.filter(Boolean) : [];
+      const matchedTerms = Array.isArray(payload.matched_detail_terms) ? payload.matched_detail_terms.filter(Boolean) : [];
+      const unmatchedTerms = Array.isArray(payload.unmatched_detail_terms) ? payload.unmatched_detail_terms.filter(Boolean) : [];
       const suggestions = Array.isArray(payload.suggested_ncs_units) ? payload.suggested_ncs_units : [];
-      const termText = lookupTerms.length ? ` (${lookupTerms.join(', ')})` : '';
+      const displayTerms = unmatchedTerms.length ? unmatchedTerms : lookupTerms;
+      const termText = displayTerms.length ? ` (${displayTerms.join(', ')})` : '';
+      const partialText = matchedTerms.length && unmatchedTerms.length
+        ? `일부 세분류만 정확 매칭되었습니다. 매칭됨: ${matchedTerms.join(', ')}. `
+        : '';
       if (suggestions.length) {
         inputMode.value = 'manual';
         setInputMode('manual');
         populateNcsUnitSelect(suggestions, false);
-        ncsSearch.value = lookupTerms[0] || '';
+        ncsSearch.value = displayTerms[0] || '';
         if (!noticeText.value.trim()) {
           noticeText.value = (dutyText.value || '').trim() || (reviewDuties.value || '').trim();
         }
@@ -1524,9 +1559,9 @@
           evalTextManual.value = (evalText.value || '').trim();
         }
         selectedCount.textContent = `정확 매칭 없음 · 후보 ${suggestions.length}개 중 사람이 선택해야 합니다.`;
-        errorBox.textContent = `정확한 NCS 세분류 매칭이 없습니다${termText}. 후보 NCS를 직접 확인·선택한 뒤 질문을 생성하세요.`;
+        errorBox.textContent = `${partialText}정확한 NCS 세분류 매칭이 없습니다${termText}. 후보 NCS를 직접 확인·선택한 뒤 질문을 생성하세요.`;
       } else {
-        errorBox.textContent = `정확한 NCS 세분류 매칭이 없습니다${termText}. 직접입력 모드에서 공식 NCS 코드를 검색·선택해야 합니다.`;
+        errorBox.textContent = `${partialText}정확한 NCS 세분류 매칭이 없습니다${termText}. 직접입력 모드에서 공식 NCS 코드를 검색·선택해야 합니다.`;
       }
       errorBox.style.display = 'block';
       raw.textContent = JSON.stringify(payload, null, 2);
