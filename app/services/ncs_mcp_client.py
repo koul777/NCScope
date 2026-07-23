@@ -147,6 +147,26 @@ def _norm(value: Any) -> str:
     return re.sub(r"[\s·‧･ㆍ•∙⋅・\-\_/|(),.]+", "", str(value or "")).lower()
 
 
+_DETAIL_QUERY_ALIASES_BY_KEY = {
+    # Public NCS classifies this under 건축설계·감리 > 건축공사감리.
+    # Some ALIO JDs shorten the 세분류 label to 건축감리.
+    _norm("건축감리"): ("건축공사감리",),
+}
+
+
+def _detail_query_names(name: str) -> list[str]:
+    names = [str(name or "").strip()]
+    for alias in _DETAIL_QUERY_ALIASES_BY_KEY.get(_norm(name), ()):
+        alias = str(alias or "").strip()
+        if alias and all(_norm(alias) != _norm(existing) for existing in names):
+            names.append(alias)
+    return names
+
+
+def _detail_search_query_limit(max_units: int) -> int:
+    return min(200, max(100, int(max_units or 0) * 5))
+
+
 def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list[dict[str, Any]]:
     """Resolve confirmed 세분류 names to NCS ability units."""
 
@@ -158,39 +178,49 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
         name = str(detail or "").strip()
         if not name:
             continue
-        result = _call_tool("ncs_search", {"query": name, "scope": "unit", "limit": 50})
-        rows = result.get("results") or result.get("units") or []
-        if isinstance(rows, dict):
-            rows = rows.get("items") or []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            path = row.get("path") if isinstance(row.get("path"), dict) else {}
-            sub_name = _path_value(path, "sub", "sub_name", "ncsSubdCdnm")
-            small_name = _path_value(path, "small", "small_name", "ncsSclasCdnm")
-            if _norm(sub_name) != _norm(name):
-                continue
-            code = str(row.get("id") or row.get("unit_code") or "").strip()
-            if not code or code in seen:
-                continue
-            seen.add(code)
-            output.append(
-                {
-                    "ncsClCd": code,
-                    "compeUnitName": str(row.get("text") or row.get("unit_name") or "").strip(),
-                    "compeUnitLevel": str(row.get("level") or "").strip(),
-                    "compeUnitDef": str(row.get("api_definition") or row.get("definition") or "").strip(),
-                    "ncsLclasCdnm": _path_value(path, "major", "major_name"),
-                    "ncsMclasCdnm": _path_value(path, "middle", "middle_name"),
-                    "ncsSclasCdnm": small_name,
-                    "ncsSubdCdnm": sub_name,
-                    "matchedDetailName": name,
-                    "source": "ncs-mcp",
-                    "matchScore": 1.0,
-                }
+        for query_name in _detail_query_names(name):
+            result = _call_tool(
+                "ncs_search",
+                {"query": query_name, "scope": "unit", "limit": _detail_search_query_limit(max_units)},
             )
-            if len(output) >= max_units:
-                return output
+            rows = result.get("results") or result.get("units") or []
+            if isinstance(rows, dict):
+                rows = rows.get("items") or []
+            matched_before = len(output)
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                path = row.get("path") if isinstance(row.get("path"), dict) else {}
+                sub_name = _path_value(path, "sub", "sub_name", "ncsSubdCdnm")
+                small_name = _path_value(path, "small", "small_name", "ncsSclasCdnm")
+                if _norm(sub_name) != _norm(query_name):
+                    continue
+                code = str(row.get("id") or row.get("unit_code") or "").strip()
+                if not code or code in seen:
+                    continue
+                seen.add(code)
+                is_alias = _norm(query_name) != _norm(name)
+                output.append(
+                    {
+                        "ncsClCd": code,
+                        "compeUnitName": str(row.get("text") or row.get("unit_name") or "").strip(),
+                        "compeUnitLevel": str(row.get("level") or "").strip(),
+                        "compeUnitDef": str(row.get("api_definition") or row.get("definition") or "").strip(),
+                        "ncsLclasCdnm": _path_value(path, "major", "major_name"),
+                        "ncsMclasCdnm": _path_value(path, "middle", "middle_name"),
+                        "ncsSclasCdnm": small_name,
+                        "ncsSubdCdnm": sub_name,
+                        "matchedDetailName": name,
+                        "resolvedDetailName": sub_name if is_alias else "",
+                        "detailQueryName": query_name if is_alias else "",
+                        "source": "ncs-mcp-detail-alias" if is_alias else "ncs-mcp",
+                        "matchScore": 1.0,
+                    }
+                )
+                if len(output) >= max_units:
+                    return output
+            if len(output) > matched_before and _norm(query_name) == _norm(name):
+                break
     return output
 
 

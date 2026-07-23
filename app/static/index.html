@@ -247,7 +247,7 @@
               </div>
               <div>
                 <label for="defaultFollowCount">주질문당 기본 꼬리질문 수</label>
-                <input id="defaultFollowCount" type="number" min="0" max="5" value="3" />
+                <input id="defaultFollowCount" type="number" min="3" max="5" value="3" />
               </div>
             </div>
             <div id="questionPlanEmpty" class="sub" style="margin:8px 0;">직무기술서에서 세분류가 추출되거나 직접 입력되면, 여기에서 어떤 세분류의 면접질문을 생성할지 선택할 수 있습니다.</div>
@@ -265,6 +265,7 @@
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="토론면접" checked /> 토론면접</label>
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="인바스켓면접" checked /> 인바스켓면접</label>
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="직무지식면접" checked /> 직무지식면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="창의적 문제해결력면접" /> 창의적 문제해결력면접</label>
             </div>
           </div>
 
@@ -424,6 +425,7 @@
     const inputMode = document.getElementById('inputMode');
     const uploadBlock = document.getElementById('uploadBlock');
     const manualBlock = document.getElementById('manualBlock');
+    const questionOptionBlock = document.getElementById('questionOptionBlock');
     const runActionBlock = document.getElementById('runActionBlock');
     const openaiApiKey = document.getElementById('openaiApiKey');
     const jdFile = document.getElementById('jdFile');
@@ -507,8 +509,22 @@
       );
     }
 
+    function currentManualPlanDetails() {
+      return dedupSclassLabels(
+        Array.from(ncsSelect.selectedOptions || [])
+          .map(opt => opt.dataset.subd || opt.dataset.name || opt.value || '')
+          .filter(Boolean)
+      );
+    }
+
+    function currentQuestionPlanDetails() {
+      return (inputMode.value || 'upload') === 'manual'
+        ? currentManualPlanDetails()
+        : currentReviewedDetails();
+    }
+
     function renderQuestionPlanRows() {
-      const details = currentReviewedDetails();
+      const details = currentQuestionPlanDetails();
       const previous = new Map(
         Array.from(questionPlanRows.querySelectorAll('.detail-plan-row')).map(row => [
           normSclassLabel(row.dataset.detail || ''),
@@ -520,10 +536,13 @@
         ])
       );
       const defaultMain = Math.max(1, Math.min(10, Number(defaultMainCount?.value || 3)));
-      const defaultFollow = Math.max(0, Math.min(5, Number(defaultFollowCount?.value || 3)));
+      const defaultFollow = Math.max(3, Math.min(5, Number(defaultFollowCount?.value || 3)));
       questionPlanRows.innerHTML = '';
       if (!details.length) {
         questionPlanEmpty.style.display = 'block';
+        questionPlanEmpty.textContent = (inputMode.value || 'upload') === 'manual'
+          ? 'NCS 코드를 선택하면, 여기에서 어떤 세분류/능력단위의 면접질문을 생성할지 선택할 수 있습니다.'
+          : '직무기술서에서 세분류가 추출되거나 직접 입력되면, 여기에서 어떤 세분류의 면접질문을 생성할지 선택할 수 있습니다.';
         questionPlanLabel.style.display = 'none';
         questionPlanHead.style.display = 'none';
         return;
@@ -558,9 +577,9 @@
 
         const follow = document.createElement('input');
         follow.type = 'number';
-        follow.min = '0';
+        follow.min = '3';
         follow.max = '5';
-        follow.value = String(saved ? saved.follow_up_count : defaultFollow);
+        follow.value = String(Math.max(3, Math.min(5, saved ? saved.follow_up_count : defaultFollow)));
         follow.className = 'plan-follow';
         row.appendChild(follow);
 
@@ -571,12 +590,12 @@
     function collectQuestionPlan() {
       const rows = Array.from(questionPlanRows.querySelectorAll('.detail-plan-row'));
       const defaultMain = Math.max(1, Math.min(10, Number(defaultMainCount?.value || 3)));
-      const defaultFollow = Math.max(0, Math.min(5, Number(defaultFollowCount?.value || 3)));
+      const defaultFollow = Math.max(3, Math.min(5, Number(defaultFollowCount?.value || 3)));
       const items = rows.map(row => ({
         detail: row.dataset.detail || '',
         enabled: !!row.querySelector('.plan-enabled')?.checked,
         main_count: Math.max(0, Math.min(10, Number(row.querySelector('.plan-main')?.value || defaultMain))),
-        follow_up_count: Math.max(0, Math.min(5, Number(row.querySelector('.plan-follow')?.value || defaultFollow))),
+        follow_up_count: Math.max(3, Math.min(5, Number(row.querySelector('.plan-follow')?.value || defaultFollow))),
       })).filter(x => x.detail);
       if (!items.length) {
         return currentReviewedDetails().map(detail => ({
@@ -593,7 +612,7 @@
       const checked = Array.from(document.querySelectorAll('input[name="interviewMethod"]:checked'))
         .map(x => x.value)
         .filter(Boolean);
-      return checked.length ? checked : ['경험면접', '상황면접', '발표면접', '토론면접'];
+      return checked.length ? checked : ['경험면접', '상황면접', '발표면접', '토론면접', '인바스켓면접', '직무지식면접'];
     }
 
     function refreshRunButtonState() {
@@ -1027,7 +1046,7 @@
       });
     });
     defaultFollowCount.addEventListener('input', () => {
-      const next = Math.max(0, Math.min(5, Number(defaultFollowCount.value || 3)));
+      const next = Math.max(3, Math.min(5, Number(defaultFollowCount.value || 3)));
       questionPlanRows.querySelectorAll('.plan-follow').forEach((input) => {
         if (!input.dataset.touched) input.value = String(next);
       });
@@ -1251,17 +1270,29 @@
     function updateSelectedCount() {
       const cnt = Array.from(ncsSelect.selectedOptions).length;
       selectedCount.textContent = `선택된 NCS 코드: ${cnt}`;
+      if ((inputMode.value || 'upload') === 'manual') {
+        renderQuestionPlanRows();
+      }
     }
 
     function setInputMode(mode) {
       const isUpload = mode !== 'manual';
+      if (isUpload && questionOptionBlock.parentElement !== uploadBlock) {
+        uploadBlock.insertBefore(questionOptionBlock, sclassBlock);
+      } else if (!isUpload && questionOptionBlock.parentElement !== manualBlock) {
+        manualBlock.appendChild(questionOptionBlock);
+      }
       if (isUpload && runActionBlock.parentElement !== uploadBlock) {
         uploadBlock.insertBefore(runActionBlock, sclassBlock);
       } else if (!isUpload && runActionBlock.parentElement !== manualBlock) {
         manualBlock.appendChild(runActionBlock);
       }
+      if (!isUpload && questionOptionBlock.nextElementSibling !== runActionBlock) {
+        manualBlock.insertBefore(questionOptionBlock, runActionBlock);
+      }
       uploadBlock.classList.toggle('hidden', !isUpload);
       manualBlock.classList.toggle('hidden', isUpload);
+      renderQuestionPlanRows();
       refreshRunButtonState();
     }
 
@@ -1658,6 +1689,8 @@
               duty_text: noticeText,
               evaluation_text: (evalTextManual.value || '').trim(),
               selected_ncs: selected,
+              question_plan: { items: collectQuestionPlan() },
+              interview_methods: collectInterviewMethods(),
               runtime_knobs: knobs,
               openai_api_key: requestOpenAIKey(),
             }),

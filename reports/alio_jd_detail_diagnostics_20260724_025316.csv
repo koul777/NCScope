@@ -1,0 +1,25 @@
+﻿idx,attachment,member,detail_seq,detail,extraction_source,extraction_page,extraction_line,extraction_snippet,exact_match,exact_units,exact_top,exact_sources,exact_canonical_details,suggestion_count,top_suggestion,suggestion_codes,suggestion_canonical_details,canonical_detail_match,canonical_detail_match_top,unit_name_match,unit_name_match_top,unit_name_parent_details,resolved_parent_detail,match_diagnostic,review_action,review_reason
+303012,NCS 기반 채용 직무 설명자료.hwp,NCS 기반 채용 직무 설명자료.hwp,1,유원시설운영관리,kordoc,1,0,유원시설운영관리 02.객실관리,True,15,유원시설 기획; 어트랙션 운영 관리; 유원시설 시설 관리,ncs-mcp,유원시설운영관리,0,,,,False,,False,,,유원시설운영관리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303012,NCS 기반 채용 직무 설명자료.hwp,NCS 기반 채용 직무 설명자료.hwp,2,객실관리,kordoc,1,0,유원시설운영관리 02.객실관리,True,7,객실 예약 관리; 체크 인(Check In); 재실(In-house)고객 관리,ncs-mcp,객실관리,0,,,,False,,False,,,객실관리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,1. [강원랜드] 직무설명서_워터월드 수상안전.pdf; 11. [강원랜드] 직무설명서_체육시설관리(복지관 운영보조).pdf; 2. [강원랜드] 직무설명서_레저운영.pdf,1,스포츠시설운영관리,markdown,0,9,세분류 02. 스포츠시설운영관리,True,10,스포츠시설 경영기획; 스포츠시설 마케팅관리; 스포츠시설 재무관리,ncs-mcp,스포츠시설운영관리,0,,,,False,,False,,,스포츠시설운영관리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,12. [강원랜드] 직무설명서_직원숙소 운영보조.pdf,2,보안,markdown,0,82,세분류 01. 보안,True,20,경비계획; 경비고객관계관리; 경계방비,ncs-mcp,보안,0,,,,False,,False,,,보안,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,3. [강원랜드] 직무설명서_슬로프 관리.pdf,3,구조물해체,markdown,0,131,세분류 12. 구조물해체,True,10,구조물해체 도면파악; 구조물해체 사전조사; 구조물해체 계획수립,ncs-mcp,구조물해체,0,,,,False,,False,,,구조물해체,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,4. [강원랜드] 직무설명서_카지노 안내데스크 운영.pdf,4,카지노 고객 지원,markdown,0,145,# 【NCS기반 채용 직무 설명자료 : 카지노 고객지원】,False,0,,,,1,카지노 고객 지원,1203040206_23v2,카지노운영관리,False,,True,카지노 고객 지원,카지노운영관리,카지노운영관리,unit_name_only,manual_review_unit_name,No exact detail match; suggestion matched a capability unit name only.
+303039,직무기술서.zip,5. [강원랜드] 직무설명서_식음.pdf,5,식음료접객,markdown,0,175,세분류 01. 식음료접객,True,10,식음료 영업 준비; 식음료 영업장 예약 관리; 환영 환송,ncs-mcp,식음료접객,0,,,,False,,False,,,식음료접객,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,6. [강원랜드] 직무설명서_조리.pdf,6,한식조리,markdown,0,200,"세분류 01. 한식조리 02. 양식조리 03. 중식조리 04. 일식·
+복어・조리 01.제과 02.제빵",True,19,한식 면류조리; 한식 국 · 탕조리; 한식  찜 · 선조리,ncs-mcp,한식조리,0,,,,False,,False,,,한식조리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,6. [강원랜드] 직무설명서_조리.pdf,7,양식조리,markdown,0,200,"세분류 01. 한식조리 02. 양식조리 03. 중식조리 04. 일식·
+복어・조리 01.제과 02.제빵",True,15,양식 스톡조리; 양식 소스조리; 양식 수프조리,ncs-mcp,양식조리,0,,,,False,,False,,,양식조리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,6. [강원랜드] 직무설명서_조리.pdf,8,중식조리,markdown,0,200,"세분류 01. 한식조리 02. 양식조리 03. 중식조리 04. 일식·
+복어・조리 01.제과 02.제빵",True,15,중식 절임·무침조리; 중식 육수·소스조리; 중식 냉채조리,ncs-mcp,중식조리,0,,,,False,,False,,,중식조리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,6. [강원랜드] 직무설명서_조리.pdf,9,일식조리,explicit,0,0,,True,18,일식 초회조리; 일식 무침조리; 일식 국물조리,ncs-mcp,일식조리,0,,,,False,,False,,,일식조리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,6. [강원랜드] 직무설명서_조리.pdf,10,복어조리,markdown,0,201,"능력단위 ○ (한식조리) 15.한식 위생관리, 16.한식 안전관리, 17.한식 메뉴관리, 20.한식 기초 조리실무
+○ (양식조리) 11.양식 위생관리, 12.양식 안전관리, 13.양식 메뉴관리, 16.양식 기초조리실무
+○ (중식조리) 15.중식 위생관리, 16.중식 안전관리, 17.중식 메뉴관리, 20.중식 기초 조리
+실무, 21.중식 식품조각
+○ (일식·복어조리) 30.일식 위생관리, 31.일식 안전관리, 32.일식 메뉴관리",True,17,복어 부재료 손질; 복어 양념장 준비; 복어 껍질굳힘조리,ncs-mcp,복어조리,0,,,,False,,False,,,복어조리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,6. [강원랜드] 직무설명서_조리.pdf,11,제과,markdown,0,198,중분류 01. 식음료조리·서비스 02.제과・제빵・떡제조,True,15,과자류제품 개발; 과자류제품 포장; 과자류제품 저장유통,ncs-mcp,제과,0,,,,False,,False,,,제과,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,6. [강원랜드] 직무설명서_조리.pdf,12,제빵,markdown,0,198,중분류 01. 식음료조리·서비스 02.제과・제빵・떡제조,True,15,빵류제품 개발; 냉동빵 가공; 빵류제품 품질관리,ncs-mcp,제빵,0,,,,False,,False,,,제빵,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,7. [강원랜드] 온라인 불법도박 사이트 감시·신고.pdf,13,카지노 영업 지원,markdown,0,225,세분류 07. 카지노 영업 지원,False,0,,,,1,카지노 영업 지원,1203040207_23v2,카지노운영관리,False,,True,카지노 영업 지원,카지노운영관리,카지노운영관리,unit_name_only,manual_review_unit_name,No exact detail match; suggestion matched a capability unit name only.
+303039,직무기술서.zip,8. [강원랜드] 직무설명서_카지노 운영지원.pdf,14,카지노운영관리,markdown,0,249,세분류 04. 카지노운영관리,True,12,카지노 영업 관리; 테이블 게임 운영관리; 머신 게임 관리,ncs-mcp,카지노운영관리,0,,,,False,,False,,,카지노운영관리,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.
+303039,직무기술서.zip,9. [강원랜드] 직무설명서_사무행정.pdf,15,사무행정,markdown,0,265,# ZIP member: 9. [강원랜드] 직무설명서사무행정.pdf,True,8,문서 작성; 문서 관리; 자료 관리,ncs-mcp,사무행정,0,,,,False,,False,,,사무행정,exact_detail,auto_exact_detail,MCP exact detail search returned official NCS units.

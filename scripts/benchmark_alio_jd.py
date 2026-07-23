@@ -9,6 +9,7 @@ import re
 import sys
 import time
 import zipfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,9 +21,17 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description, structure_job_notice
 from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units, search_units_by_detail, suggest_units_by_text
+from detail_gap_classifier import (
+    classify_unmatched_detail_gap,
+    is_healthcare_specialized_detail,
+    normalize_detail_key,
+)
 
 
 ALIO_LIST_URL = "https://job.alio.go.kr/recruit.do"
@@ -76,10 +85,37 @@ def fetch_text(
     referer: str = ALIO_LIST_URL,
     params: dict[str, Any] | None = None,
 ) -> str:
-    response = client.get(url, params=params, headers=_headers(referer), follow_redirects=True)
-    response.raise_for_status()
+    response = _get_with_retries(client, url, params=params, headers=_headers(referer))
     response.encoding = response.encoding or "utf-8"
     return response.text
+
+
+def _get_with_retries(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    follow_redirects: bool = True,
+) -> httpx.Response:
+    attempts = max(1, int(os.getenv("ALIO_HTTP_RETRIES", "3") or "3"))
+    delay = max(0.0, float(os.getenv("ALIO_HTTP_RETRY_DELAY_SEC", "0.4") or "0.4"))
+    for attempt in range(attempts):
+        try:
+            response = client.get(url, params=params, headers=headers, follow_redirects=follow_redirects)
+            response.raise_for_status()
+            return response
+        except httpx.HTTPStatusError as exc:
+            status_code = int(exc.response.status_code)
+            retryable = status_code == 429 or status_code == 408 or status_code >= 500
+            if not retryable or attempt >= attempts - 1:
+                raise
+        except (httpx.RequestError, OSError):
+            if attempt >= attempts - 1:
+                raise
+        if delay:
+            time.sleep(delay * (2 ** attempt))
+    raise RuntimeError(f"failed to fetch after {attempts} attempts: {url}")
 
 
 def _extract_detail_pages_from_list_html(text: str, seen: set[str], limit: int) -> list[DetailPage]:
@@ -258,8 +294,7 @@ def download_attachment(
     referer: str,
     max_bytes: int,
 ) -> int:
-    response = client.get(attachment.url, headers=_headers(referer), follow_redirects=True)
-    response.raise_for_status()
+    response = _get_with_retries(client, attachment.url, headers=_headers(referer))
     data = response.content
     if len(data) > max_bytes:
         raise RuntimeError(f"attachment exceeds limit: {len(data)} > {max_bytes}")
@@ -272,7 +307,15 @@ def _unit_key(unit: dict[str, Any]) -> str:
 
 
 def _detail_key(value: Any) -> str:
-    return re.sub(r"[\s·‧･ㆍ•∙⋅・\-\_/|(),.]+", "", str(value or "")).strip().lower()
+    return normalize_detail_key(value)
+
+
+def _mcp_url_configured() -> bool:
+    return bool(os.getenv("NCS_MCP_URL", "").strip())
+
+
+def _is_healthcare_specialized_detail(value: Any) -> bool:
+    return is_healthcare_specialized_detail(value)
 
 
 def _dedup_units(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -335,6 +378,12 @@ def diagnose_detail_mcp_matches(
 
     detail_rows: list[dict[str, Any]] = []
     exact_units: list[dict[str, Any]] = []
+
+    def join_unique(values: list[Any]) -> str:
+        return "; ".join(
+            dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip())
+        )
+
     for seq, detail in enumerate(details, start=1):
         term = str(detail or "").strip()
         if not term:
@@ -344,7 +393,41 @@ def diagnose_detail_mcp_matches(
         suggestions: list[dict[str, Any]] = []
         if not units:
             suggestions = suggest_units_by_text([term], max_units=max_suggestions_per_detail)
+        canonical_detail_matches = [
+            item
+            for item in suggestions
+            if item.get("isExactDetailMatch")
+            or _detail_key(item.get("canonicalDetailName") or item.get("ncsSubdCdnm")) == _detail_key(term)
+        ]
         unit_name_matches = [item for item in suggestions if item.get("isExactUnitNameMatch")]
+        if units:
+            review_action = "auto_exact_detail"
+            review_reason = "MCP exact detail search returned official NCS units."
+            match_diagnostic = "exact_detail"
+        else:
+            gap = classify_unmatched_detail_gap(
+                term,
+                suggestions=suggestions,
+                canonical_detail_matches=canonical_detail_matches,
+                unit_name_matches=unit_name_matches,
+            )
+            review_action = gap["review_action"]
+            review_reason = gap["review_reason"]
+            match_diagnostic = gap["match_diagnostic"]
+        unit_name_parent_details = join_unique(
+            [item.get("canonicalDetailName") or item.get("ncsSubdCdnm") for item in unit_name_matches]
+        )
+        canonical_match_details = join_unique(
+            [item.get("canonicalDetailName") or item.get("ncsSubdCdnm") for item in canonical_detail_matches]
+        )
+        exact_canonical_details = join_unique(
+            [item.get("resolvedDetailName") or item.get("ncsSubdCdnm") for item in units]
+        )
+        resolved_parent_detail = unit_name_parent_details
+        if not resolved_parent_detail and canonical_match_details:
+            resolved_parent_detail = canonical_match_details
+        if not resolved_parent_detail and exact_canonical_details:
+            resolved_parent_detail = exact_canonical_details
         detail_rows.append(
             {
                 "detail_seq": seq,
@@ -356,6 +439,16 @@ def diagnose_detail_mcp_matches(
                     for item in units[:3]
                     if str(item.get("compeUnitName") or item.get("ncsClCd") or "").strip()
                 ),
+                "exact_sources": "; ".join(
+                    sorted(
+                        {
+                            str(item.get("source") or "").strip()
+                            for item in units
+                            if str(item.get("source") or "").strip()
+                        }
+                    )
+                ),
+                "exact_canonical_details": exact_canonical_details,
                 "suggestion_count": len(suggestions),
                 "top_suggestion": "; ".join(
                     str(item.get("compeUnitName") or item.get("ncsClCd") or "").strip()
@@ -372,12 +465,19 @@ def diagnose_detail_mcp_matches(
                     for item in suggestions[:3]
                     if str(item.get("canonicalDetailName") or item.get("ncsSubdCdnm") or "").strip()
                 ),
+                "canonical_detail_match": bool(canonical_detail_matches),
+                "canonical_detail_match_top": canonical_match_details,
                 "unit_name_match": bool(unit_name_matches),
                 "unit_name_match_top": "; ".join(
                     str(item.get("compeUnitName") or item.get("ncsClCd") or "").strip()
                     for item in unit_name_matches[:3]
                     if str(item.get("compeUnitName") or item.get("ncsClCd") or "").strip()
                 ),
+                "unit_name_parent_details": unit_name_parent_details,
+                "resolved_parent_detail": resolved_parent_detail,
+                "match_diagnostic": match_diagnostic,
+                "review_action": review_action,
+                "review_reason": review_reason,
             }
         )
     return detail_rows, _dedup_units(exact_units)
@@ -400,6 +500,28 @@ def summarize_detail_mcp_coverage(detail_rows: list[dict[str, Any]]) -> tuple[in
     return exact_match_count, unit_name_match_count, uncovered
 
 
+def no_detail_category(absence_reason: Any) -> str:
+    reason = str(absence_reason or "").strip()
+    if not reason:
+        return ""
+    if reason == "no_ncs_mapping_declared":
+        return "declared_no_ncs_mapping"
+    if reason in {
+        "job_document_without_explicit_ncs_detail",
+        "translation_role_without_explicit_ncs_detail",
+        "multi_role_healthcare_document_without_explicit_ncs_detail",
+    }:
+        return "no_explicit_ncs_detail"
+    if reason in {
+        "ncs_detail_cell_blank_or_dash",
+        "ncs_detail_candidate_filtered",
+        "ncs_detail_header_without_candidate",
+        "ncs_table_without_detail_header",
+    }:
+        return "ncs_table_without_extractable_detail"
+    return "other_no_detail"
+
+
 def benchmark_one(
     client: httpx.Client,
     page: DetailPage,
@@ -419,6 +541,15 @@ def benchmark_one(
         "archive_members": 0,
         "detail_candidates": "",
         "detail_count": 0,
+        "no_detail_category": "",
+        "ncs_detail_absence_reason": "",
+        "ncs_detail_absence_state": "",
+        "ncs_detail_absence_evidence": "",
+        "ncs_detail_absence_filtered_candidate_reason": "",
+        "ncs_detail_absence_saw_ncs_table": False,
+        "ncs_detail_absence_saw_detail_header": False,
+        "ncs_detail_absence_blank_or_dash_detail_cell": False,
+        "ncs_detail_absence_declared_no_mapping": False,
         "notice_duty_chars": 0,
         "notice_eval_chars": 0,
         "notice_has_duty": False,
@@ -426,12 +557,14 @@ def benchmark_one(
         "mcp_units": 0,
         "mcp_ksa": 0,
         "mcp_suggestions": 0,
+        "mcp_configured": _mcp_url_configured(),
         "suggestion_top": "",
         "detail_exact_match_count": 0,
         "detail_unit_name_match_count": 0,
         "detail_unmatched_count": 0,
         "detail_partial_match": False,
         "detail_unmatched_candidates": "",
+        "detail_diagnostics_skipped_reason": "",
         "mcp_error": "",
         "_detail_rows": [],
         "status": "unknown",
@@ -466,11 +599,32 @@ def benchmark_one(
         markdown = str(parsed.get("markdown") or "")
         row["markdown_len"] = len(markdown)
         structured = structure_job_description(parsed, filename=attachment.name)
-        details = list(structured.get("fields", {}).get("ncs_detail_candidates") or [])
+        fields = structured.get("fields", {})
+        if not isinstance(fields, dict):
+            fields = {}
+        details = list(fields.get("ncs_detail_candidates") or [])
+        row["ncs_detail_absence_reason"] = str(fields.get("ncs_detail_absence_reason") or "").strip()
+        row["no_detail_category"] = no_detail_category(row["ncs_detail_absence_reason"])
+        row["ncs_detail_absence_state"] = str(fields.get("ncs_detail_absence_state") or "").strip()
+        row["ncs_detail_absence_evidence"] = str(fields.get("ncs_detail_absence_evidence") or "").strip()
+        row["ncs_detail_absence_filtered_candidate_reason"] = str(
+            fields.get("ncs_detail_absence_filtered_candidate_reason") or ""
+        ).strip()
+        row["ncs_detail_absence_saw_ncs_table"] = bool(fields.get("ncs_detail_absence_saw_ncs_table"))
+        row["ncs_detail_absence_saw_detail_header"] = bool(fields.get("ncs_detail_absence_saw_detail_header"))
+        row["ncs_detail_absence_blank_or_dash_detail_cell"] = bool(
+            fields.get("ncs_detail_absence_blank_or_dash_detail_cell")
+        )
+        row["ncs_detail_absence_declared_no_mapping"] = bool(fields.get("ncs_detail_absence_declared_no_mapping"))
+        detail_evidence_map = {
+            _detail_key(item.get("detail")): item
+            for item in (fields.get("ncs_detail_candidate_evidence") or [])
+            if isinstance(item, dict) and str(item.get("detail") or "").strip()
+        }
         detail_members = detail_member_map(parsed, fallback_member=attachment.name, details=details)
         row["detail_candidates"] = "; ".join(details)
         row["detail_count"] = len(details)
-        if details and os.getenv("NCS_MCP_URL", "").strip():
+        if details and row["mcp_configured"]:
             try:
                 detail_rows, units = diagnose_detail_mcp_matches(details[:20])
             except NcsMcpError as exc:
@@ -480,6 +634,11 @@ def benchmark_one(
                 detail_row["idx"] = page.idx
                 detail_row["attachment"] = attachment.name
                 detail_row["member"] = detail_members.get(_detail_key(detail_row.get("detail")), "")
+                evidence = detail_evidence_map.get(_detail_key(detail_row.get("detail"))) or {}
+                detail_row["extraction_source"] = evidence.get("source", "")
+                detail_row["extraction_page"] = evidence.get("page", "")
+                detail_row["extraction_line"] = evidence.get("line", "")
+                detail_row["extraction_snippet"] = evidence.get("snippet", "")
             row["_detail_rows"] = detail_rows
             exact_match_count, unit_name_match_count, unmatched = summarize_detail_mcp_coverage(detail_rows)
             row["detail_exact_match_count"] = exact_match_count
@@ -499,15 +658,19 @@ def benchmark_one(
                 for detail_row in detail_rows
                 if str(detail_row.get("top_suggestion") or "").strip()
             )[:500]
+        elif details:
+            row["detail_diagnostics_skipped_reason"] = "NCS_MCP_URL not configured"
         if not details:
             row["status"] = "parsed_no_detail"
+        elif not row["mcp_configured"]:
+            row["status"] = "mcp_not_configured"
         elif row.get("mcp_error"):
             row["status"] = "mcp_error"
         elif row.get("detail_partial_match"):
             row["status"] = "partial_detail_mcp_match"
         elif row.get("detail_unit_name_match_count") and int(row.get("detail_unmatched_count") or 0) == 0:
             row["status"] = "ok_unit_name_resolved"
-        elif os.getenv("NCS_MCP_URL", "").strip() and not row["mcp_units"] and not row.get("detail_unit_name_match_count"):
+        elif row["mcp_configured"] and not row["mcp_units"] and not row.get("detail_unit_name_match_count"):
             row["status"] = "detail_no_mcp_match"
         else:
             row["status"] = "ok"
@@ -536,6 +699,15 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         "archive_members",
         "detail_count",
         "detail_candidates",
+        "no_detail_category",
+        "ncs_detail_absence_reason",
+        "ncs_detail_absence_state",
+        "ncs_detail_absence_evidence",
+        "ncs_detail_absence_filtered_candidate_reason",
+        "ncs_detail_absence_saw_ncs_table",
+        "ncs_detail_absence_saw_detail_header",
+        "ncs_detail_absence_blank_or_dash_detail_cell",
+        "ncs_detail_absence_declared_no_mapping",
         "notice_duty_chars",
         "notice_eval_chars",
         "notice_has_duty",
@@ -543,12 +715,14 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         "mcp_units",
         "mcp_ksa",
         "mcp_suggestions",
+        "mcp_configured",
         "suggestion_top",
         "detail_exact_match_count",
         "detail_unit_name_match_count",
         "detail_unmatched_count",
         "detail_partial_match",
         "detail_unmatched_candidates",
+        "detail_diagnostics_skipped_reason",
         "mcp_error",
         "url",
         "error",
@@ -557,7 +731,10 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
+            output_row = {field: row.get(field, "") for field in fields}
+            if not output_row.get("no_detail_category"):
+                output_row["no_detail_category"] = no_detail_category(row.get("ncs_detail_absence_reason"))
+            writer.writerow(output_row)
 
     detail_fields = [
         "idx",
@@ -565,15 +742,28 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         "member",
         "detail_seq",
         "detail",
+        "extraction_source",
+        "extraction_page",
+        "extraction_line",
+        "extraction_snippet",
         "exact_match",
         "exact_units",
         "exact_top",
+        "exact_sources",
+        "exact_canonical_details",
         "suggestion_count",
         "top_suggestion",
         "suggestion_codes",
         "suggestion_canonical_details",
+        "canonical_detail_match",
+        "canonical_detail_match_top",
         "unit_name_match",
         "unit_name_match_top",
+        "unit_name_parent_details",
+        "resolved_parent_detail",
+        "match_diagnostic",
+        "review_action",
+        "review_reason",
     ]
     with detail_csv_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=detail_fields)
@@ -585,6 +775,7 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
     ok = sum(1 for row in rows if row.get("status") == "ok")
     detail_no_mcp = sum(1 for row in rows if row.get("status") == "detail_no_mcp_match")
     mcp_error_count = sum(1 for row in rows if row.get("status") == "mcp_error")
+    mcp_not_configured_count = sum(1 for row in rows if row.get("status") == "mcp_not_configured")
     with_detail = sum(1 for row in rows if int(row.get("detail_count") or 0) > 0 and row.get("status") != "error")
     parsed = sum(
         1
@@ -596,6 +787,7 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
             "detail_no_mcp_match",
             "parsed_no_detail",
             "mcp_error",
+            "mcp_not_configured",
         }
     )
     details = sum(int(row.get("detail_count") or 0) for row in rows)
@@ -606,6 +798,45 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
     unit_name_resolved_count = sum(1 for row in rows if row.get("status") == "ok_unit_name_resolved")
     unit_name_detail_count = sum(int(row.get("detail_unit_name_match_count") or 0) for row in rows)
     unmatched_detail_count = sum(int(row.get("detail_unmatched_count") or 0) for row in rows)
+    diagnostics_skipped_detail_count = sum(
+        int(row.get("detail_count") or 0)
+        for row in rows
+        if row.get("status") == "mcp_not_configured"
+    )
+    match_diagnostics = Counter(
+        str(detail_row.get("match_diagnostic") or "unspecified")
+        for row in rows
+        for detail_row in row.get("_detail_rows") or []
+    )
+    if diagnostics_skipped_detail_count:
+        match_diagnostics["not_evaluated"] += diagnostics_skipped_detail_count
+    match_diagnostic_text = "; ".join(
+        f"{name}={count}" for name, count in sorted(match_diagnostics.items())
+    ) or "none"
+    parsed_no_detail_reasons = Counter(
+        str(row.get("ncs_detail_absence_reason") or "unspecified")
+        for row in rows
+        if row.get("status") == "parsed_no_detail"
+    )
+    parsed_no_detail_reason_text = "; ".join(
+        f"{reason}={count}" for reason, count in sorted(parsed_no_detail_reasons.items())
+    ) or "none"
+    parsed_no_detail_categories = Counter(
+        str(row.get("no_detail_category") or no_detail_category(row.get("ncs_detail_absence_reason")) or "unspecified")
+        for row in rows
+        if row.get("status") == "parsed_no_detail"
+    )
+    parsed_no_detail_category_text = "; ".join(
+        f"{category}={count}" for category, count in sorted(parsed_no_detail_categories.items())
+    ) or "none"
+    parsed_no_detail_states = Counter(
+        str(row.get("ncs_detail_absence_state") or "unspecified")
+        for row in rows
+        if row.get("status") == "parsed_no_detail"
+    )
+    parsed_no_detail_state_text = "; ".join(
+        f"[{state.replace('; ', ' + ')}]={count}" for state, count in sorted(parsed_no_detail_states.items())
+    ) or "none"
     avg_parse = int(sum(int(row.get("parse_ms") or 0) for row in rows if row.get("parse_ms")) / max(1, parsed))
     lines = [
         f"# ALIO JD Benchmark - {stamp}",
@@ -616,6 +847,7 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         f"- Parsed documents: {parsed}",
         f"- Documents with detail candidates: {with_detail}",
         f"- Documents with detail candidates but no MCP match: {detail_no_mcp}",
+        f"- Documents with detail candidates skipped because MCP URL is not configured: {mcp_not_configured_count}",
         f"- Documents with MCP connection errors: {mcp_error_count}",
         f"- Notice pages with duty text candidates: {notice_duty_count}",
         f"- Notice pages with evaluation text candidates: {notice_eval_count}",
@@ -625,18 +857,31 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         f"- Unit-name recovered detail labels: {unit_name_detail_count}",
         f"- Documents with partial detail MCP matches: {partial_match_count}",
         f"- Unmatched detail candidates: {unmatched_detail_count}",
+        f"- Detail candidates with diagnostics skipped because MCP URL is not configured: {diagnostics_skipped_detail_count}",
+        f"- Detail match diagnostic counts: {match_diagnostic_text}",
+        f"- Parsed-no-detail category counts: {parsed_no_detail_category_text}",
+        f"- Parsed-no-detail reason counts: {parsed_no_detail_reason_text}",
+        f"- Parsed-no-detail state counts: {parsed_no_detail_state_text}",
         f"- Average parse time: {avg_parse} ms",
         f"- MCP URL configured: {bool(os.getenv('NCS_MCP_URL', '').strip())}",
         "",
-        "| idx | status | attachment | parse_ms | archive files | detail candidates | exact details | unit-name details | unmatched details | notice duty chars | notice eval chars | MCP units | MCP KSA | suggestions |",
-        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| idx | status | attachment | parse_ms | archive files | detail candidates | no-detail category | no-detail reason | no-detail state | MCP configured | diagnostics skip reason | exact details | unit-name details | unmatched details | notice duty chars | notice eval chars | MCP units | MCP KSA | suggestions |",
+        "| --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         detail = str(row.get("detail_candidates") or "").replace("|", "/")
+        absence_category = str(
+            row.get("no_detail_category") or no_detail_category(row.get("ncs_detail_absence_reason"))
+        ).replace("|", "/")
+        absence_reason = str(row.get("ncs_detail_absence_reason") or "").replace("|", "/")
+        absence_state = str(row.get("ncs_detail_absence_state") or "").replace("|", "/")
         attachment = str(row.get("attachment") or "").replace("|", "/")
+        diagnostics_skip = str(row.get("detail_diagnostics_skipped_reason") or "").replace("|", "/")
         lines.append(
             f"| {row.get('idx')} | {row.get('status')} | {attachment} | "
             f"{row.get('parse_ms') or 0} | {row.get('archive_members') or 0} | {detail} | "
+            f"{absence_category} | {absence_reason} | {absence_state} | "
+            f"{bool(row.get('mcp_configured'))} | {diagnostics_skip} | "
             f"{row.get('detail_exact_match_count') or 0} | "
             f"{row.get('detail_unit_name_match_count') or 0} | "
             f"{row.get('detail_unmatched_count') or 0} | "

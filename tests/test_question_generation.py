@@ -34,6 +34,10 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
     assert "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd" in prompt
     assert "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d" in prompt
     assert "ncs-mcp" in prompt
+    assert "factorName 원문" in prompt
+    assert "question과 follow_ups 중 지정 위치" in prompt
+    assert "글자 그대로 'KSA'라고 쓰지 말고" in prompt
+    assert "첫 항목은 question에 직접 쓴 주 검증 초점" in prompt
     assert "JSON" in prompt
     assert "\ufffd" not in prompt
 
@@ -47,17 +51,22 @@ def test_prompt_describes_all_supported_interview_methods():
         extra_context="",
     )
 
-    for method in ["경험면접", "상황면접", "발표면접", "토론면접", "인바스켓면접", "직무지식면접"]:
+    for method in ["경험면접", "상황면접", "발표면접", "토론면접", "창의적 문제해결력면접", "인바스켓면접", "직무지식면접"]:
         assert method in prompt
     assert "STAR 방식" in prompt
     assert "제한시간 안에 여러 문서" in prompt
     assert "절차, 기준, 산출물" in prompt
     assert "[주질문 필수어]" in prompt
     assert "경험, 상황, 본인, 행동, 결과" in prompt
+    assert "미래예측" in prompt
+    assert "문제정의, 원인 가설, 창의적 대안" in prompt
     assert "인바스켓, 제한시간, 문서, 우선순위, 보고, 위임, 직접처리" in prompt
     assert "[꼬리질문 품질 기준]" in prompt
     assert "최소 1개는 직무/NCS/KSA 핵심어" in prompt
-    assert '"type": "경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접"' in prompt
+    assert "발표면접, 토론면접, 인바스켓면접, 직무지식면접은 follow_ups[0]" in prompt
+    assert "경험면접, 상황면접, 창의적 문제해결력면접은 follow_ups[1]" in prompt
+    assert "[KSA 원문 보존 예시]" in prompt
+    assert '"type": "경험면접|상황면접|발표면접|토론면접|창의적 문제해결력면접|인바스켓면접|직무지식면접"' in prompt
 
 
 def test_parse_valid_interview_questions_object():
@@ -139,6 +148,37 @@ def test_parse_falls_back_for_unsupported_interview_type():
 
     assert len(questions) == 1
     assert questions[0]["type"] == "경험면접"
+
+
+def test_parse_accepts_creative_problem_solving_alias():
+    questions = _parse_openai_response(
+        '[{"question": "복합 문제의 원인과 대안을 어떻게 검증하겠습니까?", "type": "creative_problem_solving"}]'
+    )
+
+    assert len(questions) == 1
+    assert questions[0]["type"] == "창의적 문제해결력면접"
+
+
+def test_parse_uses_method_specific_defaults_for_partial_items():
+    questions = _parse_openai_response(
+        """
+        [
+          {
+            "question": "[발표과제] 자료를 분석하고 대안을 발표해 주세요.",
+            "type": "발표면접",
+            "follow_ups": ["분석 근거는 무엇입니까?"],
+            "evaluation_points": ["자료 분석력"]
+          }
+        ]
+        """
+    )
+
+    assert len(questions) == 1
+    assert questions[0]["type"] == "발표면접"
+    assert len(questions[0]["follow_ups"]) == 3
+    assert any("질의응답" in item for item in questions[0]["follow_ups"])
+    assert "가장 어려웠던 지점" not in "\n".join(questions[0]["follow_ups"])
+    assert "질의응답 대응" in questions[0]["evaluation_points"]
 
 
 def test_parse_drops_blind_hiring_cues():

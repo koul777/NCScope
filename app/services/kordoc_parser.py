@@ -59,8 +59,14 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
     "basic_competencies": ("직업기초능력", "기초능력"),
     "ncs_detail": (
         "세분류",
+        "세분류명",
         "NCS세분류",
         "NCS 세분류",
+        "NCS세분류명",
+        "NCS 세분류명",
+        "직무 세분류",
+        "NCS분류체계 세분류",
+        "NCS 분류체계 세분류",
         "세분류(특화분류)",
         "NCS 세분류(특화분류)",
         "소분류 세분류",
@@ -132,7 +138,7 @@ def _split_table_row(line: str) -> list[str]:
 
 
 def _is_separator_row(cells: list[str]) -> bool:
-    return bool(cells) and all(re.fullmatch(r"[-: ]+", cell or "") for cell in cells)
+    return bool(cells) and all(not cell or re.fullmatch(r"[-: ]+", cell or "") for cell in cells)
 
 
 def _split_items(text: str) -> list[str]:
@@ -199,6 +205,8 @@ def _looks_like_detail_candidate(value: str) -> bool:
     }
     if any(fragment in key for fragment in noise_fragments):
         return False
+    if "미개발" in key:
+        return False
     if _section_for_label(text) and _section_for_label(text) != "ncs_detail":
         return False
     compact = re.sub(r"\s+", "", text)
@@ -252,13 +260,215 @@ def _row_declares_no_ncs_mapping(cells: list[str]) -> bool:
     return bool(
         key
         and "ncs" in key
-        and ("mapping가능한직무" in key or "매핑가능한직무" in key or "mapping" in key)
+        and (
+            "mapping가능한직무" in key
+            or "매핑가능한직무" in key
+            or "mapping" in key
+            or "분류체계미개발" in key
+            or "미개발분야" in key
+        )
         and any(marker in key for marker in ("없어", "없음", "미개발", "별도분석"))
     )
 
 
 def _row_contains_classification_marker(cells: list[str]) -> bool:
     return any(_norm(cell) in {_norm("분류체계"), _norm("NCS 분류체계")} for cell in cells)
+
+
+def _is_blank_or_dash_cell(value: Any) -> bool:
+    raw = unicodedata.normalize("NFKC", str(value or "")).strip()
+    text = _clean_text(raw)
+    if not text:
+        return True
+    return not bool(re.search(r"[가-힣A-Za-z0-9]", text))
+
+
+def _detail_candidate_filter_reason(value: Any) -> str:
+    text = _clean_text(value)
+    if _is_blank_or_dash_cell(value):
+        return "blank_or_dash_detail_cell"
+    key = _norm(text)
+    if _row_declares_no_ncs_mapping([text]) or ("세분류" in key and "미개발" in key):
+        return "declared_no_mapping"
+    if "미개발" in key:
+        return "undeveloped_ncs_value"
+    if _section_for_label(text):
+        return "classification_label_not_value"
+    if len(text) > 40:
+        return "value_too_long"
+    if len(re.sub(r"\s+", "", text)) > 18 and any(marker in text for marker in ("업무", "부대업무", "잡역", " 및 ")):
+        return "duty_text_not_detail"
+    if re.search(r"[○●□■※]", text):
+        return "bullet_or_note_text"
+    return "filtered_candidate_not_detail_like"
+
+
+def _row_has_ncs_classification_context(cells: list[str]) -> bool:
+    key = _norm(" ".join(str(cell or "") for cell in cells))
+    if not key:
+        return False
+    if "ncs" in key and any(marker in key for marker in ("분류체계", "대분류", "중분류", "소분류", "세분류")):
+        return True
+    return "분류체계" in key and any(marker in key for marker in ("대분류", "중분류", "소분류", "세분류"))
+
+
+def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
+    text = _clean_text(markdown)
+    key = _norm(text)
+    states: list[str] = []
+    evidence: list[str] = []
+    filtered_reason = ""
+    base_reason = _ncs_detail_absence_reason(markdown)
+    pipe_detail_index: int | None = None
+
+    def add_state(value: str) -> None:
+        if value and value not in states:
+            states.append(value)
+
+    def add_evidence(value: Any) -> None:
+        snippet = re.sub(r"\s+", " ", _clean_text(value))[:160]
+        if snippet and snippet not in evidence:
+            evidence.append(snippet)
+
+    def note_detail_value(value: Any, source: Any) -> None:
+        nonlocal filtered_reason
+        reason = _detail_candidate_filter_reason(value)
+        if reason == "declared_no_mapping":
+            add_state("declared_no_mapping")
+        elif reason == "blank_or_dash_detail_cell":
+            add_state("blank_or_dash_detail_cell")
+        elif not _looks_like_detail_candidate(str(value or "")):
+            filtered_reason = filtered_reason or reason
+            add_state(f"filtered_candidate_reason={reason}")
+        add_evidence(source)
+
+    if _row_declares_no_ncs_mapping([text]) or ("세분류" in key and "미개발" in key):
+        add_state("declared_no_mapping")
+        add_evidence(text)
+
+    for raw_line in str(markdown or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        cells = _split_table_row(line)
+        if cells:
+            if _is_separator_row(cells):
+                continue
+            if _row_has_ncs_classification_context(cells):
+                add_state("saw_ncs_table")
+                add_evidence(line)
+            if any(_section_for_label(cell) == "ncs_detail" for cell in cells):
+                add_state("saw_detail_header")
+            if _row_declares_no_ncs_mapping(cells):
+                add_state("declared_no_mapping")
+                add_evidence(line)
+                continue
+            label_index = next((i for i, cell in enumerate(cells) if _section_for_label(cell) == "ncs_detail"), -1)
+            if label_index >= 0:
+                add_state("saw_detail_header")
+                pipe_detail_index = label_index
+                value_cells = cells[label_index + 1 :]
+                if value_cells:
+                    for value in value_cells:
+                        note_detail_value(value, line)
+                else:
+                    add_evidence(line)
+                continue
+            if pipe_detail_index is not None and not any(_section_for_label(cell) for cell in cells):
+                value = cells[pipe_detail_index] if pipe_detail_index < len(cells) else cells[-1]
+                note_detail_value(value, line)
+                continue
+        match = re.search(r"세분류\s*[:：]\s*(.*)$", line)
+        if match:
+            add_state("saw_detail_header")
+            value = match.group(1)
+            note_detail_value(value, line)
+
+    for raw_table in re.findall(r"<table[^>]*>(.*?)</table>", str(markdown or ""), flags=re.IGNORECASE | re.DOTALL):
+        header_sections: dict[int, str] = {}
+        for raw_row in re.findall(r"<tr[^>]*>(.*?)</tr>", raw_table, flags=re.IGNORECASE | re.DOTALL):
+            cells = [
+                _clean_text(html.unescape(re.sub(r"<[^>]+>", " ", cell)))
+                for cell in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", raw_row, flags=re.IGNORECASE | re.DOTALL)
+            ]
+            if not any(cells):
+                continue
+            row_text = " ".join(cells)
+            if _row_has_ncs_classification_context(cells):
+                add_state("saw_ncs_table")
+                add_evidence(row_text)
+            if any(_section_for_label(cell) == "ncs_detail" for cell in cells):
+                add_state("saw_detail_header")
+            if _row_declares_no_ncs_mapping(cells):
+                add_state("declared_no_mapping")
+                add_evidence(row_text)
+                continue
+            row_sections: dict[int, str] = {}
+            for idx, cell in enumerate(cells):
+                section = _section_for_label(cell)
+                if not section:
+                    continue
+                target_idx = idx
+                cell_key = _norm(cell)
+                if section == "ncs_detail" and "소분류" in cell_key and "세분류" in cell_key:
+                    target_idx = idx + 1
+                row_sections[target_idx] = section
+            if row_sections:
+                header_sections = row_sections
+            label_index = next((i for i, cell in enumerate(cells) if _section_for_label(cell) == "ncs_detail"), -1)
+            if label_index >= 0:
+                add_state("saw_detail_header")
+                value_cells = cells[label_index + 1 :]
+                if value_cells:
+                    for value in value_cells:
+                        note_detail_value(value, row_text)
+                else:
+                    add_evidence(row_text)
+                continue
+            detail_value_indexes = [idx for idx, section in header_sections.items() if section == "ncs_detail"]
+            if detail_value_indexes and not any(_section_for_label(cell) for cell in cells):
+                add_state("saw_detail_header")
+                max_header_idx = max(header_sections) if header_sections else -1
+                shift = max(0, max_header_idx - (len(cells) - 1))
+                for idx in detail_value_indexes:
+                    cell_idx = idx - shift if idx >= len(cells) else idx
+                    value = cells[cell_idx] if 0 <= cell_idx < len(cells) else ""
+                    note_detail_value(value, row_text)
+
+    if base_reason and not states:
+        if base_reason == "translation_role_without_explicit_ncs_detail":
+            add_state("translation_role_markers_without_ncs_detail")
+        elif base_reason == "multi_role_healthcare_document_without_explicit_ncs_detail":
+            add_state("multi_role_healthcare_markers_without_ncs_detail")
+        elif base_reason == "job_document_without_explicit_ncs_detail":
+            add_state("job_document_markers_without_ncs_classification")
+        else:
+            add_state(base_reason)
+        add_evidence(text)
+
+    if "declared_no_mapping" in states:
+        reason = "no_ncs_mapping_declared"
+    elif "blank_or_dash_detail_cell" in states:
+        reason = "ncs_detail_cell_blank_or_dash"
+    elif filtered_reason:
+        reason = "ncs_detail_candidate_filtered"
+    elif "saw_ncs_table" in states and "saw_detail_header" in states:
+        reason = "ncs_detail_header_without_candidate"
+    elif "saw_ncs_table" in states:
+        reason = "ncs_table_without_detail_header"
+    else:
+        reason = base_reason
+
+    return {
+        "reason": reason,
+        "state": "; ".join(states),
+        "evidence": " | ".join(evidence)[:500],
+        "filtered_candidate_reason": filtered_reason,
+        "saw_ncs_table": "saw_ncs_table" in states,
+        "saw_detail_header": "saw_detail_header" in states,
+        "blank_or_dash_detail_cell": "blank_or_dash_detail_cell" in states,
+        "declared_no_mapping": "declared_no_mapping" in states,
+    }
 
 
 def _clean_detail_candidate_text(value: str) -> str:
@@ -282,6 +492,14 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
     ]
     if len(separated) > 1 and all(_looks_like_detail_candidate(part) for part in separated):
         return separated
+
+    numbered = [
+        _clean_detail_candidate_text(part)
+        for part in re.split(r"\s+(?=\d{1,2}\s*[,.)：:\-])", text)
+        if _clean_detail_candidate_text(part)
+    ]
+    if len(numbered) > 1 and all(_looks_like_detail_candidate(part) for part in numbered):
+        return numbered
 
     unified = re.sub(r"[‧･ㆍ•∙⋅・]", "·", text)
     parts = [_clean_detail_candidate_text(part) for part in unified.split("·")]
@@ -345,6 +563,47 @@ def _extract_contextual_ncs_detail_candidates(markdown: str) -> list[str]:
         candidates.extend(["보건교육", "산업보건관리"])
 
     return candidates
+
+
+def _ncs_detail_absence_reason(markdown: str) -> str:
+    text = _clean_text(markdown)
+    key = _norm(text)
+    if _row_declares_no_ncs_mapping([text]):
+        return "no_ncs_mapping_declared"
+    if "세분류" in key and "미개발" in key:
+        return "no_ncs_mapping_declared"
+    if _has_any_norm(key, ("통번역", "통·번역", "통역", "번역")):
+        return "translation_role_without_explicit_ncs_detail"
+    healthcare_role_markers = (
+        "간호직",
+        "의료기술직",
+        "약무직",
+        "업무협력직",
+        "임상교수",
+        "임상병리",
+        "영상의학",
+        "의료사회복지",
+        "의무기록",
+    )
+    if _has_any_norm(key, ("병원", "의료기관")) and sum(_norm(marker) in key for marker in healthcare_role_markers) >= 3:
+        return "multi_role_healthcare_document_without_explicit_ncs_detail"
+    has_job_document_markers = _has_any_norm(
+        key,
+        (
+            "직무소개서",
+            "직무기술서",
+            "직무설명자료",
+            "직무수행내용",
+            "업무내용",
+            "직무요건",
+            "필요지식",
+            "필요기술",
+        ),
+    )
+    has_ncs_classification_markers = _has_any_norm(key, ("ncs", "세분류", "분류체계", "능력단위"))
+    if has_job_document_markers and not has_ncs_classification_markers:
+        return "job_document_without_explicit_ncs_detail"
+    return ""
 
 
 def _block_text(block: Any) -> str:
@@ -480,6 +739,71 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     return clean_candidates
 
 
+def _dedup_detail_candidates(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in values:
+        for text in _expand_composite_detail_candidate(item):
+            if not _looks_like_detail_candidate(text):
+                continue
+            key = _norm(text)
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(text)
+    return output
+
+
+def _detail_candidate_evidence(
+    detail_candidates: list[str],
+    sections: dict[str, list[dict[str, Any]]],
+    markdown: str,
+    detail_source: str,
+) -> list[dict[str, Any]]:
+    evidence_rows: list[dict[str, Any]] = []
+    lines = list(enumerate(str(markdown or "").splitlines(), start=1))
+    for detail in detail_candidates:
+        text = str(detail or "").strip()
+        key = _norm(text)
+        if not text or not key:
+            continue
+        evidence: dict[str, Any] = {
+            "detail": text,
+            "source": detail_source or "unknown",
+            "snippet": "",
+            "page": 0,
+            "line": 0,
+        }
+        for item in sections.get("ncs_detail", []):
+            item_text = str(item.get("text") or "").strip()
+            if key and key in _norm(item_text):
+                evidence.update(
+                    {
+                        "source": str(item.get("source") or "kordoc"),
+                        "snippet": item_text[:240],
+                        "page": int(item.get("page") or 0),
+                        "line": int(item.get("line") or 0),
+                    }
+                )
+                break
+        if not evidence["snippet"]:
+            for line_no, line in lines:
+                if key and key in _norm(line):
+                    evidence.update(
+                        {
+                            "source": "markdown",
+                            "snippet": _clean_text(line)[:240],
+                            "line": line_no,
+                        }
+                    )
+                    break
+        if not evidence["snippet"] and detail_source == "contextual":
+            evidence["source"] = "contextual"
+            evidence["snippet"] = text
+        evidence_rows.append(evidence)
+    return evidence_rows
+
+
 def _loads_kordoc_json(raw: str) -> dict[str, Any]:
     text = str(raw or "").strip()
     try:
@@ -547,6 +871,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     markdown = str(parsed.get("markdown") or "")
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in _SECTION_ALIASES}
     current: str | None = None
+    diagnostic_lines: list[str] = [markdown] if markdown else []
 
     def add(section: str, text: str, block: dict[str, Any] | None = None, line: int = 0) -> None:
         for item in _split_items(text):
@@ -604,6 +929,10 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                 for row in rows:
                     row_cells = row if isinstance(row, list) else row.get("cells", []) if isinstance(row, dict) else []
                     values = [_clean_text(_block_text(cell)) for cell in row_cells]
+                    if any(values):
+                        diagnostic_lines.append("| " + " | ".join(values) + " |")
+                    if _row_declares_no_ncs_mapping(values):
+                        continue
                     label_index = next((i for i, cell in enumerate(values) if _section_for_label(cell)), -1)
                     if label_index >= 0:
                         section = _section_for_label(values[label_index])
@@ -618,11 +947,18 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     for block in parsed.get("blocks") or []:
         visit(block)
 
-    detail_candidates = _extract_ncs_detail_candidates(markdown)
+    detail_candidates = _dedup_detail_candidates(
+        [
+            *_extract_ncs_detail_candidates(markdown),
+            *(item["text"] for item in sections["ncs_detail"] if not item.get("line")),
+        ]
+    )
     detail_source = "explicit" if detail_candidates else ""
     if not detail_candidates:
         detail_candidates = _extract_contextual_ncs_detail_candidates(markdown)
         detail_source = "contextual" if detail_candidates else ""
+    detail_candidate_evidence = _detail_candidate_evidence(detail_candidates, sections, markdown, detail_source)
+    absence_diagnostics = {} if detail_candidates else _ncs_detail_absence_diagnostics("\n".join(diagnostic_lines))
     return {
         "filename": filename,
         "parser": "kordoc",
@@ -638,6 +974,23 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             "basic_competencies": [item["text"] for item in sections["basic_competencies"]],
             "ncs_detail_candidates": detail_candidates,
             "ncs_detail_source": detail_source,
+            "ncs_detail_candidate_evidence": detail_candidate_evidence,
+            "ncs_detail_absence_reason": "" if detail_candidates else str(absence_diagnostics.get("reason") or ""),
+            "ncs_detail_absence_state": "" if detail_candidates else str(absence_diagnostics.get("state") or ""),
+            "ncs_detail_absence_evidence": "" if detail_candidates else str(absence_diagnostics.get("evidence") or ""),
+            "ncs_detail_absence_filtered_candidate_reason": ""
+            if detail_candidates
+            else str(absence_diagnostics.get("filtered_candidate_reason") or ""),
+            "ncs_detail_absence_saw_ncs_table": bool(absence_diagnostics.get("saw_ncs_table")) if not detail_candidates else False,
+            "ncs_detail_absence_saw_detail_header": bool(absence_diagnostics.get("saw_detail_header"))
+            if not detail_candidates
+            else False,
+            "ncs_detail_absence_blank_or_dash_detail_cell": bool(absence_diagnostics.get("blank_or_dash_detail_cell"))
+            if not detail_candidates
+            else False,
+            "ncs_detail_absence_declared_no_mapping": bool(absence_diagnostics.get("declared_no_mapping"))
+            if not detail_candidates
+            else False,
         },
         "document": {
             "metadata": parsed.get("metadata") or {},

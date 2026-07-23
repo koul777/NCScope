@@ -27,11 +27,56 @@ _DEFAULT_EVALUATION_POINTS = [
     "성과와 학습 내용을 사실에 기반해 제시하는가",
 ]
 
+_METHOD_DEFAULT_FOLLOW_UPS = {
+    "경험면접": _DEFAULT_FOLLOW_UPS,
+    "상황면접": [
+        "먼저 확인해야 할 사실과 기준은 무엇입니까?",
+        "그 판단을 선택한 이유와 예상 위험요인은 무엇입니까?",
+        "결과가 기대와 다를 때 후속 조치는 어떻게 하겠습니까?",
+    ],
+    "발표면접": [
+        "진단에 활용할 핵심 근거자료는 무엇입니까?",
+        "질의응답에서 반대 의견이 나오면 어떤 근거로 답변하겠습니까?",
+        "대안 중 우선순위를 가장 높게 둘 방안과 이유는 무엇입니까?",
+    ],
+    "토론면접": [
+        "입장발표에서 제시할 핵심 근거는 무엇입니까?",
+        "반대 의견 중 수용할 수 있는 부분과 어려운 부분은 무엇입니까?",
+        "최종 합의안에 반드시 포함할 기준은 무엇입니까?",
+    ],
+    "창의적 문제해결력면접": [
+        "미래예측 관점에서 먼저 확인할 변화 신호는 무엇입니까?",
+        "원인 가설과 창의적 대안은 어떻게 검증하겠습니까?",
+        "실현가능성과 의사결정 기준, 리스크 보완책은 무엇입니까?",
+    ],
+    "인바스켓면접": [
+        "여러 문서와 요청을 어떤 기준으로 분류하겠습니까?",
+        "우선순위, 보고, 위임, 직접처리 판단은 어떻게 하겠습니까?",
+        "제한시간 이후 기록과 후속 점검은 어떻게 남기겠습니까?",
+    ],
+    "직무지식면접": [
+        "반드시 확인해야 할 절차와 기준은 무엇입니까?",
+        "예외상황에서는 어떤 기준으로 판단하겠습니까?",
+        "산출물 품질과 오류 예방은 어떻게 점검하겠습니까?",
+    ],
+}
+
+_METHOD_DEFAULT_EVALUATION_POINTS = {
+    "경험면접": _DEFAULT_EVALUATION_POINTS,
+    "상황면접": ["핵심 사실 확인", "판단 기준", "행동 순서", "위험요인 인식", "이해관계자 대응"],
+    "발표면접": ["자료 분석력", "논리적 구조화", "질의응답 대응", "대안의 실행가능성", "성과지표 설계"],
+    "토론면접": ["입장발표 근거", "경청과 상호작용", "갈등 조정", "최종 합의안 도출"],
+    "창의적 문제해결력면접": ["미래예측과 문제 정의", "창의적 사고와 대안 도출", "검증 방법", "실현가능성", "의사결정과 실행계획"],
+    "인바스켓면접": ["우선순위 판단", "문서·요청 분류", "보고·위임·직접처리 판단", "시간관리"],
+    "직무지식면접": ["절차·기준 이해", "직무지식 적용", "예외상황 판단", "산출물 품질"],
+}
+
 SUPPORTED_INTERVIEW_TYPES = (
     "경험면접",
     "상황면접",
     "발표면접",
     "토론면접",
+    "창의적 문제해결력면접",
     "인바스켓면접",
     "직무지식면접",
 )
@@ -67,6 +112,16 @@ _INTERVIEW_TYPE_ALIASES = {
     "토의면접": "토론면접",
     "discussion": "토론면접",
     "debate": "토론면접",
+    "창의": "창의적 문제해결력면접",
+    "창의형": "창의적 문제해결력면접",
+    "창의적문제해결": "창의적 문제해결력면접",
+    "창의적문제해결력": "창의적 문제해결력면접",
+    "창의적문제해결력면접": "창의적 문제해결력면접",
+    "창의적 문제해결력": "창의적 문제해결력면접",
+    "창의적 문제해결력면접": "창의적 문제해결력면접",
+    "creative": "창의적 문제해결력면접",
+    "creative_problem_solving": "창의적 문제해결력면접",
+    "problem_solving": "창의적 문제해결력면접",
     "인바스켓": "인바스켓면접",
     "인바스켓형": "인바스켓면접",
     "인바스켓면접": "인바스켓면접",
@@ -146,40 +201,49 @@ def _render_question_generation_prompt(
         "- 각 질문마다 follow_ups 3개를 포함합니다.\n"
         "- follow_ups는 주질문, 구체화, 판단 근거, 결과/교훈 순서로 깊어져야 합니다.\n"
         "- follow_ups 3개는 선택 면접기법의 평가 행동을 각각 다르게 파고들고, 최소 1개는 직무/NCS/KSA 핵심어를 직접 포함합니다.\n"
+        "- 각 질문은 [KSA]의 factorName 원문 중 하나를 주 검증 초점으로 선택하고, question과 follow_ups 중 지정 위치에 그 factorName 원문을 그대로 반복합니다.\n"
+        "- question과 follow_ups에 글자 그대로 'KSA'라고 쓰지 말고, 실제 factorName 원문을 복사해 넣습니다.\n"
+        "- 발표면접, 토론면접, 인바스켓면접, 직무지식면접은 follow_ups[0]에 factorName 원문과 능력단위명을 함께 넣고, 경험면접, 상황면접, 창의적 문제해결력면접은 follow_ups[1]에 넣습니다.\n"
         "- 질문끼리 내용이 겹치면 안 됩니다.\n"
         "- evaluation_points는 4~6개의 측정 가능한 문장으로 작성합니다.\n"
-        "- ksa_refs에는 해당 질문과 직접 연결되는 KSA 키워드 2~4개를 넣습니다.\n"
+        "- ksa_refs에는 해당 질문과 직접 연결되는 factorName 원문 2~4개를 넣고, 첫 항목은 question에 직접 쓴 주 검증 초점과 일치시킵니다.\n"
         "- 민감하거나 차별적인 질문은 생성하지 않습니다.\n\n"
         "[면접 기법]\n"
         "- 경험면접: 과거 행동 또는 유사 경험을 STAR 방식으로 확인합니다.\n"
         "- 상황면접: 가상의 직무 상황에서 판단 기준, 행동 순서, 위험 대응을 확인합니다.\n"
-        "- 발표면접: 자료 분석, 대안 구성, 실행계획, 성과지표를 발표 과제로 확인합니다.\n"
-        "- 토론면접: 상충되는 입장 속에서 근거 제시, 경청, 조정, 합의 형성을 확인합니다.\n"
+        "- 발표면접: 준비시간 후 자료 분석, 대안 구성, 실행계획, 성과지표를 발표하고 질의응답 대응을 확인합니다.\n"
+        "- 토론면접: 토론시간 안에 입장발표, 반대 의견 검토, 경청, 조정, 최종 합의 형성을 확인합니다.\n"
+        "- 창의적 문제해결력면접: 미래예측, 창의적 사고, 상황 판단, 혁신적 사고, 논리 분석, 실현가능성, 문제해결, 의사결정을 과제로 확인합니다.\n"
         "- 인바스켓면접: 제한시간 안에 여러 문서와 요청의 우선순위와 첫 조치를 확인합니다.\n"
         "- 직무지식면접: 절차, 기준, 산출물, 예외상황 적용 능력을 확인합니다.\n\n"
         "[주질문 필수어]\n"
         "- 경험면접: question에 경험, 상황, 본인, 행동, 결과를 직접 포함합니다.\n"
         "- 상황면접: question에 상황, 판단, 기준, 순서, 위험을 직접 포함합니다.\n"
-        "- 발표면접: question에 발표, 진단, 대안, 실행, 성과지표를 직접 포함합니다.\n"
-        "- 토론면접: question에 토론, 충돌, 입장, 반대, 합의를 직접 포함합니다.\n"
+        "- 발표면접: question에 발표과제, 준비시간, 발표, 진단, 대안, 실행, 성과지표, 질의응답을 직접 포함합니다.\n"
+        "- 토론면접: question에 토론과제, 토론시간, 입장발표, 충돌, 입장, 반대, 합의를 직접 포함합니다.\n"
+        "- 창의적 문제해결력면접: question에 창의적 문제해결력과제, 미래예측, 문제, 정의, 대안, 검증, 실현가능성, 의사결정, 실행을 직접 포함합니다.\n"
         "- 인바스켓면접: question에 인바스켓, 제한시간, 문서, 우선순위, 보고, 위임, 직접처리를 직접 포함합니다.\n"
         "- 직무지식면접: question에 절차, 기준, 산출물, 예외상황을 직접 포함합니다.\n\n"
         "[꼬리질문 품질 기준]\n"
         "- 경험면접: 상황, 역할, 행동, 기준, 성과/개선을 순차적으로 확인합니다.\n"
         "- 상황면접: 확인할 사실, 판단 기준, 위험요인, 이해관계자 대응 또는 후속 조치를 확인합니다.\n"
-        "- 발표면접: 진단 근거자료, 대안 우선순위, 반대 의견 답변, 실행 일정이나 성과지표를 확인합니다.\n"
-        "- 토론면접: 초기 입장 근거, 반대 의견 수용 범위, 조정 방식, 합의안 기준을 확인합니다.\n"
+        "- 발표면접: 진단 근거자료, 대안 우선순위, 반대 의견 답변, 질의응답 대응, 실행 일정이나 성과지표를 확인합니다.\n"
+        "- 토론면접: 입장발표 근거, 반대 의견 수용 범위, 조정 방식, 합의안 기준을 확인합니다.\n"
+        "- 창의적 문제해결력면접: 미래예측, 문제정의, 원인 가설, 창의적 대안, 검증 방법, 실현가능성과 의사결정을 확인합니다.\n"
         "- 인바스켓면접: 문서·요청 분류, 먼저 처리/보류 판단, 보고·위임·직접처리 선택을 확인합니다.\n"
         "- 직무지식면접: 기준·규정, 예외상황, 산출물 품질, 오류 리스크 또는 교육 순서를 확인합니다.\n\n"
+        "[KSA 원문 보존 예시]\n"
+        "- 통과: question='문서작성에서 문서 요구사항 파악을 적용한 경험을 말씀해 주세요...' / follow_ups[1]='문서 요구사항 파악을 기준으로 어떤 행동을 선택했습니까?'\n"
+        "- 실패: question='문서작성에서 KSA를 적용한 경험...' / follow_ups[1]='그 판단의 이유는 무엇입니까?'처럼 factorName 원문이 빠진 문장.\n\n"
         "[기법 선택]\n"
         "- 추가 컨텍스트에 선택 기법이 있으면 그 기법만 사용합니다.\n"
-        "- 선택 기법이 없으면 경험면접, 상황면접, 직무지식면접을 기본으로 섞습니다.\n\n"
+        "- 선택 기법이 없으면 경험면접, 상황면접, 발표면접, 토론면접, 인바스켓면접, 직무지식면접을 우선 섞고, 복합 문제해결 문맥이 있으면 창의적 문제해결력면접도 포함합니다.\n\n"
         "[출력 형식]\n"
         "JSON 객체 하나만 출력:\n"
         "{\n"
         '  "interview_questions": [\n'
         "    {\n"
-        '      "type": "경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접",\n'
+        '      "type": "경험면접|상황면접|발표면접|토론면접|창의적 문제해결력면접|인바스켓면접|직무지식면접",\n'
         '      "competency": "능력단위명",\n'
         '      "ncsClCd": "코드",\n'
         '      "question": "주질문",\n'
@@ -354,6 +418,7 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
     question = _soften_entry_level_question(str(item.get("question", "")).strip())
     if not question:
         return None
+    interview_type = _canonical_interview_type(item.get("type", "경험면접"))
 
     raw_follow_ups = item.get("follow_ups")
     follow_ups: list[str] = []
@@ -364,18 +429,22 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
         if single:
             follow_ups = [_soften_entry_level_question(single)]
     if len(follow_ups) < 3:
-        for f in _DEFAULT_FOLLOW_UPS:
+        for f in _METHOD_DEFAULT_FOLLOW_UPS.get(interview_type, _DEFAULT_FOLLOW_UPS):
             if len(follow_ups) >= 3:
                 break
+            if f in follow_ups:
+                continue
             follow_ups.append(f)
     follow_ups = follow_ups[:3]
 
     ev = item.get("evaluation_points")
     evaluation_points = [str(x).strip() for x in (ev or []) if str(x).strip()] if isinstance(ev, list) else []
     if len(evaluation_points) < 4:
-        for d in _DEFAULT_EVALUATION_POINTS:
+        for d in _METHOD_DEFAULT_EVALUATION_POINTS.get(interview_type, _DEFAULT_EVALUATION_POINTS):
             if len(evaluation_points) >= 4:
                 break
+            if d in evaluation_points:
+                continue
             evaluation_points.append(d)
     evaluation_points = evaluation_points[:6]
 
@@ -387,7 +456,7 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
 
     return {
         "question": question,
-        "type": _canonical_interview_type(item.get("type", "경험면접")),
+        "type": interview_type,
         "competency": str(item.get("competency", "")).strip(),
         "ncsClCd": str(item.get("ncsClCd", "")).strip(),
         "evaluation_points": evaluation_points,

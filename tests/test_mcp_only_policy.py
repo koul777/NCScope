@@ -439,6 +439,12 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
                 "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
                 "evaluation_text": "\ubb38\uc81c\ud574\uacb0\ub2a5\ub825",
                 "selected_ncs": [unit],
+                "question_plan": {
+                    "items": [
+                        {"detail": "\uacbd\uc601\uae30\ud68d", "enabled": True, "main_count": 2, "follow_up_count": 4}
+                    ]
+                },
+                "interview_methods": ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"],
                 "openai_api_key": request_key,
             },
         )
@@ -446,9 +452,61 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
     assert resp.status_code == 200
     body = resp.json()
     assert body["openai_key_source"] == "request"
+    assert body["question_plan"]["total_main_count"] == 2
+    assert body["question_plan"]["follow_up_count"] == 4
+    assert body["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"]
     build_strategy.assert_called_once()
-    assert build_strategy.call_args.kwargs["api_key_override"] == request_key
+    kwargs = build_strategy.call_args.kwargs
+    assert kwargs["api_key_override"] == request_key
+    assert kwargs["target_count_override"] == 2
+    assert kwargs["follow_up_count"] == 4
+    assert kwargs["question_plan"]["selected_terms"] == ["\uacbd\uc601\uae30\ud68d"]
+    assert kwargs["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"]
     assert request_key not in resp.text
+
+
+def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    unit = {
+        "ncsClCd": "0202030201_25v3",
+        "compeUnitName": "\ubb38\uc11c\uc791\uc131",
+        "compeUnitLevel": "3",
+        "ncsSubdCdnm": "\uc0ac\ubb34\ud589\uc815",
+        "compeUnitDef": "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d\uc744 \ud30c\uc545\ud558\uc5ec \ubb38\uc11c\ub97c \uc791\uc131\ud55c\ub2e4",
+    }
+    ksa = {
+        "ncsClCd": unit["ncsClCd"],
+        "compeUnitName": unit["compeUnitName"],
+        "factorName": "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    mocker.patch("app.main.build_ncs_context_pack", return_value={})
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-from-text",
+            json={
+                "notice_text": "\uc0ac\ubb34\ud589\uc815 \ub2f4\ub2f9\uc5c5\ubb34",
+                "selected_ncs": [unit],
+                "question_plan": {
+                    "items": [
+                        {"detail": "\ub2e4\ub978\uc138\ubd84\ub958", "enabled": True, "main_count": 9, "follow_up_count": 5}
+                    ]
+                },
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["question_plan"]["selected_terms"] == ["\uc0ac\ubb34\ud589\uc815"]
+    assert body["question_plan"]["total_main_count"] == 3
+    assert body["question_plan"]["follow_up_count"] == 5
+    kwargs = build_strategy.call_args.kwargs
+    assert kwargs["question_plan"]["selected_terms"] == ["\uc0ac\ubb34\ud589\uc815"]
+    assert kwargs["target_count_override"] == 3
 
 
 def test_mcp_search_matches_detail_not_small_category(mocker):
@@ -494,6 +552,101 @@ def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
     rows = ncs_mcp_client.search_units_by_detail(["일식· 복어・조리"])
 
     assert [row["ncsClCd"] for row in rows] == ["dot-match"]
+
+
+def test_mcp_search_resolves_safe_detail_alias(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls = []
+
+    def fake_call_tool(name, arguments):
+        calls.append(arguments["query"])
+        if arguments["query"] == "건축공사감리":
+            return {
+                "results": [
+                    {
+                        "id": "alias-match",
+                        "text": "공사착공관리",
+                        "path": {"small": "건축설계·감리", "sub": "건축공사감리"},
+                    }
+                ]
+            }
+        return {"results": []}
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail(["건축감리"], max_units=5)
+
+    assert calls == ["건축감리", "건축공사감리"]
+    assert [row["ncsClCd"] for row in rows] == ["alias-match"]
+    assert rows[0]["matchedDetailName"] == "건축감리"
+    assert rows[0]["resolvedDetailName"] == "건축공사감리"
+    assert rows[0]["detailQueryName"] == "건축공사감리"
+    assert rows[0]["source"] == "ncs-mcp-detail-alias"
+
+
+def test_mcp_search_does_not_apply_alias_after_exact_detail_match(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls = []
+
+    def fake_call_tool(name, arguments):
+        calls.append(arguments["query"])
+        if arguments["query"] == "건축공사감리":
+            raise AssertionError("alias query should not run after an exact 세분류 match")
+        return {
+            "results": [
+                {
+                    "id": "exact-match",
+                    "text": "건축감리 수행",
+                    "path": {"small": "건축설계·감리", "sub": "건축감리"},
+                }
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail(["건축감리"], max_units=5)
+
+    assert calls == ["건축감리"]
+    assert [row["ncsClCd"] for row in rows] == ["exact-match"]
+    assert rows[0]["matchedDetailName"] == "건축감리"
+    assert rows[0]["resolvedDetailName"] == ""
+    assert rows[0]["detailQueryName"] == ""
+    assert rows[0]["source"] == "ncs-mcp"
+
+
+def test_mcp_search_uses_wider_window_for_truncated_exact_detail(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls = []
+
+    def fake_call_tool(name, arguments):
+        calls.append(arguments)
+        if arguments["limit"] <= 50:
+            return {"results": []}
+        broad_rows = [
+            {
+                "id": f"broad-{idx}",
+                "text": "시설물안전관리",
+                "path": {"small": "총무", "sub": "자산관리"},
+            }
+            for idx in range(60)
+        ]
+        exact_rows = [
+            {
+                "id": "1401030101_25v3",
+                "text": "유지관리 계획수립",
+                "path": {"small": "건설시공후관리", "sub": "유지관리"},
+            }
+        ]
+        return {"results": broad_rows + exact_rows}
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail(["유지관리"], max_units=8)
+
+    assert calls[0]["limit"] > 50
+    assert [row["ncsClCd"] for row in rows] == ["1401030101_25v3"]
+    assert rows[0]["ncsSubdCdnm"] == "유지관리"
+    assert rows[0]["source"] == "ncs-mcp"
 
 
 def test_mcp_suggest_units_by_text_keeps_non_exact_candidates(mocker):

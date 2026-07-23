@@ -8,6 +8,7 @@ from app.services.jd_strategy import (
     _count_hangul,
     _load_structured_interview_guide_summary,
     _model_question_gate_contract,
+    _planned_question_sequence_for_prompt,
     _repair_mojibake,
     _structured_interview_guide_path,
     extract_subcategory_text,
@@ -71,6 +72,11 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
         "절차",
         "산출물",
         "예외상황",
+        "창의적 문제해결력면접",
+        "창의적",
+        "문제",
+        "정의",
+        "검증",
     ]
     for term in required_terms:
         assert term in contract
@@ -79,6 +85,153 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
     assert "model-origin 품질 실패" in contract
     assert "follow_ups" in contract
     assert "직무/NCS/KSA 핵심어" in contract
+    assert "질문 골격" in contract
+    assert "[발표과제]" in contract
+    assert "[토론과제]" in contract
+    assert "[인바스켓과제]" in contract
+    assert "[창의적 문제해결력과제]" in contract
+    assert "{KSA}" in contract
+    assert "follow_ups[0]" in contract
+    assert "원문 그대로 반복" in contract
+    assert "factorName 원문" in contract
+    assert "placeholder를 남기지" in contract
+    assert "글자 그대로 'KSA'" in contract
+    assert "required_factorName" in contract
+    assert "지정 follow_up slot" in contract
+    assert "기본 slot은 follow_ups[1]" in contract
+    assert "임시 변수 F" in contract
+    assert "F 원문" in contract
+    assert "required_job_context" in contract
+    assert "주질문에만 직무명을 넣고 follow_ups를 일반론" in contract
+    assert "required_followup_focus_slot" in contract
+    assert "required_followup_focus_example" in contract
+    assert "follow_ups[1]이 아니라 follow_ups[0]" in contract
+    assert "required_job_context 순서" in contract
+    assert "{직무} 현황 진단" in contract
+    assert "창의적 문제해결력 follow_ups[1]" in contract
+    assert "경험면접 follow_ups[1]" in contract
+    assert "당시 어려움은 무엇입니까" in contract
+    assert "상황면접 follow_ups[1]" in contract
+    assert "그 판단 기준은 무엇입니까" in contract
+    assert "F 원문으로 시작" in contract
+    assert "실패 예시" in contract
+    assert "통과 예시" in contract
+    assert "그 판단" in contract
+    assert "출력 전 자체검사" in contract
+
+
+def test_planned_question_sequence_for_prompt_expands_detail_order_and_methods():
+    plan = {
+        "question_sequence": [
+            {"detail": "총무", "follow_up_count": 3},
+            {"detail": "인사", "follow_up_count": 4},
+            {"detail": "사무행정", "follow_up_count": 9},
+        ]
+    }
+
+    result = _planned_question_sequence_for_prompt(plan, ["경험면접", "상황면접"], 3)
+
+    assert result == [
+        {"index": 1, "detail": "총무", "type": "경험면접", "follow_up_count": 3},
+        {"index": 2, "detail": "인사", "type": "상황면접", "follow_up_count": 4},
+        {"index": 3, "detail": "사무행정", "type": "경험면접", "follow_up_count": 5},
+    ]
+
+
+def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor():
+    plan = {
+        "question_sequence": [
+            {"detail": "Office Admin", "follow_up_count": 3},
+            {"detail": "Office Admin", "follow_up_count": 3},
+        ]
+    }
+    ncs_matches = [
+        {
+            "ncsClCd": "U1",
+            "compeUnitName": "Document Writing",
+            "compeUnitDef": "Write documents from requirements.",
+            "ncsSubdCdnm": "Office Admin",
+        },
+        {
+            "ncsClCd": "U2",
+            "compeUnitName": "Document Control",
+            "compeUnitDef": "Control documents and records.",
+            "ncsSubdCdnm": "Office Admin",
+        },
+    ]
+    ncs_ksa = [
+        {"ncsClCd": "U1", "factorName": "Requirement Analysis"},
+        {"ncsClCd": "U1", "factorName": "Draft Review"},
+        {"ncsClCd": "U2", "factorName": "Record Classification"},
+    ]
+
+    result = _planned_question_sequence_for_prompt(
+        plan,
+        ["experience"],
+        2,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+
+    assert result[0]["ncsClCd"] == "U1"
+    assert result[0]["compeUnitName"] == "Document Writing"
+    assert result[0]["required_job_context"] == "Document Writing"
+    assert result[0]["required_factorName"] == "Requirement Analysis"
+    assert result[0]["required_followup_focus_slot"] == 1
+    assert "Requirement Analysis" in result[0]["required_followup_focus_example"]
+    assert "Document Writing" in result[0]["required_followup_focus_example"]
+    assert result[1]["ncsClCd"] == "U2"
+    assert result[1]["compeUnitName"] == "Document Control"
+    assert result[1]["required_job_context"] == "Document Control"
+    assert result[1]["required_factorName"] == "Record Classification"
+    assert result[1]["required_followup_focus_slot"] == 1
+    assert "Record Classification" in result[1]["required_followup_focus_example"]
+
+
+def test_planned_question_sequence_for_prompt_sets_method_specific_followup_focus_slots():
+    plan = {
+        "question_sequence": [
+            {"detail": "Office Admin"},
+            {"detail": "Office Admin"},
+            {"detail": "Office Admin"},
+            {"detail": "Office Admin"},
+        ]
+    }
+    ncs_matches = [
+        {"ncsClCd": "U1", "compeUnitName": "Presentation Unit", "ncsSubdCdnm": "Office Admin"},
+        {"ncsClCd": "U2", "compeUnitName": "Discussion Unit", "ncsSubdCdnm": "Office Admin"},
+        {"ncsClCd": "U3", "compeUnitName": "Creative Unit", "ncsSubdCdnm": "Office Admin"},
+        {"ncsClCd": "U4", "compeUnitName": "Situation Unit", "ncsSubdCdnm": "Office Admin"},
+    ]
+    ncs_ksa = [
+        {"ncsClCd": "U1", "factorName": "Evidence Analysis"},
+        {"ncsClCd": "U2", "factorName": "Position Rationale"},
+        {"ncsClCd": "U3", "factorName": "Alternative Validation"},
+        {"ncsClCd": "U4", "factorName": "Risk Control"},
+    ]
+
+    result = _planned_question_sequence_for_prompt(
+        plan,
+        ["발표면접", "토론면접", "창의적 문제해결력면접", "상황면접"],
+        4,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+
+    assert result[0]["required_followup_focus_slot"] == 0
+    assert "발표 쟁점" in result[0]["required_followup_focus_example"]
+    assert "Evidence Analysis" in result[0]["required_followup_focus_example"]
+    assert result[1]["required_followup_focus_slot"] == 0
+    assert "토론 쟁점" in result[1]["required_followup_focus_example"]
+    assert "Position Rationale" in result[1]["required_followup_focus_example"]
+    assert result[2]["required_followup_focus_slot"] == 1
+    assert "원인과 대안" in result[2]["required_followup_focus_example"]
+    assert "Alternative Validation" in result[2]["required_followup_focus_example"]
+    assert "Creative Unit" in result[2]["required_followup_focus_example"]
+    assert result[3]["required_followup_focus_slot"] == 1
+    assert "상황의 판단 기준" in result[3]["required_followup_focus_example"]
+    assert "Risk Control" in result[3]["required_followup_focus_example"]
+    assert "Situation Unit" in result[3]["required_followup_focus_example"]
 
 
 class TestCountHangul:

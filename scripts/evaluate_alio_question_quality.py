@@ -22,6 +22,7 @@ from app.main import (  # noqa: E402
     SUPPORTED_INTERVIEW_METHODS,
     _adjust_generated_questions,
     _attach_ksa_evidence_to_strategy,
+    _parse_interview_methods,
     _parse_question_plan_json,
     _select_units_for_question_plan,
 )
@@ -29,9 +30,49 @@ from app.services.kordoc_parser import KordocParseError, structure_job_descripti
 from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units, search_units_by_detail, suggest_units_by_text  # noqa: E402
 from app.services.jd_strategy import build_strategy_with_openai as build_jd_strategy_with_openai  # noqa: E402
 from benchmark_alio_jd import detail_member_map, parse_benchmark_document  # noqa: E402
+from detail_gap_classifier import (  # noqa: E402
+    classify_unmatched_detail_gap,
+    manual_review_suggestions as shared_manual_review_suggestions,
+    normalize_detail_key,
+)
 
 
 BENCHMARK_MODES = {"template", "model", "auto"}
+FULL_MODEL_QUESTION_SOURCE = "model"
+MODEL_MAIN_TEMPLATE_FOLLOWUPS_SOURCE = "model_main_template_followups"
+MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE = "model_main_repaired_followups"
+MODEL_QUESTION_SOURCES = {
+    FULL_MODEL_QUESTION_SOURCE,
+    MODEL_MAIN_TEMPLATE_FOLLOWUPS_SOURCE,
+    MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE,
+}
+MODEL_ORIGIN_READY_SOURCES = {
+    FULL_MODEL_QUESTION_SOURCE,
+    MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE,
+}
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().lstrip("\ufeff")
+        value = value.strip()
+        if key and value and key not in os.environ and "YOUR_" not in value and "SET_STRONG" not in value:
+            os.environ[key] = value
+
+
+def _mcp_preflight_error() -> str:
+    if os.getenv("NCS_MCP_URL", "").strip():
+        return ""
+    return (
+        "NCS_MCP_URL is required for ALIO question quality evaluation. "
+        "Set it explicitly or keep it in .env; pass --no-load-dotenv only when the environment is already configured."
+    )
 
 
 def _idx_from_path(path: Path) -> str:
@@ -107,8 +148,10 @@ def _build_benchmark_strategy(
     follow_up_count: int,
     benchmark_mode: str,
     openai_api_key: str,
+    interview_methods: list[str] | None = None,
 ) -> tuple[dict[str, Any], str]:
     resolved_mode = _resolve_benchmark_mode(benchmark_mode, openai_api_key)
+    methods = list(interview_methods or SUPPORTED_INTERVIEW_METHODS)
     if resolved_mode == "model":
         strategy = build_jd_strategy_with_openai(
             jd_text=str(parsed.get("markdown") or ""),
@@ -125,7 +168,7 @@ def _build_benchmark_strategy(
             target_count_override=int(plan.get("total_main_count") or 0) or None,
             follow_up_count=follow_up_count,
             question_plan=plan,
-            interview_methods=list(SUPPORTED_INTERVIEW_METHODS),
+            interview_methods=methods,
         )
         if not isinstance(strategy, dict):
             strategy = {
@@ -144,7 +187,7 @@ def _build_benchmark_strategy(
     strategy = _adjust_generated_questions(
         strategy,
         plan,
-        list(SUPPORTED_INTERVIEW_METHODS),
+        methods,
         ncs_matches=units,
         ncs_ksa=ksa,
     )
@@ -166,73 +209,40 @@ def _dedup_units(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _norm_detail_key(value: Any) -> str:
-    return re.sub(r"[\s\-\_/|(),.·・〮‧･ㆍ•∙⋅]+", "", str(value or "")).lower()
-
-
-_MANUAL_REVIEW_SUGGESTIONS_BY_KEY: dict[str, str] = {
-    _norm_detail_key("간호업무 보조"): (
-        "manual-review-only: nearby 요양지원 units include "
-        "0601010801_23v3 진료지원보조, 0601010802_23v3 물품전달, "
-        "0601010803_23v3 환자이송지원, 0601010808_23v3 사고예방지원; "
-        "do not count as exact coverage without human selection"
-    ),
-    _norm_detail_key("간호행정 보조"): (
-        "manual-review-only: no exact local NCS hit; broad 병원행정 candidates are too weak for automatic coverage"
-    ),
-    _norm_detail_key("재원환자 관리"): (
-        "false friend: element-level 재원환자 관리하기 belongs to 0601020110_16v2 진료비관리 under 병원행정; "
-        "keep unresolved in clinical nursing context"
-    ),
-    _norm_detail_key("응급 환자 관리"): (
-        "manual-review-only: source-like 0602020000_17v1 is not available in local MCP; "
-        "응급환자 searches return rescue/industrial units, not nursing"
-    ),
-    _norm_detail_key("영상의학"): (
-        "manual-review-only: no exact local/public NCS unit hit for human radiology context"
-    ),
-    _norm_detail_key("임상병리"): (
-        "false friend: public NCS search returns animal/nonclinical pathology hits, not human clinical laboratory context"
-    ),
-    _norm_detail_key("간호조무"): (
-        "manual-review-only: no exact local/public NCS hit; nearby 요양지원 or 병원행정 units require human selection"
-    ),
-    _norm_detail_key("간호수행"): (
-        "manual-review-only: no exact local/public NCS hit for nursing-performance label"
-    ),
-    _norm_detail_key("간호행정관리"): (
-        "manual-review-only: no exact local/public NCS hit; broad 병원행정 candidates are too weak for automatic coverage"
-    ),
-    _norm_detail_key("유지관리"): (
-        "manual-review-only: explicit JD label, but current local NCS_MCP has no exact detail coverage; "
-        "do not borrow broad maintenance suggestions automatically"
-    ),
-    _norm_detail_key("건축감리"): (
-        "manual-review-only: explicit JD label, but current local NCS_MCP has no exact detail coverage"
-    ),
-    _norm_detail_key("문화・관광정책"): (
-        "manual-review-only: explicit JD label, but current local NCS_MCP has no exact detail or unit-name coverage"
-    ),
-}
+    return normalize_detail_key(value)
 
 
 def _manual_review_suggestions(details: list[str]) -> str:
-    suggestions: list[str] = []
-    for detail in details:
-        term = str(detail or "").strip()
-        suggestion = _MANUAL_REVIEW_SUGGESTIONS_BY_KEY.get(_norm_detail_key(term))
-        if suggestion:
-            suggestions.append(f"{term}: {suggestion}")
-    return " | ".join(suggestions)
+    return shared_manual_review_suggestions(details)
 
 
-def _exact_units_by_detail(
+def _parent_detail_from_unit(unit: dict[str, Any]) -> str:
+    for field in ("canonicalDetailName", "ncsSubdCdnm", "matchedNcsSubdCdnm"):
+        value = str(unit.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _format_detail_resolution(records: list[dict[str, Any]], field: str) -> str:
+    parts: list[str] = []
+    for record in records:
+        detail = str(record.get("detail") or "").strip()
+        value = str(record.get(field) or "").strip()
+        if detail and value:
+            parts.append(f"{detail}: {value}")
+    return " | ".join(parts)
+
+
+def _detail_resolution_records(
     details: list[str],
     max_units_per_detail: int,
-) -> tuple[list[str], list[str], list[dict[str, Any]], list[str]]:
+) -> tuple[list[str], list[str], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     exact_details: list[str] = []
     unit_name_details: list[str] = []
     units: list[dict[str, Any]] = []
     unmatched: list[str] = []
+    records: list[dict[str, Any]] = []
     for detail in details:
         term = str(detail or "").strip()
         if not term:
@@ -241,6 +251,16 @@ def _exact_units_by_detail(
         if found:
             exact_details.append(term)
             units.extend(found)
+            records.append(
+                {
+                    "detail": term,
+                    "coverage_status": "exact",
+                    "resolved_parent_detail": _parent_detail_from_unit(found[0]),
+                    "coverage_blocker_type": "",
+                    "review_action": "",
+                    "coverage_blocker_reason": "",
+                }
+            )
         else:
             suggestions = suggest_units_by_text([term], max_units=max_units_per_detail)
             unit_matches = [
@@ -252,7 +272,12 @@ def _exact_units_by_detail(
                     or _norm_detail_key(row.get("compeUnitName")) == _norm_detail_key(term)
                 )
             ]
-            if unit_matches:
+            gap = classify_unmatched_detail_gap(
+                term,
+                suggestions=suggestions,
+                unit_name_matches=unit_matches,
+            )
+            if gap["match_diagnostic"] == "unit_name_only":
                 unit_name_details.append(term)
                 for row in unit_matches:
                     copied = dict(row)
@@ -260,9 +285,43 @@ def _exact_units_by_detail(
                     copied["matchedDetailName"] = term
                     copied["unitNameMatchedDetailLabel"] = term
                     units.append(copied)
+                records.append(
+                    {
+                        "detail": term,
+                        "coverage_status": "unit_name_only",
+                        "resolved_parent_detail": _parent_detail_from_unit(unit_matches[0]) if unit_matches else "",
+                        "coverage_blocker_type": gap.get("match_diagnostic", "unit_name_only"),
+                        "review_action": gap.get("review_action", "manual_review_unit_name"),
+                        "coverage_blocker_reason": gap.get("review_reason", ""),
+                    }
+                )
             else:
                 unmatched.append(term)
-    return exact_details, unit_name_details, _dedup_units(units), unmatched
+                parent_detail = ""
+                if suggestions:
+                    parent_detail = _parent_detail_from_unit(suggestions[0])
+                records.append(
+                    {
+                        "detail": term,
+                        "coverage_status": "unmatched",
+                        "resolved_parent_detail": parent_detail,
+                        "coverage_blocker_type": gap.get("match_diagnostic", "catalog_gap_or_nonstandard_source_label"),
+                        "review_action": gap.get("review_action", "manual_review_no_match"),
+                        "coverage_blocker_reason": gap.get("review_reason", ""),
+                    }
+                )
+    return exact_details, unit_name_details, _dedup_units(units), unmatched, records
+
+
+def _exact_units_by_detail(
+    details: list[str],
+    max_units_per_detail: int,
+) -> tuple[list[str], list[str], list[dict[str, Any]], list[str]]:
+    exact_details, unit_name_details, units, unmatched, _records = _detail_resolution_records(
+        details,
+        max_units_per_detail,
+    )
+    return exact_details, unit_name_details, units, unmatched
 
 
 def evaluate_cached_document(
@@ -276,14 +335,17 @@ def evaluate_cached_document(
     ksa_factors_per_unit: int,
     benchmark_mode: str = "template",
     openai_api_key: str = "",
+    interview_methods: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     idx = _idx_from_path(path)
+    methods = list(interview_methods or SUPPORTED_INTERVIEW_METHODS)
     row: dict[str, Any] = {
         "idx": idx,
         "attachment": path.name,
         "status": "unknown",
         "benchmark_mode": _normalize_benchmark_mode(benchmark_mode),
         "resolved_benchmark_mode": _resolve_benchmark_mode(benchmark_mode, openai_api_key),
+        "interview_methods": ", ".join(methods),
         "strategy_generation_policy": "",
         "strategy_error": "",
         "strategy_warning": "",
@@ -299,7 +361,11 @@ def evaluate_cached_document(
         "needs_review_questions": 0,
         "model_candidate_questions": 0,
         "model_questions": 0,
+        "model_full_questions": 0,
+        "model_main_template_followup_questions": 0,
+        "model_main_repaired_followup_questions": 0,
         "model_ready_questions": 0,
+        "model_origin_ready_questions": 0,
         "model_replaced_by_template_questions": 0,
         "template_inserted_questions": 0,
         "template_fallback_questions": 0,
@@ -316,6 +382,10 @@ def evaluate_cached_document(
         "unit_name_details": "",
         "unmatched_details": "",
         "skipped_details": "",
+        "coverage_blocker_type": "",
+        "resolved_parent_detail": "",
+        "review_action": "",
+        "coverage_blocker_reason": "",
         "manual_review_suggestions": "",
         "error": "",
     }
@@ -331,12 +401,32 @@ def evaluate_cached_document(
         row["details"] = "; ".join(details)
         if not details:
             row["status"] = "parsed_no_detail"
+            row["coverage_blocker_type"] = "parsed_no_detail"
+            row["review_action"] = "manual_review_parse_or_source_mapping"
+            absence_reason = str(fields.get("ncs_detail_absence_reason") or "").strip()
+            if absence_reason:
+                row["coverage_blocker_reason"] = absence_reason
+                row["manual_review_suggestions"] = f"parsed-no-detail: {absence_reason}"
             return row, question_rows
 
         detail_members = detail_member_map(parsed, fallback_member=path.name, details=details)
         checked_details = details[:max_details_per_doc]
         skipped_details = details[max_details_per_doc:]
-        exact_details, unit_name_details, units, unmatched = _exact_units_by_detail(checked_details, max_units_per_detail)
+        exact_details, unit_name_details, units, unmatched, resolution_records = _detail_resolution_records(
+            checked_details,
+            max_units_per_detail,
+        )
+        for skipped_detail in skipped_details:
+            resolution_records.append(
+                {
+                    "detail": skipped_detail,
+                    "coverage_status": "skipped",
+                    "resolved_parent_detail": "",
+                    "coverage_blocker_type": "skipped_by_max_details_per_doc",
+                    "review_action": "increase_max_details_per_doc_or_manual_select",
+                    "coverage_blocker_reason": "Detail label was not checked because the per-document detail limit was reached.",
+                }
+            )
         uncovered_details = unmatched + skipped_details
         covered_details = exact_details + unit_name_details
         row["exact_detail_count"] = len(exact_details)
@@ -348,6 +438,22 @@ def evaluate_cached_document(
         row["unit_name_details"] = "; ".join(unit_name_details)
         row["unmatched_details"] = "; ".join(unmatched)
         row["skipped_details"] = "; ".join(skipped_details)
+        row["coverage_blocker_type"] = _format_detail_resolution(
+            [record for record in resolution_records if str(record.get("coverage_blocker_type") or "").strip()],
+            "coverage_blocker_type",
+        )
+        row["resolved_parent_detail"] = _format_detail_resolution(
+            [record for record in resolution_records if str(record.get("resolved_parent_detail") or "").strip()],
+            "resolved_parent_detail",
+        )
+        row["review_action"] = _format_detail_resolution(
+            [record for record in resolution_records if str(record.get("review_action") or "").strip()],
+            "review_action",
+        )
+        row["coverage_blocker_reason"] = _format_detail_resolution(
+            [record for record in resolution_records if str(record.get("coverage_blocker_reason") or "").strip()],
+            "coverage_blocker_reason",
+        )
         row["manual_review_suggestions"] = _manual_review_suggestions(unmatched)
         if not covered_details or not units:
             row["status"] = "no_exact_units"
@@ -371,6 +477,7 @@ def evaluate_cached_document(
             follow_up_count=follow_up_count,
             benchmark_mode=benchmark_mode,
             openai_api_key=openai_api_key,
+            interview_methods=methods,
         )
         row["resolved_benchmark_mode"] = resolved_mode
         row["strategy_generation_policy"] = str(strategy.get("question_generation_policy") or "")
@@ -388,6 +495,12 @@ def evaluate_cached_document(
         explicit_detail_source = row.get("detail_source") == "explicit"
         contextual_detail_source = row.get("detail_source") == "contextual"
         coverage_passed = bool(exact_coverage_complete and explicit_detail_source)
+        if coverage_complete and contextual_detail_source and not str(row.get("coverage_blocker_type") or "").strip():
+            row["coverage_blocker_type"] = "detail_source: contextual_detail_source_not_strict"
+            row["review_action"] = "detail_source: manual_review_contextual_detail_source"
+            row["coverage_blocker_reason"] = (
+                "All extracted details were covered, but the detail source was inferred contextually rather than explicit in the JD."
+            )
 
         questions = strategy.get("interview_questions") if isinstance(strategy.get("interview_questions"), list) else []
         report_items = [item for item in (report.get("items") or []) if isinstance(item, dict)]
@@ -397,7 +510,11 @@ def evaluate_cached_document(
             if str(item.get("index") or "").strip()
         }
         model_questions = 0
+        model_full_questions = 0
+        model_main_template_followup_questions = 0
+        model_main_repaired_followup_questions = 0
         model_ready_questions = 0
+        model_origin_ready_questions = 0
         model_candidate_questions = 0
         model_replaced_questions = 0
         template_inserted_questions = 0
@@ -411,9 +528,17 @@ def evaluate_cached_document(
             had_model_candidate = bool(raw_model_question)
             model_candidate_questions += int(had_model_candidate)
             is_ready = bool(ready_by_index.get(q_index))
-            if source == "model":
+            if source in MODEL_QUESTION_SOURCES:
                 model_questions += 1
-                model_ready_questions += int(is_ready)
+                if source == FULL_MODEL_QUESTION_SOURCE:
+                    model_full_questions += 1
+                    model_ready_questions += int(is_ready)
+                elif source == MODEL_MAIN_TEMPLATE_FOLLOWUPS_SOURCE:
+                    model_main_template_followup_questions += 1
+                elif source == MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE:
+                    model_main_repaired_followup_questions += 1
+                if source in MODEL_ORIGIN_READY_SOURCES:
+                    model_origin_ready_questions += int(is_ready)
             elif source == "template_fallback":
                 fallback_questions += 1
                 fallback_ready_questions += int(is_ready)
@@ -427,11 +552,16 @@ def evaluate_cached_document(
         model_quality_passed = bool(
             question_gate_passed
             and row["generated_questions"] > 0
-            and model_questions == row["generated_questions"]
+            and model_origin_ready_questions == row["generated_questions"]
+            and model_main_template_followup_questions == 0
         )
         row["model_candidate_questions"] = model_candidate_questions
         row["model_questions"] = model_questions
+        row["model_full_questions"] = model_full_questions
+        row["model_main_template_followup_questions"] = model_main_template_followup_questions
+        row["model_main_repaired_followup_questions"] = model_main_repaired_followup_questions
         row["model_ready_questions"] = model_ready_questions
+        row["model_origin_ready_questions"] = model_origin_ready_questions
         row["model_replaced_by_template_questions"] = model_replaced_questions
         row["template_inserted_questions"] = template_inserted_questions
         row["template_fallback_questions"] = fallback_questions
@@ -464,6 +594,8 @@ def evaluate_cached_document(
             question_source = ""
             canonical_detail = ""
             model_question_raw = ""
+            model_followups_raw: list[str] = []
+            model_evaluation_points_raw: list[str] = []
             model_question_preserved: Any = ""
             model_replacement_reasons: list[str] = []
             follow_ups: list[str] = []
@@ -477,6 +609,16 @@ def evaluate_cached_document(
                 question_source = str(q_obj.get("question_source") or "").strip()
                 canonical_detail = str(q_obj.get("ncsSubdCdnm") or "").strip()
                 model_question_raw = str(q_obj.get("model_question_raw") or "").strip()
+                model_followups_raw = [
+                    str(x).strip()
+                    for x in (q_obj.get("model_followups_raw") or [])
+                    if str(x).strip()
+                ] if isinstance(q_obj.get("model_followups_raw"), list) else []
+                model_evaluation_points_raw = [
+                    str(x).strip()
+                    for x in (q_obj.get("model_evaluation_points_raw") or [])
+                    if str(x).strip()
+                ] if isinstance(q_obj.get("model_evaluation_points_raw"), list) else []
                 model_question_preserved = q_obj.get("model_question_preserved", "")
                 model_replacement_reasons = [
                     str(x).strip()
@@ -500,6 +642,8 @@ def evaluate_cached_document(
                     "ncsClCd": item.get("ncsClCd", ""),
                     "question_source": question_source,
                     "model_question_raw": model_question_raw[:300],
+                    "model_followups_raw": " | ".join(model_followups_raw)[:500],
+                    "model_evaluation_points_raw": " | ".join(model_evaluation_points_raw)[:500],
                     "model_question_preserved": model_question_preserved,
                     "model_replacement_reasons": " | ".join(model_replacement_reasons),
                     "question": question[:300],
@@ -532,6 +676,7 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "status",
         "benchmark_mode",
         "resolved_benchmark_mode",
+        "interview_methods",
         "strategy_generation_policy",
         "strategy_error",
         "strategy_warning",
@@ -547,7 +692,11 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "needs_review_questions",
         "model_candidate_questions",
         "model_questions",
+        "model_full_questions",
+        "model_main_template_followup_questions",
+        "model_main_repaired_followup_questions",
         "model_ready_questions",
+        "model_origin_ready_questions",
         "model_replaced_by_template_questions",
         "template_inserted_questions",
         "template_fallback_questions",
@@ -564,6 +713,10 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "unit_name_details",
         "unmatched_details",
         "skipped_details",
+        "coverage_blocker_type",
+        "resolved_parent_detail",
+        "review_action",
+        "coverage_blocker_reason",
         "manual_review_suggestions",
         "error",
     ]
@@ -585,6 +738,8 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "ncsClCd",
         "question_source",
         "model_question_raw",
+        "model_followups_raw",
+        "model_evaluation_points_raw",
         "model_question_preserved",
         "model_replacement_reasons",
         "question",
@@ -634,20 +789,45 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
     explicit_detail_rows = sum(1 for row in rows if row.get("detail_source") == "explicit")
     contextual_detail_rows = sum(1 for row in rows if row.get("detail_source") == "contextual")
     resolved_mode_counts: dict[str, int] = {}
+    method_config_counts: dict[str, int] = {}
+    coverage_blocker_counts: dict[str, int] = {}
     for row in rows:
         mode = str(row.get("resolved_benchmark_mode") or "unknown").strip() or "unknown"
         resolved_mode_counts[mode] = resolved_mode_counts.get(mode, 0) + 1
+        method_config = str(row.get("interview_methods") or "").strip()
+        if method_config:
+            method_config_counts[method_config] = method_config_counts.get(method_config, 0) + 1
+        for part in str(row.get("coverage_blocker_type") or "").split("|"):
+            value = part.strip()
+            if not value:
+                continue
+            blocker_type = value.split(":", 1)[1].strip() if ":" in value else value
+            if blocker_type:
+                coverage_blocker_counts[blocker_type] = coverage_blocker_counts.get(blocker_type, 0) + 1
     total_questions = sum(int(row.get("generated_questions") or 0) for row in rows)
     ready_questions = sum(int(row.get("ready_questions") or 0) for row in rows)
     model_candidate_questions = sum(int(row.get("model_candidate_questions") or 0) for row in rows)
     model_questions = sum(int(row.get("model_questions") or 0) for row in rows)
+    model_full_questions = sum(int(row.get("model_full_questions") or 0) for row in rows)
+    model_main_template_followup_questions = sum(
+        int(row.get("model_main_template_followup_questions") or 0) for row in rows
+    )
+    model_main_repaired_followup_questions = sum(
+        int(row.get("model_main_repaired_followup_questions") or 0) for row in rows
+    )
     model_ready_questions = sum(int(row.get("model_ready_questions") or 0) for row in rows)
+    model_origin_ready_questions = sum(
+        int(row.get("model_origin_ready_questions") or row.get("model_ready_questions") or 0)
+        for row in rows
+    )
     model_replaced_questions = sum(int(row.get("model_replaced_by_template_questions") or 0) for row in rows)
     template_inserted_questions = sum(int(row.get("template_inserted_questions") or 0) for row in rows)
     fallback_questions = sum(int(row.get("template_fallback_questions") or 0) for row in rows)
     fallback_ready_questions = sum(int(row.get("template_fallback_ready_questions") or 0) for row in rows)
     method_stats: dict[str, dict[str, int]] = {}
+    issue_stats_by_method: dict[str, dict[str, int]] = {}
     question_source_counts: dict[str, int] = {}
+    ready_source_counts: dict[str, int] = {}
     replacement_reason_counts: dict[str, int] = {}
     for item in question_rows:
         method = str(item.get("type") or "unknown").strip() or "unknown"
@@ -658,12 +838,38 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
             stats["ready"] += 1
         if "official_sample_format" in str(item.get("issues") or ""):
             stats["official_sample_format_fail"] += 1
+        for issue in re.split(r"[;|]", str(item.get("issues") or "")):
+            issue = issue.strip()
+            if issue:
+                issue_stats = issue_stats_by_method.setdefault(method, {})
+                issue_stats[issue] = issue_stats.get(issue, 0) + 1
         source = str(item.get("question_source") or "unknown").strip() or "unknown"
         question_source_counts[source] = question_source_counts.get(source, 0) + 1
+        ready_value = item.get("ready")
+        if ready_value is True or str(ready_value).lower() == "true":
+            ready_source_counts[source] = ready_source_counts.get(source, 0) + 1
         for reason in str(item.get("model_replacement_reasons") or "").split("|"):
             reason = reason.strip()
             if reason:
                 replacement_reason_counts[reason] = replacement_reason_counts.get(reason, 0) + 1
+    derived_model_full_questions = question_source_counts.get("model", 0)
+    derived_model_main_template_followup_questions = question_source_counts.get("model_main_template_followups", 0)
+    derived_model_main_repaired_followup_questions = question_source_counts.get("model_main_repaired_followups", 0)
+    if (
+        question_rows
+        and model_full_questions == 0
+        and model_main_template_followup_questions == 0
+        and model_main_repaired_followup_questions == 0
+    ):
+        model_full_questions = derived_model_full_questions
+        model_main_template_followup_questions = derived_model_main_template_followup_questions
+        model_main_repaired_followup_questions = derived_model_main_repaired_followup_questions
+    if question_rows and model_origin_ready_questions == 0:
+        model_origin_ready_questions = sum(
+            count
+            for source, count in ready_source_counts.items()
+            if source in MODEL_ORIGIN_READY_SOURCES
+        )
     template_adjusted_avg = round(
         sum(float(row.get("average_score") or 0.0) for row in rows if row.get("status") in evaluated_statuses)
         / max(1, evaluated),
@@ -680,6 +886,7 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         f"- Documents attempted: {len(rows)}",
         f"- Documents evaluated: {evaluated}",
         f"- Resolved benchmark modes: {', '.join(f'{key}={value}' for key, value in sorted(resolved_mode_counts.items()))}",
+        f"- Interview methods requested: {', '.join(f'{key} ({value})' for key, value in sorted(method_config_counts.items())) or 'unknown'}",
         f"- Documents strict source-explicit coverage + template-ready: {strict_template_passed}",
         f"- Documents passed model-origin quality gate: {model_quality_passed}",
         f"- Documents passed model-origin quality + strict coverage: {model_full_passed}",
@@ -691,12 +898,17 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         f"- Contextual detail-source documents: {contextual_detail_rows}",
         f"- Unmatched detail labels: {sum(int(row.get('unmatched_detail_count') or 0) for row in rows)}",
         f"- Skipped detail labels due to per-doc limit: {sum(int(row.get('skipped_detail_count') or 0) for row in rows)}",
+        f"- Coverage blocker types: {', '.join(f'{key}={value}' for key, value in sorted(coverage_blocker_counts.items())) or 'none'}",
         f"- Documents with manual-review suggestions: {manual_suggestion_rows}",
         f"- Evaluated questions after adjustment: {total_questions}",
         f"- Template-adjusted ready questions: {ready_questions}",
         f"- Model candidate questions received: {model_candidate_questions}",
         f"- Model-origin questions evaluated: {model_questions}",
-        f"- Model-origin ready questions: {model_ready_questions}",
+        f"- Model-origin ready questions: {model_origin_ready_questions}",
+        f"- Fully model-preserved ready questions: {model_ready_questions}",
+        f"- Fully model-preserved questions: {model_full_questions}",
+        f"- Model-main with repaired follow-ups: {model_main_repaired_followup_questions}",
+        f"- Model-main with template follow-ups: {model_main_template_followup_questions}",
         f"- Model questions replaced by template: {model_replaced_questions}",
         f"- Template questions inserted without model candidate: {template_inserted_questions}",
         f"- Template fallback questions: {fallback_questions}",
@@ -707,8 +919,8 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "> This report distinguishes template-fallback compliance from model-origin generation quality. "
         "If `Model-origin questions evaluated` is 0, method readiness below measures deterministic fallback templates, not LLM output.",
         "",
-        "| idx | status | model pass | full pass | template pass | mode | source | details | exact | unit-name | unmatched | skipped | adjusted q | ready | model cand | model kept | model repl | inserted | fallback q | tpl score | strict score | unresolved details |",
-        "| --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| idx | status | model pass | full pass | template pass | mode | source | details | exact | unit-name | unmatched | skipped | adjusted q | ready | model cand | model-origin | full model | repaired fu | template fu | model repl | inserted | fallback q | tpl score | strict score | unresolved details |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in rows:
         unmatched = str(row.get("unmatched_details") or "").replace("|", "/")
@@ -725,7 +937,10 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
             f"{row.get('unmatched_detail_count') or 0} | {row.get('skipped_detail_count') or 0} | "
             f"{row.get('generated_questions') or 0} | "
             f"{row.get('ready_questions') or 0} | {row.get('model_candidate_questions') or 0} | "
-            f"{row.get('model_questions') or 0} | {row.get('model_replaced_by_template_questions') or 0} | "
+            f"{row.get('model_questions') or 0} | {row.get('model_full_questions') or 0} | "
+            f"{row.get('model_main_repaired_followup_questions') or 0} | "
+            f"{row.get('model_main_template_followup_questions') or 0} | "
+            f"{row.get('model_replaced_by_template_questions') or 0} | "
             f"{row.get('template_inserted_questions') or 0} | {row.get('template_fallback_questions') or 0} | "
             f"{row.get('average_score') or 0} | "
             f"{row.get('coverage_adjusted_score') or 0} | {unresolved} |"
@@ -733,8 +948,10 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
     suggestion_rows = [row for row in rows if str(row.get("manual_review_suggestions") or "").strip()]
     if method_stats:
         lines.extend(["", "## Method Quality", ""])
-        lines.append("| method | questions | ready | ready rate | model | fallback | official sample format fails |")
-        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+        lines.append(
+            "| method | questions | ready | ready rate | full model | model-main + repaired follow-ups | model-main + template follow-ups | fallback | official sample format fails |"
+        )
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
         for method, stats in sorted(method_stats.items()):
             total = int(stats.get("total") or 0)
             ready = int(stats.get("ready") or 0)
@@ -743,7 +960,19 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
                 1
                 for item in question_rows
                 if str(item.get("type") or "").strip() == method
-                and str(item.get("question_source") or "").strip() == "model"
+                and str(item.get("question_source") or "").strip() == FULL_MODEL_QUESTION_SOURCE
+            )
+            mixed_total = sum(
+                1
+                for item in question_rows
+                if str(item.get("type") or "").strip() == method
+                and str(item.get("question_source") or "").strip() == MODEL_MAIN_TEMPLATE_FOLLOWUPS_SOURCE
+            )
+            repaired_total = sum(
+                1
+                for item in question_rows
+                if str(item.get("type") or "").strip() == method
+                and str(item.get("question_source") or "").strip() == MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE
             )
             fallback_total = sum(
                 1
@@ -752,9 +981,18 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
                 and str(item.get("question_source") or "").strip() == "template_fallback"
             )
             lines.append(
-                f"| {method} | {total} | {ready} | {rate} | {model_total} | {fallback_total} | "
+                f"| {method} | {total} | {ready} | {rate} | {model_total} | {repaired_total} | {mixed_total} | {fallback_total} | "
                 f"{stats.get('official_sample_format_fail') or 0} |"
             )
+    lines.extend(["", "## Quality Issues By Method", ""])
+    if issue_stats_by_method:
+        lines.append("| method | issue | questions |")
+        lines.append("| --- | --- | ---: |")
+        for method, issue_stats in sorted(issue_stats_by_method.items()):
+            for issue, count in sorted(issue_stats.items()):
+                lines.append(f"| {method} | {issue} | {count} |")
+    else:
+        lines.append("No quality issues recorded.")
     if question_source_counts:
         lines.extend(["", "## Question Source", ""])
         lines.append("| source | questions |")
@@ -787,28 +1025,78 @@ def _metric_int(row: dict[str, Any], key: str) -> int:
 def quality_gate_failures(
     rows: list[dict[str, Any]],
     *,
+    min_evaluated_doc_rate: float | None = None,
     min_model_ready_rate: float | None = None,
+    min_full_model_rate: float | None = None,
     fail_on_model_replacements: bool = False,
     fail_on_template_insertions: bool = False,
+    fail_on_repaired_followups: bool = False,
 ) -> list[str]:
     model_candidate_questions = sum(_metric_int(row, "model_candidate_questions") for row in rows)
-    model_ready_questions = sum(_metric_int(row, "model_ready_questions") for row in rows)
+    model_full_questions = sum(_metric_int(row, "model_full_questions") for row in rows)
+    model_origin_ready_questions = sum(
+        _metric_int(row, "model_origin_ready_questions")
+        if "model_origin_ready_questions" in row
+        else _metric_int(row, "model_ready_questions")
+        for row in rows
+    )
+    repaired_followups = sum(_metric_int(row, "model_main_repaired_followup_questions") for row in rows)
     model_replacements = sum(_metric_int(row, "model_replaced_by_template_questions") for row in rows)
     template_insertions = sum(_metric_int(row, "template_inserted_questions") for row in rows)
+    evaluated_statuses = {
+        "ok_model",
+        "template_ready",
+        "template_ready_unit_name_resolved",
+        "template_ready_contextual_detail",
+        "template_ready_partial_detail_coverage",
+        "needs_review",
+        "ok",
+        "ok_unit_name_resolved",
+        "ok_contextual_detail",
+        "partial_detail_coverage",
+    }
+    attempted_docs = len(rows)
+    evaluated_docs = sum(1 for row in rows if row.get("status") in evaluated_statuses)
 
     failures: list[str] = []
+    if min_evaluated_doc_rate is not None:
+        threshold = float(min_evaluated_doc_rate)
+        if attempted_docs <= 0:
+            if threshold > 0:
+                failures.append(f"no_documents for min_evaluated_doc_rate {threshold:.2f}")
+        else:
+            rate = evaluated_docs / attempted_docs
+            if rate < threshold:
+                failures.append(
+                    f"evaluated_doc_rate {rate:.2f} below minimum {threshold:.2f} "
+                    f"({evaluated_docs}/{attempted_docs} documents reached question evaluation)"
+                )
     if min_model_ready_rate is not None:
         threshold = float(min_model_ready_rate)
         if model_candidate_questions <= 0:
             if threshold > 0:
                 failures.append(f"no_model_candidate_questions for min_model_ready_rate {threshold:.2f}")
         else:
-            rate = model_ready_questions / model_candidate_questions
+            rate = model_origin_ready_questions / model_candidate_questions
             if rate < threshold:
                 failures.append(
-                    f"model_ready_rate {rate:.2f} below minimum {threshold:.2f} "
-                    f"({model_ready_questions}/{model_candidate_questions} model candidate questions ready)"
+                    f"model_origin_ready_rate {rate:.2f} below minimum {threshold:.2f} "
+                    f"({model_origin_ready_questions}/{model_candidate_questions} model-origin candidate questions ready)"
                 )
+    if min_full_model_rate is not None:
+        threshold = float(min_full_model_rate)
+        if model_candidate_questions <= 0:
+            if threshold > 0:
+                failures.append(f"no_model_candidate_questions for min_full_model_rate {threshold:.2f}")
+        else:
+            rate = model_full_questions / model_candidate_questions
+            if rate < threshold:
+                failures.append(
+                    f"full_model_rate {rate:.2f} below minimum {threshold:.2f} "
+                    f"({model_full_questions}/{model_candidate_questions} candidate questions fully model-preserved)"
+                )
+    if fail_on_repaired_followups and repaired_followups > 0:
+        failures.append(f"model_main_repaired_followups {repaired_followups} > 0")
     if fail_on_model_replacements and model_replacements > 0:
         failures.append(f"model_replacements {model_replacements} > 0")
     if fail_on_template_insertions and template_insertions > 0:
@@ -829,11 +1117,27 @@ def main() -> int:
     parser.add_argument("--ksa-units", type=int, default=4)
     parser.add_argument("--ksa-factors-per-unit", type=int, default=6)
     parser.add_argument("--benchmark-mode", choices=sorted(BENCHMARK_MODES), default="template")
+    parser.add_argument(
+        "--interview-methods",
+        default="",
+        help="Comma/JSON-separated interview methods or aliases. Defaults to the standard supported methods.",
+    )
     parser.add_argument("--openai-api-key", default="")
+    parser.add_argument("--min-evaluated-doc-rate", type=float, default=None)
     parser.add_argument("--min-model-ready-rate", type=float, default=None)
+    parser.add_argument("--min-full-model-rate", type=float, default=None)
     parser.add_argument("--fail-on-model-replacements", action="store_true")
     parser.add_argument("--fail-on-template-insertions", action="store_true")
+    parser.add_argument("--fail-on-repaired-followups", action="store_true")
+    parser.add_argument("--no-load-dotenv", action="store_true", help="Do not load ROOT/.env before MCP preflight.")
     args = parser.parse_args()
+
+    if not args.no_load_dotenv:
+        _load_env_file(ROOT / ".env")
+    preflight_error = _mcp_preflight_error()
+    if preflight_error:
+        print(preflight_error, file=sys.stderr)
+        return 2
 
     cache_dir = Path(args.cache_dir)
     if not cache_dir.exists():
@@ -841,8 +1145,13 @@ def main() -> int:
     openai_api_key = str(args.openai_api_key or os.getenv("OPENAI_API_KEY", "")).strip()
     if _normalize_benchmark_mode(args.benchmark_mode) == "model" and not openai_api_key:
         raise SystemExit("--benchmark-mode model requires --openai-api-key or OPENAI_API_KEY")
+    if args.min_evaluated_doc_rate is not None and not 0 <= float(args.min_evaluated_doc_rate) <= 1:
+        raise SystemExit("--min-evaluated-doc-rate must be between 0 and 1")
     if args.min_model_ready_rate is not None and not 0 <= float(args.min_model_ready_rate) <= 1:
         raise SystemExit("--min-model-ready-rate must be between 0 and 1")
+    if args.min_full_model_rate is not None and not 0 <= float(args.min_full_model_rate) <= 1:
+        raise SystemExit("--min-full-model-rate must be between 0 and 1")
+    interview_methods = _parse_interview_methods(args.interview_methods)
     max_bytes = max(1, int(args.max_download_mb)) * 1024 * 1024
     rows: list[dict[str, Any]] = []
     question_rows: list[dict[str, Any]] = []
@@ -858,6 +1167,7 @@ def main() -> int:
             ksa_factors_per_unit=max(1, int(args.ksa_factors_per_unit)),
             benchmark_mode=args.benchmark_mode,
             openai_api_key=openai_api_key,
+            interview_methods=interview_methods,
         )
         rows.append(row)
         question_rows.extend(items)
@@ -869,9 +1179,12 @@ def main() -> int:
     print(f"rows={len(rows)}")
     failures = quality_gate_failures(
         rows,
+        min_evaluated_doc_rate=args.min_evaluated_doc_rate,
         min_model_ready_rate=args.min_model_ready_rate,
+        min_full_model_rate=args.min_full_model_rate,
         fail_on_model_replacements=bool(args.fail_on_model_replacements),
         fail_on_template_insertions=bool(args.fail_on_template_insertions),
+        fail_on_repaired_followups=bool(args.fail_on_repaired_followups),
     )
     for failure in failures:
         print(f"quality_gate_failure={failure}", file=sys.stderr)

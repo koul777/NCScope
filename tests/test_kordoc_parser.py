@@ -23,6 +23,72 @@ def test_structure_job_description_extracts_detail_from_html_table() -> None:
     ]
 
 
+def test_structure_job_description_merges_detail_from_kordoc_table_blocks() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [{"text": "구분"}, {"text": "내용"}],
+                    [{"text": "NCS 세분류명"}, {"text": "사무행정"}],
+                    [{"text": "담당업무"}, {"text": "문서 접수 및 보고자료 작성"}],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["사무행정"]
+    assert result["fields"]["ncs_detail_source"] == "explicit"
+    assert result["fields"]["ncs_detail_candidate_evidence"][0]["detail"] == "사무행정"
+    assert result["fields"]["ncs_detail_candidate_evidence"][0]["source"] == "kordoc"
+    assert "사무행정" in result["fields"]["ncs_detail_candidate_evidence"][0]["snippet"]
+    assert result["fields"]["duties"] == ["문서 접수 및 보고자료 작성"]
+
+
+def test_structure_job_description_splits_numbered_detail_cells_from_kordoc_blocks() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [{"text": "세분류명"}, {"text": "유원시설운영관리"}, {"text": "02.객실관리"}],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["유원시설운영관리", "객실관리"]
+
+
+def test_structure_job_description_does_not_recover_no_mapping_from_kordoc_blocks() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [{"text": "NCS 세분류명"}, {"text": "현재 NCS에 Mapping 가능한 직무가 없어 별도 분석"}],
+                    [{"text": "중점 수행분야"}, {"text": "안전관리 및 사고예방"}],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="jd.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_source"] == ""
+    assert result["fields"]["ncs_detail_absence_reason"] == "no_ncs_mapping_declared"
+    assert result["fields"]["ncs_detail_absence_declared_no_mapping"] is True
+    assert result["fields"]["ncs_detail_absence_saw_detail_header"] is True
+
+
 def test_loads_kordoc_json_recovers_after_stdout_warning() -> None:
     raw = 'Warning: Required "glyf" table is not found -- trying to recover.\n{"success": true, "markdown": "ok"}'
 
@@ -266,6 +332,108 @@ def test_structure_job_description_does_not_extract_when_table_declares_no_ncs_m
 
     assert result["fields"]["ncs_detail_candidates"] == []
     assert result["fields"]["ncs_detail_source"] == ""
+    assert result["fields"]["ncs_detail_absence_reason"] == "no_ncs_mapping_declared"
+
+
+def test_structure_job_description_marks_undeveloped_ncs_classification_as_no_mapping() -> None:
+    markdown = """
+# 직무기술서 : 인증 및 환자안전
+<table>
+<tr><th rowspan="4">채용분야</th><th colspan="2" rowspan="4">인증 및 환자안전</th><th>대분류</th><th rowspan="4">현재 NCS 분류체계 미개발 분야</th></tr>
+<tr><td>중분류</td></tr>
+<tr><td>소분류</td></tr>
+<tr><td>세분류</td></tr>
+<tr><td>직무내용</td><td colspan="4">인증제도 운영 및 환자안전사고 보고 자료 관리</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "no_ncs_mapping_declared"
+
+
+def test_structure_job_description_treats_inline_undeveloped_detail_as_no_mapping() -> None:
+    markdown = """
+| NCS 분류체계 | 대분류 | 중분류 | 소분류 | 세분류 |
+| --- | --- | --- | --- | --- |
+| 채용분야 | 연구직 | 연구 | 연구 | 연구(미개발) |
+| 직무수행내용 | 연구과제 기획 및 수행 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "no_ncs_mapping_declared"
+
+
+def test_structure_job_description_marks_blank_detail_cell_state() -> None:
+    markdown = """
+| NCS 분류체계 | 대분류 | 중분류 | 소분류 | 세분류 |
+| --- | --- | --- | --- | --- |
+| 채용분야 | 경영·회계·사무 | 총무ㆍ인사 | 일반사무 | - |
+| 직무수행내용 | 자료 취합 및 문서 관리 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "ncs_detail_cell_blank_or_dash"
+    assert result["fields"]["ncs_detail_absence_saw_ncs_table"] is True
+    assert result["fields"]["ncs_detail_absence_saw_detail_header"] is True
+    assert result["fields"]["ncs_detail_absence_blank_or_dash_detail_cell"] is True
+
+
+def test_structure_job_description_marks_filtered_detail_candidate_state() -> None:
+    markdown = """
+| NCS 분류체계 | 세분류 |
+| --- | --- |
+| 채용분야 | 자료 취합 및 문서 관리 업무를 수행하고 대내외 보고자료 작성 및 부대업무를 담당 |
+| 직무수행내용 | 자료 취합 및 문서 관리 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "ncs_detail_candidate_filtered"
+    assert result["fields"]["ncs_detail_absence_filtered_candidate_reason"] == "value_too_long"
+    assert "filtered_candidate_reason=value_too_long" in result["fields"]["ncs_detail_absence_state"]
+
+
+def test_structure_job_description_marks_ncs_table_without_detail_header() -> None:
+    markdown = """
+| NCS 분류체계 | 대분류 | 중분류 | 소분류 |
+| --- | --- | --- | --- |
+| 채용분야 | 사업관리 | 사업관리 | 프로젝트관리 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "ncs_table_without_detail_header"
+    assert result["fields"]["ncs_detail_absence_saw_ncs_table"] is True
+    assert result["fields"]["ncs_detail_absence_saw_detail_header"] is False
+
+
+def test_structure_job_description_marks_job_document_without_explicit_ncs_detail() -> None:
+    markdown = """
+# 직무소개서
+| 채용분야 | 업무지원직 |
+| --- | --- |
+| 세부직무 | 배치부서 업무지원 |
+| 업무내용 | 우편물 관리, 환자 안내, 환경관리, 공연 전시 업무보조 |
+| 직무요건 | [지식] 병원 환경 관리에 대한 이해 [기술] 문서작성 및 사무기기 활용 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="job-intro.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "job_document_without_explicit_ncs_detail"
+    assert (
+        result["fields"]["ncs_detail_absence_state"]
+        == "job_document_markers_without_ncs_classification"
+    )
+    assert "직무소개서" in result["fields"]["ncs_detail_absence_evidence"]
 
 
 def test_structure_job_description_continues_after_no_ncs_mapping_row_for_later_explicit_detail() -> None:
@@ -327,6 +495,30 @@ def test_structure_job_description_does_not_infer_translation_as_ncs_detail() ->
 
     assert result["fields"]["ncs_detail_candidates"] == []
     assert result["fields"]["ncs_detail_source"] == ""
+    assert result["fields"]["ncs_detail_absence_reason"] == "translation_role_without_explicit_ncs_detail"
+    assert (
+        result["fields"]["ncs_detail_absence_state"]
+        == "translation_role_markers_without_ncs_detail"
+    )
+
+
+def test_structure_job_description_marks_multi_role_healthcare_document_without_detail() -> None:
+    markdown = """
+# 채용 직무 설명자료
+강원대학교병원 직종별 설명자료
+간호직, 의료기술직, 약무직, 업무협력직, 임상교수, 임상병리, 영상의학, 의무기록 업무를 포함한다.
+직무내용: 병원 내 여러 직종의 진료지원, 행정, 검사, 시설 업무를 통합 안내한다.
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="hospital.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "multi_role_healthcare_document_without_explicit_ncs_detail"
+    assert (
+        result["fields"]["ncs_detail_absence_state"]
+        == "multi_role_healthcare_markers_without_ncs_detail"
+    )
+    assert "강원대학교병원" in result["fields"]["ncs_detail_absence_evidence"]
 
 
 def test_structure_job_description_does_not_infer_ambiguous_power_plant_detail() -> None:
@@ -356,6 +548,27 @@ def test_structure_job_description_infers_youngheung_thermal_power_detail_when_n
 
     assert result["fields"]["ncs_detail_candidates"] == ["화력발전설비운영"]
     assert result["fields"]["ncs_detail_source"] == "contextual"
+
+
+def test_structure_job_description_does_not_infer_power_detail_for_youngheung_office_assistant() -> None:
+    markdown = """
+<table>
+<tr><th>채용분야</th><td>사무보조</td></tr>
+<tr><th>근무지</th><td>한전KPS 영흥사업처 총무부</td></tr>
+<tr><th>직무수행 내용</th><td>5호기 계획예방정비공사 사무 업무 보조, 문서 작성, 전산 입력 지원</td></tr>
+<tr><th>필요지식</th><td>사무업무에 대한 기본 지식</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="직무기술서(사무보조)_총무부.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_source"] == ""
+    assert result["fields"]["ncs_detail_absence_reason"] == "job_document_without_explicit_ncs_detail"
+    assert (
+        result["fields"]["ncs_detail_absence_state"]
+        == "job_document_markers_without_ncs_classification"
+    )
 
 
 def test_structure_job_description_infers_old_water_pipe_detail_when_no_label() -> None:

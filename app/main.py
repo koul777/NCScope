@@ -114,6 +114,15 @@ SUPPORTED_INTERVIEW_METHODS = (
     "인바스켓면접",
     "직무지식면접",
 )
+OPTIONAL_INTERVIEW_METHODS = (
+    "창의적 문제해결력면접",
+)
+QUALITY_INTERVIEW_METHODS = SUPPORTED_INTERVIEW_METHODS + OPTIONAL_INTERVIEW_METHODS
+MODEL_PRESERVED_QUESTION_SOURCES = {
+    "model",
+    "model_main_template_followups",
+    "model_main_repaired_followups",
+}
 _BLIND_HIRING_CUE_RE = re.compile(
     r"(가족|부모|형제|배우자|자녀|나이|연령|출신\s*학교|학교명|학벌|출신\s*지역|출신지역|고향|"
     r"생년\s*월일|출생\s*(?:연도|년도|일|지)|몇\s*살|만\s*\d+\s*세|"
@@ -336,6 +345,40 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
     }
 
 
+def _restrict_question_plan_to_terms(question_plan: dict[str, Any], allowed_terms: list[str]) -> dict[str, Any]:
+    allowed: list[str] = []
+    seen_allowed: set[str] = set()
+    for term in allowed_terms or []:
+        text = str(term or "").strip()
+        key = _norm_sclass_key(text)
+        if text and key and key not in seen_allowed:
+            seen_allowed.add(key)
+            allowed.append(text)
+    if not allowed:
+        return question_plan
+    allowed_keys = {_norm_sclass_key(term) for term in allowed}
+    kept = [
+        dict(item)
+        for item in (question_plan.get("items") or [])
+        if isinstance(item, dict) and _norm_sclass_key(str(item.get("detail") or "")) in allowed_keys
+    ]
+    if kept:
+        return _parse_question_plan_json(json.dumps({"items": kept}, ensure_ascii=False), allowed)
+    follow_up_count = max(3, min(5, int(question_plan.get("follow_up_count", 3) or 3)))
+    return _parse_question_plan_json(
+        json.dumps(
+            {
+                "items": [
+                    {"detail": term, "enabled": True, "main_count": 3, "follow_up_count": follow_up_count}
+                    for term in allowed
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        allowed,
+    )
+
+
 def _parse_interview_methods(raw: str) -> list[str]:
     allowed = {
         "behavior": "경험면접",
@@ -377,6 +420,16 @@ def _parse_interview_methods(raw: str) -> list[str]:
         "지식": "직무지식면접",
         "지식형": "직무지식면접",
         "지식면접": "직무지식면접",
+        "creative": "창의적 문제해결력면접",
+        "creative_problem_solving": "창의적 문제해결력면접",
+        "problem_solving": "창의적 문제해결력면접",
+        "창의": "창의적 문제해결력면접",
+        "창의형": "창의적 문제해결력면접",
+        "창의적문제해결": "창의적 문제해결력면접",
+        "창의적문제해결력": "창의적 문제해결력면접",
+        "창의적문제해결력면접": "창의적 문제해결력면접",
+        "창의적 문제해결력": "창의적 문제해결력면접",
+        "창의적 문제해결력면접": "창의적 문제해결력면접",
     }
     text = str(raw or "").strip()
     values: list[str] = []
@@ -450,11 +503,42 @@ def _ksa_terms_for_question(
             add(row.get("factorName"))
             if len(out) >= limit:
                 return out[:limit]
-    if ncs_code:
-        for term in fallback_terms or []:
-            add(term)
+    if out:
         return out[:limit]
+    for term in fallback_terms or []:
+        add(term)
+        if len(out) >= limit:
+            return out[:limit]
     return out[:limit]
+
+
+def _infer_model_focus_from_official_ksa(
+    ncs_ksa: list[dict[str, Any]] | None,
+    ncs_code: str,
+    question: str,
+    follow_ups: list[str],
+) -> str:
+    code = str(ncs_code or "").strip()
+    if not code:
+        return ""
+    compact_text = re.sub(r"\s+", "", "\n".join([str(question or ""), *follow_ups])).lower()
+    if not compact_text:
+        return ""
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for row in ncs_ksa or []:
+        if not isinstance(row, dict) or str(row.get("ncsClCd", "")).strip() != code:
+            continue
+        factor = _clean_question_text(row.get("factorName"), max_chars=60)
+        key = _ksa_key(factor)
+        if not factor or not key or key in seen or _contains_blind_hiring_cue(factor):
+            continue
+        seen.add(key)
+        candidates.append(factor)
+    for factor in sorted(candidates, key=len, reverse=True):
+        if re.sub(r"\s+", "", factor).lower() in compact_text:
+            return factor
+    return ""
 
 
 def _pick_unit_for_detail(
@@ -498,9 +582,10 @@ def _method_evaluation_points(method: str, ksa_terms: list[str]) -> list[str]:
         "경험면접": ["구체적 상황 설명", "본인 역할과 행동", "판단 근거와 협업", "결과 지표와 학습"],
         "상황면접": ["핵심 사실 확인", "판단 기준", "행동 순서와 첫 조치", "위험요인 인식", "이해관계자 대응"],
         "발표면접": ["자료 분석력", "논리적 구조화", "대안의 실행가능성", "실행계획 구체성", "성과지표 설계", "질의응답 대응"],
-        "토론면접": ["초기 입장의 근거", "경청과 상호작용", "갈등 조정", "합의안 도출", "반대 의견 처리"],
+        "토론면접": ["입장발표 근거", "경청과 상호작용", "갈등 조정", "최종 합의안 도출", "반대 의견 처리"],
         "인바스켓면접": ["우선순위 판단", "문서·요청 분류", "보고·위임·직접처리 판단", "시간관리", "리스크 대응", "기록·후속점검"],
         "직무지식면접": ["절차·기준 이해", "직무지식 적용", "예외상황 판단", "산출물 품질", "오류 예방"],
+        "창의적 문제해결력면접": ["미래예측과 문제 정의", "창의적 사고와 대안 도출", "검증 방법", "실현가능성", "의사결정과 실행계획", "리스크 보완"],
     }
     points = list(guide.get(method, guide["경험면접"]))
     ksa_points: list[str] = []
@@ -679,6 +764,13 @@ def _with_josa(text: str, final_consonant_josa: str, no_final_consonant_josa: st
     return value + (final_consonant_josa if _has_korean_final_consonant(value) else no_final_consonant_josa)
 
 
+def _quoted_with_josa(text: str, final_consonant_josa: str, no_final_consonant_josa: str) -> str:
+    value = str(text or "").strip()
+    return f"'{value}'" + (
+        final_consonant_josa if _has_korean_final_consonant(value) else no_final_consonant_josa
+    )
+
+
 def _question_for_method(
     method: str,
     subject: str,
@@ -695,32 +787,38 @@ def _question_for_method(
     context = _domain_context_pack(detail=detail, subject=subject, focus=focus, comp_def=comp_def)
     if method == "발표면접":
         return (
-            f"[발표과제] {label} 업무에서 '{focus}'와 관련된 {_with_josa(context['evidence'], '이', '가')} 주어졌다고 가정하고 "
-            "현황 문제를 진단하고 개선안을 5분 발표해 주세요. "
-            f"발표에는 현황 진단, 원인 분석, 대안 2가지, 실행 우선순위, 성과지표, 예상 질의 답변을 포함하세요{definition_hint}."
+            f"[발표과제] {label} 업무에서 {_quoted_with_josa(focus, '과', '와')} 관련된 {_with_josa(context['evidence'], '이', '가')} 주어졌다고 가정하고 "
+            "준비시간 20분 후 현황 문제를 진단하고 개선안을 5분 발표해 주세요. "
+            f"발표에는 현황 진단, 원인 분석, 대안 2가지, 실행 우선순위, 성과지표, 5분 질의응답 답변을 포함하세요{definition_hint}."
         )
     if method == "토론면접":
         return (
             f"[토론과제] {label} 업무에서 '{focus}' 관련 {_with_josa(context['debate'], '이', '가')} 충돌합니다. "
-            "20분 집단토론에서 반대 의견의 타당한 부분을 확인하고, 본인의 초기 입장과 근거, 쟁점 조정 방식, 합의안 도출 방식을 제시해 주세요."
+            "토론시간 20분 동안 1분 입장발표 후 반대 의견의 타당한 부분을 확인하고, 본인의 초기 입장과 근거, 쟁점 조정 방식, 최종 합의안 도출 방식을 제시해 주세요."
         )
     if method == "인바스켓면접":
         return (
             f"[인바스켓과제] 제한시간 30분 안에 {label} 관련 {_with_josa(context['inbasket'], '이', '가')} 동시에 들어왔습니다. "
-            f"'{focus}'를 기준으로 처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 첫 15분 행동을 제시해 주세요."
+            f"{_quoted_with_josa(focus, '을', '를')} 기준으로 처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 첫 15분 행동을 제시해 주세요."
         )
     if method == "상황면접":
         return (
-            f"{label} 업무 중 '{focus}'와 관련해 {_with_josa(context['situation'], '이', '가')} 동시에 발생한 상황입니다. "
+            f"{label} 업무 중 {_quoted_with_josa(focus, '과', '와')} 관련해 {_with_josa(context['situation'], '이', '가')} 동시에 발생한 상황입니다. "
             "어떤 기준으로 판단하고 위험요인을 어떻게 통제하며, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까?"
         )
     if method == "직무지식면접":
         return (
-            f"{label}에서 '{focus}'와 관련해 확인해야 할 절차, 기준, 관련 근거, 산출물을 설명하고 "
+            f"{label}에서 {_quoted_with_josa(focus, '과', '와')} 관련해 확인해야 할 절차, 기준, 관련 근거, 산출물을 설명하고 "
             "실제 업무에 적용할 때의 예외상황, 품질 점검 방법, 오류 예방 유의점을 말씀해 주세요."
         )
+    if method == "창의적 문제해결력면접":
+        return (
+            f"[창의적 문제해결력과제] {label} 업무에서 {_quoted_with_josa(focus, '과', '와')} 관련된 복합 문제가 발생했습니다. "
+            f"미래예측 관점에서 주어진 {_with_josa(context['evidence'], '을', '를')} 바탕으로 핵심 문제를 정의하고, 원인 가설, 창의적 대안 2가지, 검증 방법, "
+            "실현가능성, 의사결정 기준, 실행계획과 성과지표 및 리스크 보완책을 제시해 주세요."
+        )
     return (
-        f"{label} 수행 과정에서 '{focus}'를 적용해 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. "
+        f"{label} 수행 과정에서 {_quoted_with_josa(focus, '을', '를')} 적용해 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. "
         "당시 상황과 과제, 본인 역할, 선택한 행동, 결과 지표와 학습을 포함해 설명해 주세요."
     )
 
@@ -734,14 +832,14 @@ def _followups_for_method(method: str, subject: str, focus: str, count: int) -> 
     banks = {
         "경험면접": [
             "당시 상황과 본인이 맡은 역할을 구체적으로 설명해 주세요.",
-            f"'{focus}'를 적용하기 위해 실제로 취한 행동은 무엇이었습니까?",
+            f"{_quoted_with_josa(focus, '을', '를')} 적용하기 위해 실제로 취한 행동은 무엇이었습니까?",
             "다른 선택지와 비교해 그 행동을 선택한 기준은 무엇이었습니까?",
             "성과를 어떤 기준이나 지표로 확인했습니까?",
             "같은 상황이 다시 주어진다면 어떤 점을 개선하시겠습니까?",
         ],
         "상황면접": [
             "판단 전에 먼저 확인해야 할 사실과 기준은 무엇입니까?",
-            f"'{focus}'와 관련해 그 행동을 선택한 이유와 예상되는 위험요인은 무엇입니까?",
+            f"{_quoted_with_josa(focus, '과', '와')} 관련해 그 행동을 선택한 이유와 예상되는 위험요인은 무엇입니까?",
             f"{context['stakeholders']} 등 이해관계자에게 어떤 순서와 방식으로 설명하시겠습니까?",
             "결과가 기대와 다르게 나오면 어떤 후속 조치를 하시겠습니까?",
             "같은 문제가 반복되지 않도록 어떤 예방 장치를 두시겠습니까?",
@@ -768,11 +866,18 @@ def _followups_for_method(method: str, subject: str, focus: str, count: int) -> 
             "30분 이후 후속 확인과 기록은 어떻게 남기겠습니까?",
         ],
         "직무지식면접": [
-            f"'{focus}'와 관련해 반드시 확인해야 할 기준이나 규정은 무엇입니까?",
+            f"{_quoted_with_josa(focus, '과', '와')} 관련해 반드시 확인해야 할 기준이나 규정은 무엇입니까?",
             "그 기준을 실제 업무에 적용할 때 자주 발생하는 예외상황은 무엇입니까?",
             "관련 산출물의 품질을 어떻게 점검하겠습니까?",
             "잘못 적용했을 때 발생할 수 있는 리스크와 보완책은 무엇입니까?",
             "신규 담당자에게 이 절차를 설명한다면 어떤 순서로 교육하겠습니까?",
+        ],
+        "창의적 문제해결력면접": [
+            "핵심 문제정의를 위해 먼저 확인할 사실과 기준은 무엇입니까?",
+            f"{_quoted_with_josa(focus, '과', '와')} 관련한 원인 가설은 어떻게 세우고 검증하겠습니까?",
+            "대안 중 실행 우선순위를 높게 둘 방안과 그 이유는 무엇입니까?",
+            "선택한 대안의 리스크와 보완책은 어떻게 정리하겠습니까?",
+            "성과지표와 후속 점검 기준은 무엇으로 설정하겠습니까?",
         ],
     }
     bank = banks.get(method, banks["경험면접"])
@@ -815,6 +920,115 @@ def _merge_question_items(primary: list[str], fallback: list[str], limit: int) -
     return out
 
 
+def _compact_contains_term(text: str, term: str) -> bool:
+    compact_text = re.sub(r"\s+", "", str(text or "")).lower()
+    compact_term = re.sub(r"\s+", "", str(term or "")).lower()
+    return bool(compact_text and compact_term and compact_term in compact_text)
+
+
+def _follow_up_job_context(q: dict[str, Any], focus: str = "") -> str:
+    focus = _clean_question_text(focus, max_chars=60)
+    for key in (
+        "competency",
+        "compeUnitName",
+        "required_job_context",
+        "ncs_detail",
+        "ncsSubdCdnm",
+        "matchedDetailName",
+        "ncsSclasCdnm",
+    ):
+        context = _clean_question_text(q.get(key), max_chars=60)
+        if not context:
+            continue
+        if focus and _compact_contains_term(context, focus):
+            continue
+        if focus and _compact_contains_term(focus, context):
+            continue
+        return context
+    return ""
+
+
+def _inject_focus_into_follow_up(method: str, focus: str, follow_up: str, job_context: str = "") -> str:
+    text = _clean_question_text(follow_up, max_chars=140)
+    focus = _clean_question_text(focus, max_chars=60)
+    if not text or not focus or _ksa_factor_relevant_to_text(focus, text):
+        return text
+    context = _clean_question_text(job_context, max_chars=60)
+    context_part = ""
+    if context and not _compact_contains_term(text, context) and not _compact_contains_term(focus, context):
+        context_part = f" {context} 상황에서" if method == "상황면접" else f" {context} 업무에서"
+    prefix_by_method = {
+        "경험면접": f"{_quoted_with_josa(focus, '을', '를')} 적용하는 과정에서{context_part} 본인 행동과 선택 이유를 중심으로",
+        "상황면접": f"{_quoted_with_josa(focus, '과', '와')} 관련해{context_part}",
+        "발표면접": f"{_quoted_with_josa(focus, '을', '를')} 발표 쟁점으로 볼 때{context_part}",
+        "토론면접": f"{_quoted_with_josa(focus, '을', '를')} 토론 쟁점으로 볼 때{context_part}",
+        "인바스켓면접": f"{_quoted_with_josa(focus, '을', '를')} 처리 기준으로 삼을 때{context_part}",
+        "직무지식면접": f"{_quoted_with_josa(focus, '과', '와')} 관련한 기준으로{context_part}",
+        "창의적 문제해결력면접": f"{_quoted_with_josa(focus, '과', '와')} 관련한 원인과 대안 관점에서{context_part}",
+    }
+    prefix = prefix_by_method.get(method, f"{_quoted_with_josa(focus, '과', '와')} 관련해{context_part}")
+    body_limit = max(35, 138 - len(prefix))
+    body = _clean_question_text(text, max_chars=body_limit)
+    return _clean_question_text(f"{prefix} {body}", max_chars=140)
+
+
+def _follow_ups_non_focus_shape_ok(method: str, follow_ups: list[str]) -> bool:
+    clean = [str(item or "").strip() for item in follow_ups if str(item or "").strip()]
+    if len(clean) < 3:
+        return False
+    if _contains_blind_hiring_cue("\n".join(clean)):
+        return False
+    keys = [normalize_question_dedup_key(item) for item in clean]
+    if any(not key for key in keys) or len(set(keys)) != len(keys):
+        return False
+
+    compact_items = [re.sub(r"\s+", "", item) for item in clean]
+    anchors = _FOLLOW_UP_METHOD_ANCHORS.get(method, ())
+    anchor_hits = {
+        anchor
+        for anchor in anchors
+        if any(anchor in compact for compact in compact_items)
+    }
+    if len(anchor_hits) < 2:
+        return False
+
+    open_prompt_hits = sum(
+        1
+        for item in clean[:3]
+        if re.search(r"(무엇|어떤|어떻게|얼마|어땠|어떠|왜|기준|이유|설명|말씀|제시|확인|선택|평가|점검|정리)", item)
+    )
+    return open_prompt_hits >= 3
+
+
+def _repair_model_followups_with_focus(
+    method: str,
+    q: dict[str, Any],
+    follow_ups: list[str],
+    limit: int,
+) -> list[str]:
+    focus = _clean_question_text(q.get("question_focus"), max_chars=60)
+    count = max(0, min(5, int(limit or 0)))
+    clean = _merge_question_items(follow_ups, [], count)
+    if count < 3 or len(clean) < 3 or not focus:
+        return []
+    if _follow_ups_quality_ok(method, q, clean):
+        return []
+
+    job_context = _follow_up_job_context(q, focus)
+    preferred = min(_FOLLOW_UP_FOCUS_SLOT_INDEX.get(method, 1), len(clean) - 1)
+    candidate_indices = list(dict.fromkeys([preferred, 1 if len(clean) > 1 else 0, 0, 2 if len(clean) > 2 else 0]))
+    for target_index in candidate_indices:
+        repaired = list(clean)
+        repaired[target_index] = _inject_focus_into_follow_up(method, focus, repaired[target_index], job_context)
+        if repaired[target_index] == clean[target_index]:
+            continue
+        if _contains_blind_hiring_cue("\n".join(repaired)):
+            continue
+        if _follow_ups_quality_ok(method, q, repaired):
+            return repaired
+    return []
+
+
 def _adjust_generated_questions(
     strategy: dict[str, Any],
     question_plan: dict[str, Any],
@@ -842,6 +1056,7 @@ def _adjust_generated_questions(
     source_questions = source_questions[:target_total] if target_total > 0 else source_questions
 
     adjusted: list[dict[str, Any]] = []
+    fallback_rows: list[dict[str, Any]] = []
     detail_offsets: dict[str, int] = {}
     for idx, row in enumerate(source_questions):
         item = dict(row)
@@ -884,28 +1099,59 @@ def _adjust_generated_questions(
             ncs_code=ncs_code,
             fallback_terms=existing_refs,
         )
-        focus = ksa_terms[idx % len(ksa_terms)] if ksa_terms else _clean_question_text(item.get("competency") or target_detail or "핵심 수행기준")
-        item["question_focus"] = focus
         raw_question = str(item.get("question", "")).strip()
         item["model_question_raw"] = raw_question
         raw_followups = _clean_question_items(item.get("follow_ups"), limit=5)
         if not raw_followups and str(item.get("follow_up", "")).strip():
             raw_followups = _clean_question_items([item.get("follow_up")], limit=1)
+        inferred_focus = _infer_model_focus_from_official_ksa(ncs_ksa, ncs_code, raw_question, raw_followups)
+        focus = (
+            inferred_focus
+            or (ksa_terms[idx % len(ksa_terms)] if ksa_terms else "")
+            or _clean_question_text(item.get("competency") or target_detail or "핵심 수행기준")
+        )
+        item["question_focus"] = focus
+        normalized_model_question = _normalize_model_task_marker(method, raw_question)
+        normalized_model_question = _normalize_model_job_context(method, item, normalized_model_question)
         raw_evaluation_points = _clean_question_items(item.get("evaluation_points"), limit=6)
+        item["model_followups_raw"] = raw_followups
+        item["model_evaluation_points_raw"] = raw_evaluation_points
         raw_merged = "\n".join([raw_question, *raw_followups, *raw_evaluation_points])
-        model_replacement_reasons: list[str] = []
+        main_replacement_reasons: list[str] = []
+        followup_replacement_reasons: list[str] = []
+        raw_followups_final = _merge_question_items(raw_followups, [], row_follow_count)
+        repaired_followups: list[str] = []
         if not raw_question:
-            model_replacement_reasons.append("no_model_question")
+            main_replacement_reasons.append("no_model_question")
         else:
             if _contains_blind_hiring_cue(raw_merged):
-                model_replacement_reasons.append("blind_hiring_cue")
-            if not _method_shape_ok(method, raw_question):
-                model_replacement_reasons.append("main_question_method_shape")
+                main_replacement_reasons.append("blind_hiring_cue")
+            if not _method_shape_ok(method, normalized_model_question):
+                main_replacement_reasons.append("main_question_method_shape")
+            if not _main_question_task_marker_ok(method, normalized_model_question):
+                main_replacement_reasons.append("main_question_official_sample_shape")
             context_item = dict(item)
             context_item["ksa_refs"] = ksa_terms or existing_refs
-            if not _follow_ups_quality_ok(method, context_item, raw_followups):
-                model_replacement_reasons.append("follow_up_quality")
-        use_model_question = bool(raw_question and not model_replacement_reasons)
+            if not _follow_ups_quality_ok(method, context_item, raw_followups_final):
+                if not main_replacement_reasons:
+                    repaired_followups = _repair_model_followups_with_focus(
+                        method=method,
+                        q=context_item,
+                        follow_ups=raw_followups,
+                        limit=row_follow_count,
+                    )
+                if repaired_followups:
+                    followup_replacement_reasons.append("follow_up_focus_injected")
+                else:
+                    followup_replacement_reasons.append("follow_up_quality")
+        use_model_question = bool(raw_question and not main_replacement_reasons)
+        use_raw_model_followups = bool(use_model_question and not followup_replacement_reasons)
+        use_repaired_model_followups = bool(
+            use_model_question
+            and repaired_followups
+            and followup_replacement_reasons == ["follow_up_focus_injected"]
+        )
+        model_replacement_reasons = [*main_replacement_reasons, *followup_replacement_reasons]
 
         template_question = _question_for_method(
             method=method,
@@ -922,15 +1168,23 @@ def _adjust_generated_questions(
         )
         method_eval_points = _method_evaluation_points(method, ksa_terms)
 
-        item["question"] = raw_question if use_model_question else template_question
-        item["question_source"] = "model" if use_model_question else "template_fallback"
+        item["question"] = normalized_model_question if use_model_question else template_question
+        if use_model_question and use_raw_model_followups:
+            item["question_source"] = "model"
+        elif use_model_question and use_repaired_model_followups:
+            item["question_source"] = "model_main_repaired_followups"
+        elif use_model_question:
+            item["question_source"] = "model_main_template_followups"
+        else:
+            item["question_source"] = "template_fallback"
         item["model_question_preserved"] = bool(use_model_question)
-        item["model_replacement_reasons"] = [] if use_model_question else model_replacement_reasons
-        item["follow_ups"] = (
-            _merge_question_items(raw_followups, template_followups, row_follow_count)
-            if use_model_question
-            else template_followups
-        )
+        item["model_replacement_reasons"] = [] if use_model_question and use_raw_model_followups else model_replacement_reasons
+        if use_raw_model_followups:
+            item["follow_ups"] = raw_followups_final
+        elif use_repaired_model_followups:
+            item["follow_ups"] = _merge_question_items(repaired_followups, template_followups, row_follow_count)
+        else:
+            item["follow_ups"] = template_followups
         item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
         item["evaluation_points"] = (
             _merge_question_items(raw_evaluation_points, method_eval_points, 6)
@@ -938,6 +1192,48 @@ def _adjust_generated_questions(
             else method_eval_points
         )
         adjusted.append(item)
+        fallback_rows.append(
+            {
+                "question": template_question,
+                "follow_ups": template_followups,
+                "evaluation_points": method_eval_points,
+            }
+        )
+
+    probe_strategy = dict(strategy)
+    probe_strategy["interview_questions"] = [dict(q) for q in adjusted]
+    probe_strategy["question_plan_used"] = question_plan
+    probe_strategy = _attach_ksa_evidence_to_strategy(probe_strategy, ncs_ksa)
+    probe_items = {
+        int(item.get("index") or 0): item
+        for item in (probe_strategy.get("question_quality_report") or {}).get("items", [])
+        if isinstance(item, dict)
+    }
+    for pos, item in enumerate(adjusted):
+        source = str(item.get("question_source") or "").strip()
+        if source not in MODEL_PRESERVED_QUESTION_SOURCES:
+            continue
+        probe_item = probe_items.get(pos + 1) or {}
+        if probe_item.get("ready") is True:
+            continue
+        fallback = fallback_rows[pos] if pos < len(fallback_rows) else {}
+        existing_reasons = [
+            str(reason).strip()
+            for reason in (item.get("model_replacement_reasons") or [])
+            if str(reason).strip()
+        ] if isinstance(item.get("model_replacement_reasons"), list) else []
+        quality_reasons = [
+            f"quality_gate_{issue}"
+            for issue in (probe_item.get("issues") or [])
+            if str(issue).strip()
+        ] if isinstance(probe_item.get("issues"), list) else []
+        item["question"] = str(fallback.get("question") or item.get("question") or "").strip()
+        item["question_source"] = "template_fallback"
+        item["model_question_preserved"] = False
+        item["model_replacement_reasons"] = list(dict.fromkeys([*existing_reasons, *quality_reasons]))
+        item["follow_ups"] = list(fallback.get("follow_ups") or [])
+        item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
+        item["evaluation_points"] = list(fallback.get("evaluation_points") or [])
     strategy["interview_questions"] = adjusted
     strategy["interview_by_competency"] = _group_interview_questions_for_response(adjusted)
     strategy["question_plan_used"] = question_plan
@@ -1435,10 +1731,11 @@ def _clean_ksa_evidence_row(row: dict[str, Any]) -> dict[str, str]:
 _METHOD_MAIN_QUESTION_REQUIRED_TERMS: dict[str, tuple[str, ...]] = {
     "경험면접": ("경험", "상황", "본인", "행동", "결과"),
     "상황면접": ("상황", "판단", "기준", "순서", "위험"),
-    "발표면접": ("발표", "진단", "대안", "실행", "성과지표"),
-    "토론면접": ("토론", "충돌", "입장", "반대", "합의"),
+    "발표면접": ("준비시간", "발표", "진단", "대안", "실행", "성과지표", "질의응답"),
+    "토론면접": ("토론시간", "입장발표", "토론", "충돌", "입장", "반대", "합의"),
     "인바스켓면접": ("인바스켓", "제한시간", "문서", "우선순위", "보고", "위임", "직접처리"),
     "직무지식면접": ("절차", "기준", "산출물", "예외상황"),
+    "창의적 문제해결력면접": ("창의적", "미래예측", "문제", "정의", "대안", "검증", "실현가능성", "의사결정", "실행"),
 }
 
 _METHOD_EVALUATION_ANCHORS: dict[str, tuple[str, ...]] = {
@@ -1448,15 +1745,27 @@ _METHOD_EVALUATION_ANCHORS: dict[str, tuple[str, ...]] = {
     "토론면접": ("초기입장", "근거", "경청", "상호작용", "갈등조정", "합의안", "반대의견"),
     "인바스켓면접": ("우선순위", "문서", "요청분류", "보고", "위임", "직접처리", "시간관리", "리스크", "후속점검"),
     "직무지식면접": ("절차", "기준", "직무지식", "예외상황", "산출물", "품질", "오류예방"),
+    "창의적 문제해결력면접": ("미래예측", "문제정의", "창의적사고", "원인가설", "대안", "검증", "실현가능성", "의사결정", "실행계획", "성과지표", "리스크"),
 }
 
 _FOLLOW_UP_METHOD_ANCHORS: dict[str, tuple[str, ...]] = {
-    "경험면접": ("상황", "역할", "행동", "선택", "기준", "성과", "개선", "학습"),
+    "경험면접": ("상황", "역할", "행동", "선택", "기준", "이유", "성과", "개선", "학습", "교훈"),
     "상황면접": ("확인", "기준", "이유", "위험", "이해관계자", "순서", "후속", "예방"),
-    "발표면접": ("근거자료", "대안", "우선순위", "반대의견", "답변", "일정", "자원", "성과지표", "리스크"),
-    "토론면접": ("초기입장", "근거", "반대의견", "수용", "조정", "합의안", "실행책임", "후속점검"),
-    "인바스켓면접": ("문서", "요청", "분류", "먼저처리", "보류", "보고", "위임", "직접처리", "통제", "기록"),
+    "발표면접": ("근거자료", "대안", "우선순위", "반대의견", "답변", "질의응답", "일정", "자원", "성과지표", "리스크"),
+    "토론면접": ("초기입장", "입장발표", "근거", "반대의견", "수용", "조정", "합의안", "실행책임", "후속점검"),
+    "인바스켓면접": ("문서", "요청", "분류", "우선순위", "먼저처리", "첫조치", "기준", "행동", "조치", "보류", "보고", "위임", "직접처리", "통제", "기록"),
     "직무지식면접": ("기준", "규정", "예외상황", "산출물", "품질", "리스크", "보완책", "교육", "순서"),
+    "창의적 문제해결력면접": ("미래예측", "문제정의", "문제", "정의", "가설", "검증", "대안", "실현가능성", "의사결정", "실행계획", "우선순위", "리스크", "보완책", "성과지표", "후속점검"),
+}
+
+_FOLLOW_UP_FOCUS_SLOT_INDEX: dict[str, int] = {
+    "경험면접": 1,
+    "상황면접": 1,
+    "발표면접": 0,
+    "토론면접": 0,
+    "인바스켓면접": 0,
+    "직무지식면접": 0,
+    "창의적 문제해결력면접": 1,
 }
 
 _ASSESSABLE_EVALUATION_TERMS = (
@@ -1465,6 +1774,9 @@ _ASSESSABLE_EVALUATION_TERMS = (
     "행동",
     "결과",
     "성과",
+    "문제",
+    "정의",
+    "가설",
     "판단",
     "기준",
     "근거",
@@ -1494,6 +1806,9 @@ _ASSESSABLE_EVALUATION_TERMS = (
     "요청",
     "계획",
     "오류",
+    "검증",
+    "리스크",
+    "보완",
     "기록",
     "검토",
     "확인",
@@ -1553,6 +1868,47 @@ _KSA_RELEVANCE_STOPWORDS = _JOB_CONTEXT_STOPWORDS | {
     "객관적",
 }
 
+_UNRESOLVED_KSA_PLACEHOLDER_RE = re.compile(r"(?<![A-Za-z])KSA(?![A-Za-z])", re.IGNORECASE)
+
+
+_OFFICIAL_SAMPLE_FORMAT_RULES: dict[str, dict[str, tuple[str, ...]]] = {
+    "경험면접": {
+        "task_any": ("경험", "사례"),
+        "task_all": ("상황", "본인", "행동", "결과"),
+        "eval_any": ("본인역할과행동", "성과와학습", "구체적상황설명"),
+    },
+    "상황면접": {
+        "task_any": ("상황",),
+        "task_all": ("판단", "기준", "순서", "위험"),
+        "eval_any": ("판단기준", "위험요인인식", "이해관계자대응"),
+    },
+    "발표면접": {
+        "task_any": ("[발표과제]", "발표과제"),
+        "task_all": ("준비시간", "발표", "진단", "대안", "실행", "성과지표", "질의응답"),
+        "eval_any": ("자료분석력", "논리적구조화", "대안의실행가능성", "질의응답대응"),
+    },
+    "토론면접": {
+        "task_any": ("[토론과제]", "토론과제"),
+        "task_all": ("토론시간", "입장발표", "충돌", "입장", "반대", "합의"),
+        "eval_any": ("입장발표근거", "경청과상호작용", "갈등조정", "최종합의안도출"),
+    },
+    "인바스켓면접": {
+        "task_any": ("[인바스켓과제]", "인바스켓과제"),
+        "task_all": ("제한시간", "문서", "우선순위", "보고", "위임", "직접처리"),
+        "eval_any": ("우선순위판단", "문서·요청분류", "시간관리"),
+    },
+    "직무지식면접": {
+        "task_any": ("절차", "기준"),
+        "task_all": ("절차", "기준", "산출물", "예외상황"),
+        "eval_any": ("절차·기준이해", "직무지식적용", "산출물품질"),
+    },
+    "창의적 문제해결력면접": {
+        "task_any": ("[창의적문제해결력과제]", "창의적문제해결력과제", "창의적문제해결력"),
+        "task_all": ("미래예측", "문제", "정의", "대안", "검증", "실현가능성", "의사결정", "실행"),
+        "eval_any": ("미래예측과문제정의", "창의적사고와대안도출", "검증방법", "실현가능성", "의사결정과실행계획"),
+    },
+}
+
 
 def _method_shape_ok(method: str, text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
@@ -1560,6 +1916,95 @@ def _method_shape_ok(method: str, text: str) -> bool:
     if not required:
         return False
     return all(term in compact for term in required)
+
+
+def _main_question_task_marker_ok(method: str, text: str) -> bool:
+    marker_by_method = {
+        "발표면접": ("[발표과제]", "발표과제"),
+        "토론면접": ("[토론과제]", "토론과제"),
+        "인바스켓면접": ("[인바스켓과제]", "인바스켓과제"),
+        "창의적 문제해결력면접": ("[창의적 문제해결력과제]", "창의적문제해결력과제"),
+    }
+    markers = marker_by_method.get(method)
+    if not markers:
+        return True
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return any(re.sub(r"\s+", "", marker) in compact for marker in markers)
+
+
+def _normalize_model_task_marker(method: str, text: str) -> str:
+    question = str(text or "").strip()
+    if not question or _main_question_task_marker_ok(method, question):
+        return question
+
+    compact = re.sub(r"\s+", "", question)
+    if method == "발표면접":
+        prefix = "[발표과제]"
+        if "준비시간" not in compact:
+            prefix += " 준비시간 20분 후"
+    elif method == "토론면접":
+        prefix = "[토론과제]"
+        if "토론시간" not in compact:
+            prefix += " 토론시간 20분 동안"
+        if "입장발표" not in compact:
+            prefix += " 1분 입장발표 후"
+    elif method == "인바스켓면접":
+        prefix = "[인바스켓과제]"
+        if "제한시간" not in compact:
+            prefix += " 제한시간 안에"
+    elif method == "창의적 문제해결력면접":
+        prefix = "[창의적 문제해결력과제]"
+    else:
+        prefix = ""
+    if not prefix:
+        return question
+    if not _method_shape_ok(method, question) and not _method_shape_ok(method, f"{prefix} {question}"):
+        return question
+    return f"{prefix} {question}"
+
+
+def _normalize_model_job_context(method: str, q: dict[str, Any], text: str) -> str:
+    question = str(text or "").strip()
+    if not question:
+        return ""
+    probe = dict(q)
+    probe["model_question_preserved"] = True
+    if _main_question_job_context_ok(probe, question):
+        return question
+    terms = _primary_job_context_terms(probe)
+    context = _clean_question_text(terms[0] if terms else "", max_chars=60)
+    if not context or _compact_contains_term(question, context):
+        return question
+
+    marker = ""
+    body = question
+    for candidate_marker in (
+        "[발표과제]",
+        "[토론과제]",
+        "[인바스켓과제]",
+        "[창의적 문제해결력과제]",
+    ):
+        if body.startswith(candidate_marker):
+            marker = candidate_marker
+            body = body[len(candidate_marker):].strip()
+            break
+
+    if marker:
+        candidate = f"{marker} {context} 업무에서 {body}".strip()
+    elif method == "상황면접":
+        candidate = f"{context} 업무 중 {question}"
+    else:
+        candidate = f"{context}에서 {question}"
+
+    if _contains_blind_hiring_cue(candidate):
+        return question
+    if not _method_shape_ok(method, candidate):
+        return question
+    if not _main_question_task_marker_ok(method, candidate):
+        return question
+    if not _main_question_job_context_ok(probe, candidate):
+        return question
+    return candidate
 
 
 def _evaluation_points_quality_ok(method: str, evaluation_points: list[str]) -> bool:
@@ -1627,6 +2072,39 @@ def _job_specific_context_ok(q: dict[str, Any], question: str, follow_ups: list[
     return len(hits) >= required
 
 
+def _primary_job_context_terms(q: dict[str, Any]) -> list[str]:
+    raw_values = [
+        str(q.get("competency") or ""),
+        str(q.get("ncs_detail") or ""),
+        str(q.get("ncsSubdCdnm") or ""),
+        str(q.get("ncsSclasCdnm") or ""),
+    ]
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        clean = _clean_question_text(value, max_chars=80)
+        candidates = [clean]
+        candidates.extend(re.findall(r"[가-힣A-Za-z0-9]{2,}", clean))
+        for token in candidates:
+            key = re.sub(r"\s+", "", str(token or "")).lower()
+            if not key or key in _JOB_CONTEXT_STOPWORDS or len(key) < 2:
+                continue
+            if key not in seen:
+                seen.add(key)
+                terms.append(token)
+    return terms[:8]
+
+
+def _main_question_job_context_ok(q: dict[str, Any], question: str) -> bool:
+    if not bool(q.get("model_question_preserved")):
+        return True
+    terms = _primary_job_context_terms(q)
+    if not terms:
+        return True
+    compact_question = re.sub(r"\s+", "", str(question or "")).lower()
+    return any(re.sub(r"\s+", "", term).lower() in compact_question for term in terms)
+
+
 def _follow_ups_quality_ok(method: str, q: dict[str, Any], follow_ups: list[str]) -> bool:
     clean = [str(item or "").strip() for item in follow_ups if str(item or "").strip()]
     if len(clean) < 3:
@@ -1649,7 +2127,7 @@ def _follow_ups_quality_ok(method: str, q: dict[str, Any], follow_ups: list[str]
     open_prompt_hits = sum(
         1
         for item in clean[:3]
-        if re.search(r"(무엇|어떤|어떻게|왜|기준|이유|설명|말씀|제시|확인|선택|평가|점검|정리)", item)
+        if re.search(r"(무엇|어떤|어떻게|얼마|어땠|어떠|왜|기준|이유|설명|말씀|제시|확인|선택|평가|점검|정리)", item)
     )
     if open_prompt_hits < 3:
         return False
@@ -1663,6 +2141,9 @@ def _follow_ups_quality_ok(method: str, q: dict[str, Any], follow_ups: list[str]
         ]
         if not context_hits:
             return False
+    focus = str(q.get("question_focus") or "").strip()
+    if focus and not _ksa_factor_relevant_to_text(focus, "\n".join(clean)):
+        return False
     return True
 
 
@@ -1712,6 +2193,8 @@ def _ksa_evidence_relevance_ok(
             str(q.get("question_focus") or ""),
         ]
     )
+    if _UNRESOLVED_KSA_PLACEHOLDER_RE.search(evidence_text):
+        return False
     return any(
         _ksa_factor_relevant_to_text(str(row.get("factorName") or ""), evidence_text)
         for row in matching_ksa_evidence
@@ -1727,39 +2210,7 @@ def _official_sample_format_ok(
 ) -> bool:
     task_text = re.sub(r"\s+", "", "\n".join([str(question or ""), *follow_ups]))
     eval_text = re.sub(r"\s+", "", "\n".join(evaluation_points))
-    rules = {
-        "경험면접": {
-            "task_any": ("경험", "사례"),
-            "task_all": ("상황", "본인", "행동", "결과"),
-            "eval_any": ("본인역할과행동", "성과와학습", "구체적상황설명"),
-        },
-        "상황면접": {
-            "task_any": ("상황",),
-            "task_all": ("판단", "기준", "순서", "위험"),
-            "eval_any": ("판단기준", "위험요인인식", "이해관계자대응"),
-        },
-        "발표면접": {
-            "task_any": ("[발표과제]", "발표과제"),
-            "task_all": ("발표", "진단", "대안", "실행", "성과지표"),
-            "eval_any": ("자료분석력", "논리적구조화", "대안의실행가능성"),
-        },
-        "토론면접": {
-            "task_any": ("[토론과제]", "토론과제"),
-            "task_all": ("충돌", "입장", "반대", "합의"),
-            "eval_any": ("근거제시", "경청과상호작용", "갈등조정"),
-        },
-        "인바스켓면접": {
-            "task_any": ("[인바스켓과제]", "인바스켓과제"),
-            "task_all": ("제한시간", "문서", "우선순위", "보고", "위임", "직접처리"),
-            "eval_any": ("우선순위판단", "문서·요청분류", "시간관리"),
-        },
-        "직무지식면접": {
-            "task_any": ("절차", "기준"),
-            "task_all": ("절차", "기준", "산출물", "예외상황"),
-            "eval_any": ("절차·기준이해", "직무지식적용", "산출물품질"),
-        },
-    }
-    rule = rules.get(method)
+    rule = _OFFICIAL_SAMPLE_FORMAT_RULES.get(method)
     if not rule:
         return False
     return (
@@ -1826,9 +2277,10 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
         q_key = normalize_question_dedup_key(question)
         has_specific_context = not any(marker in question for marker in ("해당 직무", "핵심 수행기준"))
         checks = {
-            "supported_method": method in SUPPORTED_INTERVIEW_METHODS,
+            "supported_method": method in QUALITY_INTERVIEW_METHODS,
             "method_shape": _method_shape_ok(method, merged),
             "main_question_method_shape": _method_shape_ok(method, question),
+            "main_question_job_context": _main_question_job_context_ok(q, question),
             "follow_up_depth": len(follow_ups) >= 3,
             "follow_up_quality": _follow_ups_quality_ok(method, q, follow_ups),
             "evaluation_points": len(evaluation_points) >= 4,
@@ -1906,6 +2358,9 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
     def _pick_for_question(question: dict[str, Any]) -> list[dict[str, str]]:
         code = str(question.get("ncsClCd", "")).strip()
         refs = [str(x).strip() for x in (question.get("ksa_refs") or []) if str(x).strip()] if isinstance(question.get("ksa_refs"), list) else []
+        focus_ref = str(question.get("question_focus") or "").strip()
+        if focus_ref:
+            refs = [focus_ref, *[ref for ref in refs if _ksa_key(ref) != _ksa_key(focus_ref)]]
         ref_keys = [_ksa_key(x) for x in refs]
         picked: list[dict[str, str]] = []
         picked_keys: set[tuple[str, str]] = set()
@@ -3283,6 +3738,10 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     evaluation_text = str(payload.get("evaluation_text", "")).strip()
     request_openai_api_key = _sanitize_request_openai_key(payload.get("openai_api_key", ""))
     selected_ncs = payload.get("selected_ncs", [])
+    raw_interview_methods = payload.get("interview_methods_json", payload.get("interview_methods", ""))
+    if not isinstance(raw_interview_methods, str):
+        raw_interview_methods = json.dumps(raw_interview_methods, ensure_ascii=False)
+    interview_methods = _parse_interview_methods(raw_interview_methods)
     knobs = payload.get("runtime_knobs", {}) if isinstance(payload.get("runtime_knobs", {}), dict) else {}
     run_top_k, run_ksa_units, run_ksa_factors = _clamp_runtime_knobs(
         ncs_top_k=knobs.get("ncs_top_k"),
@@ -3317,6 +3776,20 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         )
     if not ncs_matches:
         raise HTTPException(status_code=400, detail="selected_ncs has no valid ncsClCd")
+
+    plan_terms = []
+    seen_plan_terms: set[str] = set()
+    for row in ncs_matches:
+        term = str(row.get("ncsSubdCdnm") or row.get("compeUnitName") or "").strip()
+        key = _norm_sclass_key(term)
+        if term and key and key not in seen_plan_terms:
+            seen_plan_terms.add(key)
+            plan_terms.append(term)
+    raw_question_plan = payload.get("question_plan_json", payload.get("question_plan", ""))
+    if not isinstance(raw_question_plan, str):
+        raw_question_plan = json.dumps(raw_question_plan, ensure_ascii=False)
+    question_plan = _parse_question_plan_json(raw_question_plan, plan_terms)
+    question_plan = _restrict_question_plan_to_terms(question_plan, plan_terms)
 
     prompt_notice_text = _build_priority_notice_text(
         notice_text=notice_text,
@@ -3365,6 +3838,12 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
             max_units=min(run_ksa_units, len(ncs_matches)),
             max_factors_per_unit=run_ksa_factors,
         )
+    ncs_ksa = _supplement_ksa_for_question_plan(
+        question_plan=question_plan,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+        max_factors_per_unit=run_ksa_factors,
+    )
     ncs_factor_sources = sorted(
         {
             str(x.get("factorSource", "")).strip()
@@ -3396,14 +3875,32 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
                 evaluation_text=evaluation_text,
                 desired_job="",
                 api_key_override=request_openai_api_key,
+                target_count_override=question_plan["total_main_count"] or None,
+                follow_up_count=question_plan["follow_up_count"],
+                question_plan=question_plan,
+                interview_methods=interview_methods,
             ),
+        )
+        strategy = _adjust_generated_questions(
+            strategy,
+            question_plan,
+            interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
         )
     except Exception as e:
         strategy = build_strategy_with_rule_fallback(
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
             error_message=f"model_generation_failed: {e}",
-            target_count=24,
+            target_count=question_plan["total_main_count"] or 24,
+        )
+        strategy = _adjust_generated_questions(
+            strategy,
+            question_plan,
+            interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
         )
     strategy = _attach_ksa_evidence_to_strategy(strategy, ncs_ksa)
 
@@ -3440,6 +3937,8 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "ai_ncs_code_candidates": [],
         "verified_sclass": [],
         "ncs_code_nos": [],
+        "question_plan": question_plan,
+        "interview_methods": interview_methods,
         "ncs_matches": ncs_matches,
         "ncs_ksa": ncs_ksa,
         "ncs_ksa_candidate_count": len(ncs_ksa_candidates),
