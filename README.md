@@ -1,4 +1,4 @@
-# NCScope
+# NCScope v1.1
 
 [![CI](https://github.com/koul777/NCScope/actions/workflows/ci.yml/badge.svg)](https://github.com/koul777/NCScope/actions/workflows/ci.yml)
 
@@ -24,6 +24,19 @@ NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 
 2. 직무기술서 세분류 검토
 3. 공고문 핵심텍스트 보완
 4. 로컬 NCS DB KSA 기반 질문 생성
+
+## v1.1 업데이트
+
+v1.1은 ALIO 실공고 직무기술서와 NCS 블라인드 채용 공식 샘플을 기준으로 세분류 추출, 면접기법별 질문 품질, 검증 리포트를 강화한 버전입니다.
+
+- ALIO 최근 공고 기반 세분류 벤치마크를 28건으로 확장하고, 후보별 원문 위치·추출 근거·MCP 매칭 유형을 진단 CSV에 기록합니다.
+- 세분류가 exact로 확정되지 않는 경우를 `unit_name_only`, `specialized_healthcare_label_unserved_by_mcp`, `catalog_gap_or_nonstandard_source_label`, `parsed_no_detail`, `skipped_by_max_details_per_doc`처럼 분리해 과대 매칭을 막습니다.
+- 질문 품질 리포트에 `coverage_blocker_type`, `resolved_parent_detail`, `review_action`, `coverage_blocker_reason` 컬럼을 추가해 어떤 세분류 때문에 strict coverage가 막혔는지 추적합니다.
+- 모델 원문 질문 품질을 template fallback과 분리해 집계하고, `--min-full-model-rate`, `--min-evaluated-doc-rate`, `--fail-on-repaired-followups`, `--fail-on-model-replacements`, `--fail-on-template-insertions` 게이트를 추가했습니다.
+- NCS 블라인드 채용 `채용모델 면접문항`과 `전형별 평가샘플`을 함께 프로파일링해 경험·상황·발표·토론·인바스켓·창의적 문제해결력면접 형식 신호를 검증합니다.
+- 공식 샘플에서 직무지식면접 사례가 관찰되지 않은 부분은 절차·기준·산출물·예외상황 중심의 내부 품질 게이트와 회귀 테스트로 보강했습니다.
+- 직접 입력 경로도 업로드 경로와 동일하게 면접기법 선택, 질문 계획, KSA 보강, 모델 산출물 보정 로직을 적용합니다.
+- 현재 기준 전체 회귀 테스트는 `353 passed, 2 warnings`입니다.
 
 ## 왜 필요한가
 
