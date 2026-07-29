@@ -96,7 +96,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
             return _decode_rpc(response.text)
     except (httpx.HTTPError, NcsMcpError) as exc:
         global _last_error
-        _last_error = str(exc)
+        _last_error = "ncs_mcp_request_failed"
         if isinstance(exc, NcsMcpError):
             raise
         raise NcsMcpError(f"NCS MCP request failed: {exc}") from exc
@@ -359,13 +359,13 @@ def ncs_mcp_status() -> dict[str, Any]:
             "reachable": True,
             "tools": names,
             "ksaAvailable": "ncs_unit_detail" in names,
-            "lastError": _last_error,
+            "lastError": None,
         }
-    except NcsMcpError as exc:
+    except NcsMcpError:
         return {
             "configured": bool(_endpoint()),
             "reachable": False,
             "tools": [],
             "ksaAvailable": False,
-            "lastError": str(exc),
+            "lastError": "ncs_mcp_unreachable",
         }

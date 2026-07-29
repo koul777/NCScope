@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app.services import ncs_mcp_client, openai_http
+from app.services import jd_strategy, ncs_mcp_client, openai_http
 from app.services.jd_strategy import fetch_ncs_ksa_by_units
 
 
@@ -163,6 +163,19 @@ def test_review_session_stores_only_hash_metadata_and_is_single_use():
     with pytest.raises(main.HTTPException) as exc_info:
         main._validate_review_session(review, JD_TEXT.encode("utf-8"))
     assert exc_info.value.status_code == 409
+
+
+def test_review_session_caps_untrusted_multipart_filename():
+    structured = {"document": {"markdown": JD_TEXT}, "fields": {}}
+    public = main._create_review_session(
+        JD_TEXT.encode("utf-8"),
+        structured,
+        ("x" * 20_000) + ".txt",
+    )
+
+    stored = main._REVIEW_SESSION_BY_ID.pop(public["id"])
+    assert len(stored["filename"]) <= 160
+    assert stored["filename"].endswith(".txt")
 
 
 def test_notice_parse_review_prefills_duty_and_evaluation_text():
@@ -923,6 +936,21 @@ def test_request_body_limit_rejects_chunked_body_before_handler_completes():
     ] == 413
 
 
+def test_mcp_status_does_not_expose_endpoint_or_exception_details(monkeypatch):
+    sentinel = "http://127.0.0.1:9999/mcp?token=mcp-secret-sentinel"
+    monkeypatch.setenv("NCS_MCP_URL", sentinel)
+    monkeypatch.setattr(
+        ncs_mcp_client,
+        "_tool_names",
+        lambda: (_ for _ in ()).throw(ncs_mcp_client.NcsMcpError(sentinel)),
+    )
+
+    status = ncs_mcp_client.ncs_mcp_status()
+
+    assert status["lastError"] == "ncs_mcp_unreachable"
+    assert "mcp-secret-sentinel" not in json.dumps(status)
+
+
 def test_openai_http_error_does_not_expose_remote_body(monkeypatch):
     sentinel = "sk-secret-sentinel"
     monkeypatch.setattr(
@@ -942,6 +970,45 @@ def test_openai_http_error_does_not_expose_remote_body(monkeypatch):
     error_message = str(exc_info.value)
     assert "openai_http_401" in error_message
     assert sentinel not in error_message
+
+
+def test_strategy_model_error_does_not_expose_internal_exception(monkeypatch):
+    sentinel = r"C:\secret DB_PASSWORD=sentinel"
+    monkeypatch.setattr(
+        jd_strategy,
+        "_check_openai_connectivity",
+        lambda **kwargs: (True, ""),
+    )
+    monkeypatch.setattr(
+        jd_strategy,
+        "post_chat_completions_with_retries",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+
+    result = jd_strategy.build_strategy_with_openai(
+        jd_text="직무기술서",
+        notice_text="채용공고",
+        strengths="",
+        region="",
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": "문서작성",
+            }
+        ],
+        ncs_ksa=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "factorName": "문서 요구사항 파악",
+            }
+        ],
+        api_key_override="sk-test",
+        target_count_override=1,
+    )
+
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert result["error"] == "model_generation_failed: retry_request_failed"
+    assert sentinel not in serialized
 
 
 def test_parse_review_rejects_large_upload_before_kordoc(monkeypatch, mocker):

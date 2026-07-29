@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 import os
 import base64
 import re
@@ -41,6 +42,8 @@ from app.services.ncs_mcp_client import (
     suggest_units_by_text,
 )
 from app.settings import settings
+
+logger = logging.getLogger("ncscope.jd_strategy")
 
 
 MOJIBAKE_ALIAS: dict[str, str] = {
@@ -3897,7 +3900,7 @@ def build_strategy_with_openai(
     net_ok, net_msg = _check_openai_connectivity(api_key=api_key, ttl_sec=60)
     precheck_warning = ""
     if not net_ok:
-        detail = f"openai_network_unreachable ({net_msg})" if net_msg else "openai_network_unreachable"
+        detail = "openai_network_unreachable"
         if strict_net_check:
             return build_strategy_with_rule_fallback(
                 ncs_matches=ncs_matches,
@@ -4069,7 +4072,11 @@ def build_strategy_with_openai(
         obj = _request_json(payload, timeout_sec)
     except Exception as e:
         # First failure: retry with slimmer, compeUnitDef-focused prompt.
-        model_error = str(e)
+        logger.error(
+            "openai_strategy_primary_failed",
+            exc_info=(type(e), e, e.__traceback__),
+        )
+        model_error = "primary_request_failed"
         slim_priority = ""
         if has_priority_context:
             slim_priority = (
@@ -4116,7 +4123,11 @@ def build_strategy_with_openai(
             obj = _request_json(slim_payload, min(timeout_sec, 50.0))
             recovered_with_slim_retry = True
         except Exception as e2:
-            model_error = f"{e}; retry_failed: {e2}"
+            logger.error(
+                "openai_strategy_retry_failed",
+                exc_info=(type(e2), e2, e2.__traceback__),
+            )
+            model_error = "retry_request_failed"
             obj = {}
 
     obj["ncs_candidates_raw"] = ncs_matches
@@ -4157,7 +4168,7 @@ def build_strategy_with_openai(
     if model_error:
         obj["error"] = f"model_generation_failed: {model_error}"
     if precheck_warning and not model_error:
-        obj["warning"] = f"openai_precheck_warning: {precheck_warning}"
+        obj["warning"] = "openai_precheck_warning: openai_network_unreachable"
     return obj
 
 

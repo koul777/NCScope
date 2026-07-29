@@ -112,7 +112,11 @@ http://127.0.0.1:8015
 - 입력한 키는 브라우저 저장소나 서버 DB에 저장하지 않습니다.
 - 해당 생성 요청에만 FormData/JSON으로 전달됩니다.
 - 비워 두면 기본적으로 서버의 `OPENAI_API_KEY`를 사용하지 않습니다.
-- 서버 키 fallback은 운영자가 `OPENAI_ALLOW_SERVER_KEY_FALLBACK=true`를 명시적으로 설정한 경우에만 사용합니다.
+- 서버 키 fallback은 `OPENAI_ALLOW_SERVER_KEY_FALLBACK=true`와
+  `OPENAI_SERVER_FALLBACK_TOKEN`을 함께 설정하고, 호출자가 같은 값을
+  `X-NCScope-OpenAI-Token` 헤더로 보낸 경우에만 사용합니다.
+- 브라우저 UI는 fallback 인증 헤더를 보내지 않으므로 화면에서는 요청별
+  OpenAI API key를 입력해야 합니다.
 - 응답 JSON에는 키 원문이 포함되지 않고 `request`, `env`, `missing` 상태만 표시됩니다.
 
 ### 3. 직무기술서 업로드
@@ -350,12 +354,14 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | `NCSCOPE_LOAD_DOTENV` | 선택 | `false` | 앱 import 시 `.env` 자동 로드 여부. 배포/테스트 기본값은 비활성화 |
 | `NCS_MCP_URL` | 필수 | 없음 | 로컬 NCS DB 검색 서버(NCS_MCP) Streamable HTTP 주소 |
 | `OPENAI_API_KEY` | 선택 | 없음 | 서버 OpenAI 키. 기본적으로 요청 key가 없을 때 자동 사용하지 않음 |
-| `OPENAI_ALLOW_SERVER_KEY_FALLBACK` | 선택 | `false` | 요청 key가 없을 때 서버 `OPENAI_API_KEY` 사용 허용 |
+| `OPENAI_ALLOW_SERVER_KEY_FALLBACK` | 선택 | `false` | 요청 key가 없을 때 인증된 서버 `OPENAI_API_KEY` fallback 허용 |
+| `OPENAI_SERVER_FALLBACK_TOKEN` | 조건부 | 없음 | 서버 key fallback 활성화 시 필수. 호출자는 같은 값을 `X-NCScope-OpenAI-Token` 헤더로 전송 |
 | `OPENAI_MODEL` | 선택 | `gpt-4o-mini` | 일반 모델 설정 |
 | `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
 | `OPENAI_HTTP_CURL_FALLBACK_ENABLED` | 선택 | `false` | Python HTTP 실패 시 curl fallback 사용. 사용자 key 노출 위험 때문에 opt-in |
 | `DATABASE_URL` | 선택 | `sqlite:///./ncscope.db` | 앱용 소형 DB |
 | `MAX_UPLOAD_MB` | 선택 | `30` | 업로드 제한 |
+| `MAX_REQUEST_BODY_MB` | 선택 | `MAX_UPLOAD_MB×2+2` | multipart·JSON을 포함한 HTTP 요청 전체 제한 |
 | `KORDOC_OCR` | 선택 | `true` | Kordoc OCR 경로 사용 |
 | `ENABLE_ADMIN_ENDPOINTS` | 선택 | `false` | 관리자 API 활성화 |
 | `ADMIN_TOKEN` | 조건부 | 없음 | 관리자 API 사용 시 필요 |

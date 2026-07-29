@@ -1962,7 +1962,10 @@ def _suffix_of(name: str) -> str:
 def _safe_member_label(name: str) -> str:
     value = str(name or "").replace("\\", "/").split("/")[-1].strip()
     value = re.sub(r"[\r\n\t]+", " ", value)
-    return value[:160] or "archive_member"
+    if len(value) > 160:
+        suffix = Path(value).suffix[:16]
+        value = f"{value[: max(1, 160 - len(suffix))]}{suffix}"
+    return value or "archive_member"
 
 
 def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dict[str, Any]:
@@ -2135,7 +2138,7 @@ def _create_review_session(upload_bytes: bytes, structured: dict[str, Any], file
     markdown = str(document.get("markdown") or "")
     session = {
         "id": secrets.token_urlsafe(24),
-        "filename": str(filename or ""),
+        "filename": _safe_member_label(filename),
         "created_at": time.time(),
         "document_sha256": _sha256_bytes(upload_bytes),
         "markdown_sha256": _sha256_text(markdown),
