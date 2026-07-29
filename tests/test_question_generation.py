@@ -35,9 +35,11 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
     assert "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d" in prompt
     assert "ncs-mcp" in prompt
     assert "factorName 원문" in prompt
+    assert "상황 프레임" in prompt
+    assert "question_focus" in prompt
     assert "question과 follow_ups 중 지정 위치" in prompt
     assert "글자 그대로 'KSA'라고 쓰지 말고" in prompt
-    assert "첫 항목은 question에 직접 쓴 주 검증 초점" in prompt
+    assert "첫 항목은 question_focus와 일치" in prompt
     assert "JSON" in prompt
     assert "\ufffd" not in prompt
 
@@ -66,6 +68,7 @@ def test_prompt_describes_all_supported_interview_methods():
     assert "발표면접, 토론면접, 인바스켓면접, 직무지식면접은 follow_ups[0]" in prompt
     assert "경험면접, 상황면접, 창의적 문제해결력면접은 follow_ups[1]" in prompt
     assert "[KSA 원문 보존 예시]" in prompt
+    assert '"question_focus": "주 검증 factorName"' in prompt
     assert '"type": "경험면접|상황면접|발표면접|토론면접|창의적 문제해결력면접|인바스켓면접|직무지식면접"' in prompt
 
 
@@ -141,6 +144,249 @@ def test_parse_deduplicates_identical_questions():
     questions = _parse_openai_response(response)
 
     assert len(questions) == 1
+
+
+def test_parse_deduplicates_general_intent_variants():
+    response = [
+        {"question": "우리 기관에 지원한 동기를 말씀해 주세요.", "type": "경험면접"},
+        {"question": "해당 직무에 관심을 갖게 된 이유를 설명해 주세요.", "type": "경험면접"},
+        {"question": "입사 후 어떤 성장계획과 포부가 있는지 설명해 주세요.", "type": "경험면접"},
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+    assert questions[0]["question"] == "우리 기관에 지원한 동기를 말씀해 주세요."
+    assert questions[1]["question"] == "입사 후 어떤 성장계획과 포부가 있는지 설명해 주세요."
+
+
+def test_parse_keeps_distinct_wording_for_same_intent_and_ksa_scope():
+    response = [
+        {
+            "question": "문서 요구사항 파악을 적용한 경험과 본인 행동, 결과를 설명해 주세요.",
+            "type": "경험면접",
+            "competency": "문서작성",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+        {
+            "question": "문서 요구사항 파악 관련 사례에서 어떤 행동과 결과가 있었는지 말씀해 주세요.",
+            "type": "경험면접",
+            "competency": "문서작성",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+    assert questions[0]["ksa_refs"] == ["문서 요구사항 파악"]
+    assert questions[0]["question_focus"] == "문서 요구사항 파악"
+
+
+def test_parse_keeps_same_focus_when_scenario_frames_differ():
+    response = [
+        {
+            "question": (
+                "문서 요구사항 파악 업무에서 일정 지연을 해결한 경험을 말씀해 주세요. "
+                "당시 상황, 본인 행동과 결과를 설명해 주세요."
+            ),
+            "type": "경험면접",
+            "question_focus": "문서 요구사항 파악",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+        {
+            "question": (
+                "문서 요구사항 파악 업무에서 자료 불일치를 조정한 경험을 말씀해 주세요. "
+                "당시 상황, 본인 행동과 결과를 설명해 주세요."
+            ),
+            "type": "경험면접",
+            "question_focus": "문서 요구사항 파악",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+
+
+def test_parse_keeps_same_focus_for_unlisted_scenario_frames():
+    response = [
+        {
+            "question": (
+                "문서 요구사항 파악 업무에서 시스템 장애를 해결한 경험을 말씀해 주세요. "
+                "당시 상황, 본인 행동과 결과를 설명해 주세요."
+            ),
+            "type": "경험면접",
+            "question_focus": "문서 요구사항 파악",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+        {
+            "question": (
+                "문서 요구사항 파악 업무에서 규정 변경에 대응한 경험을 말씀해 주세요. "
+                "당시 상황, 본인 행동과 결과를 설명해 주세요."
+            ),
+            "type": "경험면접",
+            "question_focus": "문서 요구사항 파악",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+
+
+def test_parse_does_not_treat_alternative_choice_reason_as_motivation():
+    response = [
+        {
+            "question": "일정 계획 수립에서 대안을 선택한 이유와 실행 순서를 설명해 주세요.",
+            "type": "직무지식면접",
+            "question_focus": "일정 계획 수립",
+            "ksa_refs": ["일정 계획 수립"],
+        },
+        {
+            "question": "예산 계획 수립에서 대안을 선택한 이유와 실행 순서를 설명해 주세요.",
+            "type": "직무지식면접",
+            "question_focus": "예산 계획 수립",
+            "ksa_refs": ["예산 계획 수립"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+
+
+def test_parse_aligns_question_focus_with_first_ksa_reference():
+    response = [
+        {
+            "question": "예산 계획 수립의 절차와 기준, 산출물과 예외상황을 설명해 주세요.",
+            "type": "직무지식면접",
+            "question_focus": "예산 계획 수립",
+            "ksa_refs": ["일정 계획 수립"],
+        }
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert questions[0]["question_focus"] == "일정 계획 수립"
+    assert questions[0]["ksa_refs"][0] == questions[0]["question_focus"]
+
+
+def test_parse_deduplicates_near_duplicate_same_scope_questions():
+    response = [
+        {
+            "question": "문서 요구사항 파악 업무에서 자료 오류를 확인하고 보완한 사례를 구체적으로 설명해 주세요.",
+            "type": "경험면접",
+            "question_focus": "문서 요구사항 파악",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+        {
+            "question": "문서 요구사항 파악 업무 중 자료 오류를 확인해 보완한 사례를 구체적으로 말씀해 주세요.",
+            "type": "경험면접",
+            "question_focus": "문서 요구사항 파악",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+        {
+            "question": "회의 운영 업무에서 자료 오류를 확인하고 보완한 사례를 구체적으로 설명해 주세요.",
+            "type": "경험면접",
+            "question_focus": "회의 운영",
+            "ksa_refs": ["회의 운영"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+    assert [q["question_focus"] for q in questions] == ["문서 요구사항 파악", "회의 운영"]
+
+
+def test_parse_keeps_same_intent_when_ksa_or_focus_differs():
+    response = [
+        {
+            "question": "문서 요구사항 파악을 적용한 경험과 본인 행동, 결과를 설명해 주세요.",
+            "type": "경험면접",
+            "competency": "문서작성",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+        {
+            "question": "회의 운영 과정에서 겪은 경험과 본인 행동, 결과를 설명해 주세요.",
+            "type": "경험면접",
+            "competency": "회의운영",
+            "question_focus": "회의 운영",
+            "ksa_refs": ["회의 운영"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+    assert questions[1]["question_focus"] == "회의 운영"
+
+
+def test_parse_keeps_contextual_collaboration_questions_when_focus_differs():
+    response = [
+        {
+            "question": "문서 요구사항 파악 기준 강화 입장과 처리 속도 우선 입장이 충돌할 때 조정 방안을 제시해 주세요.",
+            "type": "토론면접",
+            "question_focus": "문서 요구사항 파악",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+        {
+            "question": "회의 운영 기준 강화 입장과 참여자 편의 우선 입장이 충돌할 때 합의 기준을 제시해 주세요.",
+            "type": "토론면접",
+            "question_focus": "회의 운영",
+            "ksa_refs": ["회의 운영"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+    assert [q["question_focus"] for q in questions] == ["문서 요구사항 파악", "회의 운영"]
+
+
+def test_parse_keeps_planning_ksa_focus_variants():
+    response = [
+        {
+            "question": "일정 계획 수립을 적용해 문제를 해결한 경험과 본인 행동, 결과를 설명해 주세요.",
+            "type": "경험면접",
+            "competency": "문서작성",
+            "ksa_refs": ["일정 계획 수립"],
+        },
+        {
+            "question": "예산 계획 수립을 적용해 문제를 해결한 경험과 본인 행동, 결과를 설명해 주세요.",
+            "type": "경험면접",
+            "competency": "문서작성",
+            "ksa_refs": ["예산 계획 수립"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+    assert [q["ksa_refs"][0] for q in questions] == ["일정 계획 수립", "예산 계획 수립"]
+
+
+def test_parse_keeps_questions_when_primary_ksa_ref_order_differs():
+    response = [
+        {
+            "question": "일정 계획 수립과 예산 계획 수립을 함께 고려해 실행 우선순위를 정한 경험을 말씀해 주세요.",
+            "type": "경험면접",
+            "ksa_refs": ["일정 계획 수립", "예산 계획 수립"],
+        },
+        {
+            "question": "예산 계획 수립과 일정 계획 수립을 함께 고려해 실행 우선순위를 정한 경험을 말씀해 주세요.",
+            "type": "경험면접",
+            "ksa_refs": ["예산 계획 수립", "일정 계획 수립"],
+        },
+    ]
+
+    questions = _parse_openai_response(__import__("json").dumps(response, ensure_ascii=False))
+
+    assert len(questions) == 2
+    assert [q["ksa_refs"][0] for q in questions] == ["일정 계획 수립", "예산 계획 수립"]
 
 
 def test_parse_falls_back_for_unsupported_interview_type():

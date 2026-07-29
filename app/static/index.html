@@ -93,6 +93,7 @@
     .evidence-pill { border:1px solid #c8def7; background:#f3f8ff; border-radius:999px; padding:5px 9px; font-size:11.5px; color:#17345c; }
     .quality-summary { display:flex; flex-wrap:wrap; gap:7px; margin:0 0 10px; }
     .quality-summary .pill { margin:0; }
+    .quality-notice { flex-basis:100%; border-left:3px solid var(--primary-2); padding:7px 10px; color:var(--muted); background:#f4fbfb; border-radius:6px; font-size:12px; line-height:1.45; }
     .qnav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .qnav-btn { width:auto; margin:0; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; }
     .qnav-ind { font-size:13px; color:var(--muted); }
@@ -186,15 +187,15 @@
         </div>
 
         <label for="openaiApiKey">OpenAI API key (선택)</label>
-        <input id="openaiApiKey" type="password" placeholder="sk-... 또는 환경변수 OPENAI_API_KEY 사용" autocomplete="off" spellcheck="false" />
+        <input id="openaiApiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
         <div class="sub" style="margin-top:-4px; margin-bottom:10px;">
-          입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 비워두면 서버의 <code>OPENAI_API_KEY</code>를 사용합니다.
+          입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 서버 키 fallback은 운영자가 명시적으로 허용한 경우에만 사용됩니다.
         </div>
 
         <div class="workflow-menu" aria-label="검토 단계">
           <div id="flowApi" class="flow-step active">
             <strong>1. API 설정</strong>
-            <span>요청 키 또는 서버 환경변수 확인</span>
+            <span>요청 키 확인</span>
           </div>
           <div id="flowJd" class="flow-step">
             <strong>2. 직무기술서 세분류</strong>
@@ -265,7 +266,7 @@
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="토론면접" checked /> 토론면접</label>
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="인바스켓면접" checked /> 인바스켓면접</label>
               <label class="method-item"><input type="checkbox" name="interviewMethod" value="직무지식면접" checked /> 직무지식면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="창의적 문제해결력면접" /> 창의적 문제해결력면접</label>
+              <label class="method-item"><input type="checkbox" name="interviewMethod" value="창의적 문제해결력면접" checked /> 창의적 문제해결력면접</label>
             </div>
           </div>
 
@@ -467,7 +468,15 @@
     let progressSlowState = null;
     let currentQuestions = [];
     let currentQPage = 0;
+    let openaiRuntime = { serverFallback: false, serverKey: false };
     const QUESTION_PAGE_SIZE = 5;
+
+    function currentQuestionTexts() {
+      return (Array.isArray(currentQuestions) ? currentQuestions : [])
+        .map(q => String((q || {}).question || '').trim())
+        .filter(Boolean)
+        .slice(-20);
+    }
 
     // ── 소분류 상태 ────────────────────────────────────────────────────────
     // { label: string, type: 'matched'|'unmatched'|'custom' }[]
@@ -550,7 +559,8 @@
       questionPlanEmpty.style.display = 'none';
       questionPlanLabel.style.display = 'block';
       questionPlanHead.style.display = 'grid';
-      details.forEach((detail) => {
+      const isManualMode = (inputMode.value || 'upload') === 'manual';
+      details.forEach((detail, index) => {
         const saved = previous.get(normSclassLabel(detail));
         const row = document.createElement('div');
         row.className = 'detail-plan-row';
@@ -558,7 +568,7 @@
 
         const enabled = document.createElement('input');
         enabled.type = 'checkbox';
-        enabled.checked = saved ? !!saved.enabled : true;
+        enabled.checked = saved ? !!saved.enabled : (isManualMode || index === 0);
         enabled.className = 'plan-enabled';
         row.appendChild(enabled);
 
@@ -612,7 +622,7 @@
       const checked = Array.from(document.querySelectorAll('input[name="interviewMethod"]:checked'))
         .map(x => x.value)
         .filter(Boolean);
-      return checked.length ? checked : ['경험면접', '상황면접', '발표면접', '토론면접', '인바스켓면접', '직무지식면접'];
+      return checked.length ? checked : ['경험면접', '상황면접', '발표면접', '토론면접', '인바스켓면접', '직무지식면접', '창의적 문제해결력면접'];
     }
 
     function refreshRunButtonState() {
@@ -648,10 +658,15 @@
     }
 
     function updateWorkflowMenu() {
+      const hasRequestKey = Boolean(requestOpenAIKey());
+      const hasServerFallbackKey = Boolean(openaiRuntime.serverFallback && openaiRuntime.serverKey);
+      const keyFlowDetail = hasRequestKey
+        ? '요청 단위 키 입력됨'
+        : (hasServerFallbackKey ? '서버 fallback 키 사용 가능' : '요청 키 미입력 · 템플릿 기반 생성');
       setFlowStep(
         flowApi,
-        requestOpenAIKey() ? 'done' : 'active',
-        requestOpenAIKey() ? '요청 단위 키 입력됨' : '서버 환경변수 또는 입력 키 사용'
+        (hasRequestKey || hasServerFallbackKey) ? 'done' : 'active',
+        keyFlowDetail
       );
       const hasNoticeText = Boolean(
         (dutyText.value || '').trim()
@@ -1408,6 +1423,13 @@
           span.textContent = String(value || '-');
           head.appendChild(span);
         });
+        const source = String(q.question_source || '').trim();
+        if (source) {
+          const sourceEl = document.createElement('span');
+          sourceEl.className = source === 'template_fallback' ? 'pill warn' : 'pill good';
+          sourceEl.textContent = source === 'template_fallback' ? '템플릿 보정' : `AI 원문: ${source}`;
+          head.appendChild(sourceEl);
+        }
         box.appendChild(head);
 
         const question = document.createElement('div');
@@ -1416,6 +1438,16 @@
         question.appendChild(qLabel);
         question.appendChild(document.createTextNode(` ${q.question || '-'}`));
         box.appendChild(question);
+
+        const replacementReasons = Array.isArray(q.model_replacement_reasons)
+          ? q.model_replacement_reasons.filter(x => String(x || '').trim())
+          : [];
+        if (replacementReasons.length) {
+          const reason = document.createElement('div');
+          reason.className = 'sub';
+          reason.textContent = `품질 보정 사유: ${replacementReasons.join(', ')}`;
+          box.appendChild(reason);
+        }
 
         const chain = document.createElement('div');
         chain.className = 'followup-chain';
@@ -1502,13 +1534,14 @@
       }
     }
 
-    function renderQualityReport(report) {
+    function renderQualityReport(report, operationalNotice = '') {
       if (!qualitySummary) return;
       qualitySummary.innerHTML = '';
       const summary = report && typeof report === 'object' && report.summary && typeof report.summary === 'object'
         ? report.summary
         : null;
-      if (!summary) {
+      const notice = String(operationalNotice || '').trim();
+      if (!summary && !notice) {
         qualitySummary.style.display = 'none';
         return;
       }
@@ -1518,11 +1551,29 @@
         span.textContent = text;
         qualitySummary.appendChild(span);
       };
-      add(report.passed ? '품질 게이트 통과' : '품질 검토 필요', report.passed ? 'good' : 'warn');
-      add(`Ready ${summary.ready_count || 0}/${summary.question_count || 0}`);
-      add(`평균 ${summary.average_score ?? '-'}`);
-      if (summary.needs_review_count) add(`검토 ${summary.needs_review_count}`, 'warn');
-      if (report.policy) add(String(report.policy));
+      if (summary) {
+        add(report.passed ? '품질 게이트 통과' : '품질 검토 필요', report.passed ? 'good' : 'warn');
+        add(`Ready ${summary.ready_count || 0}/${summary.question_count || 0}`);
+        add(`평균 ${summary.average_score ?? '-'}`);
+        if (summary.needs_review_count) add(`검토 ${summary.needs_review_count}`, 'warn');
+        if (report.policy) add(String(report.policy));
+        const reviewItems = Array.isArray(report.items)
+          ? report.items.filter(item => item && item.ready === false)
+          : [];
+        reviewItems.slice(0, 10).forEach((item, idx) => {
+          const no = item.index || item.question_index || idx + 1;
+          const issues = Array.isArray(item.issues)
+            ? item.issues.filter(Boolean).join(', ')
+            : '품질 기준 미충족';
+          add(`#${no} 검토: ${issues || '품질 기준 미충족'}`, 'warn');
+        });
+      }
+      if (notice) {
+        const noticeEl = document.createElement('div');
+        noticeEl.className = 'quality-notice';
+        noticeEl.textContent = notice;
+        qualitySummary.appendChild(noticeEl);
+      }
       qualitySummary.style.display = 'flex';
     }
 
@@ -1538,7 +1589,7 @@
       }
 
       renderMeta(data);
-      renderQualityReport(s.question_quality_report);
+      renderQualityReport(s.question_quality_report, data.operational_notice || s.operational_notice);
       renderPipelineDiag(data, qList);
       currentQPage = 0;
       renderQuestionList(qList);
@@ -1643,6 +1694,7 @@
           }
           fd.append('question_plan_json', JSON.stringify({ items: collectQuestionPlan() }));
           fd.append('interview_methods_json', JSON.stringify(collectInterviewMethods()));
+          fd.append('avoid_questions_json', JSON.stringify(currentQuestionTexts()));
           if (!reviewConfirmed || !jdReviewPayload) {
             throw new Error('Kordoc 추출 결과를 검토·확정한 뒤 실행해 주세요.');
           }
@@ -1692,6 +1744,7 @@
               question_plan: { items: collectQuestionPlan() },
               interview_methods: collectInterviewMethods(),
               runtime_knobs: knobs,
+              avoid_questions: currentQuestionTexts(),
               openai_api_key: requestOpenAIKey(),
             }),
           });
@@ -1786,6 +1839,11 @@
     loadNcsOptions('')
       .then(() => fetch('/health').then(r => r.json()))
       .then((h) => {
+        openaiRuntime = {
+          serverFallback: Boolean(h && h.keys && h.keys.openai_server_fallback),
+          serverKey: Boolean(h && h.keys && h.keys.openai),
+        };
+        updateWorkflowMenu();
         raw.textContent = JSON.stringify({ status: '준비완료', health: h, ncs_options: ncsUnitOptions.length }, null, 2);
       })
       .catch((e) => {

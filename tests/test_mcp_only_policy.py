@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import io
 import zipfile
@@ -8,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app.services import ncs_mcp_client
+from app.services import ncs_mcp_client, openai_http
 from app.services.jd_strategy import fetch_ncs_ksa_by_units
 
 
@@ -482,6 +483,83 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
     assert request_key not in resp.text
 
 
+def test_generate_from_text_does_not_use_server_openai_key_by_default(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
+    monkeypatch.delenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", raising=False)
+    unit = {
+        "ncsClCd": "0201010103_22v2",
+        "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
+        "compeUnitLevel": "5",
+        "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
+        "compeUnitDef": "\uacbd\uc601\ubaa9\ud45c\ub97c \uc218\ub9bd\ud55c\ub2e4",
+    }
+    ksa = {
+        "ncsClCd": unit["ncsClCd"],
+        "compeUnitName": unit["compeUnitName"],
+        "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
+    mocker.patch("app.main.build_ncs_context_pack", return_value={})
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-from-text",
+            json={
+                "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
+                "selected_ncs": [unit],
+            },
+        )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["openai_key_source"] == "missing"
+    kwargs = build_strategy.call_args.kwargs
+    assert kwargs["api_key_override"] == ""
+    assert kwargs["allow_env_fallback"] is False
+    assert "sk-server-env-key" not in resp.text
+
+
+def test_generate_from_text_allows_server_openai_key_when_explicitly_enabled(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
+    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
+    unit = {
+        "ncsClCd": "0201010103_22v2",
+        "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
+        "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
+    }
+    ksa = {
+        "ncsClCd": unit["ncsClCd"],
+        "compeUnitName": unit["compeUnitName"],
+        "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
+    mocker.patch("app.main.build_ncs_context_pack", return_value={})
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-from-text",
+            json={
+                "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
+                "selected_ncs": [unit],
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["openai_key_source"] == "env"
+    assert build_strategy.call_args.kwargs["allow_env_fallback"] is True
+    assert "sk-server-env-key" not in resp.text
+
+
 def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     unit = {
@@ -756,6 +834,45 @@ def test_ksa_lookup_requires_ncs_mcp_url(monkeypatch):
         )
 
 
+def test_read_upload_limited_never_requests_unbounded_body(monkeypatch):
+    monkeypatch.setenv("MAX_UPLOAD_MB", "1")
+
+    class FakeUpload:
+        requested_sizes: list[int] = []
+
+        async def read(self, size: int = -1) -> bytes:
+            self.requested_sizes.append(size)
+            return b"x" * size
+
+    upload = FakeUpload()
+    with pytest.raises(main.HTTPException) as exc_info:
+        asyncio.run(main._read_upload_limited(upload, "jd_file"))
+
+    assert exc_info.value.status_code == 413
+    assert upload.requested_sizes == [1024 * 1024 + 1]
+
+
+def test_openai_http_error_does_not_expose_remote_body(monkeypatch):
+    sentinel = "sk-secret-sentinel"
+    monkeypatch.setattr(
+        openai_http,
+        "_run_curl_json",
+        lambda **_kwargs: (401, f"reflected Authorization: Bearer {sentinel}"),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        openai_http._chat_with_curl(
+            url="https://api.openai.com/v1/chat/completions",
+            payload={},
+            api_key=sentinel,
+            timeout_sec=1,
+        )
+
+    error_message = str(exc_info.value)
+    assert "openai_http_401" in error_message
+    assert sentinel not in error_message
+
+
 def test_parse_review_rejects_large_upload_before_kordoc(monkeypatch, mocker):
     monkeypatch.setenv("MAX_UPLOAD_MB", "1")
     parse = mocker.patch("app.main.parse_with_kordoc")
@@ -768,3 +885,126 @@ def test_parse_review_rejects_large_upload_before_kordoc(monkeypatch, mocker):
 
     assert resp.status_code == 413
     parse.assert_not_called()
+
+
+def test_extract_sclass_rejects_large_upload_before_parser(monkeypatch, mocker):
+    monkeypatch.setenv("MAX_UPLOAD_MB", "1")
+    parser = mocker.patch("app.main.extract_sclass_from_pdf_bytes")
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/extract-sclass",
+            files={"jd_file": ("large.pdf", b"x" * (1024 * 1024 + 1), "application/pdf")},
+        )
+
+    assert resp.status_code == 413
+    parser.assert_not_called()
+
+
+def test_personalized_questions_reject_sensitive_query_text(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
+    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-personalized?ncs_code=02020302&job_posting=resume-text",
+        )
+
+    assert resp.status_code == 400
+    assert "JSON body" in resp.text
+
+
+def test_question_endpoints_reject_openai_key_query_param():
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-by-ncs-code?openai_api_key=sk-query-key&ncs_code=02020302",
+            json={"openai_api_key": "sk-body-key", "ncs_code": "02020302"},
+        )
+
+    assert resp.status_code == 400
+    assert "openai_api_key" in resp.text
+    assert "JSON body" in resp.text
+
+
+def test_question_endpoints_reject_avoid_questions_query_param():
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-by-ncs-code?avoid_questions_json=%5B%22prior-question%22%5D",
+            json={"ncs_code": "02020302"},
+        )
+
+    assert resp.status_code == 400
+    assert "avoid_questions_json" in resp.text
+    assert "JSON body" in resp.text
+
+
+def test_generate_by_ncs_code_requires_mcp_url(monkeypatch):
+    monkeypatch.delenv("NCS_MCP_URL", raising=False)
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-by-ncs-code",
+            json={
+                "openai_api_key": "sk-body-key",
+                "ncs_code": "0202030201_25v3",
+            },
+        )
+
+    assert resp.status_code == 503
+    assert "NCS_MCP_URL" in resp.text
+
+
+def test_generate_by_ncs_code_stops_without_official_ksa(monkeypatch):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.setattr(
+        main,
+        "generate_interview_questions_by_ncs_code",
+        lambda **kwargs: {
+            "generation_mode": "hybrid_ai_with_template_fallback",
+            "ncs_ksa_available": False,
+            "main_questions": [],
+            "follow_up_questions": [],
+        },
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-by-ncs-code",
+            json={
+                "openai_api_key": "sk-body-key",
+                "ncs_code": "0202030201_25v3",
+            },
+        )
+
+    assert resp.status_code == 502
+    assert "Official NCS KSA" in resp.text
+
+
+def test_generate_by_ncs_code_rejects_string_boolean(monkeypatch):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-by-ncs-code",
+            json={
+                "openai_api_key": "sk-body-key",
+                "ncs_code": "0202030201_25v3",
+                "include_followups": "false",
+            },
+        )
+
+    assert resp.status_code == 422
+    assert "include_followups must be a boolean" in resp.text
+
+
+def test_strategy_upload_rejects_openai_key_query_param():
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/strategy/upload?openai_api_key=sk-query-key",
+            files={"jd_file": ("jd.txt", b"job description", "text/plain")},
+            data={"openai_api_key": "sk-body-key"},
+        )
+
+    assert resp.status_code == 400
+    assert "openai_api_key" in resp.text
+    assert "form data" in resp.text

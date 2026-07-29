@@ -12,10 +12,11 @@ import secrets
 import threading
 import time
 import zipfile
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.init_db import init_db
@@ -66,6 +67,12 @@ from app.services.jd_strategy import (
     verify_sclass_candidates_with_ncs_api,
 )
 from app.services.ncs import map_ncs
+from app.services.question_intent import (
+    FOCUS_SCOPED_GENERAL_QUESTION_INTENTS,
+    GENERAL_QUESTION_INTENTS,
+    QUESTION_INTENT_PATTERNS,
+    classify_question_intent,
+)
 from app.services.auto_runner import start_auto_runner
 from app.services.queue_manager import QueueManager
 from app.services.sclass_pipeline import (
@@ -99,12 +106,9 @@ UI_INDEX = BASE_DIR / "static" / "index.html"
 _ALIO_CACHE: dict[str, dict] = {}
 NCS_SCLASS_CSV = BASE_DIR.parent / "ncs_sclass_codes_with_code_no.csv"
 _SCLASS_OPTIONS_CACHE: list[dict] | None = None
-_QUESTION_HISTORY_LOCK = threading.Lock()
-_QUESTION_HISTORY_BY_CODE: dict[str, list[str]] = {}
-_QUESTION_HISTORY_LIMIT = 300
 # 면접 질문 생성 최적 고정값 (10개 기준)
 FAST_NCS_TOP_K = 4          # NCS 매칭 상위 4개
-FAST_KSA_UNITS = 6          # KSA 수집 능력단위 6개 (기본 6개 면접기법 커버)
+FAST_KSA_UNITS = 7          # KSA 수집 능력단위 7개 (기본 7개 면접기법 커버)
 FAST_KSA_FACTORS_PER_UNIT = 2  # 단위당 KSA 2개 (총 6개)
 SUPPORTED_INTERVIEW_METHODS = (
     "경험면접",
@@ -113,10 +117,9 @@ SUPPORTED_INTERVIEW_METHODS = (
     "토론면접",
     "인바스켓면접",
     "직무지식면접",
-)
-OPTIONAL_INTERVIEW_METHODS = (
     "창의적 문제해결력면접",
 )
+OPTIONAL_INTERVIEW_METHODS: tuple[str, ...] = ()
 QUALITY_INTERVIEW_METHODS = SUPPORTED_INTERVIEW_METHODS + OPTIONAL_INTERVIEW_METHODS
 MODEL_PRESERVED_QUESTION_SOURCES = {
     "model",
@@ -148,7 +151,7 @@ def _clamp_runtime_knobs(
             return default
 
     top_k = max(1, min(8, _to_int(ncs_top_k, FAST_NCS_TOP_K)))
-    units = max(1, min(6, _to_int(ksa_units, FAST_KSA_UNITS)))
+    units = max(1, min(7, _to_int(ksa_units, FAST_KSA_UNITS)))
     factors = max(1, min(4, _to_int(ksa_factors_per_unit, FAST_KSA_FACTORS_PER_UNIT)))
     return top_k, units, factors
 
@@ -465,6 +468,10 @@ def _group_interview_questions_for_response(questions: list[dict[str, Any]]) -> 
                 "follow_ups": list((q or {}).get("follow_ups", []) or []),
                 "evaluation_points": list((q or {}).get("evaluation_points", []) or []),
                 "method": str((q or {}).get("method") or (q or {}).get("type") or "").strip(),
+                "question_focus": str((q or {}).get("question_focus") or "").strip(),
+                "question_intent": str((q or {}).get("question_intent") or "").strip(),
+                "question_repeat_signature": str((q or {}).get("question_repeat_signature") or "").strip(),
+                "question_repeat_duplicate": bool((q or {}).get("question_repeat_duplicate") is True),
             }
         )
     return [
@@ -600,6 +607,102 @@ def _method_evaluation_points(method: str, ksa_terms: list[str]) -> list[str]:
     if ksa_points:
         points = points[: max(0, 6 - len(ksa_points))] + ksa_points
     return points[:6]
+
+
+def _focus_context_overlay(focus: str) -> dict[str, str]:
+    key = re.sub(r"\s+", "", str(focus or "")).lower()
+    if not key:
+        return {}
+    overlays: list[tuple[tuple[str, ...], dict[str, str]]] = [
+        (
+            ("보고서", "문서", "자료", "기록"),
+            {
+                "evidence": "문서 초안, 누락 자료 목록, 검토 의견, 결재 일정",
+                "situation": "자료 누락과 문서 기준 불일치",
+                "inbasket": "문서 수정 요청, 누락 자료 확인 메일, 결재 일정 변경 문서",
+                "debate": "문서 정확성을 우선하는 입장과 처리 속도를 우선하는 입장",
+            },
+        ),
+        (
+            ("예산", "일정", "계획", "자원"),
+            {
+                "evidence": "예산 배정표, 일정표, 자원 사용 내역, 변경 요청서",
+                "situation": "일정 변경과 예산·자원 제약",
+                "inbasket": "일정 변경 요청, 예산 조정 검토서, 우선순위 재배정 문서",
+                "debate": "계획 준수를 우선하는 입장과 현장 변경 대응을 우선하는 입장",
+            },
+        ),
+        (
+            ("고객", "민원", "예절", "서비스", "방문객"),
+            {
+                "evidence": "고객 응대 기록, 민원 접수 내역, 서비스 기준표",
+                "situation": "고객 불만과 서비스 기준 충돌",
+                "inbasket": "민원 접수 문서, 고객 응대 기록, 현장 조치 요청",
+                "debate": "고객 편의를 우선하는 입장과 서비스 기준 준수를 우선하는 입장",
+            },
+        ),
+        (
+            ("안전", "위험", "점검", "품질", "오류"),
+            {
+                "evidence": "점검 결과표, 오류 사례, 위험요인 목록, 개선 조치 기록",
+                "situation": "안전·품질 위험과 처리 일정 압박",
+                "inbasket": "점검 보완 요청, 오류 정정 문서, 긴급 위험 보고",
+                "debate": "위험 예방을 우선하는 입장과 일정 준수를 우선하는 입장",
+            },
+        ),
+        (
+            ("법규", "규정", "기준", "절차"),
+            {
+                "evidence": "관련 규정, 절차서, 예외 승인 기록, 적용 사례",
+                "situation": "기준 해석 차이와 예외 처리 요청",
+                "inbasket": "기준 확인 요청, 예외 승인 검토서, 절차 보완 문서",
+                "debate": "규정 준수를 엄격히 적용하는 입장과 예외 허용을 검토하는 입장",
+            },
+        ),
+        (
+            ("데이터", "분석", "지표", "통계"),
+            {
+                "evidence": "지표 추이, 원자료, 분석 결과표, 이상값 목록",
+                "situation": "지표 이상값과 원인 불명확성",
+                "inbasket": "분석 재검토 요청, 원자료 확인 메일, 지표 보고 일정",
+                "debate": "추가 검증을 우선하는 입장과 신속 보고를 우선하는 입장",
+            },
+        ),
+        (
+            ("보안", "출입", "신분증", "여권", "감별", "통제"),
+            {
+                "_replace_context": "true",
+                "evidence": "출입 로그, 신분 확인 기록, 보안 통제 기준, 예외 요청서",
+                "situation": "본인 확인 예외 요청과 보안 기준 충돌",
+                "inbasket": "출입 예외 요청, 신분 확인 기록, 보안 책임자 보고 문서",
+                "debate": "보안 통제를 우선하는 입장과 방문객 편의를 우선하는 입장",
+            },
+        ),
+    ]
+    for keywords, overlay in overlays:
+        if any(keyword in key for keyword in keywords):
+            return dict(overlay)
+    return {}
+
+
+def _merge_context_overlay(base: dict[str, str], overlay: dict[str, str]) -> dict[str, str]:
+    if not overlay:
+        return base
+    merged = dict(base)
+    replace_context = str(overlay.get("_replace_context") or "").strip().lower() == "true"
+    for field in ("evidence", "situation", "inbasket", "debate"):
+        extra = str(overlay.get(field) or "").strip()
+        current = str(merged.get(field) or "").strip()
+        if not extra:
+            continue
+        if replace_context:
+            merged[field] = extra
+            continue
+        if current and normalize_question_dedup_key(extra) not in normalize_question_dedup_key(current):
+            merged[field] = f"{extra}, {current}"
+        elif not current:
+            merged[field] = extra
+    return merged
 
 
 def _domain_context_pack(detail: str, subject: str, focus: str, comp_def: str) -> dict[str, str]:
@@ -746,8 +849,8 @@ def _domain_context_pack(detail: str, subject: str, focus: str, comp_def: str) -
     ]
     for keywords, pack in packs:
         if any(keyword.lower() in key for keyword in keywords):
-            return {**default, **pack}
-    return default
+            return _merge_context_overlay({**default, **pack}, _focus_context_overlay(focus))
+    return _merge_context_overlay(default, _focus_context_overlay(focus))
 
 
 def _has_korean_final_consonant(text: str) -> bool:
@@ -823,7 +926,7 @@ def _question_for_method(
     )
 
 
-def _followups_for_method(method: str, subject: str, focus: str, count: int) -> list[str]:
+def _followups_for_method(method: str, subject: str, focus: str, count: int, variant_index: int = 0) -> list[str]:
     if count <= 0:
         return []
     label = subject or "해당 업무"
@@ -881,7 +984,35 @@ def _followups_for_method(method: str, subject: str, focus: str, count: int) -> 
         ],
     }
     bank = banks.get(method, banks["경험면접"])
-    return bank[: max(0, min(5, count))]
+    limit = max(0, min(5, count))
+    if limit <= 0:
+        return []
+    if limit >= len(bank):
+        return list(bank[:limit])
+
+    focus_slot = _FOLLOW_UP_FOCUS_SLOT_INDEX.get(method, 1)
+    locked_indices = [0]
+    if 0 <= focus_slot < len(bank) and focus_slot not in locked_indices:
+        locked_indices.append(focus_slot)
+    locked_indices = [idx for idx in locked_indices if idx < len(bank)]
+
+    selected: list[str] = []
+    selected_indices: set[int] = set()
+    for bank_index in locked_indices:
+        if len(selected) >= limit:
+            break
+        selected.append(bank[bank_index])
+        selected_indices.add(bank_index)
+
+    candidates = [idx for idx in range(len(bank)) if idx not in selected_indices]
+    if candidates:
+        offset = max(0, int(variant_index or 0)) % len(candidates)
+        rotated = candidates[offset:] + candidates[:offset]
+        for bank_index in rotated:
+            if len(selected) >= limit:
+                break
+            selected.append(bank[bank_index])
+    return selected[:limit]
 
 
 def _clean_question_items(values: Any, limit: int) -> list[str]:
@@ -918,6 +1049,124 @@ def _merge_question_items(primary: list[str], fallback: list[str], limit: int) -
         if len(out) >= limit:
             break
     return out
+
+
+_GENERAL_QUESTION_INTENTS = GENERAL_QUESTION_INTENTS
+_FOCUS_SCOPED_GENERAL_QUESTION_INTENTS = FOCUS_SCOPED_GENERAL_QUESTION_INTENTS
+_QUESTION_INTENT_PATTERNS = QUESTION_INTENT_PATTERNS
+
+
+def _compact_question_text(value: Any) -> str:
+    return re.sub(r"\s+", "", normalize_question_dedup_key(str(value or "")))
+
+
+def _compact_question_intent_text(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    raw = re.sub(r"[^0-9a-z가-힣]+", " ", raw)
+    return re.sub(r"\s+", "", raw)
+
+
+def _question_intent_key(question: str) -> str:
+    return classify_question_intent(question, unknown="other")
+
+
+def _question_intent_for_repeat_signature(question: str) -> str:
+    intent = _question_intent_key(question)
+    return "" if intent == "other" else intent
+
+
+def _question_focus_signature(value: Any) -> str:
+    return _compact_question_text(value)[:80]
+
+
+def _question_text_similarity(left: Any, right: Any) -> float:
+    left_key = _compact_question_text(left)
+    right_key = _compact_question_text(right)
+    if not left_key or not right_key:
+        return 0.0
+    if left_key == right_key:
+        return 1.0
+    return SequenceMatcher(None, left_key, right_key).ratio()
+
+
+def _question_repeat_signature(item: dict[str, Any]) -> str:
+    question = str((item or {}).get("question") or "").strip()
+    intent = _question_intent_for_repeat_signature(question)
+    if not intent:
+        return ""
+    method = str((item or {}).get("method") or (item or {}).get("type") or "").strip()
+    method_key = _compact_question_text(method)
+    focus = str((item or {}).get("question_focus") or "").strip()
+    refs = item.get("ksa_refs")
+    if not focus and isinstance(refs, list) and refs:
+        focus = str(refs[0] or "").strip()
+    has_focus_scope = bool(focus)
+    if intent in _GENERAL_QUESTION_INTENTS and not (
+        intent in _FOCUS_SCOPED_GENERAL_QUESTION_INTENTS and has_focus_scope
+    ):
+        return f"{intent}|general"
+    if focus:
+        return f"{intent}|{method_key}|focus:{_question_focus_signature(focus)}"
+    subject = str((item or {}).get("ncsClCd") or (item or {}).get("competency") or "").strip()
+    return f"{intent}|{method_key}|{_question_focus_signature(subject)}"
+
+
+def _question_near_repeat(item: dict[str, Any], previous: dict[str, Any]) -> bool:
+    signature = _question_repeat_signature(item)
+    if not signature or signature != _question_repeat_signature(previous):
+        return False
+    if signature.endswith("|general"):
+        return True
+    question = str((item or {}).get("question") or "").strip()
+    previous_question = str((previous or {}).get("question") or "").strip()
+    if not question or not previous_question:
+        return False
+    if normalize_question_dedup_key(question) == normalize_question_dedup_key(previous_question):
+        return True
+    if min(len(_compact_question_text(question)), len(_compact_question_text(previous_question))) < 24:
+        return False
+    return _question_text_similarity(question, previous_question) >= 0.88
+
+
+def _refresh_question_repeat_metadata(items: list[dict[str, Any]]) -> None:
+    seen_by_signature: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        signature = _question_repeat_signature(item)
+        previous_items = seen_by_signature.get(signature, []) if signature else []
+        repeat_duplicate = any(_question_near_repeat(item, previous) for previous in previous_items)
+        item["question_intent"] = _question_intent_key(str(item.get("question") or ""))
+        item["question_repeat_signature"] = signature
+        item["question_repeat_duplicate"] = bool(repeat_duplicate)
+        if signature:
+            seen_by_signature.setdefault(signature, []).append(dict(item))
+
+
+def _pick_alternate_question_focus(
+    current_focus: str,
+    ksa_terms: list[str],
+    used_focuses: set[str],
+) -> str:
+    current_key = _question_focus_signature(current_focus)
+    base_focus = _clean_question_text(current_focus, max_chars=44)
+    fallback_terms = [
+        f"{base_focus} 사실 확인",
+        f"{base_focus} 판단 기준",
+        f"{base_focus} 실행 우선순위",
+        f"{base_focus} 오류 예방",
+        f"{base_focus} 이해관계자 조정",
+        f"{base_focus} 결과 점검",
+    ] if base_focus else []
+    for term in [*(ksa_terms or []), *fallback_terms]:
+        text = _clean_question_text(term, max_chars=60)
+        key = _question_focus_signature(text)
+        if not text or not key or key == current_key or key in used_focuses:
+            continue
+        if _contains_blind_hiring_cue(text):
+            continue
+        return text
+    return ""
 
 
 def _compact_contains_term(text: str, term: str) -> bool:
@@ -1058,6 +1307,8 @@ def _adjust_generated_questions(
     adjusted: list[dict[str, Any]] = []
     fallback_rows: list[dict[str, Any]] = []
     detail_offsets: dict[str, int] = {}
+    seen_repeat_items_by_signature: dict[str, list[dict[str, Any]]] = {}
+    used_focus_by_context: dict[tuple[str, str], set[str]] = {}
     for idx, row in enumerate(source_questions):
         item = dict(row)
         planned = sequence[idx] if idx < len(sequence) else {}
@@ -1165,6 +1416,7 @@ def _adjust_generated_questions(
             subject=subject,
             focus=focus,
             count=row_follow_count,
+            variant_index=idx,
         )
         method_eval_points = _method_evaluation_points(method, ksa_terms)
 
@@ -1191,6 +1443,60 @@ def _adjust_generated_questions(
             if use_model_question
             else method_eval_points
         )
+        focus_context_key = (ncs_code or subject, method)
+        used_focuses = used_focus_by_context.setdefault(focus_context_key, set())
+        repeat_signature = _question_repeat_signature(item)
+        previous_repeat_items = seen_repeat_items_by_signature.get(repeat_signature, []) if repeat_signature else []
+        repeat_near_duplicate = any(_question_near_repeat(item, previous) for previous in previous_repeat_items)
+        duplicate_replaced = False
+        if repeat_signature and repeat_near_duplicate:
+            alternate_focus = _pick_alternate_question_focus(
+                current_focus=focus,
+                ksa_terms=ksa_terms,
+                used_focuses=used_focuses,
+            )
+            if alternate_focus:
+                focus = alternate_focus
+                item["question_focus"] = focus
+                template_question = _question_for_method(
+                    method=method,
+                    subject=subject,
+                    focus=focus,
+                    detail=target_detail,
+                    comp_def=str(item.get("compeUnitDef", "")).strip(),
+                )
+                template_followups = _followups_for_method(
+                    method=method,
+                    subject=subject,
+                    focus=focus,
+                    count=row_follow_count,
+                    variant_index=idx,
+                )
+                method_eval_points = _method_evaluation_points(method, [focus, *[x for x in ksa_terms if x != focus]])
+                item["question"] = template_question
+                item["follow_ups"] = template_followups
+                item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
+                item["evaluation_points"] = method_eval_points
+                item["question_source"] = "template_fallback"
+                item["model_question_preserved"] = False
+                reasons = [
+                    str(reason).strip()
+                    for reason in (item.get("model_replacement_reasons") or [])
+                    if str(reason).strip()
+                ] if isinstance(item.get("model_replacement_reasons"), list) else []
+                item["model_replacement_reasons"] = list(dict.fromkeys([*reasons, "duplicate_question_intent"]))
+                repeat_signature = _question_repeat_signature(item)
+                duplicate_replaced = True
+                previous_repeat_items = seen_repeat_items_by_signature.get(repeat_signature, []) if repeat_signature else []
+                repeat_near_duplicate = any(_question_near_repeat(item, previous) for previous in previous_repeat_items)
+        item["question_intent"] = _question_intent_key(str(item.get("question") or ""))
+        item["question_repeat_signature"] = repeat_signature
+        item["question_repeat_duplicate"] = bool(repeat_near_duplicate and not duplicate_replaced)
+        if repeat_signature:
+            seen_repeat_items_by_signature.setdefault(repeat_signature, []).append(dict(item))
+        focus_key = _question_focus_signature(focus)
+        if focus_key:
+            used_focuses.add(focus_key)
         adjusted.append(item)
         fallback_rows.append(
             {
@@ -1234,6 +1540,7 @@ def _adjust_generated_questions(
         item["follow_ups"] = list(fallback.get("follow_ups") or [])
         item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
         item["evaluation_points"] = list(fallback.get("evaluation_points") or [])
+    _refresh_question_repeat_metadata(adjusted)
     strategy["interview_questions"] = adjusted
     strategy["interview_by_competency"] = _group_interview_questions_for_response(adjusted)
     strategy["question_plan_used"] = question_plan
@@ -1462,6 +1769,15 @@ def _require_ncs_mcp_url() -> str:
     )
 
 
+def _require_official_ksa_result(result: dict[str, Any]) -> None:
+    if result.get("ncs_ksa_available") is True:
+        return
+    raise HTTPException(
+        status_code=502,
+        detail="Official NCS KSA is unavailable from NCS_MCP; question generation was stopped.",
+    )
+
+
 def _require_legacy_ncs_api_enabled() -> None:
     if not settings.enable_legacy_ncs_api():
         raise HTTPException(
@@ -1477,6 +1793,13 @@ def _check_upload_size(data: bytes, label: str) -> None:
             status_code=413,
             detail=f"{label} exceeds MAX_UPLOAD_MB ({max_bytes // (1024 * 1024)} MB)",
         )
+
+
+async def _read_upload_limited(upload: UploadFile, label: str) -> bytes:
+    max_bytes = settings.max_upload_bytes()
+    data = await upload.read(max_bytes + 1)
+    _check_upload_size(data, label)
+    return data
 
 
 _ARCHIVE_MEMBER_LIMIT = 12
@@ -1711,6 +2034,54 @@ def _sanitize_request_openai_key(value: str | None) -> str:
     if len(key) > 300 or any(ch.isspace() for ch in key):
         raise HTTPException(status_code=400, detail="openai_api_key is invalid")
     return key
+
+
+def _allow_server_openai_key_fallback() -> bool:
+    return settings.allow_server_openai_key_fallback()
+
+
+def _openai_key_source(request_key: str) -> str:
+    return settings.openai_key_source(request_key, allow_env_fallback=_allow_server_openai_key_fallback())
+
+
+def _require_allowed_openai_key(request_key: str) -> None:
+    if settings.resolve_openai_key(request_key, allow_env_fallback=_allow_server_openai_key_fallback()):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "openai_api_key is required. Server OPENAI_API_KEY fallback is disabled unless "
+            "OPENAI_ALLOW_SERVER_KEY_FALLBACK=true is set."
+        ),
+    )
+
+
+_SENSITIVE_QUERY_PARAMS = (
+    "openai_api_key",
+    "job_posting",
+    "user_profile",
+    "notice_text",
+    "duty_text",
+    "qualification_text",
+    "preference_text",
+    "evaluation_text",
+    "strengths",
+    "jd_review_json",
+    "question_plan_json",
+    "interview_methods_json",
+    "avoid_questions",
+    "avoid_questions_json",
+)
+
+
+def _reject_sensitive_query_params(request: Request, *, destination: str) -> None:
+    blocked = [name for name in _SENSITIVE_QUERY_PARAMS if name in request.query_params]
+    if not blocked:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=f"{', '.join(blocked)} must be sent in the {destination}, not the query string",
+    )
 
 
 def _ksa_key(value: str) -> str:
@@ -2286,15 +2657,10 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         expected_count = 0
 
-    question_keys = [
-        normalize_question_dedup_key(str((q or {}).get("question") or ""))
-        for q in questions
-        if isinstance(q, dict)
-    ]
-    duplicate_keys = {key for key in question_keys if key and question_keys.count(key) > 1}
-
     items: list[dict[str, Any]] = []
     ready_count = 0
+    seen_quality_question_keys: set[str] = set()
+    seen_quality_repeat_items_by_signature: dict[str, list[dict[str, Any]]] = {}
     for idx, raw in enumerate(questions, start=1):
         q = raw if isinstance(raw, dict) else {}
         method = str(q.get("type") or q.get("method") or "").strip()
@@ -2315,6 +2681,10 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
         ] if ncs_code else []
         merged = "\n".join([question, *follow_ups, *evaluation_points, *ksa_refs])
         q_key = normalize_question_dedup_key(question)
+        repeat_signature = _question_repeat_signature(q)
+        surface_duplicate = bool(q_key and q_key in seen_quality_question_keys)
+        previous_repeat_items = seen_quality_repeat_items_by_signature.get(repeat_signature, []) if repeat_signature else []
+        repeat_duplicate = any(_question_near_repeat(q, previous) for previous in previous_repeat_items)
         has_specific_context = not any(marker in question for marker in ("해당 직무", "핵심 수행기준"))
         checks = {
             "supported_method": method in QUALITY_INTERVIEW_METHODS,
@@ -2330,7 +2700,11 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
             "ksa_grounded": _ksa_evidence_relevance_ok(question, follow_ups, evaluation_points, q, matching_ksa_evidence),
             "official_sample_format": _official_sample_format_ok(method, question, follow_ups, evaluation_points),
             "blind_hiring_safe": not _contains_blind_hiring_cue(merged),
-            "unique_question": bool(q_key and q_key not in duplicate_keys),
+            "unique_question": bool(
+                q_key
+                and not surface_duplicate
+                and not repeat_duplicate
+            ),
             "specific_context": has_specific_context,
             "job_specific_context": _job_specific_context_ok(q, question, follow_ups),
         }
@@ -2346,12 +2720,20 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
                 "competency": str(q.get("competency") or "").strip(),
                 "ncsClCd": str(q.get("ncsClCd") or "").strip(),
                 "ncs_detail": str(q.get("ncs_detail") or q.get("ncsSclasCdnm") or "").strip(),
+                "question_focus": str(q.get("question_focus") or "").strip(),
+                "question_intent": _question_intent_key(question),
+                "question_repeat_signature": repeat_signature,
+                "question_repeat_duplicate": repeat_duplicate,
                 "score": score,
                 "ready": ready,
                 "checks": checks,
                 "issues": issues,
             }
         )
+        if q_key:
+            seen_quality_question_keys.add(q_key)
+        if repeat_signature:
+            seen_quality_repeat_items_by_signature.setdefault(repeat_signature, []).append(dict(q))
 
     avg = round(sum(float(item.get("score") or 0.0) for item in items) / max(1, len(items)), 2)
     count_matches_plan = expected_count <= 0 or len(items) == expected_count
@@ -2613,32 +2995,117 @@ def _expand_direct_with_same_family_mentions(
     return direct
 
 
-def _history_key(ncs_code: str, competency_name: str = "") -> str:
-    code = normalize_question_dedup_key(ncs_code)
-    comp = normalize_question_dedup_key(competency_name)
-    return f"{code}|{comp}"
+def _build_avoid_questions_context(questions: list[str], max_items: int = 12) -> str:
+    seen: set[str] = set()
+    items: list[str] = []
+    for raw in reversed([str(q or "").strip() for q in questions]):
+        key = normalize_question_dedup_key(raw)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append(_clean_question_text(raw, max_chars=160))
+        if len(items) >= max(1, int(max_items)):
+            break
+    items = list(reversed(items))
+    if not items:
+        return ""
+    return "[반복 금지 - 최근 생성 또는 채택된 질문]\n" + "\n".join(f"- {item}" for item in items)
 
 
-def _load_question_history(ncs_code: str, competency_name: str = "") -> list[str]:
-    key = _history_key(ncs_code, competency_name)
-    with _QUESTION_HISTORY_LOCK:
-        return list(_QUESTION_HISTORY_BY_CODE.get(key, []))
+def _extract_question_texts(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = [part.strip() for part in re.split(r"[\r\n]+", raw) if part.strip()]
+    else:
+        parsed = value
+
+    if not isinstance(parsed, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in parsed:
+        if isinstance(item, dict):
+            text = str(item.get("question") or item.get("text") or "").strip()
+        else:
+            text = str(item or "").strip()
+        key = normalize_question_dedup_key(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
 
 
-def _save_question_history(
-    ncs_code: str,
-    competency_name: str,
-    new_questions: list[str],
+def _filter_questions_against_avoid_list(
+    questions: list[dict[str, Any]],
+    avoid_questions: list[str],
+) -> list[dict[str, Any]]:
+    if not questions or not avoid_questions:
+        return questions
+    avoid_texts = [str(q or "").strip() for q in avoid_questions if str(q or "").strip()]
+    avoid_keys = {normalize_question_dedup_key(q) for q in avoid_texts if normalize_question_dedup_key(q)}
+    if not avoid_texts and not avoid_keys:
+        return questions
+
+    out: list[dict[str, Any]] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        q_text = str(item.get("question") or "").strip()
+        q_key = normalize_question_dedup_key(q_text)
+        if q_key and q_key in avoid_keys:
+            continue
+        if any(is_similar_question_text(q_text, avoid) for avoid in avoid_texts):
+            continue
+        out.append(item)
+    return out
+
+
+def _filter_ncs_code_result_against_avoid_list(
+    result: dict[str, Any],
+    avoid_questions: list[str],
 ) -> None:
-    if not new_questions:
+    """Filter NCS-code questions while keeping follow-up links internally consistent."""
+    raw_main_questions = result.get("main_questions")
+    if not isinstance(raw_main_questions, list):
         return
-    key = _history_key(ncs_code, competency_name)
-    with _QUESTION_HISTORY_LOCK:
-        bucket = _QUESTION_HISTORY_BY_CODE.get(key, [])
-        bucket.extend([q for q in new_questions if str(q or "").strip()])
-        if len(bucket) > _QUESTION_HISTORY_LIMIT:
-            bucket = bucket[-_QUESTION_HISTORY_LIMIT:]
-        _QUESTION_HISTORY_BY_CODE[key] = bucket
+
+    main_questions: list[dict[str, Any]] = []
+    old_to_new_index: dict[int, int] = {}
+    for old_index, question in enumerate(raw_main_questions):
+        if not isinstance(question, dict):
+            continue
+        if not _filter_questions_against_avoid_list([question], avoid_questions):
+            continue
+        old_to_new_index[old_index] = len(main_questions)
+        main_questions.append(question)
+
+    follow_up_questions: list[dict[str, Any]] = []
+    raw_follow_up_questions = result.get("follow_up_questions")
+    if isinstance(raw_follow_up_questions, list):
+        for follow_up in raw_follow_up_questions:
+            if not isinstance(follow_up, dict):
+                continue
+            try:
+                old_index = int(follow_up.get("for_question_index"))
+            except (TypeError, ValueError):
+                continue
+            if old_index not in old_to_new_index:
+                continue
+            remapped_follow_up = dict(follow_up)
+            remapped_follow_up["for_question_index"] = old_to_new_index[old_index]
+            follow_up_questions.append(remapped_follow_up)
+
+    result["main_questions"] = main_questions
+    result["follow_up_questions"] = follow_up_questions
+    result["question_count"] = len(main_questions)
+    result["follow_up_count"] = len(follow_up_questions)
+    result["total_count"] = len(main_questions) + len(follow_up_questions)
 
 
 @app.on_event("startup")
@@ -2651,12 +3118,14 @@ def _startup() -> None:
 def health() -> dict:
     mcp = ncs_mcp_status()
     mcp_ready = bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable"))
+    openai_server_fallback = settings.allow_server_openai_key_fallback()
     return {
         "status": "ok" if mcp_ready else "degraded",
         "keys": {
             "public_inst": bool(settings.public_inst_key()),
             "ncs": bool(settings.ncs_key()),
-            "openai": bool(settings.openai_key()),
+            "openai": bool(settings.resolve_openai_key(allow_env_fallback=openai_server_fallback)),
+            "openai_server_fallback": openai_server_fallback,
         },
         "ncs_source": "remote-mcp",
         "ncs_mcp": mcp,
@@ -3127,7 +3596,7 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
     unmatched: 사전에 없는 자체 명칭 (NCS 미개발 등)
     """
     name = (jd_file.filename or "").lower()
-    data = await jd_file.read()
+    data = await _read_upload_limited(jd_file, "jd_file")
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
 
@@ -3147,10 +3616,9 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
 async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(...)) -> dict:
     """Parse a JD with Kordoc and return editable human-review fields."""
 
-    data = await jd_file.read()
+    data = await _read_upload_limited(jd_file, "jd_file")
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
-    _check_upload_size(data, "jd_file")
     parsed = _parse_upload_document(data, jd_file.filename or "", "jd_file")
     structured = structure_job_description(parsed, filename=jd_file.filename or "")
     review_session = _create_review_session(data, structured, jd_file.filename or "")
@@ -3169,10 +3637,9 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
 async def parse_notice_review_endpoint(notice_file: UploadFile = File(...)) -> dict:
     """Parse a job notice and return editable duty/evaluation text candidates."""
 
-    data = await notice_file.read()
+    data = await _read_upload_limited(notice_file, "notice_file")
     if not data:
         raise HTTPException(status_code=400, detail="notice_file is empty")
-    _check_upload_size(data, "notice_file")
     filename = notice_file.filename or ""
     parsed = _parse_upload_document(data, filename, "notice_file")
     return structure_job_notice(parsed, filename=filename)
@@ -3194,20 +3661,22 @@ async def jd_strategy_upload(
     evaluation_text: str = Form(default=""),
     question_plan_json: str = Form(default=""),
     interview_methods_json: str = Form(default=""),
+    avoid_questions_json: str = Form(default=""),
     jd_review_json: str = Form(default=""),
 ) -> dict:
     # 최적값 고정 (사용자 노출 제거)
+    _reject_sensitive_query_params(request, destination="form data")
     run_top_k, run_ksa_units, run_ksa_factors = FAST_NCS_TOP_K, FAST_KSA_UNITS, FAST_KSA_FACTORS_PER_UNIT
     request_openai_api_key = _sanitize_request_openai_key(openai_api_key)
+    allow_env_openai_fallback = _allow_server_openai_key_fallback()
 
     async def _read_text(upload: UploadFile | None, label: str) -> tuple[str, bytes, str]:
         if not upload:
             return "", b"", ""
         name = (upload.filename or "").lower()
-        data = await upload.read()
+        data = await _read_upload_limited(upload, label)
         if not data:
             raise HTTPException(status_code=400, detail=f"{label} is empty")
-        _check_upload_size(data, label)
         parsed = _parse_upload_document(data, upload.filename or "", label)
         text = str(parsed.get("markdown") or "")
         if text.strip():
@@ -3263,7 +3732,12 @@ async def jd_strategy_upload(
     use_vision_ocr = (str(__import__("os").getenv("ENABLE_VISION_OCR", "false")).strip().lower() in {"1", "true", "yes", "y"})
     # Vision OCR은 텍스트 추출이 실패했을 때만 실행 (텍스트가 있으면 오히려 NCS 매칭 오염 가능)
     if use_vision_ocr and jd_name.endswith(".pdf") and len(jd_text.strip()) < 50:
-        vision_terms = extract_focus_terms_from_pdf_vision(jd_bytes, max_pages=2)
+        vision_terms = extract_focus_terms_from_pdf_vision(
+            jd_bytes,
+            max_pages=2,
+            api_key_override=request_openai_api_key,
+            allow_env_fallback=allow_env_openai_fallback,
+        )
     prompt_notice_text = _build_priority_notice_text(
         notice_text=notice_text,
         duty_text=duty_text_clean,
@@ -3484,6 +3958,7 @@ async def jd_strategy_upload(
             top_k=run_top_k,
             preferred_sclass=ncs_query_terms,
             openai_api_key=request_openai_api_key,
+            allow_env_fallback=allow_env_openai_fallback,
         )
         if ncs_matches:
             ncs_source = f"{ncs_source}+ai-rerank" if rerank_mode == "ai" else f"{ncs_source}+rerank"
@@ -3652,6 +4127,10 @@ async def jd_strategy_upload(
         ncs_items=ncs_items,
         ncs_matches=ncs_matches,
     )
+    avoid_context = _build_avoid_questions_context(
+        _extract_question_texts(avoid_questions_json),
+        max_items=20,
+    )
     enable_ai_refine = bool(inferred_keywords or reviewed_keywords or ai_ncs_code_candidates)
 
     try:
@@ -3675,6 +4154,8 @@ async def jd_strategy_upload(
                 follow_up_count=question_plan["follow_up_count"],
                 question_plan=question_plan,
                 interview_methods=interview_methods,
+                extra_context=avoid_context,
+                allow_env_fallback=allow_env_openai_fallback,
             ),
         )
         strategy = _adjust_generated_questions(
@@ -3739,7 +4220,7 @@ async def jd_strategy_upload(
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,
-        "openai_key_source": "request" if request_openai_api_key else ("env" if settings.openai_key() else "missing"),
+        "openai_key_source": _openai_key_source(request_openai_api_key),
         "extracted_focus_terms": vision_terms,
         "subcategory_text_preview": subcategory_text[:800],
         "small_categories_extracted": extracted_small_categories,
@@ -3773,10 +4254,12 @@ async def jd_strategy_upload(
 
 @app.post("/api/questions/generate-from-text")
 async def generate_questions_from_text(request: Request, payload: dict) -> dict:
+    _reject_sensitive_query_params(request, destination="JSON body")
     notice_text = str(payload.get("notice_text", "")).strip()
     duty_text = str(payload.get("duty_text", "")).strip()
     evaluation_text = str(payload.get("evaluation_text", "")).strip()
     request_openai_api_key = _sanitize_request_openai_key(payload.get("openai_api_key", ""))
+    allow_env_openai_fallback = _allow_server_openai_key_fallback()
     selected_ncs = payload.get("selected_ncs", [])
     raw_interview_methods = payload.get("interview_methods_json", payload.get("interview_methods", ""))
     if not isinstance(raw_interview_methods, str):
@@ -3897,6 +4380,17 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         ncs_items=ncs_matches,
         ncs_matches=ncs_matches,
     )
+    raw_avoid_questions = payload.get("avoid_questions")
+    if raw_avoid_questions is None:
+        raw_avoid_questions = payload.get("current_questions")
+    if raw_avoid_questions is None:
+        raw_avoid_questions = payload.get("currentQuestions")
+    if raw_avoid_questions is None:
+        raw_avoid_questions = payload.get("avoid_questions_json")
+    avoid_context = _build_avoid_questions_context(
+        _extract_question_texts(raw_avoid_questions),
+        max_items=20,
+    )
 
     try:
         loop = asyncio.get_event_loop()
@@ -3919,6 +4413,8 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
                 follow_up_count=question_plan["follow_up_count"],
                 question_plan=question_plan,
                 interview_methods=interview_methods,
+                extra_context=avoid_context,
+                allow_env_fallback=allow_env_openai_fallback,
             ),
         )
         strategy = _adjust_generated_questions(
@@ -3963,7 +4459,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "profile_used": False,
         "ncs_source": "manual-selected",
         "ncs_error": "",
-        "openai_key_source": "request" if request_openai_api_key else ("env" if settings.openai_key() else "missing"),
+        "openai_key_source": _openai_key_source(request_openai_api_key),
         "extracted_focus_terms": [],
         "subcategory_text_preview": "",
         "small_categories": [],
@@ -3995,10 +4491,12 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
 
 @app.post("/api/questions/generate-personalized")
 def generate_questions_personalized(
-    ncs_code: str = Query(..., description="NCS competency code (e.g., 02020302)"),
+    request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
+    ncs_code: str = Query("", description="NCS competency code (e.g., 02020302)"),
     competency_name: str = Query("", description="NCS competency unit name (optional)"),
-    job_posting: str = Query("", description="Job posting text (company, position, requirements)"),
-    user_profile: str = Query("", description="User profile text (experience, skills, background)"),
+    job_posting_query: str = Query("", alias="job_posting", include_in_schema=False),
+    user_profile_query: str = Query("", alias="user_profile", include_in_schema=False),
     target_count: int = Query(12, description="Number of question templates (default 12)"),
 ) -> dict:
     """Generate personalized interview question templates based on job posting and user profile.
@@ -4006,7 +4504,8 @@ def generate_questions_personalized(
     IMPROVEMENT: Questions are TEMPLATES that incorporate job posting and user profile content.
     All questions are examples meant to guide actual interview preparation.
 
-    Query Parameters:
+    JSON Body:
+        openai_api_key: Request-scoped OpenAI key
         ncs_code: NCS competency code (required, e.g., '02020302')
         competency_name: Optional competency name for better context
         job_posting: Job posting/recruitment info text (company, position, requirements)
@@ -4021,6 +4520,22 @@ def generate_questions_personalized(
         - note: Reminder that these are templates for adaptation
     """
     try:
+        _reject_sensitive_query_params(request, destination="JSON body")
+        body = payload if isinstance(payload, dict) else {}
+        if str(job_posting_query or "").strip() or str(user_profile_query or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="job_posting and user_profile must be sent in the JSON body, not the query string",
+            )
+        request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
+        _require_allowed_openai_key(request_openai_api_key)
+        ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
+        competency_name = str(body.get("competency_name") or competency_name or "").strip()
+        job_posting = str(body.get("job_posting") or "").strip()
+        user_profile = str(body.get("user_profile") or "").strip()
+        if "target_count" in body:
+            target_count = _clamp_int(body.get("target_count"), default=target_count, lo=1, hi=12)
+
         if not ncs_code or not ncs_code.strip():
             raise HTTPException(status_code=400, detail="ncs_code is required")
 
@@ -4030,6 +4545,8 @@ def generate_questions_personalized(
         if target_count < 1 or target_count > 12:
             target_count = min(max(target_count, 1), 12)
 
+        _require_ncs_mcp_url()
+
         # Generate personalized questions
         result = generate_personalized_interview_questions(
             ncs_code=ncs_code.strip(),
@@ -4037,7 +4554,10 @@ def generate_questions_personalized(
             job_posting=job_posting.strip() or "",
             user_profile=user_profile.strip() or "",
             target_count=target_count,
+            api_key_override=request_openai_api_key,
+            allow_env_fallback=_allow_server_openai_key_fallback(),
         )
+        _require_official_ksa_result(result)
 
         return {
             "status": "success",
@@ -4056,7 +4576,9 @@ def generate_questions_personalized(
 
 @app.post("/api/questions/generate-by-ncs-code")
 def generate_questions_by_ncs_code(
-    ncs_code: str = Query(..., description="NCS competency code (e.g., 02020302)"),
+    request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
+    ncs_code: str = Query("", description="NCS competency code (e.g., 02020302)"),
     competency_name: str = Query("", description="NCS competency unit name (optional)"),
     target_count: int = Query(10, description="Number of questions to generate (default 10)"),
     include_followups: bool = Query(True, description="Include follow-up questions (default True)"),
@@ -4066,7 +4588,8 @@ def generate_questions_by_ncs_code(
     IMPROVEMENT: New endpoint for generating diverse interview questions directly from NCS codes.
     Supports 4 question types: behavioral, situational, technical, development-oriented.
 
-    Query Parameters:
+    JSON Body:
+        openai_api_key: Request-scoped OpenAI key
         ncs_code: NCS competency code (required, e.g. '02020302')
         competency_name: Optional competency name for context
         target_count: Number of main questions (1-25, default 10)
@@ -4080,6 +4603,27 @@ def generate_questions_by_ncs_code(
         - total_count: Total question count
     """
     try:
+        _reject_sensitive_query_params(request, destination="JSON body")
+        body = payload if isinstance(payload, dict) else {}
+        request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
+        _require_allowed_openai_key(request_openai_api_key)
+        ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
+        competency_name = str(body.get("competency_name") or competency_name or "").strip()
+        if "target_count" in body:
+            target_count = _clamp_int(body.get("target_count"), default=target_count, lo=1, hi=25)
+        if "include_followups" in body:
+            raw_include_followups = body.get("include_followups")
+            if not isinstance(raw_include_followups, bool):
+                raise HTTPException(status_code=422, detail="include_followups must be a boolean")
+            include_followups = raw_include_followups
+        raw_avoid_questions = body.get("avoid_questions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("current_questions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("currentQuestions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("avoid_questions_json")
+
         # Validate inputs
         if not ncs_code or not ncs_code.strip():
             raise HTTPException(status_code=400, detail="ncs_code is required")
@@ -4090,13 +4634,23 @@ def generate_questions_by_ncs_code(
         if target_count < 1 or target_count > 25:
             target_count = min(max(target_count, 1), 25)
 
+        _require_ncs_mcp_url()
+
+        request_avoid_questions = _extract_question_texts(raw_avoid_questions)
+        avoid_questions = request_avoid_questions
+        avoid_context = _build_avoid_questions_context(avoid_questions, max_items=16)
+
         # Generate questions
         result = generate_interview_questions_by_ncs_code(
             ncs_code=ncs_code.strip(),
             competency_name=competency_name.strip() or "",
             target_count=target_count,
             include_followups=include_followups,
+            extra_context=avoid_context,
+            api_key_override=request_openai_api_key,
+            allow_env_fallback=_allow_server_openai_key_fallback(),
         )
+        _require_official_ksa_result(result)
 
         if str(result.get("generation_mode", "")).strip() == "ai_generation_empty_no_fallback":
             raise HTTPException(
@@ -4106,6 +4660,8 @@ def generate_questions_by_ncs_code(
                     "Check OpenAI network/socket permissions and retry."
                 ),
             )
+
+        _filter_ncs_code_result_against_avoid_list(result, avoid_questions)
 
         return {
             "status": "success",
@@ -4182,7 +4738,9 @@ def get_question_templates() -> dict:
 
 @app.post("/api/questions/generate-batch")
 def generate_batch_diverse_questions(
-    ncs_code: str = Query(..., description="NCS code (e.g., 0202010203_19v2)"),
+    request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
+    ncs_code: str = Query("", description="NCS code (e.g., 0202010203_19v2)"),
     competency_name: str = Query("", description="Competency name"),
     batch_count: int = Query(20, description="Number of questions to generate (10-50, default 20)"),
 ) -> dict:
@@ -4193,7 +4751,8 @@ def generate_batch_diverse_questions(
 
     Format: #1, #2, #3... with question type, competency, NCS code, question, follow-up, eval points
 
-    Args:
+    JSON Body:
+        openai_api_key: Request-scoped OpenAI key
         ncs_code: NCS code (required)
         competency_name: Competency name (optional)
         batch_count: Total questions (10-50, default 20)
@@ -4204,19 +4763,36 @@ def generate_batch_diverse_questions(
     import uuid
 
     try:
+        _reject_sensitive_query_params(request, destination="JSON body")
+        body = payload if isinstance(payload, dict) else {}
+        request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
+        _require_allowed_openai_key(request_openai_api_key)
+        ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
+        competency_name = str(body.get("competency_name") or competency_name or "").strip()
+        if "batch_count" in body:
+            batch_count = _clamp_int(body.get("batch_count"), default=batch_count, lo=10, hi=50)
+        raw_avoid_questions = body.get("avoid_questions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("current_questions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("currentQuestions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("avoid_questions_json")
+
         if not ncs_code or not ncs_code.strip():
             raise HTTPException(status_code=400, detail="ncs_code required")
 
         batch_count = min(max(batch_count, 10), 50)
+        _require_ncs_mcp_url()
 
         # Generate multiple rounds of diverse questions with strict deduplication
         final_questions = []
         seen_questions = set()
         seen_question_texts = []
-        history_questions = _load_question_history(ncs_code=ncs_code.strip(), competency_name=competency_name.strip())
-        history_keys = {
+        request_avoid_questions = _extract_question_texts(raw_avoid_questions)
+        avoid_keys = {
             normalize_question_dedup_key(q)
-            for q in history_questions
+            for q in request_avoid_questions
             if normalize_question_dedup_key(q)
         }
         max_attempts = 50  # Prevent infinite loops
@@ -4224,11 +4800,19 @@ def generate_batch_diverse_questions(
 
         while len(final_questions) < batch_count and attempt < max_attempts:
             attempt += 1
+            avoid_context = _build_avoid_questions_context(
+                [*request_avoid_questions, *seen_question_texts],
+                max_items=16,
+            )
             result = generate_diverse_interview_questions(
                 ncs_code=ncs_code.strip(),
                 competency_name=competency_name.strip() or "",
                 target_count=6,
+                extra_context=avoid_context,
+                api_key_override=request_openai_api_key,
+                allow_env_fallback=_allow_server_openai_key_fallback(),
             )
+            _require_official_ksa_result(result)
 
             for q in result["questions"]:
                 if len(final_questions) >= batch_count:
@@ -4240,26 +4824,21 @@ def generate_batch_diverse_questions(
                 if not q_key:
                     continue
 
-                if q_key in seen_questions or q_key in history_keys:
+                if q_key in seen_questions or q_key in avoid_keys:
                     continue
 
                 # Block near-duplicate questions with minor wording changes.
                 if any(is_similar_question_text(q_text, prev) for prev in seen_question_texts):
                     continue
-                if any(is_similar_question_text(q_text, prev) for prev in history_questions):
+                if any(is_similar_question_text(q_text, prev) for prev in request_avoid_questions):
                     continue
 
                 final_questions.append(q)
                 seen_questions.add(q_key)
                 seen_question_texts.append(q_text)
+        _refresh_question_repeat_metadata(final_questions)
         for i, q in enumerate(final_questions, 1):
             q["number"] = i
-
-        _save_question_history(
-            ncs_code=ncs_code.strip(),
-            competency_name=competency_name.strip(),
-            new_questions=[str(q.get("question", "")).strip() for q in final_questions],
-        )
 
         response_data = {
             "status": "success",
@@ -4293,9 +4872,11 @@ def generate_batch_diverse_questions(
 
 @app.post("/api/questions/generate-diverse")
 def generate_diverse_questions(
-    ncs_code: str = Query(..., description="NCS competency code (e.g., 0202010102_19v2)"),
+    request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
+    ncs_code: str = Query("", description="NCS competency code (e.g., 0202010102_19v2)"),
     competency_name: str = Query("", description="Competency unit name (optional)"),
-    job_posting: str = Query("", description="Job posting text for context (optional)"),
+    job_posting_query: str = Query("", alias="job_posting", include_in_schema=False),
     target_count: int = Query(6, description="Number of diverse question types (1-6, default 6)"),
 ) -> dict:
     """Generate 6 diverse interview question types.
@@ -4314,7 +4895,8 @@ def generate_diverse_questions(
     - Follow-up question
     - Evaluation points (역량 평가 포인트)
 
-    Query Parameters:
+    JSON Body:
+        openai_api_key: Request-scoped OpenAI key
         ncs_code: NCS competency code (required, e.g., '0202010102_19v2')
         competency_name: Competency unit name (optional)
         job_posting: Job posting context text (optional)
@@ -4324,21 +4906,42 @@ def generate_diverse_questions(
         List of 6 diverse questions, each with different evaluation angle
     """
     try:
+        _reject_sensitive_query_params(request, destination="JSON body")
+        body = payload if isinstance(payload, dict) else {}
+        if str(job_posting_query or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="job_posting must be sent in the JSON body, not the query string",
+            )
+        request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
+        _require_allowed_openai_key(request_openai_api_key)
+        ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
+        competency_name = str(body.get("competency_name") or competency_name or "").strip()
+        job_posting = str(body.get("job_posting") or "").strip()
+        if "target_count" in body:
+            target_count = _clamp_int(body.get("target_count"), default=target_count, lo=1, hi=6)
+        raw_avoid_questions = body.get("avoid_questions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("current_questions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("currentQuestions")
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("avoid_questions_json")
+
         if not ncs_code or not ncs_code.strip():
             raise HTTPException(status_code=400, detail="ncs_code is required")
 
         if target_count < 1 or target_count > 6:
             target_count = min(max(target_count, 1), 6)
 
+        _require_ncs_mcp_url()
+
         ncs_code_clean = ncs_code.strip()
         competency_name_clean = competency_name.strip()
-        history_questions = _load_question_history(
-            ncs_code=ncs_code_clean,
-            competency_name=competency_name_clean,
-        )
-        history_keys = {
+        request_avoid_questions = _extract_question_texts(raw_avoid_questions)
+        avoid_keys = {
             normalize_question_dedup_key(q)
-            for q in history_questions
+            for q in request_avoid_questions
             if normalize_question_dedup_key(q)
         }
 
@@ -4356,12 +4959,20 @@ def generate_diverse_questions(
         while len(final_questions) < target_count and attempt < max_attempts:
             attempt += 1
             needed = min(6, max(target_count - len(final_questions), 1))
+            avoid_context = _build_avoid_questions_context(
+                [*request_avoid_questions, *seen_texts],
+                max_items=16,
+            )
             raw_result = generate_diverse_interview_questions(
                 ncs_code=ncs_code_clean,
                 competency_name=competency_name_clean or "",
                 job_posting=job_posting.strip() or "",
                 target_count=needed,
+                extra_context=avoid_context,
+                api_key_override=request_openai_api_key,
+                allow_env_fallback=_allow_server_openai_key_fallback(),
             )
+            _require_official_ksa_result(raw_result)
 
             for q in raw_result.get("questions", []):
                 if len(final_questions) >= target_count:
@@ -4370,24 +4981,19 @@ def generate_diverse_questions(
                 q_key = normalize_question_dedup_key(q_text)
                 if not q_key:
                     continue
-                if q_key in seen_keys or q_key in history_keys:
+                if q_key in seen_keys or q_key in avoid_keys:
                     continue
                 if any(is_similar_question_text(q_text, prev) for prev in seen_texts):
                     continue
-                if any(is_similar_question_text(q_text, prev) for prev in history_questions):
+                if any(is_similar_question_text(q_text, prev) for prev in request_avoid_questions):
                     continue
                 final_questions.append(q)
                 seen_keys.add(q_key)
                 seen_texts.append(q_text)
 
+        _refresh_question_repeat_metadata(final_questions)
         for i, q in enumerate(final_questions, 1):
             q["number"] = i
-
-        _save_question_history(
-            ncs_code=ncs_code_clean,
-            competency_name=competency_name_clean,
-            new_questions=[str(q.get("question", "")).strip() for q in final_questions],
-        )
 
         result = {
             "ncs_code": raw_result.get("ncs_code", ncs_code_clean),

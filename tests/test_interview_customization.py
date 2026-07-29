@@ -2,16 +2,66 @@ import json
 
 import pytest
 
+from app.services.jd_strategy import _build_ncs_code_template_fallback_question
 from app.main import (
     _adjust_generated_questions,
     _attach_ksa_evidence_to_strategy,
     _attach_question_quality_report,
+    _clamp_runtime_knobs,
+    _group_interview_questions_for_response,
+    _question_intent_key,
     _method_evaluation_points,
     _method_shape_ok,
     _official_sample_format_ok,
+    _followups_for_method,
     _parse_interview_methods,
     _parse_question_plan_json,
+    _question_for_method,
 )
+
+
+@pytest.mark.parametrize("index", range(7))
+def test_ncs_code_fallback_templates_pass_structured_quality_gate(index: int) -> None:
+    code = "0202030201_25v3"
+    unit = {
+        "ncsClCd": code,
+        "compeUnitName": "문서작성",
+        "ncsSubdCdnm": "사무행정",
+    }
+    factors = ["문서 요구사항 파악", "자료 오류 점검"]
+    question = _build_ncs_code_template_fallback_question(
+        unit=unit,
+        comp_name="문서작성",
+        ncs_code=code,
+        ksa_terms=factors,
+        evidence_terms=factors,
+        index=index,
+    )
+    strategy = {
+        "interview_questions": [question],
+        "question_plan_used": {"total_main_count": 1},
+    }
+    evidence = [
+        {
+            "ncsClCd": code,
+            "compeUnitName": "문서작성",
+            "factorName": factor,
+            "factorSource": "ncs-mcp",
+            "ksaStatus": "official",
+        }
+        for factor in factors
+    ]
+
+    out = _attach_ksa_evidence_to_strategy(strategy, evidence)
+    report_item = out["question_quality_report"]["items"][0]
+
+    assert report_item["ready"] is True, report_item["issues"]
+
+
+def test_runtime_knobs_allow_default_seven_ksa_units() -> None:
+    _, ksa_units, _ = _clamp_runtime_knobs(None, None, None)
+
+    assert ksa_units == 7
 
 
 def test_adjust_questions_enforces_selected_method_and_exact_counts() -> None:
@@ -884,6 +934,62 @@ def test_adjust_questions_replaces_model_question_when_required_main_terms_are_m
     assert "결과" in question["question"]
 
 
+def test_adjust_questions_refreshes_repeat_metadata_after_quality_gate_fallback() -> None:
+    detail = "사무행정"
+    competency = "문서작성"
+    focus = "문서 요구사항 파악"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {"items": [{"detail": detail, "enabled": True, "main_count": 1, "follow_up_count": 3}]},
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+
+    out = _adjust_generated_questions(
+        {
+            "interview_questions": [
+                {
+                    "question": (
+                        f"{competency} 업무에서 {focus}을 적용해 문제를 해결한 경험을 말씀해 주세요. "
+                        "당시 상황, 본인 역할, 선택한 행동, 결과를 포함해 설명해 주세요."
+                    ),
+                    "follow_ups": [
+                        f"당시 상황과 {competency}에서 본인이 맡은 역할을 구체적으로 설명해 주세요.",
+                        f"{focus}을 적용하기 위해 어떤 행동을 선택했습니까?",
+                        "결과와 성과를 어떤 기준으로 확인했고 무엇을 개선하시겠습니까?",
+                    ],
+                    "evaluation_points": ["성실성", "태도", "열정", "자신감"],
+                }
+            ]
+        },
+        plan,
+        ["경험면접"],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": competency,
+                "ncsSclasCdnm": detail,
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[{"ncsClCd": "0202030201_25v3", "factorName": focus}],
+    )
+    out = _attach_ksa_evidence_to_strategy(out, [{"ncsClCd": "0202030201_25v3", "factorName": focus}])
+
+    question = out["interview_questions"][0]
+    report_item = out["question_quality_report"]["items"][0]
+
+    assert question["question_source"] == "template_fallback"
+    assert question["model_question_preserved"] is False
+    assert "quality_gate_evaluation_points_quality" in question["model_replacement_reasons"]
+    assert question["question_intent"] == report_item["question_intent"]
+    assert question["question_repeat_signature"] == report_item["question_repeat_signature"]
+    assert question["question_repeat_duplicate"] is False
+    assert report_item["question_repeat_duplicate"] is False
+
+
 def test_method_templates_avoid_awkward_ksa_noun_glue() -> None:
     plan = _parse_question_plan_json(
         json.dumps(
@@ -1239,7 +1345,15 @@ def test_parse_interview_methods_canonicalizes_aliases_and_preserves_order() -> 
 def test_parse_interview_methods_defaults_to_all_supported_methods() -> None:
     methods = _parse_interview_methods("")
 
-    assert methods == ["경험면접", "상황면접", "발표면접", "토론면접", "인바스켓면접", "직무지식면접"]
+    assert methods == [
+        "경험면접",
+        "상황면접",
+        "발표면접",
+        "토론면접",
+        "인바스켓면접",
+        "직무지식면접",
+        "창의적 문제해결력면접",
+    ]
 
 
 def test_adjust_questions_rotates_selected_methods_without_blind_hiring_cues() -> None:
@@ -1488,7 +1602,7 @@ def test_adjust_questions_prefers_official_ksa_factor_used_by_model_over_cyclic_
 
     question = out["interview_questions"][1]
 
-    assert question["question_focus"] == "문서 요구사항 파악"
+    assert question["question_focus"].startswith("문서 요구사항 파악")
     assert question["question_source"] == "model"
     assert question["model_replacement_reasons"] == []
 
@@ -1537,7 +1651,7 @@ def test_adjust_questions_does_not_promote_model_ksa_refs_when_official_ksa_exis
         ]
     )
 
-    assert question["question_focus"] == "문서 요구사항 파악"
+    assert question["question_focus"].startswith("문서 요구사항 파악")
     assert "모델이 임의로 만든 기술" not in merged
 
 
@@ -2321,3 +2435,543 @@ def test_question_quality_report_flags_method_grounding_and_blind_hiring_gaps() 
     assert item["checks"]["ksa_grounded"] is False
     assert item["checks"]["detail_grounded"] is False
     assert "blind_hiring_safe" in item["issues"]
+
+
+def test_question_quality_report_marks_only_later_duplicate_question() -> None:
+    question = {
+        "type": "경험면접",
+        "method": "경험면접",
+        "competency": "문서작성",
+        "ncsClCd": "0202030201_25v3",
+        "ncs_detail": "사무행정",
+        "question_focus": "문서 요구사항 파악",
+        "ksa_refs": ["문서 요구사항 파악"],
+        "question": (
+            "사무행정 문서작성 업무에서 문서 요구사항 파악을 적용해 문제를 해결한 경험을 말씀해 주세요. "
+            "당시 상황, 본인 역할, 선택한 행동, 결과와 학습을 포함해 설명해 주세요."
+        ),
+        "follow_ups": [
+            "당시 상황과 문서작성에서 본인이 맡은 역할을 구체적으로 설명해 주세요.",
+            "문서 요구사항 파악을 적용하기 위해 실제로 취한 행동은 무엇이었습니까?",
+            "성과를 어떤 기준으로 확인했고 같은 상황에서 무엇을 개선하시겠습니까?",
+        ],
+        "evaluation_points": ["상황과 역할", "판단 기준", "행동 근거", "성과와 학습"],
+    }
+
+    out = _attach_question_quality_report({"interview_questions": [dict(question), dict(question)]})
+    items = out["question_quality_report"]["items"]
+
+    assert items[0]["checks"]["unique_question"] is True
+    assert items[0]["question_repeat_duplicate"] is False
+    assert items[1]["checks"]["unique_question"] is False
+    assert items[1]["question_repeat_duplicate"] is True
+
+
+def test_adjust_questions_replaces_repeated_intent_with_alternate_ksa_focus() -> None:
+    detail = "\uc0ac\ubb34\ud589\uc815"
+    competency = "\ubb38\uc11c\uc791\uc131"
+    focus_1 = "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545"
+    focus_2 = "\uc77c\uc815 \uacc4\ud68d \uc218\ub9bd"
+    method = "\uacbd\ud5d8\uba74\uc811"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {"items": [{"detail": detail, "enabled": True, "main_count": 2, "follow_up_count": 3}]},
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+    repeated_model_question = (
+        f"{detail} {competency} 업무에서 {focus_1}을 적용한 경험을 말씀해 주세요. "
+        "당시 상황, 본인 역할, 선택한 행동, 결과를 포함해 설명해 주세요."
+    )
+
+    out = _adjust_generated_questions(
+        {
+            "interview_questions": [
+                {"question": repeated_model_question},
+                {"question": repeated_model_question},
+            ]
+        },
+        plan,
+        [method],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": competency,
+                "ncsSclasCdnm": detail,
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+                "compeUnitDef": "\uc694\uad6c\uc0ac\ud56d\uc744 \ud30c\uc545\ud558\uc5ec \ubb38\uc11c\ub97c \uc791\uc131\ud558\ub294 \ub2a5\ub825\uc774\ub2e4.",
+            }
+        ],
+        ncs_ksa=[
+            {"ncsClCd": "0202030201_25v3", "factorName": focus_1},
+            {"ncsClCd": "0202030201_25v3", "factorName": focus_2},
+        ],
+    )
+
+    questions = out["interview_questions"]
+    assert len(questions) == 2
+    assert questions[0]["question_focus"] == focus_1
+    assert questions[1]["question_focus"] == focus_2
+    assert questions[1]["question_source"] == "template_fallback"
+    assert "duplicate_question_intent" in questions[1]["model_replacement_reasons"]
+    assert questions[0]["question_repeat_signature"] != questions[1]["question_repeat_signature"]
+    assert questions[1]["question_repeat_duplicate"] is False
+
+
+def test_adjust_questions_keeps_planning_ksa_focuses_distinct() -> None:
+    detail = "\uc0ac\ubb34\ud589\uc815"
+    competency = "\ubb38\uc11c\uc791\uc131"
+    focus_1 = "\uc77c\uc815 \uacc4\ud68d \uc218\ub9bd"
+    focus_2 = "\uc608\uc0b0 \uacc4\ud68d \uc218\ub9bd"
+    method = "\uacbd\ud5d8\uba74\uc811"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {"items": [{"detail": detail, "enabled": True, "main_count": 2, "follow_up_count": 3}]},
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+
+    out = _adjust_generated_questions(
+        {
+            "interview_questions": [
+                {
+                    "question": (
+                        f"{detail} {competency} 업무에서 {focus_1}을 적용해 문제를 해결한 경험을 말씀해 주세요. "
+                        "당시 상황, 본인 역할, 선택한 행동, 결과를 포함해 설명해 주세요."
+                    )
+                },
+                {
+                    "question": (
+                        f"{detail} {competency} 업무에서 {focus_2}을 적용해 문제를 해결한 경험을 말씀해 주세요. "
+                        "당시 상황, 본인 역할, 선택한 행동, 결과를 포함해 설명해 주세요."
+                    )
+                },
+            ]
+        },
+        plan,
+        [method],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": competency,
+                "ncsSclasCdnm": detail,
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[
+            {"ncsClCd": "0202030201_25v3", "factorName": focus_1},
+            {"ncsClCd": "0202030201_25v3", "factorName": focus_2},
+        ],
+    )
+
+    questions = out["interview_questions"]
+    assert [q["question_focus"] for q in questions] == [focus_1, focus_2]
+    assert [q["question_intent"] for q in questions] == ["planning_execution", "planning_execution"]
+    assert questions[0]["question_repeat_signature"] != questions[1]["question_repeat_signature"]
+    assert all(q["question_repeat_duplicate"] is False for q in questions)
+
+
+def test_adjust_questions_scopes_discussion_conflict_by_focus() -> None:
+    detail = "사무행정"
+    competency = "문서작성"
+    focus_1 = "문서 요구사항 파악"
+    focus_2 = "일정 계획 수립"
+    method = "토론면접"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {"items": [{"detail": detail, "enabled": True, "main_count": 2, "follow_up_count": 3}]},
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+
+    out = _adjust_generated_questions(
+        {"interview_questions": []},
+        plan,
+        [method],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": competency,
+                "ncsSclasCdnm": detail,
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[
+            {"ncsClCd": "0202030201_25v3", "factorName": focus_1},
+            {"ncsClCd": "0202030201_25v3", "factorName": focus_2},
+        ],
+    )
+
+    questions = out["interview_questions"]
+    assert [q["question_focus"] for q in questions] == [focus_1, focus_2]
+    assert [q["question_intent"] for q in questions] == ["discussion_task", "discussion_task"]
+    assert questions[0]["question_repeat_signature"] != questions[1]["question_repeat_signature"]
+    assert all(not q["question_repeat_signature"].endswith("|general") for q in questions)
+    assert all(q["question_repeat_duplicate"] is False for q in questions)
+
+
+def test_adjust_questions_preserves_same_focus_model_questions_when_scenario_differs() -> None:
+    detail = "사무행정"
+    competency = "문서작성"
+    focus = "문서 요구사항 파악"
+    method = "토론면접"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {"items": [{"detail": detail, "enabled": True, "main_count": 2, "follow_up_count": 3}]},
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+    common_followups = [
+        f"{focus}을 토론 쟁점으로 볼 때 {competency} 입장발표의 근거는 무엇입니까?",
+        "반대 의견 중 수용할 수 있는 부분과 조정하기 어려운 부분은 무엇입니까?",
+        "최종 합의안과 후속점검 기준을 어떻게 정리하시겠습니까?",
+    ]
+    common_evaluation_points = ["입장발표 근거", "경청과 상호작용", "갈등 조정", "최종 합의안 도출"]
+
+    out = _adjust_generated_questions(
+        {
+            "interview_questions": [
+                {
+                    "question": (
+                        f"[토론과제] {detail} {competency} 업무에서 {focus} 기준을 강화하는 입장과 "
+                        "처리 속도를 우선하는 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 "
+                        "반대 의견을 검토하고 조정 방식과 최종 합의안을 제시해 주세요."
+                    ),
+                    "follow_ups": list(common_followups),
+                    "evaluation_points": list(common_evaluation_points),
+                },
+                {
+                    "question": (
+                        f"[토론과제] {detail} {competency} 업무에서 {focus} 관련 정보 공유를 확대해야 한다는 입장과 "
+                        "보안 책임을 강화해야 한다는 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 "
+                        "반대 의견을 검토하고 조정 방식과 최종 합의안을 제시해 주세요."
+                    ),
+                    "follow_ups": list(common_followups),
+                    "evaluation_points": list(common_evaluation_points),
+                },
+            ]
+        },
+        plan,
+        [method],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": competency,
+                "ncsSclasCdnm": detail,
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[{"ncsClCd": "0202030201_25v3", "factorName": focus}],
+    )
+
+    questions = out["interview_questions"]
+
+    assert [q["question_source"] for q in questions] == ["model", "model"]
+    assert all(q["question_focus"] == focus for q in questions)
+    assert questions[0]["question_repeat_signature"] == questions[1]["question_repeat_signature"]
+    assert all(q["question_repeat_duplicate"] is False for q in questions)
+    assert all(q["model_replacement_reasons"] == [] for q in questions)
+
+
+def test_adjust_questions_splits_single_ksa_into_distinct_focus_angles() -> None:
+    detail = "\uc0ac\ubb34\ud589\uc815"
+    competency = "\ubb38\uc11c\uc791\uc131"
+    focus = "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545"
+    method = "\uacbd\ud5d8\uba74\uc811"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {"items": [{"detail": detail, "enabled": True, "main_count": 3, "follow_up_count": 3}]},
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+
+    out = _adjust_generated_questions(
+        {"interview_questions": []},
+        plan,
+        [method],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": competency,
+                "ncsSclasCdnm": detail,
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[{"ncsClCd": "0202030201_25v3", "factorName": focus}],
+    )
+
+    questions = out["interview_questions"]
+    assert len(questions) == 3
+    assert questions[0]["question_focus"] == focus
+    assert questions[1]["question_focus"].startswith(focus)
+    assert questions[2]["question_focus"].startswith(focus)
+    assert len({q["question_repeat_signature"] for q in questions}) == 3
+    assert all(q["question_repeat_duplicate"] is False for q in questions)
+    assert all(focus in q["question"] for q in questions)
+
+
+def test_adjust_questions_classifies_creative_problem_before_presentation_overlap() -> None:
+    detail = "\uc0ac\ubb34\ud589\uc815"
+    competency = "\ubb38\uc11c\uc791\uc131"
+    focus = "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {"items": [{"detail": detail, "enabled": True, "main_count": 1, "follow_up_count": 3}]},
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+
+    out = _adjust_generated_questions(
+        {"interview_questions": []},
+        plan,
+        ["\ucc3d\uc758\uc801 \ubb38\uc81c\ud574\uacb0\ub825\uba74\uc811"],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": competency,
+                "ncsSclasCdnm": detail,
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[{"ncsClCd": "0202030201_25v3", "factorName": focus}],
+    )
+
+    question = out["interview_questions"][0]
+
+    assert question["type"] == "\ucc3d\uc758\uc801 \ubb38\uc81c\ud574\uacb0\ub825\uba74\uc811"
+    assert question["question_intent"] == "creative_problem"
+    assert question["question_repeat_signature"].startswith("creative_problem|")
+
+
+def test_question_quality_report_exposes_question_focus_metadata() -> None:
+    focus = "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545"
+    strategy = {
+        "interview_questions": [
+            {
+                "type": "\uacbd\ud5d8\uba74\uc811",
+                "competency": "\ubb38\uc11c\uc791\uc131",
+                "ncsClCd": "0202030201_25v3",
+                "ncs_detail": "\uc0ac\ubb34\ud589\uc815",
+                "question_focus": focus,
+                "question": (
+                    f"\uc0ac\ubb34\ud589\uc815 \ubb38\uc11c\uc791\uc131 \uc5c5\ubb34\uc5d0\uc11c '{focus}'\uc744 \uc801\uc6a9\ud574 "
+                    "\ubb38\uc81c\ub97c \ud574\uacb0\ud55c \uacbd\ud5d8\uc744 \ub9d0\uc500\ud574 \uc8fc\uc138\uc694."
+                ),
+                "follow_ups": [
+                    f"'{focus}'\uc744 \ud655\uc778\ud55c \uadfc\uac70\ub294 \ubb34\uc5c7\uc785\ub2c8\uae4c?",
+                    "\ub2f9\uc2dc \uc120\ud0dd\ud55c \ud589\ub3d9\uc740 \ubb34\uc5c7\uc785\ub2c8\uae4c?",
+                    "\uacb0\uacfc\ub97c \uc5b4\ub5bb\uac8c \ud655\uc778\ud588\uc2b5\ub2c8\uae4c?",
+                ],
+                "evaluation_points": ["\uc0c1\ud669 \ud30c\uc545", "\ud589\ub3d9 \uadfc\uac70", "\uacb0\uacfc \ud655\uc778", "\ud559\uc2b5 \uc804\uc774"],
+                "ksa_refs": [focus],
+                "ksa_evidence": [
+                    {
+                        "ncsClCd": "0202030201_25v3",
+                        "compeUnitName": "\ubb38\uc11c\uc791\uc131",
+                        "factorName": focus,
+                    }
+                ],
+            }
+        ]
+    }
+
+    item = _attach_question_quality_report(strategy)["question_quality_report"]["items"][0]
+
+    assert item["question_focus"] == focus
+
+
+def test_grouped_interview_questions_preserve_repeat_metadata() -> None:
+    grouped = _group_interview_questions_for_response(
+        [
+            {
+                "type": "\uacbd\ud5d8\uba74\uc811",
+                "competency": "\ubb38\uc11c\uc791\uc131",
+                "ncsClCd": "0202030201_25v3",
+                "question": "\uc9c8\ubb38",
+                "question_focus": "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545",
+                "question_intent": "experience_behavior",
+                "question_repeat_signature": "experience_behavior|\uacbd\ud5d8\uba74\uc811|focus:x",
+                "question_repeat_duplicate": False,
+            }
+        ]
+    )
+
+    item = grouped[0]["questions"][0]
+
+    assert item["question_focus"] == "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545"
+    assert item["question_intent"] == "experience_behavior"
+    assert item["question_repeat_signature"].startswith("experience_behavior|")
+    assert item["question_repeat_duplicate"] is False
+
+
+def test_question_quality_report_marks_later_general_intent_variant_duplicate() -> None:
+    base = {
+        "type": "\uacbd\ud5d8\uba74\uc811",
+        "competency": "\ubb38\uc11c\uc791\uc131",
+        "ncsClCd": "0202030201_25v3",
+        "ncs_detail": "\uc0ac\ubb34\ud589\uc815",
+        "question_focus": "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545",
+        "follow_ups": [
+            "\ub2f9\uc2dc \uadfc\uac70\ub294 \ubb34\uc5c7\uc785\ub2c8\uae4c?",
+            "\uc120\ud0dd\ud55c \ud589\ub3d9\uc740 \ubb34\uc5c7\uc785\ub2c8\uae4c?",
+            "\uacb0\uacfc\ub97c \uc5b4\ub5bb\uac8c \ud655\uc778\ud588\uc2b5\ub2c8\uae4c?",
+        ],
+        "evaluation_points": ["\uadfc\uac70", "\ud589\ub3d9", "\uacb0\uacfc", "\ud559\uc2b5"],
+        "ksa_refs": ["\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545"],
+    }
+    first = {
+        **base,
+        "question": "\uc0ac\ubb34\ud589\uc815 \uc9c1\ubb34\uc5d0 \uc9c0\uc6d0\ud55c \ub3d9\uae30\ub97c \ub9d0\uc500\ud574 \uc8fc\uc138\uc694.",
+    }
+    second = {
+        **base,
+        "question": "\ubb38\uc11c\uc791\uc131 \uc5c5\ubb34\uc5d0 \uad00\uc2ec\uc744 \uac16\uac8c \ub41c \uc774\uc720\ub294 \ubb34\uc5c7\uc785\ub2c8\uae4c?",
+    }
+
+    items = _attach_question_quality_report({"interview_questions": [first, second]})["question_quality_report"]["items"]
+
+    assert [item["question_repeat_signature"] for item in items] == ["motivation|general", "motivation|general"]
+    assert items[0]["question_repeat_duplicate"] is False
+    assert items[1]["question_repeat_duplicate"] is True
+    assert items[0]["checks"]["unique_question"] is True
+    assert items[1]["checks"]["unique_question"] is False
+
+
+def test_question_intent_prioritizes_experience_when_problem_terms_overlap() -> None:
+    question = (
+        "\uc0ac\ubb34\ud589\uc815 \ubb38\uc11c\uc791\uc131 \uc5c5\ubb34\uc5d0\uc11c \ubb38\uc81c\ub97c \ud574\uacb0\ud55c "
+        "\uacbd\ud5d8\uc744 \ub9d0\uc500\ud574 \uc8fc\uc138\uc694. \ub2f9\uc2dc \uc0c1\ud669, \ubcf8\uc778 \ud589\ub3d9, "
+        "\uacb0\uacfc\ub97c \ud3ec\ud568\ud574 \uc124\uba85\ud574 \uc8fc\uc138\uc694."
+    )
+
+    assert _question_intent_key(question) == "experience_behavior"
+
+
+def test_question_intent_keeps_experience_when_focus_mentions_collaboration() -> None:
+    question = (
+        "\ubb38\uc11c\uc791\uc131 \uc218\ud589 \uacfc\uc815\uc5d0\uc11c '\uc5c5\ubb34 \uc6b0\uc120\uc21c\uc704 \uc124\uc815'\uacfc "
+        "'\uc774\ud574\uad00\uacc4\uc790 \ud611\uc5c5'\uc744 \uc801\uc6a9\ud574 \ubb38\uc81c\ub97c \ud574\uacb0\ud558\uac70\ub098 "
+        "\uc131\uacfc\ub97c \ub0b8 \uacbd\ud5d8\uc744 \ub9d0\uc500\ud574 \uc8fc\uc138\uc694. "
+        "\ub2f9\uc2dc \uc0c1\ud669, \ubcf8\uc778 \uc5ed\ud560, \uc120\ud0dd\ud55c \ud589\ub3d9, \uacb0\uacfc\uc640 "
+        "\ud559\uc2b5\uc744 \ud3ec\ud568\ud574 \uc124\uba85\ud574 \uc8fc\uc138\uc694."
+    )
+
+    assert _question_intent_key(question) == "experience_behavior"
+
+
+def test_question_intent_prioritizes_job_knowledge_over_situation_markers() -> None:
+    question = (
+        "\ubb38\uc11c\uc791\uc131\uc5d0\uc11c '\uc5c5\ubb34 \uc6b0\uc120\uc21c\uc704 \uc124\uc815'\uacfc \uad00\ub828\ud574 "
+        "\ud655\uc778\ud574\uc57c \ud560 \uc808\ucc28, \uae30\uc900, \uad00\ub828 \uadfc\uac70, \uc0b0\ucd9c\ubb3c\uc744 "
+        "\uc124\uba85\ud558\uace0 \uc2e4\uc81c \uc5c5\ubb34\uc5d0 \uc801\uc6a9\ud560 \ub54c\uc758 \uc608\uc678\uc0c1\ud669, "
+        "\ud488\uc9c8 \uc810\uac80 \ubc29\ubc95, \uc624\ub958 \uc608\ubc29 \uc720\uc758\uc810\uc744 \ub9d0\uc500\ud574 \uc8fc\uc138\uc694."
+    )
+
+    assert _question_intent_key(question) == "job_knowledge"
+
+
+def test_method_template_scenario_changes_by_question_focus() -> None:
+    document_question = _question_for_method(
+        "\uc0c1\ud669\uba74\uc811",
+        "\ubb38\uc11c\uc791\uc131",
+        "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545",
+        "\uc0ac\ubb34\ud589\uc815",
+        "",
+    )
+    budget_question = _question_for_method(
+        "\uc0c1\ud669\uba74\uc811",
+        "\ubb38\uc11c\uc791\uc131",
+        "\uc608\uc0b0 \uacc4\ud68d \uc218\ub9bd",
+        "\uc0ac\ubb34\ud589\uc815",
+        "",
+    )
+
+    assert document_question != budget_question
+    assert "\uc790\ub8cc \ub204\ub77d" in document_question
+    assert "\ubb38\uc11c \uae30\uc900 \ubd88\uc77c\uce58" in document_question
+    assert "\uc608\uc0b0" in budget_question
+    assert "\uc790\uc6d0 \uc81c\uc57d" in budget_question
+
+
+def test_question_intent_keeps_situation_question_out_of_inbasket_bucket() -> None:
+    question = (
+        "\uc0ac\ubb34\ud589\uc815 \ubb38\uc11c\uc791\uc131 \uc5c5\ubb34 \uc911 '\ubcf4\uace0\uc11c \uc791\uc131'\uacfc \uad00\ub828\ud574 "
+        "\uc790\ub8cc \ub204\ub77d\uacfc \ubb38\uc11c \uae30\uc900 \ubd88\uc77c\uce58 \uc0c1\ud669\uc774 \ubc1c\uc0dd\ud588\uc2b5\ub2c8\ub2e4. "
+        "\uc5b4\ub5a4 \uae30\uc900\uc73c\ub85c \ud310\ub2e8\ud558\uace0 \uc704\ud5d8\uc694\uc778\uc744 \ud1b5\uc81c\ud558\uba70, "
+        "\uc0ac\uc2e4 \ud655\uc778\ubd80\ud130 \ubcf4\uace0\uc640 \uc2e4\ud589\uae4c\uc9c0 \uc5b4\ub5a4 \uc21c\uc11c\ub85c \ud589\ub3d9\ud558\uc2dc\uaca0\uc2b5\ub2c8\uae4c?"
+    )
+
+    assert _question_intent_key(question) == "situation_judgment"
+
+
+def test_question_intent_prioritizes_explicit_inbasket_marker() -> None:
+    question = (
+        "[\uc778\ubc14\uc2a4\ucf13\uacfc\uc81c] \uc81c\ud55c\uc2dc\uac04 30\ubd84 \uc548\uc5d0 \uc810\uac80 \uc694\uccad, "
+        "\ubcf4\uace0 \ubb38\uc11c, \uc704\uc784 \ud544\uc694 \uc0ac\ud56d\uc774 \ub3d9\uc2dc\uc5d0 \ub4e4\uc5b4\uc654\uc2b5\ub2c8\ub2e4. "
+        "\uc6b0\uc120\uc21c\uc704\uc640 \uc9c1\uc811\ucc98\ub9ac \ud310\ub2e8, \uccab \ud589\ub3d9 \uc21c\uc11c\ub97c \uc81c\uc2dc\ud574 \uc8fc\uc138\uc694."
+    )
+
+    assert _question_intent_key(question) == "inbasket_priority"
+
+
+def test_question_intent_prioritizes_explicit_presentation_marker_over_growth_text() -> None:
+    question = (
+        "[\ubc1c\ud45c\uacfc\uc81c] \uc81c\ud488 \uc870\uc0ac \uae30\uc220 \uad00\ub828 \uc790\ub8cc\uac00 \uc8fc\uc5b4\uc84c\ub2e4\uace0 "
+        "\uac00\uc815\ud558\uace0 \uc900\ube44\uc2dc\uac04 20\ubd84 \ud6c4 \ud604\ud669 \ubb38\uc81c\ub97c \uc9c4\ub2e8\ud558\uace0 "
+        "\uac1c\uc120\uc548\uc744 5\ubd84 \ubc1c\ud45c\ud574 \uc8fc\uc138\uc694. "
+        "\uc0ac\uc5c5 \uc774\uc775\uc5d0 \uae30\uc5ec\ud560 \uc218 \uc788\ub294 \ubc29\uc548\uc744 \ud3ec\ud568\ud558\uc138\uc694."
+    )
+
+    assert _question_intent_key(question) == "presentation_task"
+
+
+def test_question_intent_prioritizes_explicit_discussion_marker_over_collaboration_text() -> None:
+    question = (
+        "[\ud1a0\ub860\uacfc\uc81c] \ud611\uc5c5 \ud6a8\uc728\uc744 \uc6b0\uc120\ud558\ub294 \uc785\uc7a5\uacfc "
+        "\ubcf4\uc548 \uae30\uc900\uc744 \uac15\ud654\ud574\uc57c \ud55c\ub2e4\ub294 \uc785\uc7a5\uc774 \uac08\ub4f1\ud569\ub2c8\ub2e4. "
+        "\ud1a0\ub860\uc2dc\uac04 20\ubd84 \ub3d9\uc548 \uc785\uc7a5\ubc1c\ud45c, \ubc18\ubc15, \uc870\uc815, "
+        "\ucd5c\uc885 \ud569\uc758\uc548\uc744 \uc81c\uc2dc\ud574 \uc8fc\uc138\uc694."
+    )
+
+    assert _question_intent_key(question) == "discussion_task"
+
+
+def test_security_focus_replaces_unrelated_domain_evidence() -> None:
+    question = _question_for_method(
+        "\ucc3d\uc758\uc801 \ubb38\uc81c\ud574\uacb0\ub825\uba74\uc811",
+        "\uc2dd\uc74c\ub8cc \uc601\uc5c5 \uc900\ube44",
+        "\uc704\ubcc0\uc870 \uc5ec\uad8c/\uc2e0\ubd84\uc99d \uac10\ubcc4 \uae30\uc220",
+        "\uce74\uc9c0\ub178 \uace0\uac1d \uc9c0\uc6d0",
+        "",
+    )
+
+    assert "\ucd9c\uc785 \ub85c\uadf8" in question
+    assert "\uc2e0\ubd84 \ud655\uc778 \uae30\ub85d" in question
+    assert "\uba54\ub274\ubcc4 \ud310\ub9e4\ub7c9" not in question
+    assert "\uc2dd\uc7ac\ub8cc \uc7ac\uace0\ud45c" not in question
+
+
+def test_method_followups_rotate_non_focus_probe_by_variant() -> None:
+    focus = "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545"
+
+    first = _followups_for_method("\uacbd\ud5d8\uba74\uc811", "\ubb38\uc11c\uc791\uc131", focus, 3, variant_index=0)
+    second = _followups_for_method("\uacbd\ud5d8\uba74\uc811", "\ubb38\uc11c\uc791\uc131", focus, 3, variant_index=1)
+
+    assert len(first) == 3
+    assert len(second) == 3
+    assert first[0] == second[0]
+    assert focus in first[1]
+    assert focus in second[1]
+    assert first[2] != second[2]

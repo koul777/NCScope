@@ -75,6 +75,26 @@ class Settings:
     def openai_key(self) -> str:
         return os.getenv("OPENAI_API_KEY", "").strip()
 
+    def allow_server_openai_key_fallback(self) -> bool:
+        return os.getenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "y"}
+
+    def resolve_openai_key(self, request_key: str = "", allow_env_fallback: bool | None = None) -> str:
+        key = str(request_key or "").strip()
+        if key:
+            return key
+        if allow_env_fallback is None:
+            allow_env_fallback = self.allow_server_openai_key_fallback()
+        return self.openai_key() if allow_env_fallback else ""
+
+    def openai_key_source(self, request_key: str = "", allow_env_fallback: bool | None = None) -> str:
+        if str(request_key or "").strip():
+            return "request"
+        if allow_env_fallback is None:
+            allow_env_fallback = self.allow_server_openai_key_fallback()
+        if allow_env_fallback and self.openai_key():
+            return "env"
+        return "missing"
+
     def admin_token(self) -> str:
         return os.getenv("ADMIN_TOKEN", "").strip()
 

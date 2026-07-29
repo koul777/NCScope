@@ -111,7 +111,8 @@ http://127.0.0.1:8015
 
 - 입력한 키는 브라우저 저장소나 서버 DB에 저장하지 않습니다.
 - 해당 생성 요청에만 FormData/JSON으로 전달됩니다.
-- 비워 두면 서버의 `OPENAI_API_KEY` 환경변수를 사용합니다.
+- 비워 두면 기본적으로 서버의 `OPENAI_API_KEY`를 사용하지 않습니다.
+- 서버 키 fallback은 운영자가 `OPENAI_ALLOW_SERVER_KEY_FALLBACK=true`를 명시적으로 설정한 경우에만 사용합니다.
 - 응답 JSON에는 키 원문이 포함되지 않고 `request`, `env`, `missing` 상태만 표시됩니다.
 
 ### 3. 직무기술서 업로드
@@ -161,7 +162,7 @@ Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 - 토론면접: 갈등 요소가 있는 과제를 두고 상호작용, 경청, 조정, 합의 도출을 봅니다.
 - 인바스켓면접: 실제 직무 조건을 반영한 문서·요청·우선순위 처리 과제를 제시합니다.
 - 직무지식면접: 절차, 기준, 산출물, 예외상황 대응 지식을 확인합니다.
-- 창의적 문제해결력면접: 기본 6종에는 포함하지 않는 선택형 기법으로, 복합 문제를 정의하고 원인 가설, 대안, 검증 방법, 실행계획을 평가합니다.
+- 창의적 문제해결력면접: 기본 7종에 포함되며, 복합 문제를 정의하고 원인 가설, 대안, 검증 방법, 실행계획을 평가합니다.
 
 면접기법별 질문 방식은 `['24년 능력중심 채용모델] 평가위원 가이드북`의 구조화 면접 원칙과 NCS 블라인드 채용 면접과제·평가양식 샘플에서 관찰되는 과제·평가 양식 구조를 반영했습니다.
 
@@ -348,9 +349,11 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | --- | --- | --- | --- |
 | `NCSCOPE_LOAD_DOTENV` | 선택 | `false` | 앱 import 시 `.env` 자동 로드 여부. 배포/테스트 기본값은 비활성화 |
 | `NCS_MCP_URL` | 필수 | 없음 | 로컬 NCS DB 검색 서버(NCS_MCP) Streamable HTTP 주소 |
-| `OPENAI_API_KEY` | 선택 | 없음 | 서버 기본 OpenAI 키 |
+| `OPENAI_API_KEY` | 선택 | 없음 | 서버 OpenAI 키. 기본적으로 요청 key가 없을 때 자동 사용하지 않음 |
+| `OPENAI_ALLOW_SERVER_KEY_FALLBACK` | 선택 | `false` | 요청 key가 없을 때 서버 `OPENAI_API_KEY` 사용 허용 |
 | `OPENAI_MODEL` | 선택 | `gpt-4o-mini` | 일반 모델 설정 |
 | `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
+| `OPENAI_HTTP_CURL_FALLBACK_ENABLED` | 선택 | `false` | Python HTTP 실패 시 curl fallback 사용. 사용자 key 노출 위험 때문에 opt-in |
 | `DATABASE_URL` | 선택 | `sqlite:///./ncscope.db` | 앱용 소형 DB |
 | `MAX_UPLOAD_MB` | 선택 | `30` | 업로드 제한 |
 | `KORDOC_OCR` | 선택 | `true` | Kordoc OCR 경로 사용 |
@@ -404,7 +407,7 @@ Form:
 - `jd_file`: 원본 직무기술서
 - `notice_file`: 선택 공고문
 - `jd_review_json`: 사람이 검토·확정한 JSON
-- `openai_api_key`: 선택 요청 단위 OpenAI 키
+- `openai_api_key`: 선택 요청 단위 OpenAI 키. 서버 key fallback은 별도 허용 시에만 사용
 - `duty_text`: 선택 담당업무 보정 텍스트
 - `evaluation_text`: 선택 평가항목 텍스트
 
@@ -442,6 +445,8 @@ JSON:
   "openai_api_key": "선택 입력"
 }
 ```
+
+민감한 공고문·이력서 텍스트와 OpenAI key는 URL query string이 아니라 JSON body 또는 multipart form으로 전달해야 합니다.
 
 ## 검증 방법
 
@@ -591,6 +596,7 @@ docker run --rm -p 8015:8000 `
   -e NCS_MCP_URL="http://host.docker.internal:8778/mcp" `
   -e MAX_UPLOAD_MB="30" `
   -e OPENAI_API_KEY="$env:OPENAI_API_KEY" `
+  -e OPENAI_ALLOW_SERVER_KEY_FALLBACK="false" `
   ncscope-app
 ```
 

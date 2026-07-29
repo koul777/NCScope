@@ -105,8 +105,9 @@ def _sleep_backoff(attempt: int) -> None:
 
 
 def _curl_fallback_enabled() -> bool:
-    # Windows에서 socket policy/EDR로 python outbound가 막히는 경우를 우회하기 위한 옵션.
-    default_enabled = os.name == "nt"
+    # Keep this opt-in because the curl command line can expose Authorization
+    # headers to process inspection or endpoint telemetry.
+    default_enabled = False
     return _env_bool("OPENAI_HTTP_CURL_FALLBACK_ENABLED", default_enabled)
 
 
@@ -211,8 +212,7 @@ def _chat_with_curl(url: str, payload: dict[str, Any], api_key: str, timeout_sec
     )
     if status == 200:
         return json.loads(body or "{}")
-    body_preview = str(body or "").strip().replace("\n", " ")[:200]
-    raise RuntimeError(f"openai_http_{status}: {body_preview}")
+    raise RuntimeError(f"openai_http_{status}")
 
 
 def post_chat_completions_with_retries(
@@ -244,8 +244,7 @@ def post_chat_completions_with_retries(
                         resp = client.post(url, headers=headers, json=payload)
                     if resp.status_code == 200:
                         return resp.json()
-                    body_preview = (resp.text or "").strip().replace("\n", " ")[:200]
-                    err = RuntimeError(f"openai_http_{resp.status_code}: {body_preview}")
+                    err = RuntimeError(f"openai_http_{resp.status_code}")
                     if _is_retryable_status(resp.status_code):
                         last_error = err
                         break

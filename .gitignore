@@ -10,6 +10,10 @@ venv/
 NCS_DB.xlsx
 .coverage
 .tmp/
+# Benchmark scripts write timestamped artifacts here. Curated reports that are
+# already tracked remain tracked; force-add a new report only when selected for
+# publication.
+reports/*
 reports/overnight_sessions/
 _debug*.txt
 _debug*.json

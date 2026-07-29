@@ -67,6 +67,7 @@ docker run --rm -p 8015:8000 `
   -e NCS_MCP_URL="http://host.docker.internal:8778/mcp" `
   -e MAX_UPLOAD_MB="30" `
   -e OPENAI_API_KEY="$env:OPENAI_API_KEY" `
+  -e OPENAI_ALLOW_SERVER_KEY_FALLBACK="false" `
   ncscope-app
 ```
 
@@ -82,11 +83,17 @@ NCSCOPE_LOAD_DOTENV=false
 NCS_MCP_URL=<required>
 MAX_UPLOAD_MB=30
 KORDOC_OCR=true
+OPENAI_ALLOW_SERVER_KEY_FALLBACK=false
+OPENAI_HTTP_CURL_FALLBACK_ENABLED=false
 ENABLE_ADMIN_ENDPOINTS=false
 ENABLE_LEGACY_NCS_API=false
 AUTO_SYNC_PUBLIC_INST=false
 AUTO_SYNC_NCS=false
 ```
+
+For public or shared deployments, keep `OPENAI_ALLOW_SERVER_KEY_FALLBACK=false`
+and require users to submit their own request-scoped OpenAI key. Enable server
+key fallback only behind authentication, rate limits, and cost controls.
 
 Only enable admin/legacy endpoints for private maintenance deployments:
 

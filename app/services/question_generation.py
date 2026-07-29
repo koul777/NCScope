@@ -4,9 +4,16 @@ import copy
 import json
 import os
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from app.services.openai_http import post_chat_completions_with_retries
+from app.services.question_intent import (
+    FOCUS_SCOPED_GENERAL_QUESTION_INTENTS,
+    GENERAL_QUESTION_INTENTS,
+    QUESTION_INTENT_PATTERNS,
+    classify_question_intent,
+)
 from app.settings import settings
 
 
@@ -145,6 +152,10 @@ _BLIND_HIRING_CUE_RE = re.compile(
     r"병역|군필|미필|군\s*복무|복무\s*기간|전역|혈액형)"
 )
 
+_GENERAL_QUESTION_INTENTS = GENERAL_QUESTION_INTENTS
+_FOCUS_SCOPED_GENERAL_QUESTION_INTENTS = FOCUS_SCOPED_GENERAL_QUESTION_INTENTS
+_QUESTION_INTENT_PATTERNS = QUESTION_INTENT_PATTERNS
+
 
 def _interview_type_key(value: str) -> str:
     return re.sub(r"[\s_\-./|()]+", "", str(value or "")).strip().lower()
@@ -169,6 +180,212 @@ def _contains_blind_hiring_cue(*values: Any) -> bool:
                 return True
             continue
         if _BLIND_HIRING_CUE_RE.search(str(value or "")):
+            return True
+    return False
+
+
+def _compact_question_dedupe_text(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    raw = re.sub(r"\[[^\]]+\]", " ", raw)
+    raw = re.sub(r"[^0-9a-z가-힣]+", " ", raw)
+    return re.sub(r"\s+", "", raw)
+
+
+def _compact_question_intent_text(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    raw = re.sub(r"[^0-9a-z가-힣]+", " ", raw)
+    return re.sub(r"\s+", "", raw)
+
+
+def _question_intent_key(question: Any) -> str:
+    return classify_question_intent(question)
+
+
+def _question_scope_signature(item: dict[str, Any]) -> str:
+    method = _canonical_interview_type((item or {}).get("type") or (item or {}).get("method") or "")
+    method_key = _compact_question_dedupe_text(method)[:40]
+    focus = str(
+        (item or {}).get("question_focus")
+        or (item or {}).get("focus")
+        or (item or {}).get("primary_focus")
+        or ""
+    ).strip()
+    if focus:
+        return f"{method_key}|focus:{_compact_question_dedupe_text(focus)[:80]}"
+
+    refs = (item or {}).get("ksa_refs")
+    if isinstance(refs, list):
+        ref_keys: list[str] = []
+        seen_refs: set[str] = set()
+        for ref in refs:
+            key = _compact_question_dedupe_text(ref)[:80]
+            if not key or key in seen_refs:
+                continue
+            seen_refs.add(key)
+            ref_keys.append(key)
+        if ref_keys:
+            return f"{method_key}|focus:{ref_keys[0]}"
+
+    ncs_code = _compact_question_dedupe_text((item or {}).get("ncsClCd"))[:40]
+    competency = _compact_question_dedupe_text((item or {}).get("competency"))[:80]
+    if ncs_code or competency:
+        return f"{method_key}|scope:{ncs_code}|{competency}"
+    return ""
+
+
+def _question_has_focus_scope(item: dict[str, Any]) -> bool:
+    focus = str(
+        (item or {}).get("question_focus")
+        or (item or {}).get("focus")
+        or (item or {}).get("primary_focus")
+        or ""
+    ).strip()
+    if focus:
+        return True
+    refs = (item or {}).get("ksa_refs")
+    return bool(
+        isinstance(refs, list)
+        and any(_compact_question_dedupe_text(ref) for ref in refs)
+    )
+
+
+_QUESTION_SCENARIO_FRAMES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("schedule_delay", ("일정지연", "납기지연", "기한지연")),
+    ("data_mismatch", ("자료불일치", "데이터불일치", "기준불일치")),
+    ("stakeholder_conflict", ("이해관계자충돌", "의견충돌", "이해관계자갈등")),
+    ("exception", ("예외상황", "예외처리")),
+    ("resource_constraint", ("자원제약", "인력부족", "예산제약")),
+    ("quality_risk", ("품질리스크", "품질위험", "오류위험")),
+)
+
+
+def _question_scenario_signature(question: Any) -> str:
+    compact = _compact_question_intent_text(question)
+    if not compact:
+        return ""
+    matches = [
+        name
+        for name, markers in _QUESTION_SCENARIO_FRAMES
+        if any(_compact_question_intent_text(marker) in compact for marker in markers)
+    ]
+    return "+".join(matches)
+
+
+_QUESTION_CONTEXT_BOILERPLATE = (
+    "업무에서",
+    "업무중",
+    "업무과정에서",
+    "경험을말씀해주세요",
+    "사례를구체적으로설명해주세요",
+    "사례를구체적으로말씀해주세요",
+    "당시상황",
+    "본인행동",
+    "본인의행동",
+    "행동과결과",
+    "행동결과",
+    "해결한",
+    "대응한",
+    "설명해주세요",
+    "말씀해주세요",
+)
+
+
+def _question_context_signature(item: dict[str, Any]) -> str:
+    compact = _compact_question_intent_text((item or {}).get("question"))
+    if not compact:
+        return ""
+    refs = (item or {}).get("ksa_refs")
+    first_ref = str(refs[0] or "").strip() if isinstance(refs, list) and refs else ""
+    focus = _compact_question_intent_text(
+        (item or {}).get("question_focus")
+        or first_ref
+    )
+    if focus:
+        compact = compact.replace(focus, "")
+    for phrase in _QUESTION_CONTEXT_BOILERPLATE:
+        compact = compact.replace(_compact_question_intent_text(phrase), "")
+    return compact
+
+
+def _question_dedupe_keys(item: dict[str, Any]) -> list[str]:
+    question = str((item or {}).get("question") or "").strip()
+    surface_key = _compact_question_dedupe_text(question)
+    if not surface_key:
+        return []
+
+    keys = [f"surface:{surface_key}"]
+    intent = _question_intent_key(question)
+    if not intent:
+        return keys
+
+    scope = _question_scope_signature(item)
+    if intent in _GENERAL_QUESTION_INTENTS:
+        if intent in _FOCUS_SCOPED_GENERAL_QUESTION_INTENTS and scope and _question_has_focus_scope(item):
+            keys.append(f"intent:{intent}|{scope}")
+        else:
+            keys.append(f"intent:{intent}|general")
+    return keys
+
+
+def _question_already_seen(item: dict[str, Any], seen: set[str]) -> bool:
+    keys = _question_dedupe_keys(item)
+    if not keys:
+        return True
+    if any(key in seen for key in keys):
+        return True
+    seen.update(keys)
+    return False
+
+
+def _char_ngrams(value: str, n: int = 3) -> set[str]:
+    compact = _compact_question_dedupe_text(value)
+    if len(compact) < n:
+        return {compact} if compact else set()
+    return {compact[i : i + n] for i in range(0, len(compact) - n + 1)}
+
+
+def _question_surface_similarity(left: str, right: str) -> float:
+    left_key = _compact_question_dedupe_text(left)
+    right_key = _compact_question_dedupe_text(right)
+    if not left_key or not right_key:
+        return 0.0
+    sequence_ratio = SequenceMatcher(None, left_key, right_key).ratio()
+    left_grams = _char_ngrams(left_key)
+    right_grams = _char_ngrams(right_key)
+    if not left_grams or not right_grams:
+        return sequence_ratio
+    gram_ratio = len(left_grams & right_grams) / len(left_grams | right_grams)
+    return max(sequence_ratio, gram_ratio)
+
+
+def _question_near_duplicate_seen(item: dict[str, Any], accepted: list[dict[str, Any]]) -> bool:
+    scope = _question_scope_signature(item)
+    if not scope:
+        return False
+    question = str((item or {}).get("question") or "").strip()
+    if len(_compact_question_dedupe_text(question)) < 24:
+        return False
+    for previous in accepted:
+        if _question_scope_signature(previous) != scope:
+            continue
+        previous_question = str((previous or {}).get("question") or "").strip()
+        scenario = _question_scenario_signature(question)
+        previous_scenario = _question_scenario_signature(previous_question)
+        if scenario and previous_scenario and scenario != previous_scenario:
+            continue
+        context = _question_context_signature(item)
+        previous_context = _question_context_signature(previous)
+        if (
+            context
+            and previous_context
+            and SequenceMatcher(None, context, previous_context).ratio() < 0.45
+        ):
+            continue
+        if _question_surface_similarity(question, previous_question) >= 0.84:
             return True
     return False
 
@@ -205,8 +422,10 @@ def _render_question_generation_prompt(
         "- question과 follow_ups에 글자 그대로 'KSA'라고 쓰지 말고, 실제 factorName 원문을 복사해 넣습니다.\n"
         "- 발표면접, 토론면접, 인바스켓면접, 직무지식면접은 follow_ups[0]에 factorName 원문과 능력단위명을 함께 넣고, 경험면접, 상황면접, 창의적 문제해결력면접은 follow_ups[1]에 넣습니다.\n"
         "- 질문끼리 내용이 겹치면 안 됩니다.\n"
+        "- 같은 면접기법이나 같은 factorName을 반복할 때는 상황 프레임을 다르게 사용합니다: 일정 지연, 자료 불일치, 이해관계자 충돌, 예외상황, 자원 제약, 품질 리스크.\n"
         "- evaluation_points는 4~6개의 측정 가능한 문장으로 작성합니다.\n"
-        "- ksa_refs에는 해당 질문과 직접 연결되는 factorName 원문 2~4개를 넣고, 첫 항목은 question에 직접 쓴 주 검증 초점과 일치시킵니다.\n"
+        "- question_focus에는 question에 직접 쓴 주 검증 factorName 원문 1개를 넣습니다.\n"
+        "- ksa_refs에는 해당 질문과 직접 연결되는 factorName 원문 2~4개를 넣고, 첫 항목은 question_focus와 일치시킵니다.\n"
         "- 민감하거나 차별적인 질문은 생성하지 않습니다.\n\n"
         "[면접 기법]\n"
         "- 경험면접: 과거 행동 또는 유사 경험을 STAR 방식으로 확인합니다.\n"
@@ -249,6 +468,7 @@ def _render_question_generation_prompt(
         '      "question": "주질문",\n'
         '      "follow_ups": ["구체화", "판단 근거", "결과/교훈"],\n'
         '      "evaluation_points": ["항목1", "항목2", "항목3", "항목4"],\n'
+        '      "question_focus": "주 검증 factorName",\n'
         '      "ksa_refs": ["KSA1", "KSA2"]\n'
         "    }\n"
         "  ]\n"
@@ -454,7 +674,7 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
     if _contains_blind_hiring_cue(question, follow_ups, evaluation_points):
         return None
 
-    return {
+    normalized = {
         "question": question,
         "type": interview_type,
         "competency": str(item.get("competency", "")).strip(),
@@ -464,6 +684,17 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "follow_up": follow_ups[0],
         "ksa_refs": ksa_refs,
     }
+    focus = str(item.get("question_focus") or item.get("focus") or item.get("primary_focus") or "").strip()
+    if ksa_refs:
+        normalized["question_focus"] = focus if focus in ksa_refs else ksa_refs[0]
+        if normalized["question_focus"] in ksa_refs and ksa_refs[0] != normalized["question_focus"]:
+            normalized["ksa_refs"] = [
+                normalized["question_focus"],
+                *[ref for ref in ksa_refs if ref != normalized["question_focus"]],
+            ]
+    elif focus:
+        normalized["question_focus"] = focus
+    return normalized
 
 
 def _parse_openai_response(response_text: str) -> list[dict[str, Any]]:
@@ -507,10 +738,10 @@ def _parse_openai_response(response_text: str) -> list[dict[str, Any]]:
         normalized = _normalize_question_item(row)
         if not normalized:
             continue
-        key = re.sub(r"\s+", " ", normalized["question"]).strip().lower()
-        if key in seen:
+        if _question_near_duplicate_seen(normalized, out):
             continue
-        seen.add(key)
+        if _question_already_seen(normalized, seen):
+            continue
         out.append(normalized)
     return out
 
@@ -524,8 +755,9 @@ def _generate_questions_with_openai_from_ncs(
     mode: str = "diverse",
     extra_context: str = "",
     api_key_override: str = "",
+    allow_env_fallback: bool | None = None,
 ) -> list[dict[str, Any]]:
-    api_key = str(api_key_override or "").strip() or settings.openai_key()
+    api_key = settings.resolve_openai_key(api_key_override, allow_env_fallback=allow_env_fallback)
     if not api_key:
         return []
 
@@ -599,10 +831,10 @@ def _generate_questions_with_openai_from_ncs(
             continue
 
         for row in parsed:
-            q_key = re.sub(r"\s+", " ", str((row or {}).get("question", "")).strip()).lower()
-            if not q_key or q_key in seen:
+            if _question_near_duplicate_seen(row, merged):
                 continue
-            seen.add(q_key)
+            if _question_already_seen(row, seen):
+                continue
             merged.append(row)
             if len(merged) >= target_n:
                 break

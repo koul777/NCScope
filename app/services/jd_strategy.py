@@ -29,6 +29,12 @@ from app.services.openai_http import (
     post_chat_completions_with_retries,
 )
 from app.services.question_generation import _generate_questions_with_openai_from_ncs
+from app.services.question_intent import (
+    FOCUS_SCOPED_GENERAL_QUESTION_INTENTS,
+    GENERAL_QUESTION_INTENTS,
+    QUESTION_INTENT_PATTERNS,
+    classify_question_intent,
+)
 from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units
 from app.settings import settings
 
@@ -286,12 +292,17 @@ def _render_pdf_pages_png_py313(file_bytes: bytes, max_pages: int = 2) -> list[b
         return []
 
 
-def extract_focus_terms_from_pdf_vision(file_bytes: bytes, max_pages: int = 2) -> list[str]:
+def extract_focus_terms_from_pdf_vision(
+    file_bytes: bytes,
+    max_pages: int = 2,
+    api_key_override: str = "",
+    allow_env_fallback: bool | None = None,
+) -> list[str]:
     """
     Use OpenAI vision to extract role keywords when PDF text layer is broken.
     Returns canonical Korean terms suitable for NCS matching.
     """
-    api_key = settings.openai_key()
+    api_key = settings.resolve_openai_key(api_key_override, allow_env_fallback=allow_env_fallback)
     if not api_key:
         return []
     images = _render_pdf_pages_png_py313(file_bytes=file_bytes, max_pages=max_pages)
@@ -1867,16 +1878,58 @@ def generate_personalized_interview_questions(
     job_posting: str = "",
     user_profile: str = "",
     target_count: int = 12,
+    api_key_override: str = "",
+    allow_env_fallback: bool | None = None,
 ) -> dict[str, Any]:
     comp_name = competency_name or f"NCS-{ncs_code}"
+    ncs_matches = [{"ncsClCd": ncs_code, "compeUnitName": comp_name}]
+    ncs_ksa = _safe_fetch_ncs_ksa_by_units(
+        ncs_matches=ncs_matches,
+        max_units=1,
+        max_factors_per_unit=8,
+    )
+    official_factors = {
+        re.sub(r"\s+", "", str(row.get("factorName") or "")).lower(): str(row.get("factorName") or "").strip()
+        for row in ncs_ksa
+        if str(row.get("factorName") or "").strip()
+    }
     generated = _generate_questions_with_openai_from_ncs(
         jd_text=job_posting,
         strengths=user_profile,
-        ncs_matches=[{"ncsClCd": ncs_code, "compeUnitName": comp_name}],
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
         target_count=min(max(target_count, 1), 20),
         mode="personalized",
         extra_context=f"user_profile={user_profile[:3000]}",
+        api_key_override=api_key_override,
+        allow_env_fallback=allow_env_fallback,
     )
+    questions: list[dict[str, Any]] = []
+    for q in generated:
+        raw_refs = list(q.get("ksa_refs", []) or []) if isinstance(q.get("ksa_refs"), list) else []
+        verified_refs = [
+            official_factors[key]
+            for value in raw_refs
+            if (key := re.sub(r"\s+", "", str(value or "")).lower()) in official_factors
+        ]
+        raw_focus = _primary_question_focus(q)
+        focus_key = re.sub(r"\s+", "", raw_focus).lower()
+        verified_focus = official_factors.get(focus_key) or (verified_refs[0] if verified_refs else "")
+        questions.append({
+            "question": str(q.get("question", "")).strip(),
+            "question_type": str(q.get("type", "면접질문")).strip() or "면접질문",
+            "type": str(q.get("type", "면접질문")).strip() or "면접질문",
+            "competency": comp_name,
+            "ncs_code": ncs_code,
+            "ncsClCd": ncs_code,
+            "question_focus": verified_focus,
+            "question_focus_source": "official_ksa" if verified_focus else "unverified_model_output",
+            "follow_ups": list(q.get("follow_ups", []) or []) if isinstance(q.get("follow_ups"), list) else [],
+            "evaluation_points": list(q.get("evaluation_points", []) or []) if isinstance(q.get("evaluation_points"), list) else [],
+            "eval_points": list(q.get("evaluation_points", []) or []) if isinstance(q.get("evaluation_points"), list) else [],
+            "ksa_refs": list(dict.fromkeys(verified_refs)),
+        })
+    _refresh_ncs_code_main_question_repeat_metadata(questions)
     return {
         "ncs_code": ncs_code,
         "competency_name": comp_name,
@@ -1884,11 +1937,10 @@ def generate_personalized_interview_questions(
         "company_from_posting": "",
         "requirements_from_posting": "",
         "skills_from_profile": "",
-        "questions": [
-            {"question": q.get("question", ""), "question_type": q.get("type", "면접질문")}
-            for q in generated
-        ],
+        "questions": questions,
         "question_count": len(generated),
+        "ncs_ksa_available": bool(ncs_ksa),
+        "warning": "" if ncs_ksa else "official_ncs_ksa_unavailable",
         "note": "NCS 컨텍스트 기반 생성형 AI 자율 생성 결과입니다.",
     }
 
@@ -1898,16 +1950,22 @@ def generate_diverse_interview_questions(
     competency_name: str = "",
     job_posting: str = "",
     target_count: int = 6,
+    extra_context: str = "",
+    api_key_override: str = "",
+    allow_env_fallback: bool | None = None,
 ) -> dict[str, Any]:
     comp_name = competency_name or f"NCS-{ncs_code}"
     ncs_matches = [{"ncsClCd": ncs_code, "compeUnitName": comp_name}]
-    ncs_ksa = fetch_ncs_ksa_by_units(ncs_matches=ncs_matches, max_units=1, max_factors_per_unit=6)
+    ncs_ksa = _safe_fetch_ncs_ksa_by_units(ncs_matches=ncs_matches, max_units=1, max_factors_per_unit=6)
     generated = _generate_questions_with_openai_from_ncs(
         jd_text=job_posting,
         ncs_matches=ncs_matches,
         ncs_ksa=ncs_ksa,
         target_count=min(max(target_count, 1), 6),
         mode="diverse",
+        extra_context=extra_context,
+        api_key_override=api_key_override,
+        allow_env_fallback=allow_env_fallback,
     )
     questions_list: list[dict[str, Any]] = []
     for i, q in enumerate(generated, 1):
@@ -1924,10 +1982,11 @@ def generate_diverse_interview_questions(
                 "competency": str(q.get("competency", comp_name)).strip() or comp_name,
                 "ncs_code": ncs_code,
                 "question": str(q.get("question", "")).strip(),
+                "question_focus": _primary_question_focus(q),
                 "follow_ups": follow_ups,
                 "follow_up": (follow_ups[0] if follow_ups else ""),
                 "eval_points": list(q.get("evaluation_points", []) or []),
-                "ksa_refs": list(q.get("ksa_refs", []) or []),
+                "ksa_refs": list(q.get("ksa_refs", []) or []) if isinstance(q.get("ksa_refs"), list) else [],
             }
         )
     return {
@@ -1936,7 +1995,223 @@ def generate_diverse_interview_questions(
         "generation_mode": "ai_autonomous_ncs",
         "questions": questions_list,
         "question_count": len(questions_list),
+        "ncs_ksa_available": bool(ncs_ksa),
+        "warning": "" if ncs_ksa else "official_ncs_ksa_unavailable",
         "note": "NCS 컨텍스트 기반 생성형 AI 자율 생성 결과입니다.",
+    }
+
+
+_NCS_CODE_TEMPLATE_FALLBACK_METHODS = (
+    "경험면접",
+    "상황면접",
+    "직무지식면접",
+    "인바스켓면접",
+    "발표면접",
+    "토론면접",
+    "창의적 문제해결력면접",
+)
+
+
+def _safe_fetch_ncs_ksa_by_units(**kwargs: Any) -> list[dict[str, Any]]:
+    try:
+        return fetch_ncs_ksa_by_units(**kwargs)
+    except NcsMcpError:
+        return []
+
+
+def _primary_question_focus(row: dict[str, Any]) -> str:
+    refs = row.get("ksa_refs")
+    first_ref = ""
+    if isinstance(refs, list) and refs:
+        first_ref = str(refs[0] or "").strip()
+    return str(row.get("question_focus") or first_ref).strip()
+
+
+def _compact_question_intent_text(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    raw = re.sub(r"[^0-9a-z가-힣]+", " ", raw)
+    return re.sub(r"\s+", "", raw)
+
+
+def _ncs_code_question_intent_key(question: Any) -> str:
+    return classify_question_intent(question, unknown="other")
+
+
+def _ncs_code_repeat_signature(row: dict[str, Any]) -> str:
+    question = str((row or {}).get("question") or "").strip()
+    intent = _ncs_code_question_intent_key(question)
+    if not intent:
+        return ""
+    method = str((row or {}).get("question_type") or (row or {}).get("type") or "").strip()
+    method_key = _compact_question_intent_text(method)
+    focus = _primary_question_focus(row)
+    if intent in GENERAL_QUESTION_INTENTS and not (
+        intent in FOCUS_SCOPED_GENERAL_QUESTION_INTENTS and focus
+    ):
+        return f"{intent}|general"
+    if focus:
+        return f"{intent}|{method_key}|focus:{_compact_question_intent_text(focus)[:80]}"
+    subject = str((row or {}).get("ncsClCd") or (row or {}).get("competency") or "").strip()
+    return f"{intent}|{method_key}|{_compact_question_intent_text(subject)[:80]}"
+
+
+def _refresh_ncs_code_main_question_repeat_metadata(rows: list[dict[str, Any]]) -> None:
+    seen_by_signature: dict[str, list[str]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        question = str(row.get("question") or "").strip()
+        signature = _ncs_code_repeat_signature(row)
+        previous_questions = seen_by_signature.get(signature, []) if signature else []
+        repeat_duplicate = False
+        if signature.endswith("|general") and previous_questions:
+            repeat_duplicate = True
+        elif signature:
+            repeat_duplicate = any(
+                normalize_question_dedup_key(question) == normalize_question_dedup_key(previous)
+                or is_similar_question_text(question, previous)
+                for previous in previous_questions
+            )
+        row["question_intent"] = _ncs_code_question_intent_key(question)
+        row["question_repeat_signature"] = signature
+        row["question_repeat_duplicate"] = bool(repeat_duplicate)
+        if signature and question:
+            seen_by_signature.setdefault(signature, []).append(question)
+
+
+def _build_ncs_code_template_fallback_question(
+    *,
+    unit: dict[str, Any] | None,
+    comp_name: str,
+    ncs_code: str,
+    ksa_terms: list[str],
+    evidence_terms: list[str] | None = None,
+    index: int,
+) -> dict[str, Any]:
+    method = _NCS_CODE_TEMPLATE_FALLBACK_METHODS[index % len(_NCS_CODE_TEMPLATE_FALLBACK_METHODS)]
+    label = str((unit or {}).get("compeUnitName") or comp_name or "해당 직무").strip()
+    code = str((unit or {}).get("ncsClCd") or ncs_code).strip()
+    detail = str(
+        (unit or {}).get("ncsSubdCdnm")
+        or (unit or {}).get("ncsSclasCdnm")
+        or (unit or {}).get("matchedDetailName")
+        or ""
+    ).strip()
+    context_label = label
+    if detail and re.sub(r"\s+", "", detail).lower() not in re.sub(r"\s+", "", label).lower():
+        context_label = f"{detail} {label}".strip()
+    pool = [str(x).strip() for x in ksa_terms if str(x).strip()]
+    if not pool:
+        pool = ["업무 우선순위 설정", "이해관계자 협업", "성과 점검 및 개선"]
+    evidence_pool = [str(x).strip() for x in (evidence_terms or []) if str(x).strip()]
+    k1 = evidence_pool[index % len(evidence_pool)] if evidence_pool else pool[index % len(pool)]
+    k1_index = pool.index(k1) if k1 in pool else index % len(pool)
+    k2 = pool[(k1_index + 1) % len(pool)] if len(pool) > 1 else "성과 점검 및 개선"
+    official_terms = {
+        re.sub(r"\s+", "", str(term or "")).lower()
+        for term in (evidence_terms if evidence_terms is not None else pool)
+        if str(term or "").strip()
+    }
+    evidence_refs = [
+        term
+        for term in (k1, k2)
+        if re.sub(r"\s+", "", term).lower() in official_terms
+    ]
+
+    if method == "상황면접":
+        question = (
+            f"{context_label} 업무에서 '{k1}' 관련 자료 오류와 일정 지연이 동시에 발생한 상황입니다. "
+            "어떤 기준으로 판단하고 위험을 통제하며 어떤 순서로 행동하시겠습니까?"
+        )
+        follow_ups = [
+            "먼저 확인해야 할 사실과 기준은 무엇입니까?",
+            f"{context_label} 업무에서 '{k1}'을 기준으로 그 행동을 선택한 이유는 무엇입니까?",
+            "결과가 기대와 다르면 어떤 후속 조치를 하시겠습니까?",
+        ]
+        evaluation_points = ["사실 확인", "판단 기준", "행동 순서", "위험 통제"]
+    elif method == "직무지식면접":
+        question = (
+            f"{context_label}에서 '{k1}' 관련 확인해야 할 절차, 기준, 산출물과 예외상황 대응 방안을 설명해 주세요."
+        )
+        follow_ups = [
+            f"{context_label} 업무에서 '{k1}'과 관련한 기준이나 규정은 무엇입니까?",
+            "예외상황에서 기준 적용을 어떻게 조정하겠습니까?",
+            "산출물 품질과 오류 예방은 어떻게 점검하겠습니까?",
+        ]
+        evaluation_points = ["절차·기준 이해", "예외상황 판단", "산출물 품질", "오류 예방"]
+    elif method == "인바스켓면접":
+        question = (
+            f"[인바스켓과제] 제한시간 30분 안에 {context_label} 관련 요청, 오류 정정, 보고 문서가 동시에 들어왔습니다. "
+            f"'{k1}'을 기준으로 우선순위와 보고, 위임, 직접처리 판단을 제시해 주세요."
+        )
+        follow_ups = [
+            f"{context_label} 업무에서 '{k1}'을 기준으로 가장 먼저 처리할 문서와 보류할 요청은 무엇입니까?",
+            f"'{k1}' 기준으로 보고, 위임, 직접처리를 어떻게 나누겠습니까?",
+            "제한시간 이후 기록과 후속 확인은 어떻게 남기겠습니까?",
+        ]
+        evaluation_points = ["우선순위 판단", "문서·요청 분류", "보고·위임·직접처리", "시간관리"]
+    elif method == "발표면접":
+        question = (
+            f"[발표과제] {context_label}에서 '{k1}' 관련 현황 자료와 오류 사례가 주어졌다고 가정하고 "
+            "준비시간 20분 후 문제를 진단하고 대안 2가지, 실행계획, 성과지표를 5분 발표한 뒤 "
+            "5분 질의응답에 답변해 주세요."
+        )
+        follow_ups = [
+            f"{context_label}의 '{k1}' 현황 진단에 활용한 핵심 근거자료는 무엇입니까?",
+            "대안 중 우선순위를 가장 높게 둔 방안과 이유는 무엇입니까?",
+            "질의응답에서 반대 의견이 나오면 어떤 근거로 답변하시겠습니까?",
+        ]
+        evaluation_points = ["자료 분석", "논리적 구조화", "대안 실행가능성", "성과지표"]
+    elif method == "토론면접":
+        question = (
+            f"[토론과제] {context_label}에서 '{k1}' 기준을 강화해야 한다는 입장과 처리 효율을 우선해야 한다는 입장이 충돌합니다. "
+            "토론시간 20분 동안 1분 입장발표 후 반대 의견 검토, 조정 방식, 최종 합의안을 제시해 주세요."
+        )
+        follow_ups = [
+            f"{context_label}의 '{k1}'에 대한 본인의 초기 입장발표를 뒷받침하는 핵심 근거는 무엇입니까?",
+            "반대 의견 중 수용할 수 있는 부분은 무엇입니까?",
+            "최종 합의안에 반드시 포함되어야 할 기준은 무엇입니까?",
+        ]
+        evaluation_points = ["입장발표 근거", "경청과 상호작용", "갈등 조정", "최종 합의안"]
+    elif method == "창의적 문제해결력면접":
+        question = (
+            f"[창의적 문제해결력과제] {context_label}에서 '{k1}' 관련 반복 문제가 발생했습니다. "
+            "미래예측 관점에서 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법과 "
+            "실현가능성, 의사결정 기준, 실행계획을 제시해 주세요."
+        )
+        follow_ups = [
+            "핵심 문제정의를 위해 먼저 확인할 변화 신호는 무엇입니까?",
+            f"{context_label}의 '{k1}' 관련 원인 가설은 어떻게 세우고 검증하겠습니까?",
+            "선택한 대안의 리스크와 보완책은 무엇입니까?",
+        ]
+        evaluation_points = ["미래예측과 문제 정의", "창의적 사고와 대안 도출", "검증 방법과 실현가능성", "의사결정과 실행계획"]
+    else:
+        question = (
+            f"{context_label} 수행 과정에서 '{k1}'과 '{k2}'를 적용해 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. "
+            "당시 상황, 본인 역할, 선택한 행동, 결과와 학습을 포함해 설명해 주세요."
+        )
+        follow_ups = [
+            "당시 상황과 본인이 맡은 구체적인 역할을 설명해 주세요.",
+            f"{context_label} 업무에서 '{k1}'을 적용하기 위해 실제로 취한 행동은 무엇이었습니까?",
+            "결과를 어떤 기준으로 확인했고 다시 한다면 무엇을 개선하시겠습니까?",
+        ]
+        evaluation_points = ["상황과 역할", "판단 근거", "실행 행동", "성과와 학습"]
+
+    return {
+        "question": question,
+        "type": method,
+        "competency": label,
+        "ncsClCd": code,
+        "ncs_detail": detail,
+        "question_focus": k1,
+        "question_focus_source": "official_ksa" if evidence_refs and evidence_refs[0] == k1 else "synthetic_template",
+        "evaluation_points": evaluation_points,
+        "ksa_refs": evidence_refs,
+        "follow_ups": follow_ups,
+        "question_source": "template_fallback",
+        "model_question_preserved": False,
     }
 
 
@@ -1945,6 +2220,9 @@ def generate_interview_questions_by_ncs_code(
     competency_name: str = "",
     target_count: int = 10,
     include_followups: bool = True,
+    extra_context: str = "",
+    api_key_override: str = "",
+    allow_env_fallback: bool | None = None,
 ) -> dict[str, Any]:
     code = str(ncs_code or "").strip()
     comp_name = competency_name or f"NCS-{code}"
@@ -1986,7 +2264,7 @@ def generate_interview_questions_by_ncs_code(
         ai_topup_attempts = 2
     ai_topup_attempts = max(0, min(5, ai_topup_attempts))
     used_template_fallback = False
-    ncs_ksa = fetch_ncs_ksa_by_units(
+    ncs_ksa = _safe_fetch_ncs_ksa_by_units(
         ncs_matches=ncs_matches,
         max_units=min(max(1, len(ncs_matches)), 8),
         max_factors_per_unit=6,
@@ -1998,9 +2276,17 @@ def generate_interview_questions_by_ncs_code(
         ncs_ksa=ncs_ksa,
         target_count=desired_count,
         mode="ncs_code_only",
+        extra_context=extra_context,
+        api_key_override=api_key_override,
+        allow_env_fallback=allow_env_fallback,
     )
     generated: list[dict[str, Any]] = []
     seen_question_keys: set[str] = set()
+    allowed_ncs_codes = {
+        str(item.get("ncsClCd", "")).strip()
+        for item in ncs_matches
+        if str(item.get("ncsClCd", "")).strip()
+    }
 
     def _merge_generated(rows: list[dict[str, Any]] | None) -> int:
         added = 0
@@ -2013,9 +2299,12 @@ def generate_interview_questions_by_ncs_code(
                 continue
             seen_question_keys.add(q_key)
             r = dict(row)
-            r["ncsClCd"] = str(r.get("ncsClCd", "")).strip() or (
-                str(ncs_matches[0].get("ncsClCd", "")).strip() if ncs_matches else code
-            )
+            row_code = str(r.get("ncsClCd", "")).strip()
+            if len(allowed_ncs_codes) == 1:
+                row_code = next(iter(allowed_ncs_codes))
+            elif row_code not in allowed_ncs_codes:
+                continue
+            r["ncsClCd"] = row_code or code
             generated.append(r)
             added += 1
             if len(generated) >= desired_count:
@@ -2032,6 +2321,8 @@ def generate_interview_questions_by_ncs_code(
         dedup_hint = ""
         if existing_questions:
             dedup_hint = "[중복 금지 - 이미 생성된 질문]\n" + "\n".join(f"- {q}" for q in existing_questions[:12])
+        if extra_context:
+            dedup_hint = f"{extra_context}\n{dedup_hint}".strip()
         extra_raw = _generate_questions_with_openai_from_ncs(
             jd_text="",
             ncs_matches=ncs_matches,
@@ -2039,6 +2330,8 @@ def generate_interview_questions_by_ncs_code(
             target_count=min(desired_count, remaining + 2),
             mode="ncs_code_only",
             extra_context=dedup_hint,
+            api_key_override=api_key_override,
+            allow_env_fallback=allow_env_fallback,
         )
         _merge_generated(extra_raw)
 
@@ -2069,29 +2362,24 @@ def generate_interview_questions_by_ncs_code(
             if by_code.get(uc):
                 picked = by_code[uc].pop(0)
             if not picked and allow_template_fallback:
-                unit_ksa_rows = fetch_ncs_ksa_by_units(ncs_matches=[u], max_units=1, max_factors_per_unit=3)
-                unit_ksa = [str(x.get("factorName", "")).strip() for x in unit_ksa_rows if str(x.get("factorName", "")).strip()]
+                unit_ksa_rows = _safe_fetch_ncs_ksa_by_units(ncs_matches=[u], max_units=1, max_factors_per_unit=3)
+                unit_evidence = [
+                    str(x.get("factorName", "")).strip()
+                    for x in unit_ksa_rows
+                    if str(x.get("factorName", "")).strip()
+                ]
+                unit_ksa = list(unit_evidence)
                 if len(unit_ksa) < 2:
                     unit_ksa = unit_ksa + ["업무 우선순위 설정", "이해관계자 협업"]
-                k1, k2 = unit_ksa[0], unit_ksa[1]
                 used_template_fallback = True
-                picked = {
-                    "question": f"{str(u.get('compeUnitName', '')).strip()} 수행 경험에서 '{k1}'과(와) '{k2}'를 어떻게 적용했는지 구체적으로 설명해 주세요.",
-                    "type": "경험",
-                    "ncsClCd": uc,
-                    "evaluation_points": [
-                        "상황 맥락을 구조적으로 설명하는가",
-                        "핵심 의사결정 근거가 명확한가",
-                        "실행 과정과 협업 방식이 구체적인가",
-                        "성과와 학습 포인트를 수치 또는 사실로 제시하는가",
-                    ],
-                    "ksa_refs": [k1, k2],
-                    "follow_ups": [
-                        "그 상황에서 본인이 맡은 구체적인 역할과 판단 근거를 말씀해 주세요.",
-                        "그 과정에서 가장 어려웠던 부분은 무엇이고, 어떻게 해결하셨나요?",
-                        "그 결과는 어땠고, 돌이켜보면 어떤 점을 다르게 하시겠습니까?",
-                    ],
-                }
+                picked = _build_ncs_code_template_fallback_question(
+                    unit=u,
+                    comp_name=str(u.get("compeUnitName", "")).strip() or comp_name,
+                    ncs_code=uc,
+                    ksa_terms=unit_ksa,
+                    evidence_terms=unit_evidence,
+                    index=len(distributed),
+                )
             if picked:
                 distributed.append(picked)
 
@@ -2109,39 +2397,47 @@ def generate_interview_questions_by_ncs_code(
 
     if len(generated) < desired_count and allow_template_fallback:
         used_template_fallback = True
-        ksa_pool = [str(x.get("factorName", "")).strip() for x in (ncs_ksa or []) if str(x.get("factorName", "")).strip()]
-        if not ksa_pool:
-            ksa_pool = ["업무 우선순위 설정", "이해관계자 협업", "성과 점검 및 개선"]
+        fallback_focuses = ["업무 우선순위 설정", "이해관계자 협업", "성과 점검 및 개선"]
+        ksa_by_code: dict[str, list[str]] = {}
+        ksa_by_name: dict[str, list[str]] = {}
+        unscoped_ksa: list[str] = []
+        for row in ncs_ksa or []:
+            factor = str(row.get("factorName", "")).strip()
+            if not factor:
+                continue
+            unit_code = str(row.get("ncsClCd", "")).strip()
+            unit_name = str(row.get("compeUnitName", "")).strip()
+            if unit_code:
+                ksa_by_code.setdefault(unit_code, []).append(factor)
+            if unit_name:
+                ksa_by_name.setdefault(unit_name, []).append(factor)
+            if not unit_code and not unit_name:
+                unscoped_ksa.append(factor)
         existing = {normalize_question_dedup_key(str(x.get("question", ""))) for x in generated}
         idx = 0
         while len(generated) < desired_count and idx < desired_count * 4:
-            k1 = ksa_pool[idx % len(ksa_pool)]
-            k2 = ksa_pool[(idx + 1) % len(ksa_pool)]
-            qtext = f"{comp_name} 수행 과정에서 '{k1}'과(와) '{k2}'를 적용한 실제 경험을 구체적으로 설명해 주세요."
+            unit = ncs_matches[idx % len(ncs_matches)] if ncs_matches else {}
+            unit_code = str(unit.get("ncsClCd", "")).strip()
+            unit_name = str(unit.get("compeUnitName", "")).strip()
+            unit_evidence = list(ksa_by_code.get(unit_code) or ksa_by_name.get(unit_name) or [])
+            if not unit_evidence and len(ncs_matches) <= 1:
+                unit_evidence = list(unscoped_ksa)
+            unit_ksa = list(unit_evidence) or list(fallback_focuses)
+            q = _build_ncs_code_template_fallback_question(
+                unit=unit,
+                comp_name=comp_name,
+                ncs_code=unit_code or code,
+                ksa_terms=unit_ksa,
+                evidence_terms=unit_evidence,
+                index=idx,
+            )
+            qtext = str(q.get("question", "")).strip()
             key = normalize_question_dedup_key(qtext)
             idx += 1
             if not key or key in existing:
                 continue
             existing.add(key)
-            generated.append(
-                {
-                    "question": qtext,
-                    "type": "경험",
-                    "ncsClCd": str(ncs_matches[0].get("ncsClCd", "")).strip() if ncs_matches else code,
-                    "evaluation_points": [
-                        "상황 맥락을 구조적으로 설명하는가",
-                        "핵심 의사결정 근거가 명확한가",
-                        "실행 과정과 협업 방식이 구체적인가",
-                        "성과와 학습 포인트를 수치 또는 사실로 제시하는가",
-                    ],
-                    "ksa_refs": [k1, k2],
-                    "follow_ups": [
-                        "그 상황에서 본인이 맡은 구체적인 역할과 판단 근거를 말씀해 주세요.",
-                        "그 과정에서 가장 어려웠던 부분은 무엇이고, 어떻게 해결하셨나요?",
-                        "그 결과는 어땠고, 돌이켜보면 어떤 점을 다르게 하시겠습니까?",
-                    ],
-                }
-            )
+            generated.append(q)
 
     generated = _apply_entry_level_policy_to_questions(generated)
 
@@ -2150,12 +2446,21 @@ def generate_interview_questions_by_ncs_code(
             "question": str(q.get("question", "")).strip(),
             "evaluation_points": list(q.get("evaluation_points", []) or []),
             "question_type": str(q.get("type", "면접질문")).strip() or "면접질문",
+            "type": str(q.get("type", "면접질문")).strip() or "면접질문",
+            "competency": str(q.get("competency") or comp_name).strip() or comp_name,
             "ncsClCd": str(q.get("ncsClCd", "")).strip(),
-            "ksa_refs": list(q.get("ksa_refs", []) or []),
+            "ncs_detail": str(q.get("ncs_detail") or "").strip(),
+            "question_focus": _primary_question_focus(q),
+            "question_focus_source": str(q.get("question_focus_source", "")).strip(),
+            "ksa_refs": list(q.get("ksa_refs", []) or []) if isinstance(q.get("ksa_refs"), list) else [],
             "follow_ups": list(q.get("follow_ups", []) or []),
+            "question_source": str(q.get("question_source", "")).strip(),
+            "model_question_preserved": bool(q.get("model_question_preserved")),
         }
         for q in generated
     ]
+    _refresh_ncs_code_main_question_repeat_metadata(main_questions)
+
     follow_up_questions: list[dict[str, Any]] = []
     if include_followups:
         for i, q in enumerate(generated):
@@ -2201,6 +2506,8 @@ def generate_interview_questions_by_ncs_code(
         "follow_up_count": len(follow_up_questions),
         "total_count": len(main_questions) + len(follow_up_questions),
         "template_fallback_used": used_template_fallback,
+        "ncs_ksa_available": bool(ncs_ksa),
+        "warning": "" if ncs_ksa else "official_ncs_ksa_unavailable",
     }
     if not main_questions:
         result["error"] = "ai_generation_empty"
@@ -2756,12 +3063,13 @@ def _ai_rerank_ncs_matches(
     ranked_items: list[dict[str, Any]],
     top_k: int = 8,
     api_key_override: str = "",
+    allow_env_fallback: bool | None = None,
 ) -> list[dict[str, Any]]:
     enabled = os.getenv("ENABLE_AI_RERANK", "true").strip().lower() in {"1", "true", "yes", "y"}
     if not enabled:
         return []
 
-    api_key = str(api_key_override or "").strip() or settings.openai_key()
+    api_key = settings.resolve_openai_key(api_key_override, allow_env_fallback=allow_env_fallback)
     if not api_key or len(ranked_items) < 2:
         return []
 
@@ -2955,6 +3263,7 @@ def rerank_ncs_matches(
     top_k: int = 8,
     preferred_sclass: list[str] | None = None,
     openai_api_key: str = "",
+    allow_env_fallback: bool | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     rank_pool_k = max(top_k, 12)
     diversity_cap: int | None = None
@@ -2990,6 +3299,7 @@ def rerank_ncs_matches(
         ranked_items=ranked,
         top_k=top_k,
         api_key_override=openai_api_key,
+        allow_env_fallback=allow_env_fallback,
     )
     if ai_ranked:
         return ai_ranked[:top_k], "ai"
@@ -3129,6 +3439,7 @@ def _model_question_gate_contract() -> str:
         "- follow_ups 중 최소 1개에는 질문에 배정된 능력단위명 또는 required_job_context 원문을 직접 포함하세요. 주질문에만 직무명을 넣고 follow_ups를 일반론으로 쓰면 실패입니다.\n"
         "- [질문별 생성 순서]에 required_factorName이 있으면 question과 지정 follow_up slot에 그 문자열을 원문 그대로 포함하세요.\n"
         "- required_factorName을 작성 전 임시 변수 F처럼 그대로 복사한 뒤, question과 지정 follow_up slot에 F를 한 글자도 바꾸지 말고 붙여 넣으세요.\n"
+        "- [질문별 생성 순서]에 required_scenario_frame이 있으면 question은 그 상황 프레임을 직접 반영해야 합니다. 같은 면접기법에서 같은 상황 프레임을 반복하지 마세요.\n"
         "- 지정 follow_up slot은 required_followup_focus_slot 값입니다. 값이 없으면 기본 slot은 follow_ups[1]입니다.\n"
         "- 발표·토론·인바스켓·직무지식면접은 지정 slot이 보통 follow_ups[0]입니다. 이 경우 follow_ups[1]이 아니라 follow_ups[0]에 F와 required_job_context를 넣으세요.\n"
         "- 경험·상황·창의적 문제해결력면접은 지정 slot이 보통 follow_ups[1]입니다. 이 경우 follow_ups[1]에 F와 required_job_context를 넣으세요.\n"
@@ -3258,6 +3569,72 @@ def _planned_followup_focus_example_for_prompt(method: str, job_context: str, fa
     return f"{factor_name}와 관련해 {context} 판단이나 행동을 선택한 이유는 무엇입니까?"
 
 
+def _planned_scenario_frame_for_prompt(method: str, offset: int) -> str:
+    method = str(method or "").strip()
+    frames_by_method = {
+        "경험면접": (
+            "일정 지연 또는 마감 압박 속에서 본인이 선택한 행동",
+            "자료 불일치나 정보 부족을 확인하고 보완한 경험",
+            "이해관계자 요청이 충돌한 상황에서 조정한 경험",
+            "예외상황이나 오류를 발견하고 재발을 막은 경험",
+            "제한된 자원 안에서 우선순위를 조정한 경험",
+        ),
+        "상황면접": (
+            "동시에 들어온 요청과 마감 충돌",
+            "자료 오류 또는 기준 불일치 발견",
+            "민원, 안전, 품질 리스크가 함께 있는 상황",
+            "상급자 지시와 현장 제약이 충돌하는 상황",
+            "협업 부서와 처리 기준이 다른 상황",
+        ),
+        "발표면접": (
+            "현황 자료와 오류 사례를 바탕으로 원인과 대안을 제시",
+            "운영 지표 변화와 민원 기록을 분석해 개선안을 제시",
+            "절차 준수와 처리 속도 사이의 개선 우선순위를 제시",
+            "품질 점검 결과를 바탕으로 실행계획과 성과지표를 제시",
+            "자원 제약 속 단계별 개선 로드맵을 제시",
+        ),
+        "토론면접": (
+            "기준 강화 입장과 처리 효율 우선 입장의 충돌",
+            "안전·품질 우선 입장과 일정 준수 입장의 충돌",
+            "이용자 편의 우선 입장과 절차 준수 입장의 충돌",
+            "정보 공유 확대 입장과 보안·책임성 강화 입장의 충돌",
+            "단기 성과 우선 입장과 재발 방지 우선 입장의 충돌",
+        ),
+        "인바스켓면접": (
+            "긴급 요청, 오류 정정, 보고 문서가 동시에 들어온 상황",
+            "민원 확대 가능성과 마감 임박 업무가 겹친 상황",
+            "상급자 보고, 협업 요청, 현장 확인이 동시에 필요한 상황",
+            "안전·품질 이슈와 처리 속도 요구가 동시에 있는 상황",
+            "자료 확인, 위임, 직접처리 판단을 제한시간 안에 해야 하는 상황",
+        ),
+        "직무지식면접": (
+            "기준 적용 절차와 예외상황 처리",
+            "산출물 품질 점검과 오류 예방",
+            "관련 근거 확인과 기록 관리",
+            "업무 도구 또는 자료를 활용한 검증",
+            "신규 담당자에게 설명할 적용 순서",
+        ),
+        "창의적 문제해결력면접": (
+            "반복 오류의 원인 가설과 검증 방법",
+            "환경 변화에 따른 미래 리스크와 대안",
+            "제한된 자원에서 실행 가능한 개선안 비교",
+            "이해관계자 요구가 충돌하는 복합 문제",
+            "성과지표와 후속 점검까지 포함한 개선 실험",
+        ),
+    }
+    default_frames = (
+        "일정 지연과 품질 요구가 함께 있는 상황",
+        "자료 오류 또는 기준 불일치가 발견된 상황",
+        "이해관계자 요구가 충돌하는 상황",
+        "제한된 자원에서 우선순위를 정해야 하는 상황",
+        "예외상황을 처리하고 재발을 막아야 하는 상황",
+    )
+    frames = frames_by_method.get(method, default_frames)
+    if not frames:
+        return ""
+    return frames[max(0, int(offset or 0)) % len(frames)]
+
+
 def _planned_question_example_for_prompt(method: str, job_context: str, factor_name: str) -> str:
     method = str(method or "").strip()
     job_context = str(job_context or "").strip()
@@ -3298,6 +3675,8 @@ def _planned_question_sequence_for_prompt(
     limit = max(1, min(40, int(target_count or len(raw_sequence))))
     planned: list[dict[str, Any]] = []
     detail_offsets: dict[str, int] = {}
+    factor_offsets_by_code: dict[str, int] = {}
+    scenario_offsets_by_method: dict[str, int] = {}
     for idx, row in enumerate(raw_sequence[:limit], start=1):
         detail = str(row.get("detail") or "").strip()
         if not detail:
@@ -3313,11 +3692,18 @@ def _planned_question_sequence_for_prompt(
             "type": method,
             "follow_up_count": max(0, min(5, int(row.get("follow_up_count", 3) or 0))),
         }
+        scenario_offset = scenario_offsets_by_method.get(method, 0)
+        scenario_frame = _planned_scenario_frame_for_prompt(method, scenario_offset)
+        if method:
+            scenario_offsets_by_method[method] = scenario_offset + 1
         if unit:
             ncs_code = str(unit.get("ncsClCd", "")).strip()
             compe_unit_name = str(unit.get("compeUnitName", "")).strip()
             ncs_sub_detail = str(unit.get("ncsSubdCdnm", "")).strip()
-            required_factor = _planned_factor_for_prompt(ncs_code, idx, ncs_ksa)
+            factor_offset = factor_offsets_by_code.get(ncs_code, 0)
+            required_factor = _planned_factor_for_prompt(ncs_code, factor_offset + 1, ncs_ksa)
+            if ncs_code:
+                factor_offsets_by_code[ncs_code] = factor_offset + 1
             required_context = compe_unit_name or ncs_sub_detail or detail
             planned_item.update(
                 {
@@ -3327,6 +3713,7 @@ def _planned_question_sequence_for_prompt(
                     "ncsSubdCdnm": ncs_sub_detail,
                     "required_job_context": required_context,
                     "required_factorName": required_factor,
+                    "required_scenario_frame": scenario_frame,
                     "required_question_example": _planned_question_example_for_prompt(
                         method,
                         required_context,
@@ -3338,6 +3725,14 @@ def _planned_question_sequence_for_prompt(
                         required_context,
                         required_factor,
                     ),
+                }
+            )
+        elif scenario_frame:
+            planned_item.update(
+                {
+                    "required_job_context": detail,
+                    "required_scenario_frame": scenario_frame,
+                    "required_followup_focus_slot": _planned_followup_focus_slot_for_prompt(method),
                 }
             )
         planned.append(planned_item)
@@ -3373,8 +3768,10 @@ def build_strategy_with_openai(
     follow_up_count: int = 3,
     question_plan: dict[str, Any] | None = None,
     interview_methods: list[str] | None = None,
+    extra_context: str = "",
+    allow_env_fallback: bool | None = None,
 ) -> dict[str, Any]:
-    api_key = str(api_key_override or "").strip() or settings.openai_key()
+    api_key = settings.resolve_openai_key(api_key_override, allow_env_fallback=allow_env_fallback)
     default_target = max(5, min(40, int(os.getenv("INTERVIEW_TARGET_COUNT", "10") or "10")))
     target_count = int(target_count_override or default_target)
     target_count = max(1, min(40, target_count))
@@ -3415,6 +3812,7 @@ def build_strategy_with_openai(
     strengths = (strengths or "").strip()
     duty_text = (duty_text or "").strip()
     evaluation_text = (evaluation_text or "").strip()
+    extra_context = str(extra_context or "").strip()
     has_priority_context = bool(duty_text or evaluation_text)
     priority_rules = ""
     if has_priority_context:
@@ -3458,6 +3856,7 @@ def build_strategy_with_openai(
                 "- required_factorName이 있으면 question과 지정 follow_up slot에 반드시 원문 그대로 1회 이상 반복하세요.\n"
                 "- 각 index의 required_factorName 값을 F라고 보고, 지정 follow_up slot 문장은 반드시 F 원문으로 시작하거나 F 원문을 직접 포함해야 합니다.\n"
                 "- 각 index의 required_job_context 값을 J라고 보고, follow_ups 중 최소 1개는 J 원문을 직접 포함해야 합니다.\n"
+                "- 각 index의 required_scenario_frame 값을 S라고 보고, question은 S의 상황 축을 직접 반영해야 합니다. S가 다르면 질문의 상황도 달라야 합니다.\n"
                 "- 각 index에 required_question_example이 있으면 question은 그 예시와 같은 면접기법 구조를 따르고 F와 J를 모두 포함하세요.\n"
                 "- 각 index의 required_followup_focus_slot 값이 0이면 follow_ups[0], 1이면 follow_ups[1]을 지정 slot으로 보고, required_followup_focus_example과 같은 구조로 F와 J를 모두 넣으세요.\n"
                 "- type=토론면접이면 required_question_example처럼 '[토론과제]'로 시작하고 두 입장 충돌, 토론시간, 입장발표, 반대 의견, 조정, 합의를 모두 포함하세요.\n"
@@ -3482,6 +3881,11 @@ def build_strategy_with_openai(
             "- 인바스켓면접: 제한된 시간, 다수 문서·요청·우선순위 충돌 상황을 제시하고 처리 순서와 근거를 묻는 질문.\n"
             "- 직무지식면접: 직무 절차·기준·법령·도구에 대한 이해와 적용을 묻는 질문.\n\n"
             "- 창의적 문제해결력면접: 미래예측 관점에서 복합 문제를 정의하고 원인 가설, 창의적 대안, 검증 방법, 실현가능성, 의사결정, 실행계획을 묻는 질문.\n\n"
+            "[질문 의도 다양성]\n"
+            "- 일반 질문(지원동기, 직무이해, 협업/갈등, 강점/보완점, 공공성/윤리, 입사 후 기여)은 허용됩니다.\n"
+            "- 다만 같은 일반 의도는 전체 세트에서 1회만 사용하세요. 예: 지원동기, 관심 계기, 입사 이유를 각각 따로 만들지 마세요.\n"
+            "- 직무/NCS 질문은 같은 면접기법을 반복하더라도 required_factorName, compeUnitName, required_scenario_frame, 판단 상황이 서로 달라야 합니다.\n"
+            "- 질문마다 내부 의도는 motivation, job_understanding, experience, situation, ncs_task, collaboration, ethics, problem_solving 중 하나로 다르게 설계하세요.\n\n"
         )
 
     _guide_summary = _load_structured_interview_guide_summary()
@@ -3505,6 +3909,8 @@ def build_strategy_with_openai(
         f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 정확히 {follow_up_count}개\n"
         f"- type/method는 선택 면접기법({', '.join(method_names)}) 중 하나만 사용\n"
         "- 지원자가 해당 업무를 직접 맡아보지 않았을 수 있음을 전제로, 유사 경험 또는 가정형 답변이 가능하도록 질문할 것\n"
+        "- 일반 질문은 허용하지만 같은 의도 반복은 금지: 지원동기/관심계기/입사이유처럼 의미가 같은 질문은 1개만 생성\n"
+        "- 직무/NCS 질문은 서로 다른 required_factorName, 업무 맥락, required_scenario_frame, 판단 상황을 사용해 질문 의도가 겹치지 않게 생성\n"
         "\n"
         "[주질문 작성 필수 기준]\n"
         "1. 경험면접: 직무 맥락이 분명한 과거 행동·유사경험을 STAR 방식으로 질문\n"
@@ -3522,7 +3928,7 @@ def build_strategy_with_openai(
         "- 주질문은 개방형 단일 의도, '네/아니오'로 답할 수 없는 문장\n"
         "- 각 질문은 compeUnitDef(능력단위 정의) 직접 반영\n"
         "- evaluation_points는 NCS 수행준거 기반 4~6개\n"
-        "- 동일 패턴('~경험을 말씀해 주세요' 반복) 금지 — 질문마다 다른 도입부 사용\n"
+        "- 동일 패턴('~경험을 말씀해 주세요' 반복) 금지 — 질문마다 다른 도입부와 다른 검증 초점 사용\n"
         f"[생성시드]{int(time.time())}\n"
         f"{profile_mode}\n"
         f"[희망직무]{desired_job}\n"
@@ -3532,6 +3938,7 @@ def build_strategy_with_openai(
         f"[직무기술서]{jd_text[:1500]}\n"
         f"[매칭NCS]{json.dumps((ncs_matches or [])[:5], ensure_ascii=False)}\n"
         f"[NCS평가요소]{json.dumps((ncs_ksa or [])[:15], ensure_ascii=False)}\n"
+        + (f"[추가 반복회피 컨텍스트]\n{extra_context[:2000]}\n" if extra_context else "")
     )
 
     payload = {
@@ -3588,11 +3995,14 @@ def build_strategy_with_openai(
             "- 각 질문은 compeUnitDef(능력단위 정의) 직접 반영\n"
             "- evaluation_points는 NCS 수행준거 기반 4~6개\n"
             "- 지원자가 직접 수행한 경험이 없을 수 있으므로, 유사 사례/가정형 답변이 가능하도록 질문할 것\n"
+            "- 일반 질문은 허용하되 지원동기/직무이해/협업/공공성 등 같은 의도는 반복하지 말 것\n"
+            "- 직무/NCS 질문은 required_factorName, required_scenario_frame, 업무 상황을 문항마다 다르게 쓸 것\n"
             f"{slim_priority}"
             f"[ncs_matches]{json.dumps((ncs_matches or [])[:5], ensure_ascii=False)}\n"
             f"[ncs_factors]{json.dumps((ncs_ksa or [])[:20], ensure_ascii=False)}\n"
             f"[notice_core]{notice_text[:1200]}\n"
             f"[jd_core]{jd_text[:1200]}\n"
+            + (f"[avoid_questions]\n{extra_context[:1200]}\n" if extra_context else "")
         )
         slim_payload = {
             "model": retry_model,

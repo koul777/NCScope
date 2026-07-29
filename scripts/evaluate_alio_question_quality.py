@@ -414,6 +414,8 @@ def evaluate_cached_document(
         "template_inserted_questions": 0,
         "template_fallback_questions": 0,
         "template_fallback_ready_questions": 0,
+        "question_intent_count": 0,
+        "question_repeat_duplicate_count": 0,
         "average_score": 0.0,
         "coverage_adjusted_score": 0.0,
         "coverage_passed": False,
@@ -654,6 +656,10 @@ def evaluate_cached_document(
         else:
             row["status"] = "needs_review"
 
+        question_intents: set[str] = set()
+        question_repeat_signatures: dict[str, int] = {}
+        flagged_repeat_duplicates = 0
+        explicit_repeat_duplicate_flags = False
         for item in report.get("items") or []:
             if not isinstance(item, dict):
                 continue
@@ -671,6 +677,20 @@ def evaluate_cached_document(
             evaluation_points: list[str] = []
             ksa_refs: list[str] = []
             ksa_evidence: list[dict[str, Any]] = []
+            item_issues = [
+                str(x).strip()
+                for x in (item.get("issues") or [])
+                if str(x).strip()
+            ] if isinstance(item.get("issues"), list) else []
+            question_focus = str(item.get("question_focus") or "").strip()
+            question_intent = str(item.get("question_intent") or "").strip()
+            question_repeat_signature = str(item.get("question_repeat_signature") or "").strip()
+            item_repeat_value = item.get("question_repeat_duplicate")
+            item_has_repeat_flag = "question_repeat_duplicate" in item
+            question_repeat_duplicate = (
+                item_repeat_value is True
+                or str(item_repeat_value).strip().lower() == "true"
+            )
             questions = strategy.get("interview_questions") if isinstance(strategy.get("interview_questions"), list) else []
             if 1 <= q_index <= len(questions) and isinstance(questions[q_index - 1], dict):
                 q_obj = questions[q_index - 1]
@@ -698,6 +718,24 @@ def evaluate_cached_document(
                 evaluation_points = [str(x).strip() for x in (q_obj.get("evaluation_points") or []) if str(x).strip()] if isinstance(q_obj.get("evaluation_points"), list) else []
                 ksa_refs = [str(x).strip() for x in (q_obj.get("ksa_refs") or []) if str(x).strip()] if isinstance(q_obj.get("ksa_refs"), list) else []
                 ksa_evidence = [x for x in (q_obj.get("ksa_evidence") or []) if isinstance(x, dict)] if isinstance(q_obj.get("ksa_evidence"), list) else []
+                question_focus = question_focus or str(q_obj.get("question_focus") or "").strip()
+                question_intent = question_intent or str(q_obj.get("question_intent") or "").strip()
+                question_repeat_signature = question_repeat_signature or str(q_obj.get("question_repeat_signature") or "").strip()
+                repeat_value = q_obj.get("question_repeat_duplicate")
+                item_has_repeat_flag = item_has_repeat_flag or "question_repeat_duplicate" in q_obj
+                question_repeat_duplicate = (
+                    question_repeat_duplicate
+                    or repeat_value is True
+                    or str(repeat_value).strip().lower() == "true"
+                )
+            if item_has_repeat_flag:
+                explicit_repeat_duplicate_flags = True
+            if question_repeat_signature:
+                question_repeat_signatures[question_repeat_signature] = question_repeat_signatures.get(question_repeat_signature, 0) + 1
+            if question_intent:
+                question_intents.add(question_intent)
+            if question_repeat_duplicate:
+                flagged_repeat_duplicates += 1
             question_rows.append(
                 {
                     "idx": idx,
@@ -715,6 +753,12 @@ def evaluate_cached_document(
                     "model_evaluation_points_raw": " | ".join(model_evaluation_points_raw)[:500],
                     "model_question_preserved": model_question_preserved,
                     "model_replacement_reasons": " | ".join(model_replacement_reasons),
+                    "question_focus": question_focus,
+                    "question_intent": question_intent,
+                    "question_repeat_signature": question_repeat_signature,
+                    "question_repeat_duplicate": (
+                        question_repeat_duplicate if item_has_repeat_flag else ""
+                    ),
                     "question": question[:300],
                     "follow_ups": " | ".join(follow_ups),
                     "evaluation_points": " | ".join(evaluation_points),
@@ -722,9 +766,14 @@ def evaluate_cached_document(
                     "ksa_evidence_count": len(ksa_evidence),
                     "score": item.get("score", ""),
                     "ready": item.get("ready", ""),
-                    "issues": "; ".join(item.get("issues") or []),
+                    "issues": "; ".join(item_issues),
                 }
             )
+        row["question_intent_count"] = len(question_intents)
+        signature_duplicate_count = sum(max(0, count - 1) for count in question_repeat_signatures.values())
+        row["question_repeat_duplicate_count"] = (
+            flagged_repeat_duplicates if explicit_repeat_duplicate_flags else signature_duplicate_count
+        )
         return row, question_rows
     except (KordocParseError, NcsMcpError, OSError, RuntimeError, ValueError) as exc:
         row["status"] = "error"
@@ -773,6 +822,8 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "template_inserted_questions",
         "template_fallback_questions",
         "template_fallback_ready_questions",
+        "question_intent_count",
+        "question_repeat_duplicate_count",
         "average_score",
         "coverage_adjusted_score",
         "coverage_passed",
@@ -815,6 +866,10 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "model_evaluation_points_raw",
         "model_question_preserved",
         "model_replacement_reasons",
+        "question_focus",
+        "question_intent",
+        "question_repeat_signature",
+        "question_repeat_duplicate",
         "question",
         "follow_ups",
         "evaluation_points",
@@ -909,6 +964,11 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
     question_source_counts: dict[str, int] = {}
     ready_source_counts: dict[str, int] = {}
     replacement_reason_counts: dict[str, int] = {}
+    question_intent_counts: dict[str, int] = {}
+    question_repeat_signature_counts: dict[str, int] = {}
+    question_repeat_duplicate_signature_counts: dict[str, int] = {}
+    question_repeat_duplicate_count = 0
+    explicit_repeat_duplicate_flags = False
     for item in question_rows:
         method = str(item.get("type") or "unknown").strip() or "unknown"
         stats = method_stats.setdefault(method, {"total": 0, "ready": 0, "official_sample_format_fail": 0})
@@ -928,10 +988,28 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         ready_value = item.get("ready")
         if ready_value is True or str(ready_value).lower() == "true":
             ready_source_counts[source] = ready_source_counts.get(source, 0) + 1
+        intent = str(item.get("question_intent") or "").strip()
+        if intent:
+            question_intent_counts[intent] = question_intent_counts.get(intent, 0) + 1
+        repeat_signature = str(item.get("question_repeat_signature") or "").strip()
+        if repeat_signature:
+            question_repeat_signature_counts[repeat_signature] = question_repeat_signature_counts.get(repeat_signature, 0) + 1
+        repeat_value = item.get("question_repeat_duplicate")
+        if "question_repeat_duplicate" in item and str(repeat_value).strip() != "":
+            explicit_repeat_duplicate_flags = True
+        if repeat_value is True or str(repeat_value).strip().lower() == "true":
+            question_repeat_duplicate_count += 1
+            if repeat_signature:
+                question_repeat_duplicate_signature_counts[repeat_signature] = (
+                    question_repeat_duplicate_signature_counts.get(repeat_signature, 0) + 1
+                )
         for reason in str(item.get("model_replacement_reasons") or "").split("|"):
             reason = reason.strip()
             if reason:
                 replacement_reason_counts[reason] = replacement_reason_counts.get(reason, 0) + 1
+    signature_duplicate_count = sum(max(0, count - 1) for count in question_repeat_signature_counts.values())
+    if not explicit_repeat_duplicate_flags:
+        question_repeat_duplicate_count = signature_duplicate_count
     derived_model_full_questions = question_source_counts.get("model", 0)
     derived_model_main_template_followup_questions = question_source_counts.get("model_main_template_followups", 0)
     derived_model_main_repaired_followup_questions = question_source_counts.get("model_main_repaired_followups", 0)
@@ -995,6 +1073,8 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         f"- Template questions inserted without model candidate: {template_inserted_questions}",
         f"- Template fallback questions: {fallback_questions}",
         f"- Template fallback ready questions: {fallback_ready_questions}",
+        f"- Distinct question intents: {len(question_intent_counts)}",
+        f"- Repeated question intent/focus duplicates: {question_repeat_duplicate_count}",
         f"- Average template-adjusted document score: {template_adjusted_avg}",
         f"- Average strict coverage-adjusted score: {coverage_adjusted_avg}",
         "",
@@ -1083,6 +1163,31 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         lines.append("| --- | ---: |")
         for source, count in sorted(question_source_counts.items()):
             lines.append(f"| {source} | {count} |")
+    if question_intent_counts:
+        lines.extend(["", "## Question Intent", ""])
+        lines.append("| intent | questions |")
+        lines.append("| --- | ---: |")
+        for intent, count in sorted(question_intent_counts.items()):
+            lines.append(f"| {intent} | {count} |")
+        repeated_signatures = (
+            [
+                (signature, count)
+                for signature, count in sorted(question_repeat_duplicate_signature_counts.items())
+                if count > 0
+            ]
+            if explicit_repeat_duplicate_flags
+            else [
+                (signature, count)
+                for signature, count in sorted(question_repeat_signature_counts.items())
+                if count > 1
+            ]
+        )
+        if repeated_signatures:
+            lines.extend(["", "## Repeated Question Signatures", ""])
+            lines.append("| signature | questions |")
+            lines.append("| --- | ---: |")
+            for signature, count in repeated_signatures:
+                lines.append(f"| {signature.replace('|', '/')} | {count} |")
     if replacement_reason_counts:
         lines.extend(["", "## Model Fallback Reasons", ""])
         lines.append("| reason | questions |")

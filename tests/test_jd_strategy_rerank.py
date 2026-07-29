@@ -71,6 +71,7 @@ def test_reverse_dictionary_uses_synonym_without_exact_name(monkeypatch):
 def test_rerank_ncs_matches_ai_success(monkeypatch):
     monkeypatch.setenv("ENABLE_AI_RERANK", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
     monkeypatch.setattr(jd_strategy, "_check_openai_connectivity", lambda api_key, ttl_sec=60: (True, ""))
     monkeypatch.setattr(
         jd_strategy,
@@ -112,6 +113,7 @@ def test_rerank_ncs_matches_ai_success(monkeypatch):
 def test_rerank_ncs_matches_fallback_on_invalid_ai(monkeypatch):
     monkeypatch.setenv("ENABLE_AI_RERANK", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
     monkeypatch.setattr(jd_strategy, "_check_openai_connectivity", lambda api_key, ttl_sec=60: (True, ""))
     monkeypatch.setattr(
         jd_strategy,
@@ -137,3 +139,210 @@ def test_rerank_ncs_matches_fallback_on_invalid_ai(monkeypatch):
     assert mode == "keyword"
     assert [row.get("ncsClCd") for row in ranked] == ["02020302", "02020101"]
     assert all(row.get("rerank_method") == "keyword" for row in ranked)
+
+
+def test_ncs_code_template_fallback_rotates_question_methods(monkeypatch):
+    monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.setattr(jd_strategy, "_generate_questions_with_openai_from_ncs", lambda **kwargs: [])
+    monkeypatch.setattr(
+        jd_strategy,
+        "fetch_ncs_ksa_by_units",
+        lambda **kwargs: [
+            {"ncsClCd": "U1", "factorName": "문서 요구사항 파악"},
+            {"ncsClCd": "U1", "factorName": "일정 계획 수립"},
+            {"ncsClCd": "U1", "factorName": "자료 오류 점검"},
+        ],
+    )
+
+    result = jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="U1",
+        competency_name="문서작성",
+        target_count=5,
+        include_followups=True,
+    )
+
+    question_types = [row["question_type"] for row in result["main_questions"]]
+    followup_sets = {tuple(row["follow_ups"]) for row in result["main_questions"]}
+
+    assert result["template_fallback_used"] is True
+    assert question_types[:5] == ["경험면접", "상황면접", "직무지식면접", "인바스켓면접", "발표면접"]
+    assert len(followup_sets) == 5
+    assert all(row["question_focus"] for row in result["main_questions"])
+    assert all(row["question_intent"] for row in result["main_questions"])
+    assert all(row["question_repeat_signature"] for row in result["main_questions"])
+    assert all(row["question_repeat_duplicate"] is False for row in result["main_questions"])
+
+
+def test_sclass_template_topup_keeps_ksa_with_its_own_unit(monkeypatch):
+    units = [
+        {"ncsClCd": "A", "compeUnitName": "A 능력단위", "ncsSclasCdnm": "테스트 세분류"},
+        {"ncsClCd": "B", "compeUnitName": "B 능력단위", "ncsSclasCdnm": "테스트 세분류"},
+    ]
+    factors = {
+        "A": ["A-factor-1", "A-factor-2"],
+        "B": ["B-factor-1"],
+    }
+
+    def fake_fetch_ksa(*, ncs_matches, **kwargs):
+        return [
+            {
+                "ncsClCd": unit["ncsClCd"],
+                "compeUnitName": unit["compeUnitName"],
+                "factorName": factor,
+            }
+            for unit in ncs_matches
+            for factor in factors.get(unit["ncsClCd"], [])
+        ]
+
+    monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.setattr(jd_strategy, "fetch_ncs_units_hrdk_by_sclass_code", lambda **kwargs: units)
+    monkeypatch.setattr(jd_strategy, "fetch_ncs_ksa_by_units", fake_fetch_ksa)
+    monkeypatch.setattr(jd_strategy, "_generate_questions_with_openai_from_ncs", lambda **kwargs: [])
+
+    result = jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="020203",
+        competency_name="테스트 세분류",
+        target_count=5,
+        include_followups=False,
+    )
+
+    assert len(result["main_questions"]) == 5
+    for question in result["main_questions"]:
+        code = question["ncsClCd"]
+        assert question["question_focus"] in factors[code]
+        assert question["question_focus_source"] == "official_ksa"
+        assert question["ksa_refs"]
+        assert all(ref in factors[code] for ref in question["ksa_refs"])
+
+
+def test_ncs_code_template_fallback_survives_missing_ksa_mcp(monkeypatch):
+    monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.delenv("NCS_MCP_URL", raising=False)
+    monkeypatch.setattr(jd_strategy, "_generate_questions_with_openai_from_ncs", lambda **kwargs: [])
+    monkeypatch.setattr(
+        jd_strategy,
+        "fetch_ncs_ksa_by_units",
+        lambda **kwargs: (_ for _ in ()).throw(jd_strategy.NcsMcpError("NCS_MCP_URL is required")),
+    )
+
+    result = jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="U1",
+        competency_name="문서작성",
+        target_count=3,
+        include_followups=True,
+    )
+
+    assert result["template_fallback_used"] is True
+    assert len(result["main_questions"]) == 3
+    assert all(row["question_focus"] for row in result["main_questions"])
+    assert all(row["question_focus_source"] == "synthetic_template" for row in result["main_questions"])
+    assert all(row["ksa_refs"] == [] for row in result["main_questions"])
+    assert all(row["question_repeat_signature"] for row in result["main_questions"])
+
+
+def test_ncs_code_main_questions_attach_repeat_metadata(monkeypatch):
+    focus = "문서 요구사항 파악"
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "false")
+    monkeypatch.setattr(
+        jd_strategy,
+        "fetch_ncs_ksa_by_units",
+        lambda **kwargs: [{"ncsClCd": "U1", "factorName": focus}],
+    )
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **kwargs: [
+            {
+                "type": "경험면접",
+                "ncsClCd": "U1",
+                "question_focus": focus,
+                "ksa_refs": [focus],
+                "question": (
+                    f"문서작성 업무에서 {focus}을 적용해 문제를 해결한 경험을 말씀해 주세요. "
+                    "당시 상황, 본인 역할, 선택한 행동, 결과를 포함해 설명해 주세요."
+                ),
+                "follow_ups": ["판단 근거는 무엇입니까?"],
+            },
+            {
+                "type": "경험면접",
+                "ncsClCd": "U1",
+                "question_focus": focus,
+                "ksa_refs": [focus],
+                "question": (
+                    f"문서작성 업무에서 {focus}을 활용해 문제를 해결한 경험을 말씀해 주세요. "
+                    "당시 상황과 본인 역할, 선택한 행동, 결과를 포함해 설명해 주세요."
+                ),
+                "follow_ups": ["행동 근거는 무엇입니까?"],
+            },
+        ],
+    )
+
+    result = jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="U1",
+        competency_name="문서작성",
+        target_count=2,
+        include_followups=False,
+    )
+
+    questions = result["main_questions"]
+
+    assert [q["question_focus"] for q in questions] == [focus, focus]
+    assert [q["question_intent"] for q in questions] == ["experience_behavior", "experience_behavior"]
+    assert questions[0]["question_repeat_signature"] == questions[1]["question_repeat_signature"]
+    assert questions[0]["question_repeat_signature"].startswith("experience_behavior|경험면접|focus:")
+    assert [q["question_repeat_duplicate"] for q in questions] == [False, True]
+
+
+def test_personalized_questions_preserve_generation_metadata(monkeypatch):
+    monkeypatch.setattr(
+        jd_strategy,
+        "fetch_ncs_ksa_by_units",
+        lambda **kwargs: [
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": "문서작성",
+                "factorName": "문서 요구사항 파악",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **kwargs: [
+            {
+                "type": "경험면접",
+                "competency": "문서작성",
+                "ncsClCd": "0202030201_25v3",
+                "question": "문서 요구사항 파악 경험을 말씀해 주세요.",
+                "question_focus": "문서 요구사항 파악",
+                "ksa_refs": ["문서 요구사항 파악"],
+                "follow_ups": ["근거는 무엇입니까?"],
+                "evaluation_points": ["상황 파악", "행동 근거"],
+            }
+        ],
+    )
+
+    result = jd_strategy.generate_personalized_interview_questions(
+        ncs_code="0202030201_25v3",
+        competency_name="문서작성",
+        job_posting="사무행정 담당",
+        user_profile="문서관리 경험",
+        target_count=1,
+    )
+
+    question = result["questions"][0]
+
+    assert question["question_focus"] == "문서 요구사항 파악"
+    assert question["question_focus_source"] == "official_ksa"
+    assert question["ksa_refs"] == ["문서 요구사항 파악"]
+    assert question["follow_ups"] == ["근거는 무엇입니까?"]
+    assert question["evaluation_points"] == ["상황 파악", "행동 근거"]
+    assert question["ncsClCd"] == "0202030201_25v3"
+    assert question["question_intent"]
+    assert question["question_repeat_signature"]
+    assert question["question_repeat_duplicate"] is False
+    assert result["ncs_ksa_available"] is True

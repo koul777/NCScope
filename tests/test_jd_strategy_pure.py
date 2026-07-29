@@ -131,11 +131,15 @@ def test_planned_question_sequence_for_prompt_expands_detail_order_and_methods()
 
     result = _planned_question_sequence_for_prompt(plan, ["경험면접", "상황면접"], 3)
 
-    assert result == [
+    assert [
+        {key: item[key] for key in ("index", "detail", "type", "follow_up_count")}
+        for item in result
+    ] == [
         {"index": 1, "detail": "총무", "type": "경험면접", "follow_up_count": 3},
         {"index": 2, "detail": "인사", "type": "상황면접", "follow_up_count": 4},
         {"index": 3, "detail": "사무행정", "type": "경험면접", "follow_up_count": 5},
     ]
+    assert all(item["required_scenario_frame"] for item in result)
 
 
 def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor():
@@ -177,6 +181,7 @@ def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor(
     assert result[0]["compeUnitName"] == "Document Writing"
     assert result[0]["required_job_context"] == "Document Writing"
     assert result[0]["required_factorName"] == "Requirement Analysis"
+    assert result[0]["required_scenario_frame"]
     assert result[0]["required_followup_focus_slot"] == 1
     assert "Requirement Analysis" in result[0]["required_followup_focus_example"]
     assert "Document Writing" in result[0]["required_followup_focus_example"]
@@ -184,8 +189,25 @@ def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor(
     assert result[1]["compeUnitName"] == "Document Control"
     assert result[1]["required_job_context"] == "Document Control"
     assert result[1]["required_factorName"] == "Record Classification"
+    assert result[1]["required_scenario_frame"]
     assert result[1]["required_followup_focus_slot"] == 1
     assert "Record Classification" in result[1]["required_followup_focus_example"]
+
+
+def test_planned_question_sequence_adds_scenario_frame_without_matched_unit():
+    plan = {
+        "question_sequence": [
+            {"detail": "Unknown Detail"},
+            {"detail": "Unknown Detail"},
+        ]
+    }
+
+    result = _planned_question_sequence_for_prompt(plan, ["상황면접"], 2, ncs_matches=[], ncs_ksa=[])
+
+    assert [item["required_job_context"] for item in result] == ["Unknown Detail", "Unknown Detail"]
+    assert all(item["required_followup_focus_slot"] == 1 for item in result)
+    assert len({item["required_scenario_frame"] for item in result}) == 2
+    assert all("required_factorName" not in item for item in result)
 
 
 def test_planned_question_sequence_for_prompt_sets_method_specific_followup_focus_slots():
@@ -273,6 +295,38 @@ def test_planned_question_sequence_for_prompt_includes_strict_method_examples():
     assert "Inbasket Unit" in inbasket_followup
     assert "문서·요청 우선순위" in inbasket_followup
     assert "보고·위임·직접처리 판단" in inbasket_followup
+
+
+def test_planned_question_sequence_rotates_factor_by_unit_occurrence_and_scenario_frame():
+    plan = {
+        "question_sequence": [
+            {"detail": "Office Admin"},
+            {"detail": "Office Admin"},
+            {"detail": "Office Admin"},
+        ]
+    }
+    ncs_matches = [
+        {"ncsClCd": "U1", "compeUnitName": "Document Writing", "ncsSubdCdnm": "Office Admin"},
+    ]
+    ncs_ksa = [
+        {"ncsClCd": "U1", "factorName": "Requirement Analysis"},
+        {"ncsClCd": "U1", "factorName": "Schedule Planning"},
+    ]
+
+    result = _planned_question_sequence_for_prompt(
+        plan,
+        ["경험면접"],
+        3,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+
+    assert [item["required_factorName"] for item in result] == [
+        "Requirement Analysis",
+        "Schedule Planning",
+        "Requirement Analysis",
+    ]
+    assert len({item["required_scenario_frame"] for item in result}) == 3
 
 
 class TestCountHangul:

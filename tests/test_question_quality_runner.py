@@ -102,6 +102,10 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
             "model_question_raw": "model raw question",
             "model_question_preserved": True,
             "model_replacement_reasons": "",
+            "question_focus": "document requirement analysis",
+            "question_intent": "experience",
+            "question_repeat_signature": "experience:document-writing",
+            "question_repeat_duplicate": False,
             "question": "문서작성 경험을 말씀해 주세요.",
             "score": 1.0,
             "ready": True,
@@ -122,6 +126,8 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
     assert "Fully model-preserved questions: 6" in md_text
     assert "Model-main with repaired follow-ups: 0" in md_text
     assert "Model-main with template follow-ups: 0" in md_text
+    assert "Distinct question intents: 1" in md_text
+    assert "Repeated question intent/focus duplicates: 0" in md_text
     assert "Coverage blocker types: none" in md_text
     assert "| idx | status | model pass | full pass | template pass |" in md_text
     assert "| model cand | model-origin | full model | repaired fu | template fu |" in md_text
@@ -136,6 +142,10 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
     assert "model_evaluation_points_raw" in item_csv
     assert "model_question_preserved" in item_csv
     assert "model_replacement_reasons" in item_csv
+    assert "question_focus" in item_csv
+    assert "question_intent" in item_csv
+    assert "question_repeat_signature" in item_csv
+    assert "question_repeat_duplicate" in item_csv
     assert "follow_ups" in item_csv
     assert "evaluation_points" in item_csv
     assert "ksa_evidence_count" in item_csv
@@ -149,6 +159,10 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
         "model_evaluation_points_raw",
         "model_question_preserved",
         "model_replacement_reasons",
+        "question_focus",
+        "question_intent",
+        "question_repeat_signature",
+        "question_repeat_duplicate",
         "follow_ups",
         "evaluation_points",
         "ksa_evidence_count",
@@ -166,6 +180,8 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
     assert "model_main_repaired_followup_questions" in main_csv
     assert "model_origin_ready_questions" in main_csv
     assert "model_replaced_by_template_questions" in main_csv
+    assert "question_intent_count" in main_csv
+    assert "question_repeat_duplicate_count" in main_csv
     assert "coverage_blocker_type" in main_csv
     assert "coverage_blocker_details" in main_csv
     assert "resolved_parent_detail" in main_csv
@@ -176,7 +192,47 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
     assert "Detail check limits" in md_text
     assert "## Method Quality" in md_text
     assert "## Question Source" in md_text
+    assert "## Question Intent" in md_text
+    assert "| experience | 1 |" in md_text
     assert "사무행정" in item_csv
+
+
+def test_write_quality_reports_prefers_explicit_repeat_duplicate_flags(tmp_path: Path) -> None:
+    rows = [{"idx": "1", "attachment": "jd.txt", "status": "ok"}]
+    question_rows = [
+        {
+            "idx": "1",
+            "attachment": "jd.txt",
+            "question_index": 1,
+            "type": "토론면접",
+            "question_source": "model",
+            "question_intent": "collaboration_conflict",
+            "question_repeat_signature": "collaboration_conflict|토론면접|focus:문서요구사항파악",
+            "question_repeat_duplicate": False,
+            "question": "기준 강화 입장과 처리 효율 입장이 충돌하는 토론 질문",
+            "ready": True,
+            "issues": "",
+        },
+        {
+            "idx": "1",
+            "attachment": "jd.txt",
+            "question_index": 2,
+            "type": "토론면접",
+            "question_source": "model",
+            "question_intent": "collaboration_conflict",
+            "question_repeat_signature": "collaboration_conflict|토론면접|focus:문서요구사항파악",
+            "question_repeat_duplicate": False,
+            "question": "정보 공유 입장과 보안 책임 입장이 충돌하는 토론 질문",
+            "ready": True,
+            "issues": "",
+        },
+    ]
+
+    md_path, _, _ = runner.write_quality_reports(rows, question_rows, tmp_path)
+
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "Repeated question intent/focus duplicates: 0" in md_text
+    assert "## Repeated Question Signatures" not in md_text
 
 
 def test_write_quality_reports_shows_strict_blockers_in_markdown(tmp_path: Path) -> None:
@@ -946,6 +1002,119 @@ def test_evaluate_cached_document_model_mode_counts_replaced_model_question(tmp_
     assert question_rows[0]["model_question_preserved"] is False
     assert "main_question_method_shape" in question_rows[0]["model_replacement_reasons"]
     assert "follow_up_quality" in question_rows[0]["model_replacement_reasons"]
+
+
+def test_evaluate_cached_document_counts_repeat_signature_excess_once(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "303107_1_jd.txt"
+    path.write_text("dummy", encoding="utf-8")
+    unit = {
+        "ncsClCd": "0202030201_25v3",
+        "compeUnitName": "Doc Writing",
+        "ncsSclasCdnm": "Office",
+        "ncsSubdCdnm": "A",
+        "matchedDetailName": "A",
+        "compeUnitDef": "Write documents from requirements.",
+    }
+    repeat_signature = "experience_behavior|경험면접|focus:requirements"
+    strategy = {
+        "question_generation_policy": "test_duplicate_pair",
+        "interview_questions": [
+            {
+                "type": "경험면접",
+                "competency": "Doc Writing",
+                "ncsClCd": "0202030201_25v3",
+                "question_source": "template_fallback",
+                "question": "요구사항 파악 경험을 말씀해 주세요.",
+                "question_intent": "experience_behavior",
+                "question_repeat_signature": repeat_signature,
+            },
+            {
+                "type": "경험면접",
+                "competency": "Doc Writing",
+                "ncsClCd": "0202030201_25v3",
+                "question_source": "template_fallback",
+                "question": "요구사항 파악 사례를 말씀해 주세요.",
+                "question_intent": "experience_behavior",
+                "question_repeat_signature": repeat_signature,
+            },
+        ],
+        "question_quality_report": {
+            "passed": False,
+            "summary": {
+                "question_count": 2,
+                "ready_count": 0,
+                "needs_review_count": 2,
+                "average_score": 0.9,
+            },
+            "items": [
+                {
+                    "index": 1,
+                    "type": "경험면접",
+                    "competency": "Doc Writing",
+                    "ncsClCd": "0202030201_25v3",
+                    "ncs_detail": "A",
+                    "question_intent": "experience_behavior",
+                    "question_repeat_signature": repeat_signature,
+                    "score": 0.9,
+                    "ready": False,
+                    "issues": ["unique_question"],
+                },
+                {
+                    "index": 2,
+                    "type": "경험면접",
+                    "competency": "Doc Writing",
+                    "ncsClCd": "0202030201_25v3",
+                    "ncs_detail": "A",
+                    "question_intent": "experience_behavior",
+                    "question_repeat_signature": repeat_signature,
+                    "score": 0.9,
+                    "ready": False,
+                    "issues": ["unique_question"],
+                },
+            ],
+        },
+    }
+
+    monkeypatch.setattr(runner, "parse_benchmark_document", lambda data, filename, max_bytes: {"markdown": "dummy jd text"})
+    monkeypatch.setattr(
+        runner,
+        "structure_job_description",
+        lambda parsed, filename: {
+            "fields": {
+                "ncs_detail_candidates": ["A"],
+                "ncs_detail_source": "explicit",
+            }
+        },
+    )
+    monkeypatch.setattr(runner, "search_units_by_detail", lambda details, max_units: [unit])
+    monkeypatch.setattr(runner, "suggest_units_by_text", lambda details, max_units: [])
+    monkeypatch.setattr(runner, "get_ksa_by_units", lambda units, max_factors_per_unit: [])
+    monkeypatch.setattr(runner, "_build_benchmark_strategy", lambda **kwargs: (strategy, "template"))
+
+    row, question_rows = runner.evaluate_cached_document(
+        path=path,
+        max_bytes=1024 * 1024,
+        questions_per_doc=2,
+        follow_up_count=3,
+        max_details_per_doc=4,
+        max_units_per_detail=8,
+        ksa_units=2,
+        ksa_factors_per_unit=4,
+    )
+
+    assert row["question_intent_count"] == 1
+    assert row["question_repeat_duplicate_count"] == 1
+    assert len(question_rows) == 2
+    assert [item["question_repeat_duplicate"] for item in question_rows] == ["", ""]
+
+    md_path, _, _ = runner.write_quality_reports(
+        [row],
+        question_rows,
+        tmp_path / "reports",
+    )
+    assert "Repeated question intent/focus duplicates: 1" in md_path.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_evaluate_cached_document_fails_when_extracted_detail_is_unmatched(tmp_path: Path, monkeypatch) -> None:
