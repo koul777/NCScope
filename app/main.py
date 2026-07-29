@@ -6,12 +6,15 @@ import functools
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import secrets
 import threading
 import time
 import zipfile
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -84,8 +87,92 @@ from app.services.sclass_pipeline import (
 from app.services.sync_workers import sync_ncs_units, sync_public_institutions
 from app.settings import settings
 
-app = FastAPI(title="NCScope", version="0.1.0")
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    def __init__(self, app, limit_bytes: int | None = None):
+        self.app = app
+        self.limit_bytes = limit_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        limit = int(self.limit_bytes or settings.max_request_body_bytes())
+        headers = {
+            bytes(key).lower(): bytes(value)
+            for key, value in (scope.get("headers") or [])
+        }
+        raw_content_length = headers.get(b"content-length", b"").decode(
+            "ascii", errors="ignore"
+        )
+        try:
+            content_length = int(raw_content_length) if raw_content_length else 0
+        except ValueError:
+            content_length = 0
+        if content_length > limit:
+            response = JSONResponse(
+                status_code=413,
+                content={"detail": "request body exceeds MAX_REQUEST_BODY_MB"},
+            )
+            await response(scope, receive, send)
+            return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body") or b"")
+                if received > limit:
+                    raise _RequestBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            response = JSONResponse(
+                status_code=413,
+                content={"detail": "request body exceeds MAX_REQUEST_BODY_MB"},
+            )
+            await response(scope, receive, send)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    init_db()
+    start_auto_runner()
+    yield
+
+
+app = FastAPI(title="NCScope", version="0.1.0", lifespan=_lifespan)
+app.add_middleware(RequestBodyLimitMiddleware)
 queue = QueueManager(max_retries=2)
+logger = logging.getLogger("ncscope")
+
+
+def _internal_http_error(
+    code: str,
+    exc: BaseException,
+    *,
+    status_code: int = 500,
+) -> HTTPException:
+    reference = secrets.token_hex(6)
+    logger.error(
+        "%s reference=%s",
+        code,
+        reference,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "reference": reference},
+    )
 
 
 # Middleware: Disable caching for all question generation endpoints
@@ -121,6 +208,11 @@ SUPPORTED_INTERVIEW_METHODS = (
 )
 OPTIONAL_INTERVIEW_METHODS: tuple[str, ...] = ()
 QUALITY_INTERVIEW_METHODS = SUPPORTED_INTERVIEW_METHODS + OPTIONAL_INTERVIEW_METHODS
+OPERATIONAL_REVIEW_NOTICE = (
+    "NCScope output is a KSA-grounded structured-interview draft. "
+    "A human reviewer must confirm final questions against blind-hiring rules "
+    "and institution-specific evaluation standards."
+)
 MODEL_PRESERVED_QUESTION_SOURCES = {
     "model",
     "model_main_template_followups",
@@ -1671,7 +1763,11 @@ def _fetch_ncs_ksa_or_502(
             max_factors_per_unit=max_factors_per_unit,
         )
     except NcsMcpError as exc:
-        raise HTTPException(status_code=502, detail=f"로컬 NCS DB KSA 조회 실패(NCS_MCP): {exc}") from exc
+        raise _internal_http_error(
+            "ncs_mcp_ksa_failed",
+            exc,
+            status_code=502,
+        ) from exc
 
 
 def _dedupe_units_by_code(units: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -1770,12 +1866,61 @@ def _require_ncs_mcp_url() -> str:
 
 
 def _require_official_ksa_result(result: dict[str, Any]) -> None:
-    if result.get("ncs_ksa_available") is True:
-        return
-    raise HTTPException(
-        status_code=502,
-        detail="Official NCS KSA is unavailable from NCS_MCP; question generation was stopped.",
-    )
+    if result.get("ncs_ksa_available") is not True:
+        raise HTTPException(
+            status_code=502,
+            detail="Official NCS KSA is unavailable from NCS_MCP; question generation was stopped.",
+        )
+
+    questions: list[dict[str, Any]] = []
+    for key in ("main_questions", "questions"):
+        rows = result.get(key)
+        if isinstance(rows, list):
+            questions.extend(row for row in rows if isinstance(row, dict))
+
+    invalid_indices: list[int] = []
+    for index, question in enumerate(questions, start=1):
+        refs = [
+            str(value).strip()
+            for value in (question.get("ksa_refs") or [])
+            if str(value).strip()
+        ] if isinstance(question.get("ksa_refs"), list) else []
+        question_text = str(question.get("question") or "").strip()
+        follow_ups = [
+            str(value).strip()
+            for value in (question.get("follow_ups") or [])
+            if str(value).strip()
+        ] if isinstance(question.get("follow_ups"), list) else []
+        visible_text = _compact_question_text(" ".join([question_text, *follow_ups]))
+        has_visible_ref = any(
+            _compact_question_text(ref) in visible_text
+            for ref in refs
+            if _compact_question_text(ref)
+        )
+        method = str(
+            question.get("type") or question.get("question_type") or ""
+        ).strip()
+        method_shape_ok = (
+            method not in QUALITY_INTERVIEW_METHODS
+            or _method_shape_ok(method, question_text)
+        )
+        if not (
+            str(question.get("question_focus_source") or "").strip() == "official_ksa"
+            and refs
+            and str(question.get("ncsClCd") or question.get("ncs_code") or "").strip()
+            and has_visible_ref
+            and method_shape_ok
+        ):
+            invalid_indices.append(index)
+
+    if invalid_indices:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Question generation produced unverified or invalid NCS KSA grounding "
+                f"for question indices: {invalid_indices[:10]}"
+            ),
+        )
 
 
 def _require_legacy_ncs_api_enabled() -> None:
@@ -1804,8 +1949,8 @@ async def _read_upload_limited(upload: UploadFile, label: str) -> bytes:
 
 _ARCHIVE_MEMBER_LIMIT = 12
 _SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
-_REVIEW_SESSION_TTL_SEC = 4 * 60 * 60
-_REVIEW_SESSION_MAX = 500
+_REVIEW_SESSION_TTL_SEC = 30 * 60
+_REVIEW_SESSION_MAX = 100
 _REVIEW_SESSION_LOCK = threading.Lock()
 _REVIEW_SESSION_BY_ID: dict[str, dict[str, Any]] = {}
 
@@ -1843,9 +1988,12 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
                 return {
                     "markdown": text,
                     "metadata": {"filename": name, "fallback": "pdf-text"},
-                    "warnings": [f"Kordoc parse failed; used PDF text fallback: {exc}"],
+                    "warnings": ["Kordoc parse failed; used PDF text fallback."],
                 }
-        raise HTTPException(status_code=422, detail=f"{label} could not be parsed by Kordoc: {exc}") from exc
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label} could not be parsed by Kordoc",
+        ) from exc
 
 
 def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, Any]:
@@ -1885,7 +2033,7 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                 try:
                     member_bytes = archive.read(info)
                 except (RuntimeError, OSError, zipfile.BadZipFile) as exc:
-                    warnings.append(f"{member_label}: ZIP member could not be read: {exc}")
+                    warnings.append(f"{member_label}: ZIP member could not be read")
                     continue
                 try:
                     parsed = _parse_single_document_upload(member_bytes, member_label, label)
@@ -1991,11 +2139,12 @@ def _create_review_session(upload_bytes: bytes, structured: dict[str, Any], file
         "created_at": time.time(),
         "document_sha256": _sha256_bytes(upload_bytes),
         "markdown_sha256": _sha256_text(markdown),
-        "markdown": markdown,
+        "markdown_size": len(markdown.encode("utf-8")),
     }
     with _REVIEW_SESSION_LOCK:
         _prune_review_sessions(session["created_at"])
         _REVIEW_SESSION_BY_ID[session["id"]] = session
+        _prune_review_sessions(session["created_at"])
     return _public_review_session(session)
 
 
@@ -2015,7 +2164,7 @@ def _validate_review_session(review_payload: dict[str, Any], upload_bytes: bytes
         )
     with _REVIEW_SESSION_LOCK:
         _prune_review_sessions()
-        session = dict(_REVIEW_SESSION_BY_ID.get(session_id) or {})
+        session = dict(_REVIEW_SESSION_BY_ID.pop(session_id, {}) or {})
     if not session:
         raise HTTPException(status_code=409, detail="jd_review_json.review_session_id is expired or unknown")
     if session.get("document_sha256") != _sha256_bytes(upload_bytes):
@@ -2024,6 +2173,8 @@ def _validate_review_session(review_payload: dict[str, Any], upload_bytes: bytes
     payload_markdown = str(payload_document.get("markdown") or "")
     if payload_markdown and _sha256_text(payload_markdown) != session.get("markdown_sha256"):
         raise HTTPException(status_code=400, detail="jd_review_json.document.markdown does not match server parse session")
+    if payload_markdown:
+        session["markdown"] = payload_markdown
     return session
 
 
@@ -2036,22 +2187,44 @@ def _sanitize_request_openai_key(value: str | None) -> str:
     return key
 
 
-def _allow_server_openai_key_fallback() -> bool:
-    return settings.allow_server_openai_key_fallback()
+def _allow_server_openai_key_fallback(request: Request | None = None) -> bool:
+    if not settings.allow_server_openai_key_fallback():
+        return False
+    expected = settings.server_openai_fallback_token()
+    provided = (
+        str(request.headers.get("x-ncscope-openai-token") or "").strip()
+        if request is not None
+        else ""
+    )
+    return bool(
+        expected
+        and provided
+        and secrets.compare_digest(provided, expected)
+    )
 
 
-def _openai_key_source(request_key: str) -> str:
-    return settings.openai_key_source(request_key, allow_env_fallback=_allow_server_openai_key_fallback())
+def _openai_key_source(request_key: str, request: Request | None = None) -> str:
+    return settings.openai_key_source(
+        request_key,
+        allow_env_fallback=_allow_server_openai_key_fallback(request),
+    )
 
 
-def _require_allowed_openai_key(request_key: str) -> None:
-    if settings.resolve_openai_key(request_key, allow_env_fallback=_allow_server_openai_key_fallback()):
+def _require_allowed_openai_key(
+    request_key: str,
+    request: Request | None = None,
+) -> None:
+    if settings.resolve_openai_key(
+        request_key,
+        allow_env_fallback=_allow_server_openai_key_fallback(request),
+    ):
         return
     raise HTTPException(
         status_code=400,
         detail=(
             "openai_api_key is required. Server OPENAI_API_KEY fallback is disabled unless "
-            "OPENAI_ALLOW_SERVER_KEY_FALLBACK=true is set."
+            "OPENAI_ALLOW_SERVER_KEY_FALLBACK=true, OPENAI_SERVER_FALLBACK_TOKEN is set, "
+            "and the matching X-NCScope-OpenAI-Token header is provided."
         ),
     )
 
@@ -3108,17 +3281,15 @@ def _filter_ncs_code_result_against_avoid_list(
     result["total_count"] = len(main_questions) + len(follow_up_questions)
 
 
-@app.on_event("startup")
-def _startup() -> None:
-    init_db()
-    start_auto_runner()
-
-
 @app.get("/health")
-def health() -> dict:
+def health(request: Request) -> dict:
     mcp = ncs_mcp_status()
     mcp_ready = bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable"))
-    openai_server_fallback = settings.allow_server_openai_key_fallback()
+    openai_server_fallback_configured = bool(
+        settings.allow_server_openai_key_fallback()
+        and settings.server_openai_fallback_token()
+    )
+    openai_server_fallback = _allow_server_openai_key_fallback(request)
     return {
         "status": "ok" if mcp_ready else "degraded",
         "keys": {
@@ -3126,6 +3297,7 @@ def health() -> dict:
             "ncs": bool(settings.ncs_key()),
             "openai": bool(settings.resolve_openai_key(allow_env_fallback=openai_server_fallback)),
             "openai_server_fallback": openai_server_fallback,
+            "openai_server_fallback_requires_header": openai_server_fallback_configured,
         },
         "ncs_source": "remote-mcp",
         "ncs_mcp": mcp,
@@ -3162,7 +3334,7 @@ def ncs_sclass_options() -> dict:
                     "sclass_code": str(row.get("NCS_SCLAS_CD", "")).strip(),
                 }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"failed to read csv: {e}") from e
+        raise _internal_http_error("ncs_catalog_read_failed", e) from e
 
     items = [by_name[k] for k in sorted(by_name.keys())]
     _SCLASS_OPTIONS_CACHE = items
@@ -3217,7 +3389,11 @@ def ncs_unit_options(
             source = "ncs-mcp-suggest"
             message = "Exact detail-class match was not found. Review suggested NCS units manually."
     except NcsMcpError as exc:
-        raise HTTPException(status_code=502, detail=f"로컬 NCS DB 조회 실패(NCS_MCP): {exc}") from exc
+        raise _internal_http_error(
+            "ncs_mcp_search_failed",
+            exc,
+            status_code=502,
+        ) from exc
     return {"count": len(items), "items": items, "source": source, "message": message}
 
 
@@ -3271,7 +3447,11 @@ def ncs_sclass_ksa(
             "ksa": ksa,
         }
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"sclass ksa fetch failed: {e}") from e
+        raise _internal_http_error(
+            "ncs_sclass_ksa_failed",
+            e,
+            status_code=502,
+        ) from e
 
 
 @app.get("/api/ops/metrics")
@@ -3299,7 +3479,11 @@ def admin_sync_public_inst(
     try:
         return sync_public_institutions(max_pages=max_pages, num_of_rows=num_of_rows)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"sync failed: {e}") from e
+        raise _internal_http_error(
+            "public_institution_sync_failed",
+            e,
+            status_code=502,
+        ) from e
 
 
 @app.post("/api/admin/sync/ncs")
@@ -3314,7 +3498,7 @@ def admin_sync_ncs(
     try:
         return sync_ncs_units(path=path, pages=pages, num_of_rows=num_of_rows)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"sync failed: {e}") from e
+        raise _internal_http_error("ncs_sync_failed", e, status_code=502) from e
 
 
 @app.get("/api/integrations/public-inst/{resource}")
@@ -3327,11 +3511,15 @@ def public_inst_proxy(
     try:
         return fetch_public_inst(resource=resource, page_no=page_no, num_of_rows=num_of_rows, data_type=data_type)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail="invalid public institution request") from e
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise _internal_http_error("public_institution_proxy_failed", e) from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"external call failed: {e}") from e
+        raise _internal_http_error(
+            "public_institution_proxy_failed",
+            e,
+            status_code=502,
+        ) from e
 
 
 @app.get("/api/integrations/ncs")
@@ -3358,11 +3546,15 @@ def ncs_proxy(
     try:
         return fetch_ncs(path=path, query=query)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail="invalid legacy NCS request") from e
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise _internal_http_error("legacy_ncs_proxy_failed", e) from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"external call failed: {e}") from e
+        raise _internal_http_error(
+            "legacy_ncs_proxy_failed",
+            e,
+            status_code=502,
+        ) from e
 
 
 @app.get("/api/integrations/ncs/highschool")
@@ -3381,11 +3573,15 @@ def ncs_highschool_proxy(
             return_type=return_type,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail="invalid NCS high-school request") from e
     except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise _internal_http_error("ncs_highschool_proxy_failed", e) from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"external call failed: {e}") from e
+        raise _internal_http_error(
+            "ncs_highschool_proxy_failed",
+            e,
+            status_code=502,
+        ) from e
 
 
 @app.get("/api/ncs/diagnose")
@@ -3401,7 +3597,7 @@ def ncs_diagnose(sample_job_cd: str = Query(default="02020101")) -> dict:
             "message": "NCS_MCP local NCS DB server is ready" if ok else "NCS_MCP local NCS DB server is not ready",
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"diagnose failed: {e}") from e
+        raise _internal_http_error("ncs_diagnose_failed", e) from e
 
 
 def _extract_result_items(data: dict) -> list[dict]:
@@ -3604,7 +3800,7 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
         try:
             return extract_sclass_from_pdf_bytes(data, filename=(jd_file.filename or ""))
         except RuntimeError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            raise _internal_http_error("jd_sclass_extract_failed", e) from e
     elif name.endswith(".txt"):
         text = data.decode("utf-8", errors="ignore")
         return extract_sclass_from_text(text, filename=(jd_file.filename or ""))
@@ -3668,7 +3864,7 @@ async def jd_strategy_upload(
     _reject_sensitive_query_params(request, destination="form data")
     run_top_k, run_ksa_units, run_ksa_factors = FAST_NCS_TOP_K, FAST_KSA_UNITS, FAST_KSA_FACTORS_PER_UNIT
     request_openai_api_key = _sanitize_request_openai_key(openai_api_key)
-    allow_env_openai_fallback = _allow_server_openai_key_fallback()
+    allow_env_openai_fallback = _allow_server_openai_key_fallback(request)
 
     async def _read_text(upload: UploadFile | None, label: str) -> tuple[str, bytes, str]:
         if not upload:
@@ -3861,7 +4057,11 @@ async def jd_strategy_upload(
                 max_units=max(20, run_top_k * 12),
             )
         except NcsMcpError as exc:
-            raise HTTPException(status_code=502, detail=f"로컬 NCS DB 조회 실패(NCS_MCP): {exc}") from exc
+            raise _internal_http_error(
+                "ncs_mcp_search_failed",
+                exc,
+                status_code=502,
+            ) from exc
         if not ncs_items:
             try:
                 suggested_units = suggest_units_by_text(lookup_terms, max_units=12)
@@ -3910,7 +4110,11 @@ async def jd_strategy_upload(
                 ncs_source = "ncs-mcp"
                 ncs_query_terms = reviewed_detail_terms
         except NcsMcpError as exc:
-            ncs_error = f"로컬 NCS DB 조회 실패(NCS_MCP): {exc}"
+            logger.error(
+                "ncs_mcp_search_failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            ncs_error = "ncs_mcp_search_failed"
 
     # 4) 코드 기반 조회 후, 키워드 기반으로 순차 fallback
     max_sclass_verified = _clamp_sclass_limit(os.getenv("NCS_API_MAX_SCLASS_VERIFIED", "4"), default=4)
@@ -4166,10 +4370,14 @@ async def jd_strategy_upload(
             ncs_ksa=ncs_ksa,
         )
     except Exception as e:
+        logger.error(
+            "jd_strategy_model_generation_failed",
+            exc_info=(type(e), e, e.__traceback__),
+        )
         strategy = build_strategy_with_rule_fallback(
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
-            error_message=f"model_generation_failed: {e}",
+            error_message="model_generation_failed",
             target_count=question_plan["total_main_count"] or 24,
         )
         strategy = _adjust_generated_questions(
@@ -4213,14 +4421,11 @@ async def jd_strategy_upload(
         ),
         "question_plan": question_plan,
         "interview_methods": interview_methods,
-        "operational_notice": (
-            "NCScope output is a KSA-grounded structured-interview draft. "
-            "A human reviewer must confirm final questions against blind-hiring rules and institution-specific evaluation standards."
-        ),
+        "operational_notice": OPERATIONAL_REVIEW_NOTICE,
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,
-        "openai_key_source": _openai_key_source(request_openai_api_key),
+        "openai_key_source": _openai_key_source(request_openai_api_key, request),
         "extracted_focus_terms": vision_terms,
         "subcategory_text_preview": subcategory_text[:800],
         "small_categories_extracted": extracted_small_categories,
@@ -4259,7 +4464,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     duty_text = str(payload.get("duty_text", "")).strip()
     evaluation_text = str(payload.get("evaluation_text", "")).strip()
     request_openai_api_key = _sanitize_request_openai_key(payload.get("openai_api_key", ""))
-    allow_env_openai_fallback = _allow_server_openai_key_fallback()
+    allow_env_openai_fallback = _allow_server_openai_key_fallback(request)
     selected_ncs = payload.get("selected_ncs", [])
     raw_interview_methods = payload.get("interview_methods_json", payload.get("interview_methods", ""))
     if not isinstance(raw_interview_methods, str):
@@ -4425,10 +4630,14 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
             ncs_ksa=ncs_ksa,
         )
     except Exception as e:
+        logger.error(
+            "manual_strategy_model_generation_failed",
+            exc_info=(type(e), e, e.__traceback__),
+        )
         strategy = build_strategy_with_rule_fallback(
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
-            error_message=f"model_generation_failed: {e}",
+            error_message="model_generation_failed",
             target_count=question_plan["total_main_count"] or 24,
         )
         strategy = _adjust_generated_questions(
@@ -4459,7 +4668,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "profile_used": False,
         "ncs_source": "manual-selected",
         "ncs_error": "",
-        "openai_key_source": _openai_key_source(request_openai_api_key),
+        "openai_key_source": _openai_key_source(request_openai_api_key, request),
         "extracted_focus_terms": [],
         "subcategory_text_preview": "",
         "small_categories": [],
@@ -4475,6 +4684,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "ncs_code_nos": [],
         "question_plan": question_plan,
         "interview_methods": interview_methods,
+        "operational_notice": OPERATIONAL_REVIEW_NOTICE,
         "ncs_matches": ncs_matches,
         "ncs_ksa": ncs_ksa,
         "ncs_ksa_candidate_count": len(ncs_ksa_candidates),
@@ -4528,7 +4738,7 @@ def generate_questions_personalized(
                 detail="job_posting and user_profile must be sent in the JSON body, not the query string",
             )
         request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
-        _require_allowed_openai_key(request_openai_api_key)
+        _require_allowed_openai_key(request_openai_api_key, request)
         ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
         competency_name = str(body.get("competency_name") or competency_name or "").strip()
         job_posting = str(body.get("job_posting") or "").strip()
@@ -4555,23 +4765,20 @@ def generate_questions_personalized(
             user_profile=user_profile.strip() or "",
             target_count=target_count,
             api_key_override=request_openai_api_key,
-            allow_env_fallback=_allow_server_openai_key_fallback(),
+            allow_env_fallback=_allow_server_openai_key_fallback(request),
         )
         _require_official_ksa_result(result)
 
         return {
             "status": "success",
             "data": result,
-            "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Question generation failed: {str(e)[:200]}"
-        )
+        raise _internal_http_error("personalized_question_generation_failed", e) from e
 
 
 @app.post("/api/questions/generate-by-ncs-code")
@@ -4606,7 +4813,7 @@ def generate_questions_by_ncs_code(
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
         request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
-        _require_allowed_openai_key(request_openai_api_key)
+        _require_allowed_openai_key(request_openai_api_key, request)
         ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
         competency_name = str(body.get("competency_name") or competency_name or "").strip()
         if "target_count" in body:
@@ -4648,7 +4855,7 @@ def generate_questions_by_ncs_code(
             include_followups=include_followups,
             extra_context=avoid_context,
             api_key_override=request_openai_api_key,
-            allow_env_fallback=_allow_server_openai_key_fallback(),
+            allow_env_fallback=_allow_server_openai_key_fallback(request),
         )
         _require_official_ksa_result(result)
 
@@ -4666,16 +4873,13 @@ def generate_questions_by_ncs_code(
         return {
             "status": "success",
             "data": result,
-            "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Question generation failed: {str(e)[:200]}"
-        )
+        raise _internal_http_error("ncs_code_question_generation_failed", e) from e
 
 
 @app.get("/api/questions/templates")
@@ -4766,7 +4970,7 @@ def generate_batch_diverse_questions(
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
         request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
-        _require_allowed_openai_key(request_openai_api_key)
+        _require_allowed_openai_key(request_openai_api_key, request)
         ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
         competency_name = str(body.get("competency_name") or competency_name or "").strip()
         if "batch_count" in body:
@@ -4810,7 +5014,7 @@ def generate_batch_diverse_questions(
                 target_count=6,
                 extra_context=avoid_context,
                 api_key_override=request_openai_api_key,
-                allow_env_fallback=_allow_server_openai_key_fallback(),
+                allow_env_fallback=_allow_server_openai_key_fallback(request),
             )
             _require_official_ksa_result(result)
 
@@ -4849,7 +5053,7 @@ def generate_batch_diverse_questions(
                 "questions": final_questions,
                 "note": "각 질문은 AI가 생성한 고유한 질문입니다. 매 요청마다 다른 질문이 생성됩니다.",
             },
-            "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "request_id": str(uuid.uuid4()),  # Unique ID to prevent caching
         }
 
@@ -4867,7 +5071,7 @@ def generate_batch_diverse_questions(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed: {str(e)[:200]}")
+        raise _internal_http_error("batch_question_generation_failed", e) from e
 
 
 @app.post("/api/questions/generate-diverse")
@@ -4914,7 +5118,7 @@ def generate_diverse_questions(
                 detail="job_posting must be sent in the JSON body, not the query string",
             )
         request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
-        _require_allowed_openai_key(request_openai_api_key)
+        _require_allowed_openai_key(request_openai_api_key, request)
         ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
         competency_name = str(body.get("competency_name") or competency_name or "").strip()
         job_posting = str(body.get("job_posting") or "").strip()
@@ -4970,7 +5174,7 @@ def generate_diverse_questions(
                 target_count=needed,
                 extra_context=avoid_context,
                 api_key_override=request_openai_api_key,
-                allow_env_fallback=_allow_server_openai_key_fallback(),
+                allow_env_fallback=_allow_server_openai_key_fallback(request),
             )
             _require_official_ksa_result(raw_result)
 
@@ -5007,13 +5211,10 @@ def generate_diverse_questions(
         return {
             "status": "success",
             "data": result,
-            "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Question generation failed: {str(e)[:200]}"
-        )
+        raise _internal_http_error("diverse_question_generation_failed", e) from e

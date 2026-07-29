@@ -197,7 +197,14 @@ def test_sclass_template_topup_keeps_ksa_with_its_own_unit(monkeypatch):
 
     monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")
     monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
-    monkeypatch.setattr(jd_strategy, "fetch_ncs_units_hrdk_by_sclass_code", lambda **kwargs: units)
+    monkeypatch.setattr(jd_strategy, "suggest_units_by_text", lambda *args, **kwargs: units)
+    monkeypatch.setattr(
+        jd_strategy,
+        "fetch_ncs_units_hrdk_by_sclass_code",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy HRDK/XLSX path must not be used")
+        ),
+    )
     monkeypatch.setattr(jd_strategy, "fetch_ncs_ksa_by_units", fake_fetch_ksa)
     monkeypatch.setattr(jd_strategy, "_generate_questions_with_openai_from_ncs", lambda **kwargs: [])
 
@@ -241,6 +248,50 @@ def test_ncs_code_template_fallback_survives_missing_ksa_mcp(monkeypatch):
     assert all(row["question_focus_source"] == "synthetic_template" for row in result["main_questions"])
     assert all(row["ksa_refs"] == [] for row in result["main_questions"])
     assert all(row["question_repeat_signature"] for row in result["main_questions"])
+
+
+def test_sclass_result_is_unavailable_when_any_unit_lacks_official_ksa(monkeypatch):
+    units = [
+        {"ncsClCd": "A", "compeUnitName": "A 능력단위", "ncsSclasCdnm": "테스트 세분류"},
+        {"ncsClCd": "B", "compeUnitName": "B 능력단위", "ncsSclasCdnm": "테스트 세분류"},
+    ]
+
+    def fake_fetch_ksa(*, ncs_matches, **kwargs):
+        return [
+            {
+                "ncsClCd": "A",
+                "compeUnitName": "A 능력단위",
+                "factorName": "A 공식요소",
+            }
+            for unit in ncs_matches
+            if unit["ncsClCd"] == "A"
+        ]
+
+    monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.setattr(
+        jd_strategy,
+        "suggest_units_by_text",
+        lambda *args, **kwargs: units,
+    )
+    monkeypatch.setattr(jd_strategy, "fetch_ncs_ksa_by_units", fake_fetch_ksa)
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **kwargs: [],
+    )
+
+    result = jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="020203",
+        competency_name="테스트 세분류",
+        target_count=2,
+        include_followups=False,
+    )
+
+    assert [row["ncsClCd"] for row in result["main_questions"]] == ["A", "B"]
+    assert result["main_questions"][0]["question_focus_source"] == "official_ksa"
+    assert result["main_questions"][1]["question_focus_source"] == "synthetic_template"
+    assert result["ncs_ksa_available"] is False
 
 
 def test_ncs_code_main_questions_attach_repeat_metadata(monkeypatch):
@@ -346,3 +397,77 @@ def test_personalized_questions_preserve_generation_metadata(monkeypatch):
     assert question["question_repeat_signature"]
     assert question["question_repeat_duplicate"] is False
     assert result["ncs_ksa_available"] is True
+
+
+def test_personalized_questions_reject_invented_ksa_grounding(monkeypatch):
+    monkeypatch.setattr(
+        jd_strategy,
+        "fetch_ncs_ksa_by_units",
+        lambda **kwargs: [
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": "문서작성",
+                "factorName": "문서 요구사항 파악",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **kwargs: [
+            {
+                "type": "경험면접",
+                "ncsClCd": "0202030201_25v3",
+                "question": "가짜요소를 적용한 경험을 말씀해 주세요.",
+                "question_focus": "가짜요소",
+                "ksa_refs": ["가짜요소"],
+            }
+        ],
+    )
+
+    result = jd_strategy.generate_personalized_interview_questions(
+        ncs_code="0202030201_25v3",
+        competency_name="문서작성",
+        target_count=1,
+    )
+
+    assert result["questions"][0]["question_focus_source"] == "unverified_model_output"
+    assert result["questions"][0]["ksa_refs"] == []
+    assert result["ncs_ksa_available"] is False
+
+
+def test_diverse_questions_reject_invented_ksa_grounding(monkeypatch):
+    monkeypatch.setattr(
+        jd_strategy,
+        "fetch_ncs_ksa_by_units",
+        lambda **kwargs: [
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": "문서작성",
+                "factorName": "문서 요구사항 파악",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **kwargs: [
+            {
+                "type": "면접질문",
+                "ncsClCd": "0202030201_25v3",
+                "question": "가짜요소를 설명해 주세요.",
+                "question_focus": "가짜요소",
+                "ksa_refs": ["가짜요소"],
+            }
+        ],
+    )
+
+    result = jd_strategy.generate_diverse_interview_questions(
+        ncs_code="0202030201_25v3",
+        competency_name="문서작성",
+        target_count=1,
+    )
+
+    assert result["questions"][0]["question_focus_source"] == "unverified_model_output"
+    assert result["questions"][0]["ksa_refs"] == []
+    assert result["ncs_ksa_available"] is False

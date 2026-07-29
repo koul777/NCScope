@@ -105,6 +105,8 @@ def classify_question_intent(question: Any, *, unknown: str = "") -> str:
         required = 1 if intent in GENERAL_QUESTION_INTENTS else 2
         if intent == "collaboration_conflict" and experience_overlap:
             required = 2
+        if intent == "job_understanding" and experience_overlap:
+            continue
         if intent in {"inbasket_priority", "problem_solving"} and hits >= required and experience_overlap:
             return "experience_behavior"
         if hits >= required:

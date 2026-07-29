@@ -35,7 +35,11 @@ from app.services.question_intent import (
     QUESTION_INTENT_PATTERNS,
     classify_question_intent,
 )
-from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units
+from app.services.ncs_mcp_client import (
+    NcsMcpError,
+    get_ksa_by_units,
+    suggest_units_by_text,
+)
 from app.settings import settings
 
 
@@ -1872,6 +1876,53 @@ def _build_ksa_driven_question_pack(
     return _build_interview_by_competency_from_questions(interview_questions)
 
 
+def _official_question_grounding(
+    row: dict[str, Any],
+    ncs_ksa: list[dict[str, Any]] | None,
+    *,
+    default_code: str = "",
+) -> tuple[str, list[str], str]:
+    question_code = str(
+        row.get("ncsClCd") or row.get("ncs_code") or default_code
+    ).strip()
+    official_by_key = {
+        re.sub(r"\s+", "", str(item.get("factorName") or "")).lower(): str(
+            item.get("factorName") or ""
+        ).strip()
+        for item in (ncs_ksa or [])
+        if str(item.get("ncsClCd") or "").strip() == question_code
+        and str(item.get("factorName") or "").strip()
+    }
+    raw_refs = (
+        list(row.get("ksa_refs") or [])
+        if isinstance(row.get("ksa_refs"), list)
+        else []
+    )
+    verified_refs = [
+        official_by_key[key]
+        for value in raw_refs
+        if (key := re.sub(r"\s+", "", str(value or "")).lower()) in official_by_key
+    ]
+    raw_focus = _primary_question_focus(row)
+    focus_key = re.sub(r"\s+", "", raw_focus).lower()
+    verified_focus = official_by_key.get(focus_key) or (
+        verified_refs[0] if verified_refs else ""
+    )
+    if verified_focus:
+        verified_refs = [
+            verified_focus,
+            *[ref for ref in verified_refs if ref != verified_focus],
+        ]
+    source = "official_ksa" if verified_focus and verified_refs else (
+        "synthetic_template"
+        if str(row.get("question_focus_source") or "").strip() == "synthetic_template"
+        else "unverified_model_output"
+    )
+    if source == "synthetic_template" and not verified_focus:
+        verified_focus = raw_focus
+    return verified_focus, list(dict.fromkeys(verified_refs)), source
+
+
 def generate_personalized_interview_questions(
     ncs_code: str,
     competency_name: str = "",
@@ -1888,11 +1939,6 @@ def generate_personalized_interview_questions(
         max_units=1,
         max_factors_per_unit=8,
     )
-    official_factors = {
-        re.sub(r"\s+", "", str(row.get("factorName") or "")).lower(): str(row.get("factorName") or "").strip()
-        for row in ncs_ksa
-        if str(row.get("factorName") or "").strip()
-    }
     generated = _generate_questions_with_openai_from_ncs(
         jd_text=job_posting,
         strengths=user_profile,
@@ -1906,15 +1952,13 @@ def generate_personalized_interview_questions(
     )
     questions: list[dict[str, Any]] = []
     for q in generated:
-        raw_refs = list(q.get("ksa_refs", []) or []) if isinstance(q.get("ksa_refs"), list) else []
-        verified_refs = [
-            official_factors[key]
-            for value in raw_refs
-            if (key := re.sub(r"\s+", "", str(value or "")).lower()) in official_factors
-        ]
-        raw_focus = _primary_question_focus(q)
-        focus_key = re.sub(r"\s+", "", raw_focus).lower()
-        verified_focus = official_factors.get(focus_key) or (verified_refs[0] if verified_refs else "")
+        grounded_row = dict(q)
+        grounded_row["ncsClCd"] = ncs_code
+        verified_focus, verified_refs, focus_source = _official_question_grounding(
+            grounded_row,
+            ncs_ksa,
+            default_code=ncs_code,
+        )
         questions.append({
             "question": str(q.get("question", "")).strip(),
             "question_type": str(q.get("type", "면접질문")).strip() or "면접질문",
@@ -1923,13 +1967,18 @@ def generate_personalized_interview_questions(
             "ncs_code": ncs_code,
             "ncsClCd": ncs_code,
             "question_focus": verified_focus,
-            "question_focus_source": "official_ksa" if verified_focus else "unverified_model_output",
+            "question_focus_source": focus_source,
             "follow_ups": list(q.get("follow_ups", []) or []) if isinstance(q.get("follow_ups"), list) else [],
             "evaluation_points": list(q.get("evaluation_points", []) or []) if isinstance(q.get("evaluation_points"), list) else [],
             "eval_points": list(q.get("evaluation_points", []) or []) if isinstance(q.get("evaluation_points"), list) else [],
             "ksa_refs": list(dict.fromkeys(verified_refs)),
         })
     _refresh_ncs_code_main_question_repeat_metadata(questions)
+    all_questions_grounded = bool(questions) and all(
+        row.get("question_focus_source") == "official_ksa"
+        and bool(row.get("ksa_refs"))
+        for row in questions
+    )
     return {
         "ncs_code": ncs_code,
         "competency_name": comp_name,
@@ -1939,8 +1988,12 @@ def generate_personalized_interview_questions(
         "skills_from_profile": "",
         "questions": questions,
         "question_count": len(generated),
-        "ncs_ksa_available": bool(ncs_ksa),
-        "warning": "" if ncs_ksa else "official_ncs_ksa_unavailable",
+        "ncs_ksa_available": bool(ncs_ksa) and all_questions_grounded,
+        "warning": (
+            ""
+            if ncs_ksa and all_questions_grounded
+            else "official_ncs_ksa_unavailable_or_question_grounding_failed"
+        ),
         "note": "NCS 컨텍스트 기반 생성형 AI 자율 생성 결과입니다.",
     }
 
@@ -1969,6 +2022,13 @@ def generate_diverse_interview_questions(
     )
     questions_list: list[dict[str, Any]] = []
     for i, q in enumerate(generated, 1):
+        grounded_row = dict(q)
+        grounded_row["ncsClCd"] = ncs_code
+        verified_focus, verified_refs, focus_source = _official_question_grounding(
+            grounded_row,
+            ncs_ksa,
+            default_code=ncs_code,
+        )
         raw_fu = q.get("follow_ups")
         if isinstance(raw_fu, list):
             follow_ups = [str(x).strip() for x in raw_fu if str(x).strip()]
@@ -1981,22 +2041,33 @@ def generate_diverse_interview_questions(
                 "type": str(q.get("type", "면접질문")).strip() or "면접질문",
                 "competency": str(q.get("competency", comp_name)).strip() or comp_name,
                 "ncs_code": ncs_code,
+                "ncsClCd": ncs_code,
                 "question": str(q.get("question", "")).strip(),
-                "question_focus": _primary_question_focus(q),
+                "question_focus": verified_focus,
+                "question_focus_source": focus_source,
                 "follow_ups": follow_ups,
                 "follow_up": (follow_ups[0] if follow_ups else ""),
                 "eval_points": list(q.get("evaluation_points", []) or []),
-                "ksa_refs": list(q.get("ksa_refs", []) or []) if isinstance(q.get("ksa_refs"), list) else [],
+                "ksa_refs": verified_refs,
             }
         )
+    all_questions_grounded = bool(questions_list) and all(
+        row.get("question_focus_source") == "official_ksa"
+        and bool(row.get("ksa_refs"))
+        for row in questions_list
+    )
     return {
         "ncs_code": ncs_code,
         "competency_name": comp_name,
         "generation_mode": "ai_autonomous_ncs",
         "questions": questions_list,
         "question_count": len(questions_list),
-        "ncs_ksa_available": bool(ncs_ksa),
-        "warning": "" if ncs_ksa else "official_ncs_ksa_unavailable",
+        "ncs_ksa_available": bool(ncs_ksa) and all_questions_grounded,
+        "warning": (
+            ""
+            if ncs_ksa and all_questions_grounded
+            else "official_ncs_ksa_unavailable_or_question_grounding_failed"
+        ),
         "note": "NCS 컨텍스트 기반 생성형 AI 자율 생성 결과입니다.",
     }
 
@@ -2230,31 +2301,35 @@ def generate_interview_questions_by_ncs_code(
     is_sclass_mode = bool(code.isdigit() and len(code) == 6)
     sclass_units: list[dict[str, Any]] = []
 
-    # If code has a valid 6-digit prefix, enrich context using local indexed NCS rows.
+    # Expand 6-digit small-category codes through NCS_MCP only. Local XLSX and
+    # legacy HRDK APIs are not authoritative runtime sources for public
+    # question generation.
     code6 = re.sub(r"[^0-9]", "", code)[:6]
-    if len(code6) == 6:
-        sclass_units = fetch_ncs_units_hrdk_by_sclass_code(
-            ncs_lclass_code=code6[:2],
-            ncs_mclass_code=code6[2:4],
-            ncs_sclass_code=code6[4:6],
-            sclass_name="",
+    if is_sclass_mode:
+        try:
+            candidates = suggest_units_by_text([comp_name, code], max_units=80)
+        except NcsMcpError:
+            candidates = []
+        sclass_units = [
+            unit
+            for unit in candidates
+            if re.sub(r"\D", "", str(unit.get("ncsClCd") or ""))[:6] == code6
+            or (
+                comp_name
+                and _norm_text(str(unit.get("ncsSclasCdnm") or ""))
+                == _norm_text(comp_name)
+            )
+        ]
+        ncs_matches = (
+            sclass_units[: max(8, min(12, len(sclass_units)))]
+            if sclass_units
+            else []
         )
-        if is_sclass_mode:
-            # Input is sclass code_no (e.g., 020201): multi-unit context.
-            ncs_matches = sclass_units[: max(8, min(12, len(sclass_units)))] if sclass_units else ncs_matches
-            if sclass_units:
-                comp_name = str(sclass_units[0].get("ncsSclasCdnm", "")).strip() or comp_name
-        else:
-            picked = None
-            for u in sclass_units:
-                if str(u.get("ncsClCd", "")).strip() == code:
-                    picked = u
-                    break
-            if not picked and sclass_units:
-                picked = sclass_units[0]
-            if picked:
-                comp_name = str(picked.get("compeUnitName", "")).strip() or comp_name
-                ncs_matches = [picked]
+        if sclass_units:
+            comp_name = (
+                str(sclass_units[0].get("ncsSclasCdnm", "")).strip()
+                or comp_name
+            )
 
     desired_count = min(max(target_count, 1), 25)
     allow_template_fallback = str(os.getenv("NCS_ALLOW_TEMPLATE_FALLBACK", "false")).strip().lower() in {"1", "true", "yes", "y"}
@@ -2440,6 +2515,19 @@ def generate_interview_questions_by_ncs_code(
             generated.append(q)
 
     generated = _apply_entry_level_policy_to_questions(generated)
+    grounded_generated: list[dict[str, Any]] = []
+    for raw_question in generated:
+        question = dict(raw_question)
+        verified_focus, verified_refs, focus_source = _official_question_grounding(
+            question,
+            ncs_ksa,
+            default_code=code,
+        )
+        question["question_focus"] = verified_focus
+        question["ksa_refs"] = verified_refs
+        question["question_focus_source"] = focus_source
+        grounded_generated.append(question)
+    generated = grounded_generated
 
     main_questions = [
         {
@@ -2496,6 +2584,12 @@ def generate_interview_questions_by_ncs_code(
     elif not main_questions:
         generation_mode = "ai_generation_empty_no_fallback"
 
+    all_questions_grounded = bool(main_questions) and all(
+        row.get("question_focus_source") == "official_ksa"
+        and bool(row.get("ksa_refs"))
+        and bool(str(row.get("ncsClCd") or "").strip())
+        for row in main_questions
+    )
     result = {
         "ncs_code": code,
         "competency_name": comp_name,
@@ -2506,8 +2600,12 @@ def generate_interview_questions_by_ncs_code(
         "follow_up_count": len(follow_up_questions),
         "total_count": len(main_questions) + len(follow_up_questions),
         "template_fallback_used": used_template_fallback,
-        "ncs_ksa_available": bool(ncs_ksa),
-        "warning": "" if ncs_ksa else "official_ncs_ksa_unavailable",
+        "ncs_ksa_available": bool(ncs_ksa) and all_questions_grounded,
+        "warning": (
+            ""
+            if ncs_ksa and all_questions_grounded
+            else "official_ncs_ksa_unavailable_or_question_grounding_failed"
+        ),
     }
     if not main_questions:
         result["error"] = "ai_generation_empty"

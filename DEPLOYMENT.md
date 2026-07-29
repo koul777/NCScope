@@ -82,8 +82,10 @@ Recommended defaults:
 NCSCOPE_LOAD_DOTENV=false
 NCS_MCP_URL=<required>
 MAX_UPLOAD_MB=30
+MAX_REQUEST_BODY_MB=62
 KORDOC_OCR=true
 OPENAI_ALLOW_SERVER_KEY_FALLBACK=false
+OPENAI_SERVER_FALLBACK_TOKEN=<required when fallback is enabled>
 OPENAI_HTTP_CURL_FALLBACK_ENABLED=false
 ENABLE_ADMIN_ENDPOINTS=false
 ENABLE_LEGACY_NCS_API=false
@@ -94,6 +96,8 @@ AUTO_SYNC_NCS=false
 For public or shared deployments, keep `OPENAI_ALLOW_SERVER_KEY_FALLBACK=false`
 and require users to submit their own request-scoped OpenAI key. Enable server
 key fallback only behind authentication, rate limits, and cost controls.
+NCScope additionally requires callers to send the configured
+`OPENAI_SERVER_FALLBACK_TOKEN` in the `X-NCScope-OpenAI-Token` header.
 
 Only enable admin/legacy endpoints for private maintenance deployments:
 

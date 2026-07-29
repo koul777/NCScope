@@ -2871,6 +2871,15 @@ def test_question_intent_keeps_experience_when_focus_mentions_collaboration() ->
     assert _question_intent_key(question) == "experience_behavior"
 
 
+def test_question_intent_keeps_experience_in_institution_job_context() -> None:
+    question = (
+        "우리 기관 문서작성 업무를 수행한 경험을 말씀해 주세요. "
+        "당시 상황, 본인 역할, 선택한 행동과 결과를 포함해 설명해 주세요."
+    )
+
+    assert _question_intent_key(question) == "experience_behavior"
+
+
 def test_question_intent_prioritizes_job_knowledge_over_situation_markers() -> None:
     question = (
         "\ubb38\uc11c\uc791\uc131\uc5d0\uc11c '\uc5c5\ubb34 \uc6b0\uc120\uc21c\uc704 \uc124\uc815'\uacfc \uad00\ub828\ud574 "

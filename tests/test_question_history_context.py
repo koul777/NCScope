@@ -9,11 +9,15 @@ def _configured_ncs_mcp(monkeypatch):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
 
 
-def _question(text: str, question_type: str = "경험면접") -> dict[str, object]:
+def _question(text: str, question_type: str = "면접질문") -> dict[str, object]:
     return {
         "question": text,
         "type": question_type,
         "question_type": question_type,
+        "ncsClCd": "0202030201_25v3",
+        "question_focus": text,
+        "question_focus_source": "official_ksa",
+        "ksa_refs": [text],
         "follow_ups": [],
         "eval_points": [],
     }
@@ -185,7 +189,7 @@ def test_generate_by_ncs_code_uses_and_filters_request_avoid_questions(monkeypat
             "ncs_ksa_available": True,
             "main_questions": [
                 _question("현재 화면의 중복 질문입니다."),
-                _question("새로운 문서 요구사항 판단 질문입니다.", "상황면접"),
+                _question("새로운 문서 요구사항 판단 질문입니다."),
             ],
             "follow_up_questions": [],
         }

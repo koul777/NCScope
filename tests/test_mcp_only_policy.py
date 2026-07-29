@@ -147,6 +147,24 @@ def _confirmed_review_payload(fields: dict, confirmed: object = True, jd_text: s
     }
 
 
+def test_review_session_stores_only_hash_metadata_and_is_single_use():
+    review = _confirmed_review_payload(
+        {"ncs_detail_candidates": ["경영기획"]},
+        jd_text=JD_TEXT,
+    )
+    session_id = review["review_session_id"]
+
+    stored = main._REVIEW_SESSION_BY_ID[session_id]
+    assert "markdown" not in stored
+    assert stored["markdown_size"] == len(JD_TEXT.encode("utf-8"))
+
+    validated = main._validate_review_session(review, JD_TEXT.encode("utf-8"))
+    assert validated["markdown"] == JD_TEXT
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._validate_review_session(review, JD_TEXT.encode("utf-8"))
+    assert exc_info.value.status_code == 409
+
+
 def test_notice_parse_review_prefills_duty_and_evaluation_text():
     notice = (
         "## 담당업무\n"
@@ -465,6 +483,7 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
     assert resp.status_code == 200
     body = resp.json()
     assert body["openai_key_source"] == "request"
+    assert body["operational_notice"] == main.OPERATIONAL_REVIEW_NOTICE
     assert body["question_plan"]["total_main_count"] == 2
     assert body["question_plan"]["follow_up_count"] == 4
     assert body["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"]
@@ -528,6 +547,7 @@ def test_generate_from_text_allows_server_openai_key_when_explicitly_enabled(mon
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
     monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
+    monkeypatch.setenv("OPENAI_SERVER_FALLBACK_TOKEN", "fallback-auth-token")
     unit = {
         "ncsClCd": "0201010103_22v2",
         "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
@@ -548,6 +568,7 @@ def test_generate_from_text_allows_server_openai_key_when_explicitly_enabled(mon
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/questions/generate-from-text",
+            headers={"X-NCScope-OpenAI-Token": "fallback-auth-token"},
             json={
                 "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
                 "selected_ncs": [unit],
@@ -558,6 +579,21 @@ def test_generate_from_text_allows_server_openai_key_when_explicitly_enabled(mon
     assert resp.json()["openai_key_source"] == "env"
     assert build_strategy.call_args.kwargs["allow_env_fallback"] is True
     assert "sk-server-env-key" not in resp.text
+
+
+def test_server_openai_fallback_rejects_missing_auth_header(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
+    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
+    monkeypatch.setenv("OPENAI_SERVER_FALLBACK_TOKEN", "fallback-auth-token")
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-personalized",
+            json={"ncs_code": "0202030201_25v3"},
+        )
+
+    assert resp.status_code == 400
+    assert "X-NCScope-OpenAI-Token" in resp.text
 
 
 def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkeypatch, mocker):
@@ -852,6 +888,41 @@ def test_read_upload_limited_never_requests_unbounded_body(monkeypatch):
     assert upload.requested_sizes == [1024 * 1024 + 1]
 
 
+def test_request_body_limit_rejects_chunked_body_before_handler_completes():
+    messages = [
+        {"type": "http.request", "body": b"123", "more_body": True},
+        {"type": "http.request", "body": b"456", "more_body": False},
+    ]
+    sent: list[dict] = []
+    handler_completed = False
+
+    async def receive():
+        return messages.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    async def inner(scope, receive_inner, send_inner):
+        nonlocal handler_completed
+        await receive_inner()
+        await receive_inner()
+        handler_completed = True
+
+    middleware = main.RequestBodyLimitMiddleware(inner, limit_bytes=5)
+    asyncio.run(
+        middleware(
+            {"type": "http", "headers": []},
+            receive,
+            send,
+        )
+    )
+
+    assert handler_completed is False
+    assert next(message for message in sent if message["type"] == "http.response.start")[
+        "status"
+    ] == 413
+
+
 def test_openai_http_error_does_not_expose_remote_body(monkeypatch):
     sentinel = "sk-secret-sentinel"
     monkeypatch.setattr(
@@ -899,6 +970,25 @@ def test_extract_sclass_rejects_large_upload_before_parser(monkeypatch, mocker):
 
     assert resp.status_code == 413
     parser.assert_not_called()
+
+
+def test_extract_sclass_does_not_expose_internal_exception(monkeypatch):
+    sentinel = r"C:\internal\db.sqlite DB_PASSWORD=sentinel"
+    monkeypatch.setattr(
+        main,
+        "extract_sclass_from_pdf_bytes",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(sentinel)),
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/extract-sclass",
+            files={"jd_file": ("jd.pdf", b"%PDF-test", "application/pdf")},
+        )
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"]["code"] == "jd_sclass_extract_failed"
+    assert sentinel not in resp.text
 
 
 def test_personalized_questions_reject_sensitive_query_text(monkeypatch):
@@ -978,6 +1068,76 @@ def test_generate_by_ncs_code_stops_without_official_ksa(monkeypatch):
 
     assert resp.status_code == 502
     assert "Official NCS KSA" in resp.text
+
+
+def test_generate_by_ncs_code_rejects_unverified_question_grounding(monkeypatch):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.setattr(
+        main,
+        "generate_interview_questions_by_ncs_code",
+        lambda **kwargs: {
+            "generation_mode": "ai_autonomous_ncs_code_only",
+            "ncs_ksa_available": True,
+            "main_questions": [
+                {
+                    "question": "가짜요소를 설명해 주세요.",
+                    "type": "면접질문",
+                    "ncsClCd": "0202030201_25v3",
+                    "question_focus": "",
+                    "question_focus_source": "unverified_model_output",
+                    "ksa_refs": [],
+                }
+            ],
+            "follow_up_questions": [],
+        },
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-by-ncs-code",
+            json={
+                "openai_api_key": "sk-body-key",
+                "ncs_code": "0202030201_25v3",
+            },
+        )
+
+    assert resp.status_code == 502
+    assert "unverified or invalid NCS KSA grounding" in resp.text
+
+
+def test_generate_by_ncs_code_rejects_invalid_supported_method_shape(monkeypatch):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.setattr(
+        main,
+        "generate_interview_questions_by_ncs_code",
+        lambda **kwargs: {
+            "generation_mode": "ai_autonomous_ncs_code_only",
+            "ncs_ksa_available": True,
+            "main_questions": [
+                {
+                    "question": "공식요소를 간단히 말해 주세요.",
+                    "type": "발표면접",
+                    "ncsClCd": "0202030201_25v3",
+                    "question_focus": "공식요소",
+                    "question_focus_source": "official_ksa",
+                    "ksa_refs": ["공식요소"],
+                }
+            ],
+            "follow_up_questions": [],
+        },
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-by-ncs-code",
+            json={
+                "openai_api_key": "sk-body-key",
+                "ncs_code": "0202030201_25v3",
+            },
+        )
+
+    assert resp.status_code == 502
+    assert "unverified or invalid NCS KSA grounding" in resp.text
 
 
 def test_generate_by_ncs_code_rejects_string_boolean(monkeypatch):

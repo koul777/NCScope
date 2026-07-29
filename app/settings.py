@@ -72,11 +72,24 @@ class Settings:
         mb = max(1.0, min(100.0, mb))
         return int(mb * 1024 * 1024)
 
+    def max_request_body_bytes(self) -> int:
+        default_mb = (self.max_upload_bytes() * 2 + 2 * 1024 * 1024) / (1024 * 1024)
+        raw = os.getenv("MAX_REQUEST_BODY_MB", str(default_mb)).strip()
+        try:
+            mb = float(raw)
+        except ValueError:
+            mb = default_mb
+        mb = max(1.0, min(202.0, mb))
+        return int(mb * 1024 * 1024)
+
     def openai_key(self) -> str:
         return os.getenv("OPENAI_API_KEY", "").strip()
 
     def allow_server_openai_key_fallback(self) -> bool:
         return os.getenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "y"}
+
+    def server_openai_fallback_token(self) -> str:
+        return os.getenv("OPENAI_SERVER_FALLBACK_TOKEN", "").strip()
 
     def resolve_openai_key(self, request_key: str = "", allow_env_fallback: bool | None = None) -> str:
         key = str(request_key or "").strip()

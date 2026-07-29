@@ -1583,13 +1583,24 @@
 
       const s = data.strategy || {};
       const qList = Array.isArray(s.interview_questions) ? s.interview_questions : [];
-      if (s.error) {
+      const templateFallbackSucceeded = Boolean(
+        s.error
+        && qList.length
+        && qList.some(item => item && item.question_source === 'template_fallback')
+      );
+      if (s.error && !templateFallbackSucceeded) {
         errorBox.style.display = 'block';
         errorBox.textContent = `오류: ${s.error}`;
       }
+      const notices = [
+        data.operational_notice || s.operational_notice,
+        templateFallbackSucceeded
+          ? 'AI 생성에 실패하여 공식 NCS KSA 기반 템플릿 초안을 생성했습니다. 최종 사용 전에 질문을 검토하세요.'
+          : '',
+      ].filter(Boolean);
 
       renderMeta(data);
-      renderQualityReport(s.question_quality_report, data.operational_notice || s.operational_notice);
+      renderQualityReport(s.question_quality_report, notices.join(' '));
       renderPipelineDiag(data, qList);
       currentQPage = 0;
       renderQuestionList(qList);

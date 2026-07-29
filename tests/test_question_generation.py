@@ -325,6 +325,39 @@ def test_parse_keeps_same_intent_when_ksa_or_focus_differs():
     assert questions[1]["question_focus"] == "회의 운영"
 
 
+def test_parse_keeps_institution_context_experience_questions_with_distinct_focus():
+    response = [
+        {
+            "question": (
+                "우리 기관 문서작성 업무를 수행한 경험을 말씀해 주세요. "
+                "당시 상황, 본인 역할, 행동과 결과를 포함해 설명해 주세요."
+            ),
+            "type": "경험면접",
+            "question_focus": "문서 요구사항 파악",
+            "ksa_refs": ["문서 요구사항 파악"],
+        },
+        {
+            "question": (
+                "우리 기관 회의운영 업무를 수행한 경험을 말씀해 주세요. "
+                "당시 상황, 본인 역할, 행동과 결과를 포함해 설명해 주세요."
+            ),
+            "type": "경험면접",
+            "question_focus": "회의 의제 관리",
+            "ksa_refs": ["회의 의제 관리"],
+        },
+    ]
+
+    questions = _parse_openai_response(
+        __import__("json").dumps(response, ensure_ascii=False)
+    )
+
+    assert len(questions) == 2
+    assert [row["question_focus"] for row in questions] == [
+        "문서 요구사항 파악",
+        "회의 의제 관리",
+    ]
+
+
 def test_parse_keeps_contextual_collaboration_questions_when_focus_differs():
     response = [
         {
