@@ -88,6 +88,10 @@ class Settings:
     def allow_server_openai_key_fallback(self) -> bool:
         return os.getenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "y"}
 
+    def local_demo_mode(self) -> bool:
+        """Allow the server key without a token only for loopback presentation traffic."""
+        return os.getenv("NCSCOPE_LOCAL_DEMO_MODE", "false").strip().lower() in {"1", "true", "yes", "y"}
+
     def server_openai_fallback_token(self) -> str:
         return os.getenv("OPENAI_SERVER_FALLBACK_TOKEN", "").strip()
 

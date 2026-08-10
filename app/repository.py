@@ -6,7 +6,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from app.db import SessionLocal
 from app.models import (
@@ -21,6 +21,9 @@ from app.models import (
     MatchResult,
     NcsSyncRun,
     NcsUnit,
+    QuestionQualityEvalCase,
+    QuestionQualityReview,
+    QuestionQualityRun,
     UserProfile,
 )
 
@@ -304,6 +307,393 @@ def record_audit_log(
         s.add(rec)
         s.flush()
         return int(rec.id)
+
+
+def _quality_run_dict(rec: QuestionQualityRun) -> dict[str, Any]:
+    return {
+        "id": rec.id,
+        "source_endpoint": rec.source_endpoint,
+        "ncs_codes": list((rec.ncs_codes_json or {}).get("items") or []),
+        "competency_names": list((rec.competency_names_json or {}).get("items") or []),
+        "quality_policy_version": rec.quality_policy_version,
+        "generator_version": rec.generator_version or "",
+        "question_count": int(rec.question_count or 0),
+        "ready_count": int(rec.ready_count or 0),
+        "review_required": bool(rec.review_required),
+        "escalation_required": bool(rec.escalation_required),
+        "exception_allowed": bool(rec.exception_allowed),
+        "trigger_codes": list((rec.trigger_codes_json or {}).get("items") or []),
+        "final_decision": rec.final_decision,
+        "created_at": rec.created_at.isoformat() if rec.created_at else "",
+        "updated_at": rec.updated_at.isoformat() if rec.updated_at else "",
+    }
+
+
+def create_question_quality_run(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = str(payload.get("id") or uuid.uuid4()).strip()[:64]
+    review_token = str(payload.get("review_token") or "").strip()
+    if not review_token:
+        raise ValueError("review_token is required")
+    with db_session() as s:
+        rec = QuestionQualityRun(
+            id=run_id,
+            source_endpoint=str(payload.get("source_endpoint") or "unknown")[:128],
+            ncs_codes_json={"items": list(payload.get("ncs_codes") or [])[:40]},
+            competency_names_json={"items": list(payload.get("competency_names") or [])[:40]},
+            quality_policy_version=str(payload.get("quality_policy_version") or "unknown")[:128],
+            generator_version=str(payload.get("generator_version") or "")[:128] or None,
+            review_token_hash=hashlib.sha256(review_token.encode("utf-8")).hexdigest(),
+            question_count=max(0, int(payload.get("question_count") or 0)),
+            ready_count=max(0, int(payload.get("ready_count") or 0)),
+            review_required=bool(payload.get("review_required", True)),
+            escalation_required=bool(payload.get("escalation_required", False)),
+            exception_allowed=bool(payload.get("exception_allowed", True)),
+            trigger_codes_json={"items": list(payload.get("trigger_codes") or [])[:40]},
+            evidence_json=dict(payload.get("evidence") or {}),
+            final_decision="draft",
+        )
+        s.add(rec)
+        s.flush()
+        out = _quality_run_dict(rec)
+        out["review_token"] = review_token
+        return out
+
+
+def get_question_quality_run(run_id: str) -> dict[str, Any] | None:
+    with db_session() as s:
+        rec = s.get(QuestionQualityRun, str(run_id or "").strip())
+        if not rec:
+            return None
+        out = _quality_run_dict(rec)
+        reviews = s.execute(
+            select(QuestionQualityReview)
+            .where(QuestionQualityReview.run_id == rec.id)
+            .order_by(QuestionQualityReview.id)
+        ).scalars().all()
+        out["reviews"] = [
+            {
+                "id": review.id,
+                "question_hash": review.question_hash,
+                "question_index": review.question_index,
+                "ncs_code": review.ncs_code or "",
+                "method": review.method or "",
+                "verdict": review.verdict,
+                "active": bool(review.active),
+                "issue_codes": list((review.issue_codes_json or {}).get("items") or []),
+                "note": review.note_redacted or "",
+                "created_at": review.created_at.isoformat() if review.created_at else "",
+            }
+            for review in reviews
+        ]
+        return out
+
+
+def verify_question_quality_run_token(run_id: str, review_token: str) -> bool:
+    with db_session() as s:
+        rec = s.get(QuestionQualityRun, str(run_id or "").strip())
+        token = str(review_token or "").strip()
+        return bool(
+            rec
+            and token
+            and hashlib.sha256(token.encode("utf-8")).hexdigest() == rec.review_token_hash
+        )
+
+
+def record_question_quality_review(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = str(payload.get("run_id") or "").strip()
+    with db_session() as s:
+        run = s.get(QuestionQualityRun, run_id)
+        if not run:
+            raise LookupError("quality run not found")
+        review_token = str(payload.get("review_token") or "").strip()
+        if not review_token or hashlib.sha256(review_token.encode("utf-8")).hexdigest() != run.review_token_hash:
+            raise PermissionError("invalid review token")
+        question_hash = str(payload.get("question_hash") or "").strip()
+        evidence_by_hash = {
+            str(item.get("question_hash") or "").strip(): item
+            for item in ((run.evidence_json or {}).get("question_items") or [])
+            if isinstance(item, dict) and str(item.get("question_hash") or "").strip()
+        }
+        if not question_hash or question_hash not in evidence_by_hash:
+            raise ValueError("question_hash is not part of this quality run")
+        evidence_item = evidence_by_hash[question_hash]
+        question_text = str(payload.get("question_text") or "").strip()
+        if question_text and hashlib.sha256(question_text.encode("utf-8")).hexdigest() != question_hash:
+            raise ValueError("question_text does not match question_hash")
+        reviewer_ref = str(payload.get("reviewer_ref") or "local-reviewer")
+        prior_active = s.execute(
+            select(QuestionQualityReview)
+            .where(QuestionQualityReview.run_id == run_id)
+            .where(QuestionQualityReview.question_hash == question_hash)
+            .where(QuestionQualityReview.active.is_(True))
+        ).scalars().all()
+        for prior in prior_active:
+            prior.active = False
+        review = QuestionQualityReview(
+            run_id=run_id,
+            question_hash=question_hash[:64],
+            question_index=(int(evidence_item.get("index")) if evidence_item.get("index") is not None else None),
+            ncs_code=str(evidence_item.get("ncs_code") or "")[:64] or None,
+            method=str(evidence_item.get("method") or "")[:64] or None,
+            question_text=question_text[:1600] or None,
+            verdict=str(payload.get("verdict") or "needs_edit")[:32],
+            issue_codes_json={"items": list(payload.get("issue_codes") or [])[:20]},
+            note_redacted=str(payload.get("note") or "")[:500] or None,
+            reviewer_ref_hash=hashlib.sha256(reviewer_ref.encode("utf-8")).hexdigest(),
+            active=True,
+        )
+        s.add(review)
+        s.flush()
+
+        review_rows = s.execute(
+            select(QuestionQualityReview)
+            .where(QuestionQualityReview.run_id == run_id)
+            .where(QuestionQualityReview.active.is_(True))
+            .order_by(QuestionQualityReview.id)
+        ).scalars().all()
+        latest_by_question = {row.question_hash: row.verdict for row in review_rows}
+        verdicts = list(latest_by_question.values())
+        if any(value == "reject" for value in verdicts):
+            run.final_decision = "rejected"
+        elif any(value == "needs_edit" for value in verdicts):
+            run.final_decision = "needs_edit"
+        elif verdicts and len(verdicts) >= int(run.question_count or 0) and not run.escalation_required:
+            run.final_decision = "approved"
+        else:
+            run.final_decision = "reviewing"
+        s.flush()
+        return {
+            "id": int(review.id),
+            "run_id": run_id,
+            "question_hash": review.question_hash,
+            "verdict": review.verdict,
+            "issue_codes": list((review.issue_codes_json or {}).get("items") or []),
+            "run_decision": run.final_decision,
+        }
+
+
+def rollback_question_quality_review(
+    *,
+    run_id: str,
+    review_token: str,
+    question_hash: str,
+    reviewer_ref: str = "local-reviewer",
+    note: str = "",
+) -> dict[str, Any]:
+    with db_session() as s:
+        run = s.get(QuestionQualityRun, str(run_id or "").strip())
+        if not run:
+            raise LookupError("quality run not found")
+        token = str(review_token or "").strip()
+        if not token or hashlib.sha256(token.encode("utf-8")).hexdigest() != run.review_token_hash:
+            raise PermissionError("invalid review token")
+        q_hash = str(question_hash or "").strip()
+        allowed_hashes = {
+            str(item.get("question_hash") or "").strip()
+            for item in ((run.evidence_json or {}).get("question_items") or [])
+            if isinstance(item, dict)
+        }
+        if q_hash not in allowed_hashes:
+            raise ValueError("question_hash is not part of this quality run")
+        history = s.execute(
+            select(QuestionQualityReview)
+            .where(QuestionQualityReview.run_id == run.id)
+            .where(QuestionQualityReview.question_hash == q_hash)
+            .where(QuestionQualityReview.verdict != "rollback")
+            .order_by(desc(QuestionQualityReview.id))
+        ).scalars().all()
+        current = next((row for row in history if row.active), None)
+        if not current:
+            raise ValueError("no active review to roll back")
+        current.active = False
+        previous = next((row for row in history if row.id != current.id), None)
+        if previous:
+            previous.active = True
+        rollback_event = QuestionQualityReview(
+            run_id=run.id,
+            question_hash=q_hash,
+            question_index=current.question_index,
+            ncs_code=current.ncs_code,
+            method=current.method,
+            question_text=None,
+            verdict="rollback",
+            issue_codes_json={"items": []},
+            note_redacted=str(note or "")[:500] or None,
+            reviewer_ref_hash=hashlib.sha256(str(reviewer_ref or "local-reviewer").encode("utf-8")).hexdigest(),
+            active=False,
+        )
+        s.add(rollback_event)
+        s.flush()
+
+        active_verdicts = list(
+            s.execute(
+                select(QuestionQualityReview.verdict)
+                .where(QuestionQualityReview.run_id == run.id)
+                .where(QuestionQualityReview.active.is_(True))
+            ).scalars().all()
+        )
+        if any(value == "reject" for value in active_verdicts):
+            run.final_decision = "rejected"
+        elif any(value == "needs_edit" for value in active_verdicts):
+            run.final_decision = "needs_edit"
+        elif active_verdicts and len(active_verdicts) >= int(run.question_count or 0) and not run.escalation_required:
+            run.final_decision = "approved"
+        elif active_verdicts:
+            run.final_decision = "reviewing"
+        else:
+            run.final_decision = "draft"
+        s.flush()
+        return {
+            "run_id": run.id,
+            "question_hash": q_hash,
+            "rolled_back_review_id": int(current.id),
+            "restored_review_id": int(previous.id) if previous else None,
+            "run_decision": run.final_decision,
+        }
+
+
+def list_question_quality_feedback(ncs_codes: list[str], limit: int = 80) -> list[dict[str, Any]]:
+    codes = [str(code or "").strip() for code in ncs_codes if str(code or "").strip()]
+    with db_session() as s:
+        stmt = (
+            select(QuestionQualityReview)
+            .where(QuestionQualityReview.verdict.in_(("reject", "needs_edit")))
+            .where(QuestionQualityReview.active.is_(True))
+            .where(QuestionQualityReview.question_text.is_not(None))
+            .order_by(desc(QuestionQualityReview.id))
+            .limit(min(max(int(limit or 20), 1), 200))
+        )
+        if codes:
+            stmt = stmt.where(QuestionQualityReview.ncs_code.in_(codes))
+        rows = s.execute(stmt).scalars().all()
+        return [
+            {
+                "run_id": row.run_id,
+                "question_hash": row.question_hash,
+                "question_text": row.question_text or "",
+                "ncs_code": row.ncs_code or "",
+                "method": row.method or "",
+                "verdict": row.verdict,
+                "issue_codes": list((row.issue_codes_json or {}).get("items") or []),
+            }
+            for row in rows
+        ]
+
+
+def promote_question_quality_eval_case(review_id: int, case_type: str, policy_version: str) -> dict[str, Any]:
+    with db_session() as s:
+        review = s.get(QuestionQualityReview, int(review_id))
+        if not review:
+            raise LookupError("quality review not found")
+        if not review.active:
+            raise ValueError("only the active review decision can be promoted")
+        normalized_case = str(case_type or "").strip()
+        if normalized_case == "golden" and review.verdict != "approve":
+            raise ValueError("golden cases require an approved review")
+        if normalized_case in {"negative", "regression"} and review.verdict not in {"reject", "needs_edit"}:
+            raise ValueError("negative/regression cases require reject or needs_edit")
+        case = QuestionQualityEvalCase(
+            source_review_id=review.id,
+            case_type=normalized_case,
+            quality_policy_version=str(policy_version or "unknown")[:128],
+            expected_decision="pass" if normalized_case == "golden" else "fail",
+            active=True,
+        )
+        s.add(case)
+        s.flush()
+        return {
+            "id": int(case.id),
+            "source_review_id": int(review.id),
+            "case_type": case.case_type,
+            "expected_decision": case.expected_decision,
+            "active": bool(case.active),
+        }
+
+
+def list_question_quality_eval_cases(active_only: bool = True) -> list[dict[str, Any]]:
+    with db_session() as s:
+        stmt = (
+            select(QuestionQualityEvalCase, QuestionQualityReview)
+            .join(QuestionQualityReview, QuestionQualityReview.id == QuestionQualityEvalCase.source_review_id)
+            .order_by(QuestionQualityEvalCase.id)
+        )
+        if active_only:
+            stmt = stmt.where(QuestionQualityEvalCase.active.is_(True))
+        rows = s.execute(stmt).all()
+        return [
+            {
+                "id": int(case.id),
+                "source_review_id": int(review.id),
+                "case_type": case.case_type,
+                "quality_policy_version": case.quality_policy_version,
+                "expected_decision": case.expected_decision,
+                "active": bool(case.active),
+                "question_hash": review.question_hash,
+                "question_text": review.question_text or "",
+                "ncs_code": review.ncs_code or "",
+                "method": review.method or "",
+                "verdict": review.verdict,
+                "issue_codes": list((review.issue_codes_json or {}).get("items") or []),
+            }
+            for case, review in rows
+        ]
+
+
+def question_quality_metrics() -> dict[str, Any]:
+    with db_session() as s:
+        run_count = int(s.scalar(select(func.count()).select_from(QuestionQualityRun)) or 0)
+        review_count = int(s.scalar(select(func.count()).select_from(QuestionQualityReview)) or 0)
+        active_review_count = int(
+            s.scalar(
+                select(func.count()).select_from(QuestionQualityReview).where(QuestionQualityReview.active.is_(True))
+            )
+            or 0
+        )
+        rollback_count = int(
+            s.scalar(
+                select(func.count()).select_from(QuestionQualityReview).where(QuestionQualityReview.verdict == "rollback")
+            )
+            or 0
+        )
+        escalation_count = int(
+            s.scalar(
+                select(func.count()).select_from(QuestionQualityRun).where(QuestionQualityRun.escalation_required.is_(True))
+            )
+            or 0
+        )
+        active_eval_cases = int(
+            s.scalar(
+                select(func.count()).select_from(QuestionQualityEvalCase).where(QuestionQualityEvalCase.active.is_(True))
+            )
+            or 0
+        )
+        decision_rows = s.execute(
+            select(QuestionQualityReview.verdict, func.count(QuestionQualityReview.id))
+            .where(QuestionQualityReview.active.is_(True))
+            .group_by(QuestionQualityReview.verdict)
+        ).all()
+        issue_counts: dict[str, int] = {}
+        for payload in s.execute(
+            select(QuestionQualityReview.issue_codes_json).where(QuestionQualityReview.active.is_(True))
+        ).scalars().all():
+            for code in (payload or {}).get("items") or []:
+                key = str(code or "").strip()
+                if key:
+                    issue_counts[key] = issue_counts.get(key, 0) + 1
+        decisions = {str(verdict): int(count) for verdict, count in decision_rows}
+        return {
+            "runs": run_count,
+            "reviews": review_count,
+            "active_reviews": active_review_count,
+            "rollback_events": rollback_count,
+            "escalation_runs": escalation_count,
+            "active_eval_cases": active_eval_cases,
+            "decisions": decisions,
+            "approval_rate": round(decisions.get("approve", 0) / max(1, active_review_count), 4),
+            "rejection_rate": round(decisions.get("reject", 0) / max(1, active_review_count), 4),
+            "escalation_rate": round(escalation_count / max(1, run_count), 4),
+            "issue_counts": dict(sorted(issue_counts.items())),
+        }
 
 
 def upsert_institution(

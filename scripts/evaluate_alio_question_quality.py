@@ -683,6 +683,10 @@ def evaluate_cached_document(
                 if str(x).strip()
             ] if isinstance(item.get("issues"), list) else []
             question_focus = str(item.get("question_focus") or "").strip()
+            question_focus_type = str(item.get("question_focus_type") or "").strip()
+            assessment_scale = str(item.get("assessment_scale") or "").strip()
+            assessment_anchors = ""
+            interviewer_instruction = ""
             question_intent = str(item.get("question_intent") or "").strip()
             question_repeat_signature = str(item.get("question_repeat_signature") or "").strip()
             item_repeat_value = item.get("question_repeat_duplicate")
@@ -719,6 +723,16 @@ def evaluate_cached_document(
                 ksa_refs = [str(x).strip() for x in (q_obj.get("ksa_refs") or []) if str(x).strip()] if isinstance(q_obj.get("ksa_refs"), list) else []
                 ksa_evidence = [x for x in (q_obj.get("ksa_evidence") or []) if isinstance(x, dict)] if isinstance(q_obj.get("ksa_evidence"), list) else []
                 question_focus = question_focus or str(q_obj.get("question_focus") or "").strip()
+                question_focus_type = question_focus_type or str(q_obj.get("question_focus_type") or "").strip()
+                assessment_guide = q_obj.get("assessment_guide") if isinstance(q_obj.get("assessment_guide"), dict) else {}
+                assessment_scale = assessment_scale or str(assessment_guide.get("scale") or "").strip()
+                anchor_map = assessment_guide.get("anchors") if isinstance(assessment_guide.get("anchors"), dict) else {}
+                assessment_anchors = " | ".join(
+                    str(anchor_map.get(level) or "").strip()
+                    for level in ("high", "medium", "low")
+                    if str(anchor_map.get(level) or "").strip()
+                )
+                interviewer_instruction = str(assessment_guide.get("interviewer_instruction") or "").strip()
                 question_intent = question_intent or str(q_obj.get("question_intent") or "").strip()
                 question_repeat_signature = question_repeat_signature or str(q_obj.get("question_repeat_signature") or "").strip()
                 repeat_value = q_obj.get("question_repeat_duplicate")
@@ -754,6 +768,10 @@ def evaluate_cached_document(
                     "model_question_preserved": model_question_preserved,
                     "model_replacement_reasons": " | ".join(model_replacement_reasons),
                     "question_focus": question_focus,
+                    "question_focus_type": question_focus_type,
+                    "assessment_scale": assessment_scale,
+                    "assessment_anchors": assessment_anchors,
+                    "interviewer_instruction": interviewer_instruction,
                     "question_intent": question_intent,
                     "question_repeat_signature": question_repeat_signature,
                     "question_repeat_duplicate": (
@@ -867,6 +885,10 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         "model_question_preserved",
         "model_replacement_reasons",
         "question_focus",
+        "question_focus_type",
+        "assessment_scale",
+        "assessment_anchors",
+        "interviewer_instruction",
         "question_intent",
         "question_repeat_signature",
         "question_repeat_duplicate",

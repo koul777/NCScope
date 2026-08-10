@@ -36,7 +36,7 @@ v1.1은 ALIO 실공고 직무기술서와 NCS 블라인드 채용 공식 샘플�
 - NCS 블라인드 채용 `채용모델 면접문항`과 `전형별 평가샘플`을 함께 프로파일링해 경험·상황·발표·토론·인바스켓·창의적 문제해결력면접 형식 신호를 검증합니다.
 - 공식 샘플에서 직무지식면접 사례가 관찰되지 않은 부분은 절차·기준·산출물·예외상황 중심의 내부 품질 게이트와 회귀 테스트로 보강했습니다.
 - 직접 입력 경로도 업로드 경로와 동일하게 면접기법 선택, 질문 계획, KSA 보강, 모델 산출물 보정 로직을 적용합니다.
-- 현재 기준 전체 회귀 테스트는 `363 passed, 2 warnings`입니다.
+- 현재 기준 전체 회귀 테스트는 `505 passed`입니다.
 
 ## 왜 필요한가
 
@@ -112,11 +112,14 @@ http://127.0.0.1:8015
 - 입력한 키는 브라우저 저장소나 서버 DB에 저장하지 않습니다.
 - 해당 생성 요청에만 FormData/JSON으로 전달됩니다.
 - 비워 두면 기본적으로 서버의 `OPENAI_API_KEY`를 사용하지 않습니다.
+- 로컬 발표에서는 `OPENAI_ALLOW_SERVER_KEY_FALLBACK=true`와
+  `NCSCOPE_LOCAL_DEMO_MODE=true`를 함께 설정하면, `127.0.0.1`에서 접속한
+  브라우저가 `.env`의 `OPENAI_API_KEY`를 기본 사용합니다.
 - 서버 키 fallback은 `OPENAI_ALLOW_SERVER_KEY_FALLBACK=true`와
   `OPENAI_SERVER_FALLBACK_TOKEN`을 함께 설정하고, 호출자가 같은 값을
   `X-NCScope-OpenAI-Token` 헤더로 보낸 경우에만 사용합니다.
-- 브라우저 UI는 fallback 인증 헤더를 보내지 않으므로 화면에서는 요청별
-  OpenAI API key를 입력해야 합니다.
+- 로컬 발표 모드를 제외하면 브라우저 UI는 fallback 인증 헤더를 보내지 않으므로
+  화면에서 요청별 OpenAI API key를 입력해야 합니다.
 - 응답 JSON에는 키 원문이 포함되지 않고 `request`, `env`, `missing` 상태만 표시됩니다.
 
 ### 3. 직무기술서 업로드
@@ -355,6 +358,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | `NCS_MCP_URL` | 필수 | 없음 | 로컬 NCS DB 검색 서버(NCS_MCP) Streamable HTTP 주소 |
 | `OPENAI_API_KEY` | 선택 | 없음 | 서버 OpenAI 키. 기본적으로 요청 key가 없을 때 자동 사용하지 않음 |
 | `OPENAI_ALLOW_SERVER_KEY_FALLBACK` | 선택 | `false` | 요청 key가 없을 때 인증된 서버 `OPENAI_API_KEY` fallback 허용 |
+| `NCSCOPE_LOCAL_DEMO_MODE` | 선택 | `false` | 로컬 발표용. fallback 활성화 시 loopback 요청이 별도 토큰 없이 서버 키를 사용하도록 허용 |
 | `OPENAI_SERVER_FALLBACK_TOKEN` | 조건부 | 없음 | 서버 key fallback 활성화 시 필수. 호출자는 같은 값을 `X-NCScope-OpenAI-Token` 헤더로 전송 |
 | `OPENAI_MODEL` | 선택 | `gpt-4o-mini` | 일반 모델 설정 |
 | `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
@@ -463,7 +467,7 @@ python -m pytest -q
 
 현재 검증 결과(2026-07-24 08:20 KST 세션 기준):
 
-- `python -m pytest -q` → 363 passed, 2 warnings
+- `python -m pytest -q` → 505 passed
 - `py_compile` → passed
 - `app/static/index.html` inline script parse → `scripts_ok=1`
 - `git diff --check` → CRLF 변환 경고만 확인, whitespace error 없음
@@ -630,6 +634,17 @@ NCScope는 화면, 문서 파싱, 사람 검토, 면접 질문 생성을 담당�
 - OpenAI API 사용 시 데이터 처리 정책이 기관 기준에 맞는지
 - NCS 원천 데이터와 serving DB 배포 방식이 라이선스·보안 기준에 맞는지
 - 면접 질문을 최종 확정하기 전 담당자가 NCS 근거와 질문 적합성을 검토했는지
+
+## AX 증거 기반 품질 운영
+
+생성 결과에는 공식 NCS 평가양식 구조를 반영한 상·중·하 행동기반 평정과 면접위원 지침이 포함됩니다. 화면에서 각 문항을 승인하거나 수정 요청하면 구조화된 이슈가 운영 DB에 기록되고, 반려 문항은 같은 NCS 코드의 다음 생성에서 반복 금지·개선 문맥으로 환류됩니다.
+
+- 품질 지표: `GET /api/ops/quality-metrics`
+- AX 13개 관문 자체점검: `GET /api/ops/ax-readiness`
+- 반복 품질 사이클: `python scripts\run_question_quality_loop.py --cycles 1`
+- 상세 기준: [`docs/AX_EVIDENCE_GATE_MAP.md`](docs/AX_EVIDENCE_GATE_MAP.md)
+
+AX 단계는 합산 점수가 아닙니다. 코드나 설계만 있는 관문은 `설계·시범`으로 표시하고, 실제 리뷰·이관·회귀·장애훈련·SLA 기록이 없는 관문은 운영 증거로 올리지 않습니다.
 
 ## Kordoc 사용 고지
 

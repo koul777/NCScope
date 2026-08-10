@@ -7,16 +7,21 @@ from app.main import (
     _adjust_generated_questions,
     _attach_ksa_evidence_to_strategy,
     _attach_question_quality_report,
+    _behavior_anchored_evaluation,
+    _behavior_anchors_ok,
     _clamp_runtime_knobs,
     _group_interview_questions_for_response,
     _question_intent_key,
     _method_evaluation_points,
     _method_shape_ok,
+    _natural_question_wording_ok,
+    _focus_scenario_coherence_ok,
     _official_sample_format_ok,
     _followups_for_method,
     _parse_interview_methods,
     _parse_question_plan_json,
     _question_for_method,
+    _select_ksa_focus_for_method,
 )
 
 
@@ -1329,6 +1334,12 @@ def test_adjust_questions_distinguishes_all_interview_methods(
     assert evaluation_marker in question["evaluation_points"]
     assert question["ncs_detail"] == "사무행정"
     assert question["ncsClCd"] == "0202030201_25v3"
+    conditions = question["task_conditions"]
+    assert len(conditions["candidate_instruction"]) >= 25
+    assert len(conditions["required_outputs"]) >= 2
+    assert "동일한 자료" in conditions["standardization"]
+    if method in {"발표면접", "토론면접", "인바스켓면접", "창의적 문제해결력면접"}:
+        assert all(row["minutes"] > 0 for row in conditions["time_plan"])
 
 
 def test_parse_interview_methods_canonicalizes_aliases_and_preserves_order() -> None:
@@ -2286,7 +2297,7 @@ def test_method_evaluation_points_reserve_ksa_slot_for_full_default_methods() ->
     points = _method_evaluation_points("발표면접", ["문서 요구사항 파악"])
 
     assert len(points) == 6
-    assert "문서 요구사항 파악 적용 근거" in points
+    assert "'문서 요구사항 파악'의 실제 수행 근거" in points
     assert "자료 분석력" in points
     assert "성과지표 설계" in points
 
@@ -2984,3 +2995,113 @@ def test_method_followups_rotate_non_focus_probe_by_variant() -> None:
     assert focus in first[1]
     assert focus in second[1]
     assert first[2] != second[2]
+
+
+def test_focus_selection_prefers_skill_over_attitude_for_behavior_question() -> None:
+    rows = [
+        {"ncsClCd": "U1", "factorName": "문서 분류 기준 지식", "ksaTypeName": "지식"},
+        {"ncsClCd": "U1", "factorName": "문서 오류 점검 능력", "ksaTypeName": "기술"},
+        {"ncsClCd": "U1", "factorName": "꼼꼼하게 확인하려는 태도", "ksaTypeName": "태도"},
+    ]
+
+    assert _select_ksa_focus_for_method(rows, "U1", "경험면접") == "문서 오류 점검 능력"
+    assert _select_ksa_focus_for_method(rows, "U1", "직무지식면접") == "문서 분류 기준 지식"
+
+
+def test_experience_template_expresses_attitude_as_observable_behavior() -> None:
+    question = _question_for_method(
+        "경험면접",
+        "구조물해체 도면파악",
+        "도면 숙지 의지",
+        "구조물해체",
+        "관련 도면을 보고 현장 상황을 파악하는 능력이다.",
+        focus_type="태도",
+    )
+    follow_ups = _followups_for_method(
+        "경험면접",
+        "구조물해체 도면파악",
+        "도면 숙지 의지",
+        3,
+        focus_type="태도",
+    )
+
+    assert "'도면 숙지 의지'가 특히 요구됐던" in question
+    assert "도면 숙지 의지를 적용" not in "\n".join([question, *follow_ups])
+    assert "실제 행동으로 어떻게 보여주었습니까" in follow_ups[1]
+
+
+def test_natural_wording_gate_rejects_attitude_as_mechanical_application() -> None:
+    q = {"question_focus": "도면 숙지 의지", "question_focus_type": "태도"}
+
+    assert _natural_question_wording_ok(
+        q,
+        "도면 숙지 의지를 적용해 문제를 해결한 경험을 말씀해 주세요.",
+        ["당시 본인 행동은 무엇이었습니까?"],
+    ) is False
+
+
+def test_discussion_focus_must_appear_in_the_conflict_not_only_as_a_trailing_label() -> None:
+    q = {"question_focus": "기물 파지 및 운반 능력"}
+    unrelated = (
+        "[토론과제] 음식서비스 업무에서 위생·품질 기준 강화와 영업 효율이 충돌합니다. "
+        "토론 후 합의안을 제시해 주세요. 합의 기준에는 기물 파지 및 운반 능력을 포함하세요."
+    )
+    grounded = (
+        "[토론과제] 음식서비스 업무에서 기물별 안전한 파지·운반 절차와 처리 속도가 충돌합니다. "
+        "토론 후 합의안을 제시해 주세요. 합의 기준에는 기물 파지 및 운반 능력을 포함하세요."
+    )
+
+    assert _focus_scenario_coherence_ok("토론면접", q, unrelated) is False
+    assert _focus_scenario_coherence_ok("토론면접", q, grounded) is True
+
+
+def test_discussion_template_grounds_handling_focus_in_the_conflict() -> None:
+    question = _question_for_method(
+        "토론면접",
+        "음식서비스",
+        "기물 파지 및 운반 능력",
+        "음식서비스",
+        "음식과 서비스를 제공하는 능력이다.",
+        focus_type="기술",
+    )
+
+    assert "기물별 안전한 파지·운반 절차" in question
+    assert _focus_scenario_coherence_ok(
+        "토론면접",
+        {"question_focus": "기물 파지 및 운반 능력"},
+        question,
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "경험면접",
+        "상황면접",
+        "발표면접",
+        "토론면접",
+        "인바스켓면접",
+        "직무지식면접",
+        "창의적 문제해결력면접",
+    ],
+)
+def test_official_style_evaluation_guide_has_distinct_behavior_anchors(method: str) -> None:
+    guide = _behavior_anchored_evaluation(
+        method,
+        "문서 요구사항 파악",
+        ["판단 근거", "실행 행동", "성과 확인", "위험 통제"],
+    )
+
+    assert _behavior_anchors_ok(guide) is True
+    assert guide["dimensions"] == ["판단 근거", "실행 행동", "성과 확인", "위험 통제"]
+    assert set(guide["anchors"]) == {"high", "medium", "low"}
+
+
+def test_behavior_anchor_gate_rejects_label_only_scale() -> None:
+    assert _behavior_anchors_ok(
+        {
+            "scale": "3단계 행동기반 평정",
+            "anchors": {"high": "상", "medium": "중", "low": "하"},
+            "interviewer_instruction": "점수를 선택하세요.",
+        }
+    ) is False

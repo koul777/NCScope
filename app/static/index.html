@@ -91,6 +91,20 @@
     .fu-label { font-weight:700; color:#1a4ab8; margin-right:4px; }
     .evidence-list { margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; }
     .evidence-pill { border:1px solid #c8def7; background:#f3f8ff; border-radius:999px; padding:5px 9px; font-size:11.5px; color:#17345c; }
+    .rating-guide { margin-top:9px; border:1px solid #d7e4d8; border-radius:10px; padding:8px 10px; background:#f7fbf7; }
+    .rating-guide summary { color:#31543a; font-weight:800; }
+    .rating-anchor { margin-top:6px; font-size:12px; line-height:1.45; color:#3f5144; }
+    .rating-instruction { margin-top:7px; padding-top:7px; border-top:1px dashed #cbd9cd; font-size:11.5px; color:var(--muted); }
+    .task-conditions { margin-top:9px; border:1px solid #d8e2ef; border-radius:10px; padding:8px 10px; background:#f7faff; }
+    .task-conditions summary { color:#314f72; font-weight:800; }
+    .task-condition-row { margin-top:6px; font-size:12px; line-height:1.45; color:#40546b; }
+    .question-review { margin-top:10px; padding-top:9px; border-top:1px dashed #d7e2ef; display:flex; gap:7px; align-items:center; flex-wrap:wrap; }
+    .question-review select { width:auto; min-height:34px; padding:6px 8px; font-size:12px; }
+    .question-review button { width:auto; margin:0; padding:7px 10px; border-radius:8px; font-size:12px; }
+    .question-review .approve { background:#16794a; }
+    .question-review .needs-edit { background:#a56b13; }
+    .question-review .rollback { background:#64748b; }
+    .review-result { font-size:11.5px; color:var(--muted); }
     .quality-summary { display:flex; flex-wrap:wrap; gap:7px; margin:0 0 10px; }
     .quality-summary .pill { margin:0; }
     .quality-notice { flex-basis:100%; border-left:3px solid var(--primary-2); padding:7px 10px; color:var(--muted); background:#f4fbfb; border-radius:6px; font-size:12px; line-height:1.45; }
@@ -187,9 +201,9 @@
         </div>
 
         <label for="openaiApiKey">OpenAI API key (선택)</label>
-        <input id="openaiApiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
-        <div class="sub" style="margin-top:-4px; margin-bottom:10px;">
-          입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 서버 키 fallback은 운영자가 명시적으로 허용한 경우에만 사용됩니다.
+        <input id="openaiApiKey" type="password" placeholder=".env 키가 없을 때만 입력" autocomplete="off" spellcheck="false" />
+        <div id="openaiKeyHint" class="sub" style="margin-top:-4px; margin-bottom:10px;">
+          직접 입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 로컬 발표 모드에서는 .env 키를 기본 사용할 수 있습니다.
         </div>
 
         <div class="workflow-menu" aria-label="검토 단계">
@@ -429,6 +443,7 @@
     const questionOptionBlock = document.getElementById('questionOptionBlock');
     const runActionBlock = document.getElementById('runActionBlock');
     const openaiApiKey = document.getElementById('openaiApiKey');
+    const openaiKeyHint = document.getElementById('openaiKeyHint');
     const jdFile = document.getElementById('jdFile');
     const noticeFile = document.getElementById('noticeFile');
     const dutyText = document.getElementById('dutyText');
@@ -468,6 +483,7 @@
     let progressSlowState = null;
     let currentQuestions = [];
     let currentQPage = 0;
+    let currentQualityControl = null;
     let openaiRuntime = { serverFallback: false, serverKey: false };
     const QUESTION_PAGE_SIZE = 5;
 
@@ -662,7 +678,7 @@
       const hasServerFallbackKey = Boolean(openaiRuntime.serverFallback && openaiRuntime.serverKey);
       const keyFlowDetail = hasRequestKey
         ? '요청 단위 키 입력됨'
-        : (hasServerFallbackKey ? '서버 fallback 키 사용 가능' : '요청 키 미입력 · 템플릿 기반 생성');
+        : (hasServerFallbackKey ? '.env API 키 사용 가능' : '요청 키 미입력 · 템플릿 기반 생성');
       setFlowStep(
         flowApi,
         (hasRequestKey || hasServerFallbackKey) ? 'done' : 'active',
@@ -1468,6 +1484,168 @@
         sub.textContent = `평가 포인트: ${ev}`;
         box.appendChild(sub);
 
+        const conditions = q.task_conditions && typeof q.task_conditions === 'object'
+          ? q.task_conditions
+          : null;
+        if (conditions && conditions.candidate_instruction) {
+          const details = document.createElement('details');
+          details.className = 'task-conditions';
+          const summary = document.createElement('summary');
+          summary.textContent = '응시자 지시문·시간·제출요건';
+          details.appendChild(summary);
+          const conditionRows = [];
+          conditionRows.push(`응시자 지시문: ${String(conditions.candidate_instruction || '')}`);
+          const timePlan = Array.isArray(conditions.time_plan) ? conditions.time_plan : [];
+          if (timePlan.length) {
+            conditionRows.push(`시간: ${timePlan.map(row => `${String(row.phase || '')} ${Number(row.minutes || 0)}분`).join(' · ')}`);
+          } else if (conditions.timing_basis) {
+            conditionRows.push(`시간: ${String(conditions.timing_basis)}`);
+          }
+          const materials = Array.isArray(conditions.provided_materials) ? conditions.provided_materials : [];
+          const outputs = Array.isArray(conditions.required_outputs) ? conditions.required_outputs : [];
+          if (materials.length) conditionRows.push(`제공자료: ${materials.join(', ')}`);
+          if (outputs.length) conditionRows.push(`필수 산출: ${outputs.join(', ')}`);
+          if (conditions.standardization) conditionRows.push(`표준화: ${String(conditions.standardization)}`);
+          conditionRows.forEach((value) => {
+            const row = document.createElement('div');
+            row.className = 'task-condition-row';
+            row.textContent = value;
+            details.appendChild(row);
+          });
+          box.appendChild(details);
+        }
+
+        const guide = q.assessment_guide && typeof q.assessment_guide === 'object'
+          ? q.assessment_guide
+          : null;
+        const anchors = guide && guide.anchors && typeof guide.anchors === 'object'
+          ? guide.anchors
+          : null;
+        if (anchors && anchors.high && anchors.medium && anchors.low) {
+          const details = document.createElement('details');
+          details.className = 'rating-guide';
+          const summary = document.createElement('summary');
+          summary.textContent = guide.scale || '행동기반 채점기준';
+          details.appendChild(summary);
+          ['high', 'medium', 'low'].forEach((level) => {
+            const row = document.createElement('div');
+            row.className = 'rating-anchor';
+            row.textContent = String(anchors[level] || '');
+            details.appendChild(row);
+          });
+          if (guide.interviewer_instruction) {
+            const instruction = document.createElement('div');
+            instruction.className = 'rating-instruction';
+            instruction.textContent = `면접위원 지침: ${guide.interviewer_instruction}`;
+            details.appendChild(instruction);
+          }
+          box.appendChild(details);
+        }
+
+        if (currentQualityControl && currentQualityControl.run_id && currentQualityControl.review_token) {
+          const review = document.createElement('div');
+          review.className = 'question-review';
+          const issue = document.createElement('select');
+          [
+            ['too_generic', '직무 맥락이 일반적임'],
+            ['wrong_ncs_alignment', 'NCS 정렬 오류'],
+            ['behavioral_not_star_like', 'STAR 증거 부족'],
+            ['duplicate_intent', '평가의도 중복'],
+            ['difficulty_too_low', '난이도 낮음'],
+            ['difficulty_too_high', '난이도 높음'],
+            ['unnatural_wording', '문장이 부자연스러움'],
+            ['focus_scenario_mismatch', '초점·상황 불일치'],
+            ['missing_task_conditions', '지시문·시간·산출요건 누락'],
+            ['legal_or_bias_risk', '블라인드·편향 위험'],
+          ].forEach(([value, label]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            issue.appendChild(option);
+          });
+          const approve = document.createElement('button');
+          approve.type = 'button';
+          approve.className = 'approve';
+          approve.textContent = '이 문항 승인';
+          const needsEdit = document.createElement('button');
+          needsEdit.type = 'button';
+          needsEdit.className = 'needs-edit';
+          needsEdit.textContent = '수정 필요';
+          const rollback = document.createElement('button');
+          rollback.type = 'button';
+          rollback.className = 'rollback';
+          rollback.textContent = '검토 되돌리기';
+          rollback.disabled = true;
+          const result = document.createElement('span');
+          result.className = 'review-result';
+          const submit = async (verdict) => {
+            approve.disabled = true;
+            needsEdit.disabled = true;
+            result.textContent = '검토 기록 중...';
+            try {
+              const response = await fetch(`/api/quality/runs/${encodeURIComponent(currentQualityControl.run_id)}/review`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  review_token: currentQualityControl.review_token,
+                  question_hash: q.question_hash || '',
+                  question_text: String(q.question || '').trim(),
+                  question_index: no,
+                  ncs_code: String(q.ncsClCd || '').trim(),
+                  method: String(q.type || q.method || '').trim(),
+                  verdict,
+                  issue_codes: verdict === 'approve' ? [] : [issue.value],
+                  reviewer_ref: 'browser-local-reviewer',
+                }),
+              });
+              const payload = await response.json();
+              if (!response.ok) throw new Error(payload.detail || '검토 기록 실패');
+              result.textContent = verdict === 'approve' ? '승인 기록 완료' : '수정 요청이 다음 생성에 반영됩니다.';
+              issue.disabled = true;
+              rollback.disabled = false;
+            } catch (error) {
+              result.textContent = `기록 실패: ${String(error.message || error)}`;
+              approve.disabled = false;
+              needsEdit.disabled = false;
+            }
+          };
+          approve.addEventListener('click', () => submit('approve'));
+          needsEdit.addEventListener('click', () => submit('needs_edit'));
+          rollback.addEventListener('click', async () => {
+            rollback.disabled = true;
+            result.textContent = '검토 결정 되돌리는 중...';
+            try {
+              const response = await fetch(
+                `/api/quality/runs/${encodeURIComponent(currentQualityControl.run_id)}/questions/${encodeURIComponent(q.question_hash || '')}/rollback-review`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    review_token: currentQualityControl.review_token,
+                    reviewer_ref: 'browser-local-reviewer',
+                    note: '브라우저에서 최근 검토 결정 취소',
+                  }),
+                },
+              );
+              const payload = await response.json();
+              if (!response.ok) throw new Error(payload.detail || '되돌리기 실패');
+              result.textContent = '최근 검토 결정을 되돌렸습니다.';
+              issue.disabled = false;
+              approve.disabled = false;
+              needsEdit.disabled = false;
+            } catch (error) {
+              result.textContent = `되돌리기 실패: ${String(error.message || error)}`;
+              rollback.disabled = false;
+            }
+          });
+          review.appendChild(issue);
+          review.appendChild(approve);
+          review.appendChild(needsEdit);
+          review.appendChild(rollback);
+          review.appendChild(result);
+          box.appendChild(review);
+        }
+
         const evidenceRows = Array.isArray(q.ksa_evidence) ? q.ksa_evidence : [];
         const ksaRefs = Array.isArray(q.ksa_refs) ? q.ksa_refs.filter(x => String(x || '').trim()) : [];
         if (evidenceRows.length || ksaRefs.length) {
@@ -1534,7 +1712,7 @@
       }
     }
 
-    function renderQualityReport(report, operationalNotice = '') {
+    function renderQualityReport(report, operationalNotice = '', qualityControl = null) {
       if (!qualitySummary) return;
       qualitySummary.innerHTML = '';
       const summary = report && typeof report === 'object' && report.summary && typeof report.summary === 'object'
@@ -1568,6 +1746,11 @@
           add(`#${no} 검토: ${issues || '품질 기준 미충족'}`, 'warn');
         });
       }
+      if (qualityControl && typeof qualityControl === 'object') {
+        add(qualityControl.evidence_recorded ? '운영 증거 기록됨' : '운영 증거 저장 실패', qualityControl.evidence_recorded ? 'good' : 'warn');
+        if (qualityControl.review_required) add('사람 검토 필요', 'warn');
+        if (qualityControl.escalation_required) add('고위험 검토 이관', 'warn');
+      }
       if (notice) {
         const noticeEl = document.createElement('div');
         noticeEl.className = 'quality-notice';
@@ -1583,6 +1766,9 @@
 
       const s = data.strategy || {};
       const qList = Array.isArray(s.interview_questions) ? s.interview_questions : [];
+      currentQualityControl = s.quality_control && typeof s.quality_control === 'object'
+        ? s.quality_control
+        : null;
       const templateFallbackSucceeded = Boolean(
         s.error
         && qList.length
@@ -1600,7 +1786,7 @@
       ].filter(Boolean);
 
       renderMeta(data);
-      renderQualityReport(s.question_quality_report, notices.join(' '));
+      renderQualityReport(s.question_quality_report, notices.join(' '), currentQualityControl);
       renderPipelineDiag(data, qList);
       currentQPage = 0;
       renderQuestionList(qList);
@@ -1854,6 +2040,10 @@
           serverFallback: Boolean(h && h.keys && h.keys.openai_server_fallback),
           serverKey: Boolean(h && h.keys && h.keys.openai),
         };
+        if (openaiRuntime.serverFallback && openaiRuntime.serverKey) {
+          openaiApiKey.placeholder = '.env API 키 사용 중 (입력 불필요)';
+          openaiKeyHint.textContent = '로컬 발표 모드: .env의 OpenAI API 키를 기본 사용합니다. 입력칸은 비워 두셔도 됩니다.';
+        }
         updateWorkflowMenu();
         raw.textContent = JSON.stringify({ status: '준비완료', health: h, ncs_options: ncsUnitOptions.length }, null, 2);
       })

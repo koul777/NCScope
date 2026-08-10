@@ -609,6 +609,33 @@ def test_server_openai_fallback_rejects_missing_auth_header(monkeypatch):
     assert "X-NCScope-OpenAI-Token" in resp.text
 
 
+def test_local_demo_mode_allows_env_key_only_for_loopback(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
+    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
+    monkeypatch.setenv("NCSCOPE_LOCAL_DEMO_MODE", "true")
+    monkeypatch.delenv("OPENAI_SERVER_FALLBACK_TOKEN", raising=False)
+
+    loopback_request = main.Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/health",
+        "headers": [],
+        "client": ("127.0.0.1", 54321),
+    })
+    remote_request = main.Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/health",
+        "headers": [],
+        "client": ("192.0.2.10", 54321),
+    })
+
+    assert main._allow_server_openai_key_fallback(loopback_request) is True
+    assert main._openai_key_source("", loopback_request) == "env"
+    assert main._allow_server_openai_key_fallback(remote_request) is False
+    assert main._openai_key_source("", remote_request) == "missing"
+
+
 def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     unit = {

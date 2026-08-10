@@ -292,6 +292,61 @@ def _cached_download_path(out_dir: Path, seq: str, safe_title: str) -> Path | No
     return None
 
 
+def load_cached_official_entries(
+    report_dir: Path,
+    out_dir: Path,
+    collection: OfficialSampleCollection,
+    limit: int,
+) -> list[OfficialSampleEntry]:
+    """Recover entry metadata from the newest report whose archives still exist."""
+    wanted = max(0, int(limit))
+    if wanted <= 0 or not report_dir.is_dir() or not out_dir.is_dir():
+        return []
+
+    report_paths = sorted(
+        report_dir.glob("ncs_official_interview_samples_*.csv"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    seen: set[str] = set()
+    entries: list[OfficialSampleEntry] = []
+    for report_path in report_paths:
+        try:
+            with report_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        except (OSError, UnicodeError, csv.Error):
+            continue
+        for row in rows:
+            if str(row.get("collection_id") or "").strip() != collection.key:
+                continue
+            seq = str(row.get("seq") or "").strip()
+            title = str(row.get("title") or "").strip()
+            if not seq or not title or seq in seen:
+                continue
+            safe_title = re.sub(r'[\\/:*?"<>|]+', "_", title).strip(" .")[:120] or seq
+            if not _cached_download_path(out_dir, seq, safe_title):
+                continue
+            entries.append(
+                OfficialSampleEntry(
+                    seq=seq,
+                    title=title,
+                    file_mstky="",
+                    filedetl_seq="",
+                    filename=title,
+                    collection_key=collection.key,
+                    collection_label=collection.label,
+                    lib_dstin_cd=collection.lib_dstin_cd,
+                    menu_id=collection.menu_id,
+                    ncs_code_hint=str(row.get("ncs_code_hint") or "").strip(),
+                    detail_label_hint=str(row.get("detail_label_hint") or "").strip(),
+                )
+            )
+            seen.add(seq)
+            if len(entries) >= wanted:
+                return entries
+    return entries
+
+
 def download_sample_archive(entry: OfficialSampleEntry, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     safe_title = re.sub(r'[\\/:*?"<>|]+', "_", entry.title).strip(" .")[:120] or entry.seq
@@ -692,6 +747,23 @@ def _profile_document_bytes(filename: str, data: bytes) -> tuple[list[dict[str, 
         method_text, method_context_source = method_contexts.get(method, (markdown, "full_document"))
         signal_flags = _official_sample_signal_flags(method_text)
         structured_signals = _official_sample_structured_signals(method, method_text)
+        has_task_prompt = any(
+            token in markdown for token in ("면접과제", "면접질문지", "과제", "응시자", "발표", "토론")
+        )
+        has_evaluation_form = any(
+            token in markdown for token in ("평가양식", "평가요소", "평가항목", "평가표", "채점", "평정")
+        )
+        row_artifact_types = [item for item in artifact_types if item != "other"]
+        # Some official combined HWP files expose a recognizable task section but
+        # omit the exact task heading used by the filename/whole-document marker
+        # classifier. Treat the method-specific task shape as stronger evidence
+        # than the generic container label so task/evaluation pairing is not lost.
+        if structured_signals.get("task_prompt_style") and "task" not in row_artifact_types:
+            row_artifact_types.append("task")
+        if has_evaluation_form and "evaluation_form" not in row_artifact_types:
+            row_artifact_types.append("evaluation_form")
+        if not row_artifact_types:
+            row_artifact_types = ["other"]
         rows.append(
             {
                 "member": Path(filename).name,
@@ -701,10 +773,10 @@ def _profile_document_bytes(filename: str, data: bytes) -> tuple[list[dict[str, 
                 "method_context_source": method_context_source,
                 "method_context_chars": len(method_text),
                 "artifact_type": artifact_type,
-                "artifact_types": "; ".join(artifact_types),
+                "artifact_types": "; ".join(row_artifact_types),
                 "chars": len(markdown),
-                "has_task_prompt": any(token in markdown for token in ("면접과제", "면접질문지", "과제", "응시자", "발표", "토론")),
-                "has_evaluation_form": any(token in markdown for token in ("평가양식", "평가요소", "평가항목", "평가표", "채점", "평정")),
+                "has_task_prompt": has_task_prompt,
+                "has_evaluation_form": has_evaluation_form,
                 **signal_flags,
                 **structured_signals,
                 "terms": "; ".join(_extract_terms(method_text)),
@@ -790,6 +862,7 @@ def write_reports(samples: list[dict[str, Any]], members: list[dict[str, Any]], 
     member_csv = report_dir / f"ncs_official_interview_sample_members_{stamp}.csv"
 
     sample_fields = [
+        "source_mode",
         "collection",
         "collection_id",
         "lib_dstin_cd",
@@ -875,6 +948,7 @@ def write_reports(samples: list[dict[str, Any]], members: list[dict[str, Any]], 
     section_context_count = sum(1 for row in members if row.get("method_context_source") == "document_section")
     ncs_code_hint_count = sum(1 for row in samples if str(row.get("ncs_code_hint") or "").strip())
     detail_label_hint_count = sum(1 for row in samples if str(row.get("detail_label_hint") or "").strip())
+    source_modes = sorted({str(row.get("source_mode") or "unknown") for row in samples})
     prompt_styles = sorted(
         {
             str(row.get("task_prompt_style") or "").strip()
@@ -886,6 +960,7 @@ def write_reports(samples: list[dict[str, Any]], members: list[dict[str, Any]], 
         f"# NCS Official Interview Samples - {stamp}",
         "",
         f"- Samples profiled: {len(samples)}",
+        f"- Source modes: {', '.join(source_modes) if source_modes else 'none'}",
         f"- Samples with task/evaluation pairs: {passed_pairs}",
         f"- Observed methods: {', '.join(observed_methods) if observed_methods else 'none'}",
         f"- Supported methods not observed in sampled files: {', '.join(missing_methods) if missing_methods else 'none'}",
@@ -931,13 +1006,36 @@ def main() -> int:
     collections = list(SAMPLE_COLLECTIONS.values()) if args.collection == "all" else [_collection_from_key(args.collection)]
     for collection in collections:
         list_url = str(args.list_url or "").strip() or collection.list_url
-        entries = discover_official_samples(max(1, int(args.limit)), list_url=list_url, collection=collection)
+        source_mode = "live"
+        try:
+            entries = discover_official_samples(max(1, int(args.limit)), list_url=list_url, collection=collection)
+        except RuntimeError as exc:
+            entries = load_cached_official_entries(
+                Path(args.report_dir),
+                Path(args.out_dir),
+                collection,
+                max(1, int(args.limit)),
+            )
+            if not entries:
+                raise
+            source_mode = "cached"
+            print(
+                f"warning: live official listing unavailable for {collection.key}; "
+                f"using {len(entries)} cached archives ({exc})",
+                file=sys.stderr,
+            )
         for entry in entries:
             archive_path = download_sample_archive(entry, Path(args.out_dir))
-            view_text = fetch_sample_view_text(entry)
             member_rows, warnings = profile_sample_file(archive_path, max_members=max(1, int(args.max_members)))
+            view_text = ""
+            if source_mode == "live":
+                try:
+                    view_text = fetch_sample_view_text(entry)
+                except RuntimeError as exc:
+                    warnings.append(f"official view text unavailable: {exc}")
             summary = summarize_sample(entry.title, member_rows)
             sample_row = {
+                "source_mode": source_mode,
                 "collection": entry.collection_label,
                 "collection_id": entry.collection_key,
                 "lib_dstin_cd": entry.lib_dstin_cd,

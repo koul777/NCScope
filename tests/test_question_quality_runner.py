@@ -1161,7 +1161,11 @@ def test_evaluate_cached_document_fails_when_extracted_detail_is_unmatched(tmp_p
         ksa_factors_per_unit=4,
     )
 
-    assert row["status"] == "template_ready_partial_detail_coverage"
+    assert row["status"] == "template_ready_partial_detail_coverage", [
+        (item.get("type"), item.get("issues"), item.get("question"))
+        for item in question_rows
+        if item.get("ready") is not True
+    ]
     assert row["passed"] is False
     assert row["generated_questions"] == 6
     assert row["ready_questions"] == 6
@@ -1222,7 +1226,11 @@ def test_evaluate_cached_document_separates_skipped_details_from_unmatched(tmp_p
         ksa_factors_per_unit=4,
     )
 
-    assert row["status"] == "template_ready_partial_detail_coverage"
+    assert row["status"] == "template_ready_partial_detail_coverage", [
+        (item.get("type"), item.get("issues"), item.get("question"))
+        for item in question_rows
+        if item.get("ready") is not True
+    ]
     assert row["passed"] is False
     assert row["checked_detail_count"] == 1
     assert row["max_details_per_doc"] == 1

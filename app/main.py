@@ -29,6 +29,15 @@ from app.repository import list_postings as repo_list_postings
 from app.repository import recommend_postings as repo_recommend_postings
 from app.repository import record_audit_log
 from app.repository import save_match_result
+from app.repository import create_question_quality_run
+from app.repository import get_question_quality_run
+from app.repository import list_question_quality_eval_cases
+from app.repository import list_question_quality_feedback
+from app.repository import promote_question_quality_eval_case
+from app.repository import question_quality_metrics
+from app.repository import record_question_quality_review
+from app.repository import rollback_question_quality_review
+from app.repository import verify_question_quality_run_token
 from app.schemas import AiInterviewRequest, AiInterviewResponse, PostingCreate, ReportCreate, ReportOut
 from app.services.ai_strategy import build_strategy_with_openai, rank_postings_with_openai
 from app.services.external_api import fetch_ncs, fetch_ncs_highschool_course, fetch_public_inst, fetch_recruitment
@@ -76,7 +85,14 @@ from app.services.question_intent import (
     QUESTION_INTENT_PATTERNS,
     classify_question_intent,
 )
+from app.services.question_quality_ops import (
+    QUALITY_POLICY_VERSION,
+    derive_quality_control,
+    feedback_prompt_context,
+    sanitize_feedback_payload,
+)
 from app.services.auto_runner import start_auto_runner
+from app.services.ax_readiness import assess_ax_readiness
 from app.services.queue_manager import QueueManager
 from app.services.sclass_pipeline import (
     extract_pdf_text_fallback,
@@ -611,6 +627,93 @@ def _ksa_terms_for_question(
     return out[:limit]
 
 
+def _normalize_ksa_type(value: Any, factor_name: str = "") -> str:
+    raw = re.sub(r"\s+", "", str(value or "")).lower()
+    if raw in {"k", "knowledge", "지식"} or "지식" in raw:
+        return "지식"
+    if raw in {"s", "skill", "skills", "기술"} or any(token in raw for token in ("기술", "스킬")):
+        return "기술"
+    if raw in {"a", "attitude", "태도"} or "태도" in raw:
+        return "태도"
+
+    compact = re.sub(r"\s+", "", str(factor_name or "")).lower()
+    if any(token in compact for token in ("태도", "자세", "의지", "의식", "성실", "적극성", "책임감")):
+        return "태도"
+    if any(token in compact for token in ("지식", "개념", "원리", "이론", "종류", "특성", "법규", "법령")):
+        return "지식"
+    if any(
+        token in compact
+        for token in ("능력", "기술", "스킬", "작성", "수립", "분석", "산정", "조작", "점검", "활용", "파악")
+    ):
+        return "기술"
+    return ""
+
+
+def _ksa_type_for_focus(
+    ncs_ksa: list[dict[str, Any]] | None,
+    ncs_code: str,
+    focus: str,
+) -> str:
+    focus_key = _ksa_key(focus)
+    for row in ncs_ksa or []:
+        if not isinstance(row, dict) or str(row.get("ncsClCd", "")).strip() != str(ncs_code or "").strip():
+            continue
+        if _ksa_key(row.get("factorName", "")) != focus_key:
+            continue
+        return _normalize_ksa_type(
+            row.get("ksaTypeName") or row.get("factorType") or row.get("ksa_type"),
+            str(row.get("factorName") or ""),
+        )
+    return _normalize_ksa_type("", focus)
+
+
+def _select_ksa_focus_for_method(
+    ncs_ksa: list[dict[str, Any]] | None,
+    ncs_code: str,
+    method: str,
+    fallback_terms: list[str] | None = None,
+) -> str:
+    code = str(ncs_code or "").strip()
+    candidates: list[tuple[str, str, int]] = []
+    seen: set[str] = set()
+    for position, row in enumerate(ncs_ksa or []):
+        if not isinstance(row, dict) or str(row.get("ncsClCd", "")).strip() != code:
+            continue
+        factor = _clean_question_text(row.get("factorName"), max_chars=60)
+        key = _ksa_key(factor)
+        if not factor or not key or key in seen or _contains_blind_hiring_cue(factor):
+            continue
+        seen.add(key)
+        candidates.append(
+            (
+                factor,
+                _normalize_ksa_type(
+                    row.get("ksaTypeName") or row.get("factorType") or row.get("ksa_type"),
+                    factor,
+                ),
+                position,
+            )
+        )
+    if not candidates:
+        for position, term in enumerate(fallback_terms or []):
+            factor = _clean_question_text(term, max_chars=60)
+            key = _ksa_key(factor)
+            if not factor or not key or key in seen or _contains_blind_hiring_cue(factor):
+                continue
+            seen.add(key)
+            candidates.append((factor, _normalize_ksa_type("", factor), position))
+    if not candidates:
+        return ""
+
+    preference = {
+        "경험면접": ("기술", "태도", "지식", ""),
+        "직무지식면접": ("지식", "기술", "태도", ""),
+    }.get(method, ("기술", "지식", "태도", ""))
+    rank = {kind: index for index, kind in enumerate(preference)}
+    candidates.sort(key=lambda item: (rank.get(item[1], len(rank)), item[2], len(item[0])))
+    return candidates[0][0]
+
+
 def _infer_model_focus_from_official_ksa(
     ncs_ksa: list[dict[str, Any]] | None,
     ncs_code: str,
@@ -676,7 +779,7 @@ def _pick_unit_for_detail(
     return dict(pool[offset % len(pool)])
 
 
-def _method_evaluation_points(method: str, ksa_terms: list[str]) -> list[str]:
+def _method_evaluation_points(method: str, ksa_terms: list[str], focus_type: str = "") -> list[str]:
     guide = {
         "경험면접": ["구체적 상황 설명", "본인 역할과 행동", "판단 근거와 협업", "결과 지표와 학습"],
         "상황면접": ["핵심 사실 확인", "판단 기준", "행동 순서와 첫 조치", "위험요인 인식", "이해관계자 대응"],
@@ -691,14 +794,202 @@ def _method_evaluation_points(method: str, ksa_terms: list[str]) -> list[str]:
     for term in ksa_terms:
         if _contains_blind_hiring_cue(term):
             continue
-        point = f"{term} 적용 근거"
+        term_type = _normalize_ksa_type(focus_type, term)
+        if term_type == "태도":
+            point = f"'{term}'이 드러난 행동 근거"
+        elif term_type == "지식":
+            point = f"'{term}'을 활용한 판단 근거"
+        else:
+            point = f"'{term}'의 실제 수행 근거"
         if point not in points and point not in ksa_points:
             ksa_points.append(point)
-        if len(ksa_points) >= 2:
+        if len(ksa_points) >= 1:
             break
     if ksa_points:
         points = points[: max(0, 6 - len(ksa_points))] + ksa_points
     return points[:6]
+
+
+def _behavior_anchored_evaluation(
+    method: str,
+    focus: str,
+    evaluation_points: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build an observable three-level rubric paired with an interview task."""
+    focus_label = str(focus or "핵심 수행기준").strip() or "핵심 수행기준"
+    dimensions = [str(x).strip() for x in (evaluation_points or []) if str(x).strip()][:6]
+    behavior = {
+        "경험면접": (
+            "상황·과제·본인 역할·행동·결과·학습을 구분하고 선택 기준과 결과 지표를 근거로 설명한다",
+            "사례와 본인 행동은 설명하지만 선택 기준, 결과 지표 또는 학습 중 일부가 구체적이지 않다",
+            "일반론이나 팀 성과만 말하며 본인 행동과 결과를 확인할 근거가 없다",
+        ),
+        "상황면접": (
+            "확인할 사실과 판단 기준을 밝히고 위험·이해관계자를 고려한 행동 순서와 후속조치를 제시한다",
+            "기본 대응 방향은 타당하지만 사실 확인, 우선순위 또는 위험 통제의 연결이 일부 부족하다",
+            "근거 없이 결론부터 제시하거나 위험·보고·후속조치를 설명하지 못한다",
+        ),
+        "발표면접": (
+            "제공자료로 현황과 원인을 구분하고 대안 비교, 실행 우선순위, 성과지표와 질의응답 근거를 제시한다",
+            "현황과 대안은 제시하지만 자료 근거, 실행계획 또는 성과지표 중 일부가 모호하다",
+            "자료와 무관한 주장 위주이며 원인, 실행안, 성과 확인 방법이 연결되지 않는다",
+        ),
+        "토론면접": (
+            "근거 있는 입장을 제시하고 상대 의견을 요약·검토하며 쟁점을 조정해 실행 가능한 공동 합의안을 만든다",
+            "본인 입장과 일부 조정안은 제시하지만 경청 근거 또는 최종 합의의 실행 기준이 부족하다",
+            "주장만 반복하거나 상대 의견을 다루지 못해 합의안과 후속 책임을 도출하지 못한다",
+        ),
+        "인바스켓면접": (
+            "문서별 긴급도·영향도를 근거로 우선순위를 정하고 보고·위임·직접처리와 후속 기록을 구분한다",
+            "대체로 우선순위를 정하지만 일부 판단 근거나 시간·위험 통제 계획이 구체적이지 않다",
+            "도착 순서대로 처리하거나 보고·위임·보류 기준 없이 항목을 나열한다",
+        ),
+        "직무지식면접": (
+            "절차와 기준의 근거를 산출물·예외상황·품질점검·오류 예방 방법까지 연결해 설명한다",
+            "기본 절차와 용어는 설명하지만 예외 판단 또는 산출물 품질 확인 방법이 일부 부족하다",
+            "용어를 단편적으로 나열하고 실제 절차, 예외 또는 오류 예방에 적용하지 못한다",
+        ),
+        "창의적 문제해결력면접": (
+            "변화 신호로 문제를 재정의하고 복수 대안을 비교해 검증방법·실현가능성·리스크 보완책을 제시한다",
+            "문제와 대안은 제시하지만 검증방법, 의사결정 기준 또는 실행계획 중 일부가 모호하다",
+            "아이디어를 나열할 뿐 문제 근거, 대안 비교, 검증 및 실행 가능성을 설명하지 못한다",
+        ),
+    }.get(method, (
+        "구체적인 근거와 관찰 가능한 행동, 결과를 연결해 설명한다",
+        "기본 답변은 제시하지만 근거 또는 행동의 구체성이 일부 부족하다",
+        "추상적인 주장만 제시해 실제 행동과 결과를 확인할 수 없다",
+    ))
+    return {
+        "scale": "3단계 행동기반 평정",
+        "focus": focus_label,
+        "dimensions": dimensions,
+        "anchors": {
+            "high": f"상: '{focus_label}' 관점에서 {behavior[0]}.",
+            "medium": f"중: '{focus_label}' 관점에서 {behavior[1]}.",
+            "low": f"하: '{focus_label}' 관점에서 {behavior[2]}.",
+        },
+        "interviewer_instruction": (
+            "모든 지원자에게 동일한 기본 과제와 허용된 후속질문 범위를 적용하고, "
+            "답변의 인상보다 제시된 행동·근거·산출물을 기록해 평정하십시오."
+        ),
+    }
+
+
+def _behavior_anchors_ok(guide: Any) -> bool:
+    if not isinstance(guide, dict):
+        return False
+    anchors = guide.get("anchors") if isinstance(guide.get("anchors"), dict) else {}
+    values = [str(anchors.get(level) or "").strip() for level in ("high", "medium", "low")]
+    return (
+        str(guide.get("scale") or "").strip() == "3단계 행동기반 평정"
+        and all(len(value) >= 30 for value in values)
+        and len(set(values)) == 3
+        and len(str(guide.get("interviewer_instruction") or "").strip()) >= 30
+    )
+
+
+def _task_conditions_for_method(
+    method: str,
+    subject: str = "",
+    focus: str = "",
+    detail: str = "",
+    comp_def: str = "",
+) -> dict[str, Any]:
+    """Return standardized candidate conditions paired with the task and rubric."""
+    context = _domain_context_pack(detail=detail, subject=subject, focus=focus, comp_def=comp_def)
+    base: dict[str, dict[str, Any]] = {
+        "경험면접": {
+            "candidate_instruction": "한 가지 실제 사례를 선택해 상황·과제·본인 역할·행동·결과·학습 순서로 답변하십시오.",
+            "time_plan": [],
+            "provided_materials": ["별도 자료 없음"],
+            "required_outputs": ["본인 행동과 선택 기준", "결과를 확인할 수 있는 지표 또는 근거", "사례에서 얻은 학습"],
+        },
+        "상황면접": {
+            "candidate_instruction": "제시된 상황에서 먼저 확인할 사실, 판단 기준, 행동 순서, 보고 및 후속조치를 구분해 답변하십시오.",
+            "time_plan": [],
+            "provided_materials": ["상황 시나리오"],
+            "required_outputs": ["사실 확인 항목", "판단 기준과 위험 통제", "행동·보고·후속조치 순서"],
+        },
+        "발표면접": {
+            "candidate_instruction": "제공자료만을 근거로 현황과 원인을 구분하고, 비교 가능한 대안과 실행계획을 발표한 뒤 질의응답에 답하십시오.",
+            "time_plan": [
+                {"phase": "준비", "minutes": 20},
+                {"phase": "발표", "minutes": 5},
+                {"phase": "질의응답", "minutes": 5},
+            ],
+            "provided_materials": [context["evidence"]],
+            "required_outputs": ["현황·원인 진단", "대안 2가지와 우선순위", "실행계획과 성과지표"],
+        },
+        "토론면접": {
+            "candidate_instruction": "근거 있는 초기 입장을 밝히고 상대 의견을 검토한 뒤, 실행 가능한 공동 합의안과 후속 책임을 도출하십시오.",
+            "time_plan": [
+                {"phase": "개별 입장발표", "minutes": 1},
+                {"phase": "전체 토론", "minutes": 20},
+            ],
+            "provided_materials": ["토론 쟁점과 상반된 입장"],
+            "required_outputs": ["초기 입장과 근거", "반대 의견 검토", "최종 합의안과 실행 기준"],
+        },
+        "인바스켓면접": {
+            "candidate_instruction": "동시에 접수된 문서를 분류해 처리 우선순위와 보고·위임·직접처리 결정을 기록하고 첫 행동을 제시하십시오.",
+            "time_plan": [{"phase": "문서 검토 및 의사결정", "minutes": 30}],
+            "provided_materials": [context["inbasket"]],
+            "required_outputs": ["문서별 우선순위", "보고·위임·직접처리 판단", "첫 15분 행동과 후속점검"],
+        },
+        "직무지식면접": {
+            "candidate_instruction": "용어만 나열하지 말고 절차와 기준을 실제 산출물, 예외상황, 품질점검 및 오류 예방에 연결해 답변하십시오.",
+            "time_plan": [],
+            "provided_materials": ["별도 자료 없음"],
+            "required_outputs": ["절차와 기준의 근거", "예외상황 판단", "산출물 품질점검과 오류 예방"],
+        },
+        "창의적 문제해결력면접": {
+            "candidate_instruction": "제공자료에서 변화 신호를 찾아 문제를 재정의하고, 복수 대안을 비교해 검증·실행·보완 계획을 설명하십시오.",
+            "time_plan": [
+                {"phase": "준비", "minutes": 20},
+                {"phase": "해결안 설명", "minutes": 7},
+                {"phase": "질의응답", "minutes": 5},
+            ],
+            "provided_materials": [context["evidence"]],
+            "required_outputs": ["미래 변화와 문제 정의", "대안 2가지와 검증방법", "실행계획·성과지표·리스크 보완"],
+        },
+    }
+    conditions = dict(base.get(method) or base["경험면접"])
+    conditions["standardization"] = (
+        "모든 지원자에게 동일한 자료, 기본 과제, 시간 조건과 허용된 후속질문 범위를 적용합니다."
+    )
+    conditions["timing_basis"] = (
+        "NCS 공식 표본에서 반복 관찰된 기본 시간구조를 적용했으며 기관 운영기준에 따라 사전 확정합니다."
+        if conditions.get("time_plan")
+        else "공식 표본의 고정시간 신호가 제한적이므로 기관 운영기준에서 동일 응답시간을 사전 확정합니다."
+    )
+    return conditions
+
+
+def _task_conditions_ok(method: str, conditions: Any) -> bool:
+    if not isinstance(conditions, dict):
+        return False
+    instruction = str(conditions.get("candidate_instruction") or "").strip()
+    standardization = str(conditions.get("standardization") or "").strip()
+    outputs = conditions.get("required_outputs") if isinstance(conditions.get("required_outputs"), list) else []
+    materials = conditions.get("provided_materials") if isinstance(conditions.get("provided_materials"), list) else []
+    time_plan = conditions.get("time_plan") if isinstance(conditions.get("time_plan"), list) else []
+    timed_methods = {"발표면접", "토론면접", "인바스켓면접", "창의적 문제해결력면접"}
+    time_ok = method not in timed_methods or bool(
+        time_plan
+        and all(
+            isinstance(row, dict)
+            and str(row.get("phase") or "").strip()
+            and isinstance(row.get("minutes"), int)
+            and int(row.get("minutes") or 0) > 0
+            for row in time_plan
+        )
+    )
+    return bool(
+        len(instruction) >= 25
+        and len(standardization) >= 25
+        and len([item for item in outputs if str(item or "").strip()]) >= 2
+        and any(str(item or "").strip() for item in materials)
+        and time_ok
+    )
 
 
 def _focus_context_overlay(focus: str) -> dict[str, str]:
@@ -740,6 +1031,16 @@ def _focus_context_overlay(focus: str) -> dict[str, str]:
                 "situation": "안전·품질 위험과 처리 일정 압박",
                 "inbasket": "점검 보완 요청, 오류 정정 문서, 긴급 위험 보고",
                 "debate": "위험 예방을 우선하는 입장과 일정 준수를 우선하는 입장",
+            },
+        ),
+        (
+            ("기물", "파지", "운반", "적재", "보관", "취급"),
+            {
+                "_replace_context": "true",
+                "evidence": "기물별 취급 기준, 파손·오염 기록, 작업 동선, 인력 배치표",
+                "situation": "기물 파손·오염 위험과 피크시간 운반 지연",
+                "inbasket": "기물 파손 보고, 긴급 운반 요청, 작업 동선 변경, 위생 점검 문서",
+                "debate": "기물별 안전한 파지·운반 절차를 우선하는 입장과 피크시간 처리 속도를 우선하는 입장",
             },
         ),
         (
@@ -972,24 +1273,28 @@ def _question_for_method(
     focus: str,
     detail: str,
     comp_def: str,
+    focus_type: str = "",
 ) -> str:
     if subject and detail and _norm_sclass_key(subject) != _norm_sclass_key(detail):
         label = f"{detail} 세분류의 {subject}"
     else:
         label = subject or detail or "해당 직무"
     focus = focus or "핵심 수행기준"
-    definition_hint = f" ({_clean_question_text(comp_def, max_chars=70)})" if comp_def else ""
+    focus_type = _normalize_ksa_type(focus_type, focus)
     context = _domain_context_pack(detail=detail, subject=subject, focus=focus, comp_def=comp_def)
     if method == "발표면접":
         return (
-            f"[발표과제] {label} 업무에서 {_quoted_with_josa(focus, '과', '와')} 관련된 {_with_josa(context['evidence'], '이', '가')} 주어졌다고 가정하고 "
+            f"[발표과제] {label} 업무에서 {_quoted_with_josa(focus, '과', '와')} 관련된 "
+            f"{_with_josa(context['evidence'], '이', '가')} 주어졌다고 가정하고 "
             "준비시간 20분 후 현황 문제를 진단하고 개선안을 5분 발표해 주세요. "
-            f"발표에는 현황 진단, 원인 분석, 대안 2가지, 실행 우선순위, 성과지표, 5분 질의응답 답변을 포함하세요{definition_hint}."
+            "발표에는 현황 진단, 원인 분석, 대안 2가지, 실행 우선순위, 성과지표, 5분 질의응답 답변을 포함하세요."
         )
     if method == "토론면접":
         return (
-            f"[토론과제] {label} 업무에서 '{focus}' 관련 {_with_josa(context['debate'], '이', '가')} 충돌합니다. "
+            f"[토론과제] {label} 업무에서 {_quoted_with_josa(focus, '을', '를')} 어떻게 수행할지를 두고 "
+            f"{_with_josa(context['debate'], '이', '가')} 충돌합니다. "
             "토론시간 20분 동안 1분 입장발표 후 반대 의견의 타당한 부분을 확인하고, 본인의 초기 입장과 근거, 쟁점 조정 방식, 최종 합의안 도출 방식을 제시해 주세요."
+            f" 합의 기준에는 {_quoted_with_josa(focus, '을', '를')} 포함하세요."
         )
     if method == "인바스켓면접":
         return (
@@ -998,7 +1303,8 @@ def _question_for_method(
         )
     if method == "상황면접":
         return (
-            f"{label} 업무 중 {_quoted_with_josa(focus, '과', '와')} 관련해 {_with_josa(context['situation'], '이', '가')} 동시에 발생한 상황입니다. "
+            f"{label} 업무 중 {_quoted_with_josa(focus, '과', '와')} 관련해 "
+            f"{_with_josa(context['situation'], '이', '가')} 동시에 발생한 상황입니다. "
             "어떤 기준으로 판단하고 위험요인을 어떻게 통제하며, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까?"
         )
     if method == "직무지식면접":
@@ -1009,25 +1315,45 @@ def _question_for_method(
     if method == "창의적 문제해결력면접":
         return (
             f"[창의적 문제해결력과제] {label} 업무에서 {_quoted_with_josa(focus, '과', '와')} 관련된 복합 문제가 발생했습니다. "
-            f"미래예측 관점에서 주어진 {_with_josa(context['evidence'], '을', '를')} 바탕으로 핵심 문제를 정의하고, 원인 가설, 창의적 대안 2가지, 검증 방법, "
-            "실현가능성, 의사결정 기준, 실행계획과 성과지표 및 리스크 보완책을 제시해 주세요."
+            f"준비시간 20분 동안 주어진 {_with_josa(context['evidence'], '을', '를')} 바탕으로 미래예측 관점에서 핵심 문제를 정의하고, "
+            "원인 가설, 창의적 대안 2가지, 검증 방법, 실현가능성, 의사결정 기준, 실행계획과 성과지표 및 리스크 보완책을 "
+            "7분 동안 설명한 뒤 5분 질의응답에 답해 주세요."
         )
+    if focus_type == "태도":
+        focus_clause = f"{_quoted_with_josa(focus, '이', '가')} 특히 요구됐던"
+    elif focus_type == "지식":
+        focus_clause = f"{_quoted_with_josa(focus, '을', '를')} 활용해"
+    else:
+        focus_clause = f"{_quoted_with_josa(focus, '을', '를')} 발휘해"
     return (
-        f"{label} 수행 과정에서 {_quoted_with_josa(focus, '을', '를')} 적용해 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. "
-        "당시 상황과 과제, 본인 역할, 선택한 행동, 결과 지표와 학습을 포함해 설명해 주세요."
+        f"{label} 수행 과정에서 {focus_clause} 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. "
+        "당시 상황과 과제, 본인 역할과 행동, 선택 기준, 결과 지표와 학습을 포함해 설명해 주세요."
     )
 
 
-def _followups_for_method(method: str, subject: str, focus: str, count: int, variant_index: int = 0) -> list[str]:
+def _followups_for_method(
+    method: str,
+    subject: str,
+    focus: str,
+    count: int,
+    variant_index: int = 0,
+    focus_type: str = "",
+) -> list[str]:
     if count <= 0:
         return []
     label = subject or "해당 업무"
     focus = focus or "핵심 수행기준"
+    focus_type = _normalize_ksa_type(focus_type, focus)
     context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
+    experience_focus_probe = (
+        f"{_quoted_with_josa(focus, '을', '를')} 실제 행동으로 어떻게 보여주었습니까?"
+        if focus_type == "태도"
+        else f"{_quoted_with_josa(focus, '을', '를')} 활용해 실제로 취한 행동은 무엇이었습니까?"
+    )
     banks = {
         "경험면접": [
             "당시 상황과 본인이 맡은 역할을 구체적으로 설명해 주세요.",
-            f"{_quoted_with_josa(focus, '을', '를')} 적용하기 위해 실제로 취한 행동은 무엇이었습니까?",
+            experience_focus_probe,
             "다른 선택지와 비교해 그 행동을 선택한 기준은 무엇이었습니까?",
             "성과를 어떤 기준이나 지표로 확인했습니까?",
             "같은 상황이 다시 주어진다면 어떤 점을 개선하시겠습니까?",
@@ -1450,10 +1776,17 @@ def _adjust_generated_questions(
         inferred_focus = _infer_model_focus_from_official_ksa(ncs_ksa, ncs_code, raw_question, raw_followups)
         focus = (
             inferred_focus
-            or (ksa_terms[idx % len(ksa_terms)] if ksa_terms else "")
+            or _select_ksa_focus_for_method(
+                ncs_ksa=ncs_ksa,
+                ncs_code=ncs_code,
+                method=method,
+                fallback_terms=ksa_terms or existing_refs,
+            )
             or _clean_question_text(item.get("competency") or target_detail or "핵심 수행기준")
         )
         item["question_focus"] = focus
+        focus_type = _ksa_type_for_focus(ncs_ksa, ncs_code, focus)
+        item["question_focus_type"] = focus_type
         normalized_model_question = _normalize_model_task_marker(method, raw_question)
         normalized_model_question = _normalize_model_job_context(method, item, normalized_model_question)
         raw_evaluation_points = _clean_question_items(item.get("evaluation_points"), limit=6)
@@ -1502,6 +1835,7 @@ def _adjust_generated_questions(
             focus=focus,
             detail=target_detail,
             comp_def=str(item.get("compeUnitDef", "")).strip(),
+            focus_type=focus_type,
         )
         template_followups = _followups_for_method(
             method=method,
@@ -1509,8 +1843,10 @@ def _adjust_generated_questions(
             focus=focus,
             count=row_follow_count,
             variant_index=idx,
+            focus_type=focus_type,
         )
-        method_eval_points = _method_evaluation_points(method, ksa_terms)
+        focus_first_ksa_terms = [focus, *[term for term in ksa_terms if _ksa_key(term) != _ksa_key(focus)]]
+        method_eval_points = _method_evaluation_points(method, focus_first_ksa_terms, focus_type)
 
         item["question"] = normalized_model_question if use_model_question else template_question
         if use_model_question and use_raw_model_followups:
@@ -1535,6 +1871,18 @@ def _adjust_generated_questions(
             if use_model_question
             else method_eval_points
         )
+        item["task_conditions"] = _task_conditions_for_method(
+            method=method,
+            subject=subject,
+            focus=focus,
+            detail=target_detail,
+            comp_def=str(item.get("compeUnitDef", "")).strip(),
+        )
+        item["assessment_guide"] = _behavior_anchored_evaluation(
+            method,
+            focus,
+            item["evaluation_points"],
+        )
         focus_context_key = (ncs_code or subject, method)
         used_focuses = used_focus_by_context.setdefault(focus_context_key, set())
         repeat_signature = _question_repeat_signature(item)
@@ -1550,12 +1898,15 @@ def _adjust_generated_questions(
             if alternate_focus:
                 focus = alternate_focus
                 item["question_focus"] = focus
+                focus_type = _ksa_type_for_focus(ncs_ksa, ncs_code, focus)
+                item["question_focus_type"] = focus_type
                 template_question = _question_for_method(
                     method=method,
                     subject=subject,
                     focus=focus,
                     detail=target_detail,
                     comp_def=str(item.get("compeUnitDef", "")).strip(),
+                    focus_type=focus_type,
                 )
                 template_followups = _followups_for_method(
                     method=method,
@@ -1563,12 +1914,25 @@ def _adjust_generated_questions(
                     focus=focus,
                     count=row_follow_count,
                     variant_index=idx,
+                    focus_type=focus_type,
                 )
-                method_eval_points = _method_evaluation_points(method, [focus, *[x for x in ksa_terms if x != focus]])
+                method_eval_points = _method_evaluation_points(
+                    method,
+                    [focus, *[x for x in ksa_terms if x != focus]],
+                    focus_type,
+                )
                 item["question"] = template_question
                 item["follow_ups"] = template_followups
                 item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
                 item["evaluation_points"] = method_eval_points
+                item["task_conditions"] = _task_conditions_for_method(
+                    method=method,
+                    subject=subject,
+                    focus=focus,
+                    detail=target_detail,
+                    comp_def=str(item.get("compeUnitDef", "")).strip(),
+                )
+                item["assessment_guide"] = _behavior_anchored_evaluation(method, focus, method_eval_points)
                 item["question_source"] = "template_fallback"
                 item["model_question_preserved"] = False
                 reasons = [
@@ -1595,6 +1959,14 @@ def _adjust_generated_questions(
                 "question": template_question,
                 "follow_ups": template_followups,
                 "evaluation_points": method_eval_points,
+                "task_conditions": _task_conditions_for_method(
+                    method=method,
+                    subject=subject,
+                    focus=focus,
+                    detail=target_detail,
+                    comp_def=str(item.get("compeUnitDef", "")).strip(),
+                ),
+                "assessment_guide": _behavior_anchored_evaluation(method, focus, method_eval_points),
             }
         )
 
@@ -1632,6 +2004,8 @@ def _adjust_generated_questions(
         item["follow_ups"] = list(fallback.get("follow_ups") or [])
         item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
         item["evaluation_points"] = list(fallback.get("evaluation_points") or [])
+        item["task_conditions"] = dict(fallback.get("task_conditions") or {})
+        item["assessment_guide"] = dict(fallback.get("assessment_guide") or {})
     _refresh_question_repeat_metadata(adjusted)
     strategy["interview_questions"] = adjusted
     strategy["interview_by_competency"] = _group_interview_questions_for_response(adjusted)
@@ -2073,6 +2447,129 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
 
 
+def _quality_feedback_context(ncs_matches: list[dict[str, Any]] | None) -> str:
+    codes = list(
+        dict.fromkeys(
+            str(row.get("ncsClCd") or "").strip()
+            for row in (ncs_matches or [])
+            if isinstance(row, dict) and str(row.get("ncsClCd") or "").strip()
+        )
+    )
+    if not codes:
+        return ""
+    try:
+        events = list_question_quality_feedback(codes, limit=40)
+    except Exception:
+        logger.warning("question_quality_feedback_unavailable", exc_info=True)
+        return ""
+    contexts = [feedback_prompt_context(events, code, max_items=4) for code in codes[:6]]
+    return "\n\n".join(context for context in contexts if context)
+
+
+def _join_generation_context(*parts: str) -> str:
+    return "\n\n".join(str(part or "").strip() for part in parts if str(part or "").strip())[:12000]
+
+
+def _register_question_quality_evidence(
+    strategy: dict[str, Any],
+    *,
+    source_endpoint: str,
+    ncs_matches: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    report = strategy.get("question_quality_report") if isinstance(strategy.get("question_quality_report"), dict) else {}
+    control = derive_quality_control(strategy)
+    policy_version = str(report.get("policy") or QUALITY_POLICY_VERSION).strip() or QUALITY_POLICY_VERSION
+    questions = [item for item in (strategy.get("interview_questions") or []) if isinstance(item, dict)]
+    report_items = {
+        int(item.get("index") or 0): item
+        for item in (report.get("items") or [])
+        if isinstance(item, dict)
+    }
+    question_items: list[dict[str, Any]] = []
+    for index, question in enumerate(questions, start=1):
+        text = str(question.get("question") or "").strip()
+        question_hash = _sha256_text(text)
+        question["question_hash"] = question_hash
+        item_report = report_items.get(index) or {}
+        question_items.append(
+            {
+                "index": index,
+                "question_hash": question_hash,
+                "method": str(question.get("type") or question.get("method") or "").strip(),
+                "ncs_code": str(question.get("ncsClCd") or "").strip(),
+                "question_focus": str(question.get("question_focus") or "").strip(),
+                "question_source": str(question.get("question_source") or "").strip(),
+                "ready": bool(item_report.get("ready")),
+                "issues": list(item_report.get("issues") or [])[:30],
+                "checks": dict(item_report.get("checks") or {}),
+            }
+        )
+    codes = list(
+        dict.fromkeys(
+            [
+                str(row.get("ncsClCd") or "").strip()
+                for row in (ncs_matches or [])
+                if isinstance(row, dict) and str(row.get("ncsClCd") or "").strip()
+            ]
+            + [item["ncs_code"] for item in question_items if item["ncs_code"]]
+        )
+    )
+    names = list(
+        dict.fromkeys(
+            str(row.get("compeUnitName") or "").strip()
+            for row in (ncs_matches or [])
+            if isinstance(row, dict) and str(row.get("compeUnitName") or "").strip()
+        )
+    )
+    run_id = f"qqr_{secrets.token_hex(16)}"
+    review_token = secrets.token_urlsafe(24)
+    payload = {
+        "id": run_id,
+        "review_token": review_token,
+        "source_endpoint": source_endpoint,
+        "ncs_codes": codes,
+        "competency_names": names,
+        "quality_policy_version": policy_version,
+        "generator_version": str(strategy.get("question_customization_policy") or ""),
+        "question_count": int((report.get("summary") or {}).get("question_count") or len(questions)),
+        "ready_count": int((report.get("summary") or {}).get("ready_count") or 0),
+        "review_required": bool(control.get("review_required", True)),
+        "escalation_required": bool(control.get("escalation_required", False)),
+        "exception_allowed": bool(control.get("exception_allowed", True)),
+        "trigger_codes": list(control.get("trigger_codes") or []),
+        "evidence": {
+            "quality_policy": policy_version,
+            "question_items": question_items,
+            "source_reference": "NCS 채용모델 면접문항 자료실",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    try:
+        persisted = create_question_quality_run(payload)
+        quality_control = {
+            **control,
+            "policy_version": policy_version,
+            "run_id": persisted["id"],
+            "review_token": persisted["review_token"],
+            "evidence_recorded": True,
+        }
+    except Exception:
+        logger.error("question_quality_evidence_persistence_failed", exc_info=True)
+        trigger_codes = list(dict.fromkeys([*(control.get("trigger_codes") or []), "quality_evidence_store_unavailable"]))
+        quality_control = {
+            **control,
+            "policy_version": policy_version,
+            "run_id": "",
+            "review_token": "",
+            "review_required": True,
+            "escalation_required": True,
+            "trigger_codes": trigger_codes,
+            "evidence_recorded": False,
+        }
+    strategy["quality_control"] = quality_control
+    return quality_control
+
+
 def _request_ip_hash(request: Request | None) -> str:
     host = ""
     try:
@@ -2193,6 +2690,12 @@ def _sanitize_request_openai_key(value: str | None) -> str:
 def _allow_server_openai_key_fallback(request: Request | None = None) -> bool:
     if not settings.allow_server_openai_key_fallback():
         return False
+    # Local demo mode is intentionally limited to loopback traffic. This lets a
+    # presenter use OPENAI_API_KEY from .env without copying it into the UI,
+    # while remote/shared deployments still require the fallback token below.
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
+    if settings.local_demo_mode() and client_host in {"127.0.0.1", "::1", "localhost"}:
+        return True
     expected = settings.server_openai_fallback_token()
     provided = (
         str(request.headers.get("x-ncscope-openai-token") or "").strip()
@@ -2269,6 +2772,10 @@ def _clean_ksa_evidence_row(row: dict[str, Any]) -> dict[str, str]:
         "ncsClCd": str(row.get("ncsClCd", "")).strip(),
         "compeUnitName": str(row.get("compeUnitName", "")).strip(),
         "factorName": str(row.get("factorName", "")).strip(),
+        "ksaTypeName": str(
+            row.get("ksaTypeName") or row.get("factorType") or row.get("ksa_type") or ""
+        ).strip(),
+        "elementName": str(row.get("elementName", "")).strip(),
         "factorLevel": str(row.get("factorLevel", "")).strip(),
         "factorSource": str(row.get("factorSource", "")).strip(),
         "ksaStatus": str(row.get("ksaStatus", "")).strip(),
@@ -2789,6 +3296,53 @@ def _ksa_evidence_relevance_ok(
     )
 
 
+def _natural_question_wording_ok(q: dict[str, Any], question: str, follow_ups: list[str]) -> bool:
+    main = str(question or "").strip()
+    if not main or len(main) > 420:
+        return False
+    visible = "\n".join([main, *[str(item or "") for item in follow_ups]])
+    if visible.count("관련") >= 5:
+        return False
+    if re.search(r"\([^)]{0,100}(?:하는|위한|통해|하여)\)\.?$", main):
+        return False
+
+    focus = str(q.get("question_focus") or "").strip()
+    focus_type = str(q.get("question_focus_type") or "").strip() or _normalize_ksa_type("", focus)
+    if focus and focus_type == "태도":
+        compact_visible = re.sub(r"\s+", "", visible)
+        compact_focus = re.sub(r"\s+", "", focus)
+        if re.search(re.escape(compact_focus) + r".{0,12}적용", compact_visible):
+            return False
+    return True
+
+
+def _focus_scenario_coherence_ok(method: str, q: dict[str, Any], question: str) -> bool:
+    """Require discussion topics to drive the conflict, not appear as a trailing label only."""
+    if method != "토론면접":
+        return True
+    focus = str(q.get("question_focus") or "").strip()
+    if not focus:
+        return False
+    # Anything after this phrase is an output constraint, not the scenario itself.
+    scenario_text = str(question or "").split("합의 기준에는", 1)[0]
+    compact_scenario = re.sub(r"\s+", "", scenario_text).lower()
+    compact_focus = re.sub(r"\s+", "", focus).lower()
+    if compact_focus and compact_focus in compact_scenario:
+        return True
+    stopwords = {
+        "관련", "능력", "기술", "지식", "태도", "활용", "적용", "업무", "수행",
+        "기준", "대한", "위한", "이해", "및", "과", "와", "의", "을", "를",
+    }
+    focus_tokens = [
+        token
+        for token in re.findall(r"[0-9A-Za-z가-힣]{2,}", focus)
+        if token not in stopwords
+    ]
+    if not focus_tokens:
+        return True
+    return any(token.replace(" ", "").lower() in compact_scenario for token in focus_tokens)
+
+
 def _official_sample_format_ok(
     method: str,
     question: str,
@@ -2813,7 +3367,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     questions = strategy.get("interview_questions")
     if not isinstance(questions, list):
         strategy["question_quality_report"] = {
-            "policy": "main_question_method_shape_ksa_official_sample_eval_followup_job_context_gate_v9_visible_ksa",
+            "policy": "ncs_official_task_evaluation_pair_v13_conditions_ax_evidence_gate",
             "passed": False,
             "summary": {
                 "question_count": 0,
@@ -2847,6 +3401,20 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
             for x in (q.get("evaluation_points") or [])
             if str(x).strip()
         ] if isinstance(q.get("evaluation_points"), list) else []
+        if not q.get("assessment_guide"):
+            q["assessment_guide"] = _behavior_anchored_evaluation(
+                method,
+                str(q.get("question_focus") or "").strip(),
+                evaluation_points,
+            )
+        if not q.get("task_conditions"):
+            q["task_conditions"] = _task_conditions_for_method(
+                method=method,
+                subject=str(q.get("competency") or "").strip(),
+                focus=str(q.get("question_focus") or "").strip(),
+                detail=str(q.get("ncs_detail") or q.get("ncsSclasCdnm") or "").strip(),
+                comp_def=str(q.get("compeUnitDef") or "").strip(),
+            )
         ksa_refs = [str(x).strip() for x in (q.get("ksa_refs") or []) if str(x).strip()] if isinstance(q.get("ksa_refs"), list) else []
         ksa_evidence = q.get("ksa_evidence") if isinstance(q.get("ksa_evidence"), list) else []
         ncs_code = str(q.get("ncsClCd") or "").strip()
@@ -2883,6 +3451,10 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
             ),
             "specific_context": has_specific_context,
             "job_specific_context": _job_specific_context_ok(q, question, follow_ups),
+            "natural_wording": _natural_question_wording_ok(q, question, follow_ups),
+            "focus_scenario_coherence": _focus_scenario_coherence_ok(method, q, question),
+            "standardized_task_conditions": _task_conditions_ok(method, q.get("task_conditions")),
+            "behavior_anchored_evaluation": _behavior_anchors_ok(q.get("assessment_guide")),
         }
         issues = [name for name, passed in checks.items() if not passed]
         score = round(sum(1 for passed in checks.values() if passed) / max(1, len(checks)), 2)
@@ -2897,6 +3469,10 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
                 "ncsClCd": str(q.get("ncsClCd") or "").strip(),
                 "ncs_detail": str(q.get("ncs_detail") or q.get("ncsSclasCdnm") or "").strip(),
                 "question_focus": str(q.get("question_focus") or "").strip(),
+                "question_focus_type": str(q.get("question_focus_type") or "").strip(),
+                "assessment_scale": str((q.get("assessment_guide") or {}).get("scale") or "").strip()
+                if isinstance(q.get("assessment_guide"), dict)
+                else "",
                 "question_intent": _question_intent_key(question),
                 "question_repeat_signature": repeat_signature,
                 "question_repeat_duplicate": repeat_duplicate,
@@ -2915,7 +3491,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     count_matches_plan = expected_count <= 0 or len(items) == expected_count
     passed = bool(count_matches_plan and items and ready_count == len(items))
     strategy["question_quality_report"] = {
-        "policy": "main_question_method_shape_ksa_official_sample_eval_followup_job_context_gate_v9_visible_ksa",
+        "policy": "ncs_official_task_evaluation_pair_v13_conditions_ax_evidence_gate",
         "passed": passed,
         "summary": {
             "question_count": len(items),
@@ -3301,6 +3877,7 @@ def health(request: Request) -> dict:
             "openai": bool(settings.resolve_openai_key(allow_env_fallback=openai_server_fallback)),
             "openai_server_fallback": openai_server_fallback,
             "openai_server_fallback_requires_header": openai_server_fallback_configured,
+            "openai_local_demo_mode": bool(settings.local_demo_mode()),
         },
         "ncs_source": "remote-mcp",
         "ncs_mcp": mcp,
@@ -3470,6 +4047,198 @@ def _require_admin(x_admin_token: str | None) -> None:
         raise HTTPException(status_code=403, detail="ADMIN_TOKEN is required")
     if x_admin_token != expected:
         raise HTTPException(status_code=401, detail="invalid admin token")
+
+
+@app.get("/api/ops/quality-metrics")
+def ops_question_quality_metrics() -> dict:
+    try:
+        return {
+            "quality_policy_version": QUALITY_POLICY_VERSION,
+            "metrics": question_quality_metrics(),
+            "evidence_note": "운영 리뷰 DB에 기록된 생성·검토·에스컬레이션 이벤트 기준",
+        }
+    except Exception as exc:
+        raise _internal_http_error("question_quality_metrics_failed", exc, status_code=503) from exc
+
+
+@app.get("/api/ops/ax-readiness")
+def ops_ax_readiness() -> dict:
+    metrics = question_quality_metrics()
+    mcp = ncs_mcp_status()
+    state_path = BASE_DIR.parent / "reports" / "question_quality_loop" / "state.json"
+    loop_state: dict[str, Any] = {}
+    try:
+        if state_path.is_file():
+            candidate = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(candidate, dict):
+                loop_state = candidate
+    except Exception:
+        loop_state = {}
+    decisions = metrics.get("decisions") if isinstance(metrics.get("decisions"), dict) else {}
+    negative_reviews = int(decisions.get("reject") or 0) + int(decisions.get("needs_edit") or 0)
+    signals = {
+        "ready_asset_evidence": bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable")),
+        "ready_asset_pilot": bool(mcp.get("configured")),
+        "ready_asset_ref": "GET /health · NCS_MCP configured/reachable/ksaAvailable",
+        "enabled_output_evidence": int(metrics.get("runs") or 0) > 0,
+        "enabled_output_pilot": True,
+        "enabled_output_ref": f"question_quality_runs={int(metrics.get('runs') or 0)}",
+        "enabled_review_evidence": int(metrics.get("reviews") or 0) > 0,
+        "enabled_review_pilot": True,
+        "enabled_review_ref": f"question_quality_reviews={int(metrics.get('reviews') or 0)}",
+        "first_redesign_evidence": False,
+        "first_redesign_pilot": True,
+        "first_redesign_ref": "docs/QUESTION_QUALITY_ORCHESTRATION.md",
+        "first_auto_evidence": False,
+        "first_auto_pilot": True,
+        "first_auto_ref": "scripts/run_question_quality_loop.py (운영 자동처리 증거는 별도 필요)",
+        "first_escalation_evidence": int(metrics.get("escalation_runs") or 0) > 0,
+        "first_escalation_pilot": True,
+        "first_escalation_ref": f"escalation_runs={int(metrics.get('escalation_runs') or 0)}",
+        "first_exception_evidence": False,
+        "first_exception_pilot": True,
+        "first_exception_ref": "승인·반려는 구현됨; 이의·롤백 훈련 로그는 아직 없음",
+        "first_metrics_evidence": int(metrics.get("runs") or 0) > 0,
+        "first_metrics_pilot": True,
+        "first_metrics_ref": "GET /api/ops/quality-metrics",
+        "first_feedback_evidence": negative_reviews > 0,
+        "first_feedback_pilot": True,
+        "first_feedback_ref": f"reject_or_needs_edit_reviews={negative_reviews}",
+        "native_core_evidence": False,
+        "native_core_pilot": True,
+        "native_core_ref": "AI 중단 영향분석·핵심 KPI 연계 운영 증거 필요",
+        "native_loop_evidence": bool(int(metrics.get("active_eval_cases") or 0) > 0 and loop_state.get("success") is True),
+        "native_loop_pilot": True,
+        "native_loop_ref": (
+            f"active_eval_cases={int(metrics.get('active_eval_cases') or 0)} · "
+            f"latest_loop_success={loop_state.get('success') is True}"
+        ),
+        "native_resilience_evidence": False,
+        "native_resilience_pilot": True,
+        "native_resilience_ref": "템플릿 강등 경로는 구현됨; 실제 장애훈련·RTO 기록 필요",
+        "native_scope_evidence": False,
+        "native_scope_pilot": True,
+        "native_scope_ref": "적용·제외 범위, SLA, 감사 주기의 운영 승인 문서 필요",
+    }
+    return {
+        "assessment": assess_ax_readiness(signals),
+        "quality_metrics": metrics,
+        "ncs_mcp": mcp,
+        "latest_quality_loop": loop_state,
+        "disclaimer": "AX체크 기준의 자체 점검이며 공식 인증·감사 결과가 아닙니다.",
+    }
+
+
+@app.get("/api/quality/runs/{run_id}")
+def get_quality_run_endpoint(
+    run_id: str,
+    x_review_token: str | None = Header(default=None, alias="X-Review-Token"),
+) -> dict:
+    if not verify_question_quality_run_token(str(run_id or "").strip(), str(x_review_token or "")):
+        raise HTTPException(status_code=401, detail="invalid review token")
+    run = get_question_quality_run(str(run_id or "").strip())
+    if not run:
+        raise HTTPException(status_code=404, detail="quality run not found")
+    return {"status": "success", "data": run}
+
+
+@app.post("/api/quality/runs/{run_id}/review")
+def review_quality_run_endpoint(
+    run_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
+) -> dict:
+    candidate = dict(payload or {})
+    candidate["run_id"] = str(run_id or "").strip()
+    try:
+        feedback = sanitize_feedback_payload(candidate)
+        if feedback["verdict"] in {"reject", "needs_edit"}:
+            if not feedback.get("issue_codes"):
+                raise ValueError("reject/needs_edit feedback requires at least one issue code")
+            if not str(feedback.get("question_text") or "").strip():
+                raise ValueError("reject/needs_edit feedback requires question_text for the improvement loop")
+        result = record_question_quality_review(feedback)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _record_audit_event(
+        request,
+        action=f"question_quality_{feedback['verdict']}",
+        resource_type="question_quality_run",
+        resource_id=str(run_id or ""),
+    )
+    return {"status": "success", "data": result}
+
+
+@app.post("/api/quality/reviews/{review_id}/promote-to-eval")
+def promote_quality_review_endpoint(
+    review_id: int,
+    payload: dict[str, Any] | None = Body(default=None),
+    x_admin_token: str | None = Header(default=None),
+) -> dict:
+    _require_admin(x_admin_token)
+    case_type = str((payload or {}).get("case_type") or "").strip()
+    if case_type not in {"golden", "negative", "regression"}:
+        raise HTTPException(status_code=422, detail="case_type must be golden, negative, or regression")
+    try:
+        result = promote_question_quality_eval_case(review_id, case_type, QUALITY_POLICY_VERSION)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "success", "data": result}
+
+
+@app.post("/api/quality/runs/{run_id}/questions/{question_hash}/rollback-review")
+def rollback_quality_review_endpoint(
+    run_id: str,
+    question_hash: str,
+    request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
+) -> dict:
+    candidate = dict(payload or {})
+    candidate.update(
+        {
+            "run_id": str(run_id or "").strip(),
+            "question_hash": str(question_hash or "").strip(),
+            "verdict": "approve",
+            "issue_codes": [],
+        }
+    )
+    try:
+        sanitized = sanitize_feedback_payload(candidate)
+        result = rollback_question_quality_review(
+            run_id=sanitized["run_id"],
+            review_token=str(sanitized.get("review_token") or ""),
+            question_hash=sanitized["question_hash"],
+            reviewer_ref=str(sanitized.get("reviewer_ref") or "local-reviewer"),
+            note=str(sanitized.get("note") or ""),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _record_audit_event(
+        request,
+        action="question_quality_review_rollback",
+        resource_type="question_quality_run",
+        resource_id=str(run_id or ""),
+    )
+    return {"status": "success", "data": result}
+
+
+@app.get("/api/quality/eval-cases")
+def list_quality_eval_cases_endpoint(
+    active_only: bool = Query(default=True),
+    x_admin_token: str | None = Header(default=None),
+) -> dict:
+    _require_admin(x_admin_token)
+    return {"status": "success", "data": list_question_quality_eval_cases(active_only=active_only)}
 
 
 @app.post("/api/admin/sync/public-inst")
@@ -4338,6 +5107,7 @@ async def jd_strategy_upload(
         _extract_question_texts(avoid_questions_json),
         max_items=20,
     )
+    avoid_context = _join_generation_context(avoid_context, _quality_feedback_context(ncs_matches))
     enable_ai_refine = bool(inferred_keywords or reviewed_keywords or ai_ncs_code_candidates)
 
     try:
@@ -4391,6 +5161,11 @@ async def jd_strategy_upload(
             ncs_ksa=ncs_ksa,
         )
     strategy = _attach_ksa_evidence_to_strategy(strategy, ncs_ksa)
+    _register_question_quality_evidence(
+        strategy,
+        source_endpoint="/api/jd/strategy/upload",
+        ncs_matches=ncs_matches,
+    )
 
     if review_session:
         _record_audit_event(
@@ -4599,6 +5374,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         _extract_question_texts(raw_avoid_questions),
         max_items=20,
     )
+    avoid_context = _join_generation_context(avoid_context, _quality_feedback_context(ncs_matches))
 
     try:
         loop = asyncio.get_event_loop()
@@ -4651,6 +5427,11 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
             ncs_ksa=ncs_ksa,
         )
     strategy = _attach_ksa_evidence_to_strategy(strategy, ncs_ksa)
+    _register_question_quality_evidence(
+        strategy,
+        source_endpoint="/api/questions/generate-from-text",
+        ncs_matches=ncs_matches,
+    )
 
     _record_audit_event(
         request,

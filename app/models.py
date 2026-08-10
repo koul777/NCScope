@@ -266,3 +266,70 @@ class AuditLog(Base):
         Index("ix_audit_logs_actor_created", "actor_id", "created_at"),
     )
 
+
+class QuestionQualityRun(Base):
+    __tablename__ = "question_quality_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_endpoint: Mapped[str] = mapped_column(String(128), nullable=False)
+    ncs_codes_json: Mapped[dict] = mapped_column(JSON, nullable=True)
+    competency_names_json: Mapped[dict] = mapped_column(JSON, nullable=True)
+    quality_policy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    generator_version: Mapped[str] = mapped_column(String(128), nullable=True)
+    review_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ready_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    escalation_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    exception_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    trigger_codes_json: Mapped[dict] = mapped_column(JSON, nullable=True)
+    evidence_json: Mapped[dict] = mapped_column(JSON, nullable=True)
+    final_decision: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("ix_question_quality_runs_created", "created_at"),
+        Index("ix_question_quality_runs_policy", "quality_policy_version"),
+    )
+
+
+class QuestionQualityReview(Base):
+    __tablename__ = "question_quality_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("question_quality_runs.id"), nullable=False)
+    question_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    question_index: Mapped[int] = mapped_column(Integer, nullable=True)
+    ncs_code: Mapped[str] = mapped_column(String(64), nullable=True)
+    method: Mapped[str] = mapped_column(String(64), nullable=True)
+    question_text: Mapped[str] = mapped_column(Text, nullable=True)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    issue_codes_json: Mapped[dict] = mapped_column(JSON, nullable=True)
+    note_redacted: Mapped[str] = mapped_column(String(500), nullable=True)
+    reviewer_ref_hash: Mapped[str] = mapped_column(String(64), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_question_quality_reviews_run", "run_id"),
+        Index("ix_question_quality_reviews_ncs_created", "ncs_code", "created_at"),
+    )
+
+
+class QuestionQualityEvalCase(Base):
+    __tablename__ = "question_quality_eval_cases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_review_id: Mapped[int] = mapped_column(ForeignKey("question_quality_reviews.id"), nullable=False)
+    case_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    quality_policy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    expected_decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("source_review_id", "case_type", name="ux_quality_eval_review_case"),
+        Index("ix_question_quality_eval_active", "active", "case_type"),
+    )
+

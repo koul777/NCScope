@@ -222,6 +222,33 @@ def test_download_sample_archive_returns_cached_file_before_network(monkeypatch,
     assert samples.download_sample_archive(entry, tmp_path) == cached
 
 
+def test_load_cached_official_entries_uses_latest_report_metadata(tmp_path: Path) -> None:
+    report_dir = tmp_path / "reports"
+    out_dir = tmp_path / "downloads"
+    report_dir.mkdir()
+    out_dir.mkdir()
+    (report_dir / "ncs_official_interview_samples_20260101_000000.csv").write_text(
+        "collection_id,seq,title,ncs_code_hint,detail_label_hint\n"
+        "interview-model,1001,cached sample,19-03-03,detail label\n",
+        encoding="utf-8-sig",
+    )
+    (out_dir / "1001_cached sample.zip").write_bytes(b"PK\x03\x04cached")
+
+    entries = samples.load_cached_official_entries(
+        report_dir,
+        out_dir,
+        samples.SAMPLE_COLLECTIONS["interview-model"],
+        4,
+    )
+
+    assert len(entries) == 1
+    assert entries[0].seq == "1001"
+    assert entries[0].title == "cached sample"
+    assert entries[0].ncs_code_hint == "19-03-03"
+    assert entries[0].detail_label_hint == "detail label"
+    assert entries[0].file_mstky == ""
+
+
 def test_title_ncs_hints_normalizes_code_and_detail_label() -> None:
     assert samples._title_ncs_hints("(2024고도화)통신서비스_20-02-03") == ("20-02-03", "통신서비스")
     assert samples._title_ncs_hints("19-3-18. 자율주행개발 면접과제 및 평가양식") == ("19-03-18", "자율주행개발")
@@ -323,6 +350,24 @@ def test_profile_sample_file_tracks_single_hwp_document_materials(monkeypatch, t
     assert {row["discussion_minutes"] for row in rows} == {"20"}
     assert all("100" in row["rating_scale_labels"] for row in rows)
     assert all("문제해결력" in row["evaluation_elements"] for row in rows)
+
+
+def test_profile_combined_document_uses_task_shape_when_exact_heading_is_missing() -> None:
+    text = (
+        "직무기술서\n채용공고\n"
+        "경험면접\n최근 수행한 업무 사례에서 본인의 역할과 행동, 결과를 설명해 주세요.\n"
+        "평가표\n평가요소: 문제해결\n평정: 우수 보통 미흡\n"
+    )
+
+    rows, warnings = samples._profile_document_bytes("정보통신기기개발.txt", text.encode("utf-8"))
+    summary = samples.summarize_sample("정보통신기기개발", rows)
+
+    assert warnings == []
+    assert len(rows) == 1
+    assert rows[0]["artifact_type"] == "job_description"
+    assert "task" in rows[0]["artifact_types"]
+    assert "evaluation_form" in rows[0]["artifact_types"]
+    assert summary["has_task_and_eval_pairs"] is True
 
 
 def test_profile_document_bytes_uses_method_sections_for_combined_documents() -> None:
