@@ -70,8 +70,6 @@ def test_reverse_dictionary_uses_synonym_without_exact_name(monkeypatch):
 
 def test_rerank_ncs_matches_ai_success(monkeypatch):
     monkeypatch.setenv("ENABLE_AI_RERANK", "true")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
     monkeypatch.setattr(jd_strategy, "_check_openai_connectivity", lambda api_key, ttl_sec=60: (True, ""))
     monkeypatch.setattr(
         jd_strategy,
@@ -103,6 +101,7 @@ def test_rerank_ncs_matches_ai_success(monkeypatch):
         jd_text="총무 업무 중심의 채용",
         ncs_items=[{"ncsClCd": "02020302"}, {"ncsClCd": "02020101"}],
         top_k=2,
+        openai_api_key="test-key",
     )
 
     assert mode == "ai"
@@ -112,8 +111,6 @@ def test_rerank_ncs_matches_ai_success(monkeypatch):
 
 def test_rerank_ncs_matches_fallback_on_invalid_ai(monkeypatch):
     monkeypatch.setenv("ENABLE_AI_RERANK", "true")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
     monkeypatch.setattr(jd_strategy, "_check_openai_connectivity", lambda api_key, ttl_sec=60: (True, ""))
     monkeypatch.setattr(
         jd_strategy,
@@ -134,6 +131,7 @@ def test_rerank_ncs_matches_fallback_on_invalid_ai(monkeypatch):
         jd_text="사무행정 채용",
         ncs_items=[{"ncsClCd": "02020302"}, {"ncsClCd": "02020101"}],
         top_k=2,
+        openai_api_key="test-key",
     )
 
     assert mode == "keyword"

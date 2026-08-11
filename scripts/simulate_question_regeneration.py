@@ -14,7 +14,7 @@ if str(ROOT) in sys.path:
     sys.path.remove(str(ROOT))
 sys.path.insert(0, str(ROOT))
 
-from app.main import (
+from app.main import (  # noqa: E402
     QUALITY_INTERVIEW_METHODS,
     _behavior_anchored_evaluation,
     _followups_for_method,
@@ -23,7 +23,11 @@ from app.main import (
     _run_runtime_question_quality_orchestration,
     _task_conditions_for_method,
 )
-from app.services.question_quality_orchestrator import evaluate_ksa_measurement, is_history_duplicate
+from app.services.question_quality_orchestrator import (  # noqa: E402
+    RUNTIME_QUESTION_ORCHESTRATION_POLICY,
+    evaluate_ksa_measurement,
+    is_history_duplicate,
+)
 
 
 DEFAULT_REPORT_DIR = ROOT / "reports" / "question_quality_simulation"
@@ -212,6 +216,7 @@ def run_simulation(
     total_cycles = len(cases) * cycle_count
     return {
         "schema_version": "question_regeneration_simulation_v1",
+        "runtime_policy": RUNTIME_QUESTION_ORCHESTRATION_POLICY,
         "generated_at": datetime.now().astimezone().isoformat(),
         "status": "passed" if not failures else "failed",
         "cycles_per_case": cycle_count,
@@ -252,6 +257,7 @@ def write_report(result: dict[str, Any], report_dir: Path) -> tuple[Path, Path]:
         "# 면접 문항 반복 생성 시뮬레이션",
         "",
         f"- 상태: **{result['status']}**",
+        f"- 런타임 정책: `{result['runtime_policy']}`",
         f"- 조합: {result['case_count']}개 ({result['method_count']}개 면접기법 × {result['focus_type_count']}개 KSA 유형)",
         f"- 조합별 반복: {result['cycles_per_case']}회",
         f"- 총 생성 사이클: {result['total_cycles']}회",

@@ -765,9 +765,8 @@ def _generate_questions_with_openai_from_ncs(
     mode: str = "diverse",
     extra_context: str = "",
     api_key_override: str = "",
-    allow_env_fallback: bool | None = None,
 ) -> list[dict[str, Any]]:
-    api_key = settings.resolve_openai_key(api_key_override, allow_env_fallback=allow_env_fallback)
+    api_key = settings.resolve_openai_key(api_key_override)
     if not api_key:
         return []
 

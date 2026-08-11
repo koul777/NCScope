@@ -185,8 +185,12 @@ generate-review-regenerate sequence. A separate long-run pressure check covers
 history; the deterministic constraint/stakeholder pool contains 1,152 unique
 combinations before reuse.
 
-Recorded overnight evidence includes a 4,830-cycle regeneration run with zero
-empty, duplicate, unresolved, KSA-gate, or full-quality failures, and a
+Recorded overnight evidence includes a current-policy 630-cycle regeneration
+matrix with zero empty, duplicate, unresolved, KSA-gate, or full-quality
+failures. An earlier runtime-policy v5 pressure run covered 4,830 cycles across
+the 500-question rollover boundary with the same zero-failure invariants. A
+v6 rerun at that pressure size hit the 15-minute environment timeout and is not
+counted as passing evidence. The lifecycle evidence is a
 1,000-cycle review lifecycle run with 333 forced database reconnects, 2,000
 intentionally invalid foreign-hash/tampered-text requests, 1,000 exact review
 retries and 1,000 exact rollback retries that created no duplicate history rows,

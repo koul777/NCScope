@@ -223,7 +223,7 @@ def post_chat_completions_with_retries(
 ) -> dict[str, Any]:
     key = str(api_key or "").strip()
     if not key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
+        raise RuntimeError("OpenAI API key is not set")
 
     attempts = int(max_attempts or 0) if max_attempts is not None else 0
     if attempts <= 0:

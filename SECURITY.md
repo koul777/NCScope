@@ -4,10 +4,9 @@
 
 - `.env`는 GitHub에 올리지 않습니다.
 - 앱은 기본적으로 import 시점에 `.env`를 자동 로드하지 않습니다.
-- 로컬 실행은 `.\run_local.ps1`을 사용하거나, 배포 플랫폼의 환경변수 기능으로 `NCS_MCP_URL`, `OPENAI_API_KEY` 등을 주입하세요.
+- 로컬 실행은 `.\run_local.ps1`을 사용하세요. `.env`와 배포 환경변수에는 `NCS_MCP_URL` 등 비밀이 아닌 런타임 설정만 두고, OpenAI API key는 UI 또는 요청 body/form에 전달하세요.
 - 화면에 입력한 OpenAI API key는 요청 단위로만 서버에 전달되며, DB나 브라우저 저장소에 저장하지 않습니다.
-- 요청에 OpenAI API key가 없을 때 서버 `OPENAI_API_KEY`를 대신 쓰는 fallback은 기본적으로 꺼져 있습니다. fallback을 켜더라도 `OPENAI_SERVER_FALLBACK_TOKEN`과 일치하는 `X-NCScope-OpenAI-Token` 헤더가 없으면 서버 키를 사용하지 않습니다. 공유/공개 배포에서는 추가 사용량 제한과 비용 모니터링을 구성하세요.
-- 로컬 발표에 한해 `OPENAI_ALLOW_SERVER_KEY_FALLBACK=true`와 `NCSCOPE_LOCAL_DEMO_MODE=true`를 함께 사용할 수 있습니다. 이 예외는 loopback 요청에만 적용되며, 발표 후에는 두 설정을 다시 `false`로 바꾸세요.
+- 요청에 OpenAI API key가 없으면 템플릿 기반 생성 경로를 사용하거나, 해당 endpoint가 요청 키를 요구할 때 400을 반환합니다. 서버 환경변수·`.env`·fallback 토큰으로 키를 대체하지 않습니다.
 - Windows `curl` fallback은 기본적으로 꺼져 있습니다. 이 fallback을 켜면 일부 환경에서 Authorization 헤더가 프로세스 실행 정보에 노출될 수 있습니다.
 - 이미 로컬 공유 작업공간에 노출된 API key는 재발급·폐기하는 것을 권장합니다.
 

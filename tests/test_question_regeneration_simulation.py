@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from scripts.simulate_question_regeneration import FOCUSES, run_simulation, write_report
 from scripts.simulate_question_review_lifecycle import run_simulation as run_lifecycle_simulation
+from app.services.question_quality_orchestrator import RUNTIME_QUESTION_ORCHESTRATION_POLICY
 
 
 def test_repeated_generation_simulation_covers_methods_and_ksa_without_failures() -> None:
     result = run_simulation(cycles=4, history_window=200)
 
     assert result["status"] == "passed"
+    assert result["runtime_policy"] == RUNTIME_QUESTION_ORCHESTRATION_POLICY
     assert result["case_count"] == 7 * len(FOCUSES)
     assert result["total_cycles"] == 7 * len(FOCUSES) * 4
     assert result["failure_count"] == 0

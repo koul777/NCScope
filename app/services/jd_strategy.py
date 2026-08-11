@@ -303,13 +303,12 @@ def extract_focus_terms_from_pdf_vision(
     file_bytes: bytes,
     max_pages: int = 2,
     api_key_override: str = "",
-    allow_env_fallback: bool | None = None,
 ) -> list[str]:
     """
     Use OpenAI vision to extract role keywords when PDF text layer is broken.
     Returns canonical Korean terms suitable for NCS matching.
     """
-    api_key = settings.resolve_openai_key(api_key_override, allow_env_fallback=allow_env_fallback)
+    api_key = settings.resolve_openai_key(api_key_override)
     if not api_key:
         return []
     images = _render_pdf_pages_png_py313(file_bytes=file_bytes, max_pages=max_pages)
@@ -1933,7 +1932,6 @@ def generate_personalized_interview_questions(
     user_profile: str = "",
     target_count: int = 12,
     api_key_override: str = "",
-    allow_env_fallback: bool | None = None,
 ) -> dict[str, Any]:
     comp_name = competency_name or f"NCS-{ncs_code}"
     ncs_matches = [{"ncsClCd": ncs_code, "compeUnitName": comp_name}]
@@ -1951,7 +1949,6 @@ def generate_personalized_interview_questions(
         mode="personalized",
         extra_context=f"user_profile={user_profile[:3000]}",
         api_key_override=api_key_override,
-        allow_env_fallback=allow_env_fallback,
     )
     questions: list[dict[str, Any]] = []
     for q in generated:
@@ -2008,7 +2005,6 @@ def generate_diverse_interview_questions(
     target_count: int = 6,
     extra_context: str = "",
     api_key_override: str = "",
-    allow_env_fallback: bool | None = None,
 ) -> dict[str, Any]:
     comp_name = competency_name or f"NCS-{ncs_code}"
     ncs_matches = [{"ncsClCd": ncs_code, "compeUnitName": comp_name}]
@@ -2021,7 +2017,6 @@ def generate_diverse_interview_questions(
         mode="diverse",
         extra_context=extra_context,
         api_key_override=api_key_override,
-        allow_env_fallback=allow_env_fallback,
     )
     questions_list: list[dict[str, Any]] = []
     for i, q in enumerate(generated, 1):
@@ -2298,7 +2293,6 @@ def generate_interview_questions_by_ncs_code(
     include_followups: bool = True,
     extra_context: str = "",
     api_key_override: str = "",
-    allow_env_fallback: bool | None = None,
 ) -> dict[str, Any]:
     code = str(ncs_code or "").strip()
     comp_name = competency_name or f"NCS-{code}"
@@ -2358,7 +2352,6 @@ def generate_interview_questions_by_ncs_code(
         mode="ncs_code_only",
         extra_context=extra_context,
         api_key_override=api_key_override,
-        allow_env_fallback=allow_env_fallback,
     )
     generated: list[dict[str, Any]] = []
     seen_question_keys: set[str] = set()
@@ -2411,7 +2404,6 @@ def generate_interview_questions_by_ncs_code(
             mode="ncs_code_only",
             extra_context=dedup_hint,
             api_key_override=api_key_override,
-            allow_env_fallback=allow_env_fallback,
         )
         _merge_generated(extra_raw)
 
@@ -3166,13 +3158,12 @@ def _ai_rerank_ncs_matches(
     ranked_items: list[dict[str, Any]],
     top_k: int = 8,
     api_key_override: str = "",
-    allow_env_fallback: bool | None = None,
 ) -> list[dict[str, Any]]:
     enabled = os.getenv("ENABLE_AI_RERANK", "true").strip().lower() in {"1", "true", "yes", "y"}
     if not enabled:
         return []
 
-    api_key = settings.resolve_openai_key(api_key_override, allow_env_fallback=allow_env_fallback)
+    api_key = settings.resolve_openai_key(api_key_override)
     if not api_key or len(ranked_items) < 2:
         return []
 
@@ -3366,7 +3357,6 @@ def rerank_ncs_matches(
     top_k: int = 8,
     preferred_sclass: list[str] | None = None,
     openai_api_key: str = "",
-    allow_env_fallback: bool | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     rank_pool_k = max(top_k, 12)
     diversity_cap: int | None = None
@@ -3402,7 +3392,6 @@ def rerank_ncs_matches(
         ranked_items=ranked,
         top_k=top_k,
         api_key_override=openai_api_key,
-        allow_env_fallback=allow_env_fallback,
     )
     if ai_ranked:
         return ai_ranked[:top_k], "ai"
@@ -3879,9 +3868,8 @@ def build_strategy_with_openai(
     question_plan: dict[str, Any] | None = None,
     interview_methods: list[str] | None = None,
     extra_context: str = "",
-    allow_env_fallback: bool | None = None,
 ) -> dict[str, Any]:
-    api_key = settings.resolve_openai_key(api_key_override, allow_env_fallback=allow_env_fallback)
+    api_key = settings.resolve_openai_key(api_key_override)
     default_target = max(5, min(40, int(os.getenv("INTERVIEW_TARGET_COUNT", "10") or "10")))
     target_count = int(target_count_override or default_target)
     target_count = max(1, min(40, target_count))
@@ -3894,7 +3882,7 @@ def build_strategy_with_openai(
         return build_strategy_with_rule_fallback(
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
-            error_message="model_generation_failed: OPENAI_API_KEY is not set",
+            error_message="model_generation_failed: request OpenAI API key is not set",
             target_count=target_count,
         )
     if force_fallback:

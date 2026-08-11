@@ -5,6 +5,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+_DOTENV_BLOCKED_KEYS = frozenset(
+    {
+        "OPENAI_API_KEY",
+        "OPENAI_ALLOW_SERVER_KEY_FALLBACK",
+        "OPENAI_SERVER_FALLBACK_TOKEN",
+        "NCSCOPE_LOCAL_DEMO_MODE",
+    }
+)
+
+
 def _load_env_file(path: Path) -> None:
     if not path.exists():
         return
@@ -17,6 +27,7 @@ def _load_env_file(path: Path) -> None:
         value = value.strip()
         if (
             key
+            and key not in _DOTENV_BLOCKED_KEYS
             and value
             and "YOUR_" not in value
             and "SET_STRONG" not in value
@@ -82,35 +93,12 @@ class Settings:
         mb = max(1.0, min(202.0, mb))
         return int(mb * 1024 * 1024)
 
-    def openai_key(self) -> str:
-        return os.getenv("OPENAI_API_KEY", "").strip()
+    def resolve_openai_key(self, request_key: str = "") -> str:
+        """Return only the request-scoped key; server/environment fallback is removed."""
+        return str(request_key or "").strip()
 
-    def allow_server_openai_key_fallback(self) -> bool:
-        return os.getenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "y"}
-
-    def local_demo_mode(self) -> bool:
-        """Allow the server key without a token only for loopback presentation traffic."""
-        return os.getenv("NCSCOPE_LOCAL_DEMO_MODE", "false").strip().lower() in {"1", "true", "yes", "y"}
-
-    def server_openai_fallback_token(self) -> str:
-        return os.getenv("OPENAI_SERVER_FALLBACK_TOKEN", "").strip()
-
-    def resolve_openai_key(self, request_key: str = "", allow_env_fallback: bool | None = None) -> str:
-        key = str(request_key or "").strip()
-        if key:
-            return key
-        if allow_env_fallback is None:
-            allow_env_fallback = self.allow_server_openai_key_fallback()
-        return self.openai_key() if allow_env_fallback else ""
-
-    def openai_key_source(self, request_key: str = "", allow_env_fallback: bool | None = None) -> str:
-        if str(request_key or "").strip():
-            return "request"
-        if allow_env_fallback is None:
-            allow_env_fallback = self.allow_server_openai_key_fallback()
-        if allow_env_fallback and self.openai_key():
-            return "env"
-        return "missing"
+    def openai_key_source(self, request_key: str = "") -> str:
+        return "request" if str(request_key or "").strip() else "missing"
 
     def admin_token(self) -> str:
         return os.getenv("ADMIN_TOKEN", "").strip()

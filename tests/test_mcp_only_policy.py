@@ -560,88 +560,29 @@ def test_generate_from_text_does_not_use_server_openai_key_by_default(monkeypatc
     assert body["openai_key_source"] == "missing"
     kwargs = build_strategy.call_args.kwargs
     assert kwargs["api_key_override"] == ""
-    assert kwargs["allow_env_fallback"] is False
     assert "sk-server-env-key" not in resp.text
 
 
-def test_generate_from_text_allows_server_openai_key_when_explicitly_enabled(monkeypatch, mocker):
-    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
-    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
-    monkeypatch.setenv("OPENAI_SERVER_FALLBACK_TOKEN", "fallback-auth-token")
-    unit = {
-        "ncsClCd": "0201010103_22v2",
-        "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
-        "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
-    }
-    ksa = {
-        "ncsClCd": unit["ncsClCd"],
-        "compeUnitName": unit["compeUnitName"],
-        "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
-        "factorSource": "ncs-mcp",
-        "ksaStatus": "official",
-    }
-    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
-    mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
-    mocker.patch("app.main.build_ncs_context_pack", return_value={})
-    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
-
-    with TestClient(main.app) as client:
-        resp = client.post(
-            "/api/questions/generate-from-text",
-            headers={"X-NCScope-OpenAI-Token": "fallback-auth-token"},
-            json={
-                "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
-                "selected_ncs": [unit],
-            },
-        )
-
-    assert resp.status_code == 200
-    assert resp.json()["openai_key_source"] == "env"
-    assert build_strategy.call_args.kwargs["allow_env_fallback"] is True
-    assert "sk-server-env-key" not in resp.text
-
-
-def test_server_openai_fallback_rejects_missing_auth_header(monkeypatch):
+def test_server_openai_environment_key_is_never_used(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
     monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
     monkeypatch.setenv("OPENAI_SERVER_FALLBACK_TOKEN", "fallback-auth-token")
 
     with TestClient(main.app) as client:
-        resp = client.post(
+        generation_resp = client.post(
             "/api/questions/generate-personalized",
+            headers={"X-NCScope-OpenAI-Token": "fallback-auth-token"},
             json={"ncs_code": "0202030201_25v3"},
         )
+        health_resp = client.get("/health")
 
-    assert resp.status_code == 400
-    assert "X-NCScope-OpenAI-Token" in resp.text
-
-
-def test_local_demo_mode_allows_env_key_only_for_loopback(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
-    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
-    monkeypatch.setenv("NCSCOPE_LOCAL_DEMO_MODE", "true")
-    monkeypatch.delenv("OPENAI_SERVER_FALLBACK_TOKEN", raising=False)
-
-    loopback_request = main.Request({
-        "type": "http",
-        "method": "GET",
-        "path": "/health",
-        "headers": [],
-        "client": ("127.0.0.1", 54321),
-    })
-    remote_request = main.Request({
-        "type": "http",
-        "method": "GET",
-        "path": "/health",
-        "headers": [],
-        "client": ("192.0.2.10", 54321),
-    })
-
-    assert main._allow_server_openai_key_fallback(loopback_request) is True
-    assert main._openai_key_source("", loopback_request) == "env"
-    assert main._allow_server_openai_key_fallback(remote_request) is False
-    assert main._openai_key_source("", remote_request) == "missing"
+    assert generation_resp.status_code == 400
+    assert "request body" in generation_resp.text
+    assert "sk-server-env-key" not in generation_resp.text
+    assert health_resp.status_code == 200
+    health = health_resp.json()
+    assert health["keys"]["openai"] is False
+    assert health["keys"]["openai_request_scoped"] is True
 
 
 def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkeypatch, mocker):
@@ -1211,10 +1152,7 @@ def test_extract_sclass_does_not_expose_internal_exception(monkeypatch):
     assert sentinel not in resp.text
 
 
-def test_personalized_questions_reject_sensitive_query_text(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
-    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
-
+def test_personalized_questions_reject_sensitive_query_text():
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/questions/generate-personalized?ncs_code=02020302&job_posting=resume-text",

@@ -124,6 +124,12 @@ Set-Location -LiteralPath $(ConvertTo-PSLiteral $mcpRepo)
 
 $envFile = Join-Path $PSScriptRoot ".env"
 if (Test-Path -LiteralPath $envFile) {
+  $blockedDotenvKeys = @(
+    "OPENAI_API_KEY",
+    "OPENAI_ALLOW_SERVER_KEY_FALLBACK",
+    "OPENAI_SERVER_FALLBACK_TOKEN",
+    "NCSCOPE_LOCAL_DEMO_MODE"
+  )
   Get-Content -LiteralPath $envFile -Encoding UTF8 | ForEach-Object {
     $line = $_.Trim()
     if (-not $line -or $line.StartsWith("#") -or $line -notmatch "=") {
@@ -132,6 +138,9 @@ if (Test-Path -LiteralPath $envFile) {
     $key, $value = $line -split "=", 2
     $key = $key.Trim().TrimStart([char]0xFEFF)
     $value = $value.Trim()
+    if ($blockedDotenvKeys -contains $key) {
+      return
+    }
     if ($key -and $value -and -not [Environment]::GetEnvironmentVariable($key, "Process")) {
       [Environment]::SetEnvironmentVariable($key, $value, "Process")
     }

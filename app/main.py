@@ -209,7 +209,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(title="NCScope", version="1.2.0", lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
 queue = QueueManager(max_retries=2)
@@ -3172,50 +3172,23 @@ def _sanitize_request_openai_key(value: str | None) -> str:
     return key
 
 
-def _allow_server_openai_key_fallback(request: Request | None = None) -> bool:
-    if not settings.allow_server_openai_key_fallback():
-        return False
-    # Local demo mode is intentionally limited to loopback traffic. This lets a
-    # presenter use OPENAI_API_KEY from .env without copying it into the UI,
-    # while remote/shared deployments still require the fallback token below.
-    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
-    if settings.local_demo_mode() and client_host in {"127.0.0.1", "::1", "localhost"}:
-        return True
-    expected = settings.server_openai_fallback_token()
-    provided = (
-        str(request.headers.get("x-ncscope-openai-token") or "").strip()
-        if request is not None
-        else ""
-    )
-    return bool(
-        expected
-        and provided
-        and secrets.compare_digest(provided, expected)
-    )
-
-
 def _openai_key_source(request_key: str, request: Request | None = None) -> str:
-    return settings.openai_key_source(
-        request_key,
-        allow_env_fallback=_allow_server_openai_key_fallback(request),
-    )
+    del request
+    return settings.openai_key_source(request_key)
 
 
 def _require_allowed_openai_key(
     request_key: str,
     request: Request | None = None,
 ) -> None:
-    if settings.resolve_openai_key(
-        request_key,
-        allow_env_fallback=_allow_server_openai_key_fallback(request),
-    ):
+    del request
+    if settings.resolve_openai_key(request_key):
         return
     raise HTTPException(
         status_code=400,
         detail=(
-            "openai_api_key is required. Server OPENAI_API_KEY fallback is disabled unless "
-            "OPENAI_ALLOW_SERVER_KEY_FALLBACK=true, OPENAI_SERVER_FALLBACK_TOKEN is set, "
-            "and the matching X-NCScope-OpenAI-Token header is provided."
+            "openai_api_key is required in the request body or form data. "
+            "Server and .env API key fallback is not supported."
         ),
     )
 
@@ -4661,22 +4634,16 @@ def _filter_ncs_code_result_against_avoid_list(
 
 @app.get("/health")
 def health(request: Request) -> dict:
+    del request
     mcp = ncs_mcp_status()
     mcp_ready = bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable"))
-    openai_server_fallback_configured = bool(
-        settings.allow_server_openai_key_fallback()
-        and settings.server_openai_fallback_token()
-    )
-    openai_server_fallback = _allow_server_openai_key_fallback(request)
     return {
         "status": "ok" if mcp_ready else "degraded",
         "keys": {
             "public_inst": bool(settings.public_inst_key()),
             "ncs": bool(settings.ncs_key()),
-            "openai": bool(settings.resolve_openai_key(allow_env_fallback=openai_server_fallback)),
-            "openai_server_fallback": openai_server_fallback,
-            "openai_server_fallback_requires_header": openai_server_fallback_configured,
-            "openai_local_demo_mode": bool(settings.local_demo_mode()),
+            "openai": False,
+            "openai_request_scoped": True,
         },
         "ncs_source": "remote-mcp",
         "ncs_mcp": mcp,
@@ -5443,7 +5410,6 @@ async def jd_strategy_upload(
     _reject_sensitive_query_params(request, destination="form data")
     run_top_k, run_ksa_units, run_ksa_factors = FAST_NCS_TOP_K, FAST_KSA_UNITS, FAST_KSA_FACTORS_PER_UNIT
     request_openai_api_key = _sanitize_request_openai_key(openai_api_key)
-    allow_env_openai_fallback = _allow_server_openai_key_fallback(request)
 
     async def _read_text(upload: UploadFile | None, label: str) -> tuple[str, bytes, str]:
         if not upload:
@@ -5511,7 +5477,6 @@ async def jd_strategy_upload(
             jd_bytes,
             max_pages=2,
             api_key_override=request_openai_api_key,
-            allow_env_fallback=allow_env_openai_fallback,
         )
     prompt_notice_text = _build_priority_notice_text(
         notice_text=notice_text,
@@ -5741,7 +5706,6 @@ async def jd_strategy_upload(
             top_k=run_top_k,
             preferred_sclass=ncs_query_terms,
             openai_api_key=request_openai_api_key,
-            allow_env_fallback=allow_env_openai_fallback,
         )
         if ncs_matches:
             ncs_source = f"{ncs_source}+ai-rerank" if rerank_mode == "ai" else f"{ncs_source}+rerank"
@@ -5937,7 +5901,6 @@ async def jd_strategy_upload(
                 question_plan=question_plan,
                 interview_methods=interview_methods,
                 extra_context=avoid_context,
-                allow_env_fallback=allow_env_openai_fallback,
             ),
         )
         strategy = _adjust_generated_questions(
@@ -6068,7 +6031,6 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         if raw_generation_offset is not None
         else None
     )
-    allow_env_openai_fallback = _allow_server_openai_key_fallback(request)
     selected_ncs = payload.get("selected_ncs", [])
     raw_interview_methods = payload.get("interview_methods_json", payload.get("interview_methods", ""))
     if not isinstance(raw_interview_methods, str):
@@ -6222,7 +6184,6 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
                 question_plan=question_plan,
                 interview_methods=interview_methods,
                 extra_context=avoid_context,
-                allow_env_fallback=allow_env_openai_fallback,
             ),
         )
         strategy = _adjust_generated_questions(
@@ -6385,7 +6346,6 @@ def generate_questions_personalized(
             user_profile=user_profile.strip() or "",
             target_count=target_count,
             api_key_override=request_openai_api_key,
-            allow_env_fallback=_allow_server_openai_key_fallback(request),
         )
         _require_official_ksa_result(result)
 
@@ -6475,7 +6435,6 @@ def generate_questions_by_ncs_code(
             include_followups=include_followups,
             extra_context=avoid_context,
             api_key_override=request_openai_api_key,
-            allow_env_fallback=_allow_server_openai_key_fallback(request),
         )
         _require_official_ksa_result(result)
 
@@ -6634,7 +6593,6 @@ def generate_batch_diverse_questions(
                 target_count=6,
                 extra_context=avoid_context,
                 api_key_override=request_openai_api_key,
-                allow_env_fallback=_allow_server_openai_key_fallback(request),
             )
             _require_official_ksa_result(result)
 
@@ -6794,7 +6752,6 @@ def generate_diverse_questions(
                 target_count=needed,
                 extra_context=avoid_context,
                 api_key_override=request_openai_api_key,
-                allow_env_fallback=_allow_server_openai_key_fallback(request),
             )
             _require_official_ksa_result(raw_result)
 

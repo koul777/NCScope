@@ -63,7 +63,14 @@ def _load_env_file(path: Path) -> None:
         key, value = line.split("=", 1)
         key = key.strip().lstrip("\ufeff")
         value = value.strip()
-        if key and value and key not in os.environ and "YOUR_" not in value and "SET_STRONG" not in value:
+        if (
+            key
+            and key != "OPENAI_API_KEY"
+            and value
+            and key not in os.environ
+            and "YOUR_" not in value
+            and "SET_STRONG" not in value
+        ):
             os.environ[key] = value
 
 
@@ -72,7 +79,8 @@ def _mcp_preflight_error() -> str:
         return ""
     return (
         "NCS_MCP_URL is required for ALIO question quality evaluation. "
-        "Set it explicitly or keep it in .env; pass --no-load-dotenv only when the environment is already configured."
+        "Set it explicitly or keep it in .env; API keys are never loaded from .env. "
+        "Pass --no-load-dotenv only when the environment is already configured."
     )
 
 
@@ -1402,7 +1410,11 @@ def main() -> int:
     parser.add_argument("--fail-on-model-replacements", action="store_true")
     parser.add_argument("--fail-on-template-insertions", action="store_true")
     parser.add_argument("--fail-on-repaired-followups", action="store_true")
-    parser.add_argument("--no-load-dotenv", action="store_true", help="Do not load ROOT/.env before MCP preflight.")
+    parser.add_argument(
+        "--no-load-dotenv",
+        action="store_true",
+        help="Do not load ROOT/.env before MCP preflight; OpenAI API keys are never loaded from .env.",
+    )
     args = parser.parse_args()
 
     if not args.no_load_dotenv:
@@ -1415,9 +1427,9 @@ def main() -> int:
     cache_dir = Path(args.cache_dir)
     if not cache_dir.exists():
         raise SystemExit(f"cache dir not found: {cache_dir}")
-    openai_api_key = str(args.openai_api_key or os.getenv("OPENAI_API_KEY", "")).strip()
+    openai_api_key = str(args.openai_api_key or "").strip()
     if _normalize_benchmark_mode(args.benchmark_mode) == "model" and not openai_api_key:
-        raise SystemExit("--benchmark-mode model requires --openai-api-key or OPENAI_API_KEY")
+        raise SystemExit("--benchmark-mode model requires --openai-api-key; API keys are not read from .env or the environment")
     if args.min_evaluated_doc_rate is not None and not 0 <= float(args.min_evaluated_doc_rate) <= 1:
         raise SystemExit("--min-evaluated-doc-rate must be between 0 and 1")
     if args.min_template_ready_rate is not None and not 0 <= float(args.min_template_ready_rate) <= 1:

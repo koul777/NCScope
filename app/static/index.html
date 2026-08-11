@@ -201,9 +201,9 @@
         </div>
 
         <label for="openaiApiKey">OpenAI API key (선택)</label>
-        <input id="openaiApiKey" type="password" placeholder=".env 키가 없을 때만 입력" autocomplete="off" spellcheck="false" />
+        <input id="openaiApiKey" type="password" placeholder="이번 생성 요청에만 입력" autocomplete="off" spellcheck="false" />
         <div id="openaiKeyHint" class="sub" style="margin-top:-4px; margin-bottom:10px;">
-          직접 입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. 로컬 발표 모드에서는 .env 키를 기본 사용할 수 있습니다.
+          직접 입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. API 키는 .env나 서버 환경에서 자동으로 가져오지 않습니다.
         </div>
 
         <div class="workflow-menu" aria-label="검토 단계">
@@ -490,7 +490,6 @@
     let questionGenerationInFlight = false;
     let currentQPage = 0;
     let currentQualityControl = null;
-    let openaiRuntime = { serverFallback: false, serverKey: false };
     const QUESTION_PAGE_SIZE = 5;
 
     function normalizedQuestionHistoryKey(value) {
@@ -759,13 +758,12 @@
 
     function updateWorkflowMenu() {
       const hasRequestKey = Boolean(requestOpenAIKey());
-      const hasServerFallbackKey = Boolean(openaiRuntime.serverFallback && openaiRuntime.serverKey);
       const keyFlowDetail = hasRequestKey
         ? '요청 단위 키 입력됨'
-        : (hasServerFallbackKey ? '.env API 키 사용 가능' : '요청 키 미입력 · 템플릿 기반 생성');
+        : '요청 키 미입력 · 템플릿 기반 생성';
       setFlowStep(
         flowApi,
-        (hasRequestKey || hasServerFallbackKey) ? 'done' : 'active',
+        hasRequestKey ? 'done' : 'active',
         keyFlowDetail
       );
       const hasNoticeText = Boolean(
@@ -2251,14 +2249,6 @@
     loadNcsOptions('')
       .then(() => fetch('/health').then(r => r.json()))
       .then((h) => {
-        openaiRuntime = {
-          serverFallback: Boolean(h && h.keys && h.keys.openai_server_fallback),
-          serverKey: Boolean(h && h.keys && h.keys.openai),
-        };
-        if (openaiRuntime.serverFallback && openaiRuntime.serverKey) {
-          openaiApiKey.placeholder = '.env API 키 사용 중 (입력 불필요)';
-          openaiKeyHint.textContent = '로컬 발표 모드: .env의 OpenAI API 키를 기본 사용합니다. 입력칸은 비워 두셔도 됩니다.';
-        }
         updateWorkflowMenu();
         raw.textContent = JSON.stringify({ status: '준비완료', health: h, ncs_options: ncsUnitOptions.length }, null, 2);
       })

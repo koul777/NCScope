@@ -14,7 +14,7 @@ NCScope 저장소는 Kordoc 소스 저장소가 아니며, Kordoc의 권리와 �
 
 ## OpenAI API
 
-NCScope는 사용자가 제공한 OpenAI API key 또는 서버 환경변수 `OPENAI_API_KEY`를 사용해 구조화 면접 질문 초안을 생성할 수 있습니다. API key와 업로드 문서 처리 기준은 [`SECURITY.md`](SECURITY.md)를 확인하세요.
+NCScope는 사용자가 요청 단위로 제공한 OpenAI API key를 사용해 구조화 면접 질문 초안을 생성할 수 있습니다. API key와 업로드 문서 처리 기준은 [`SECURITY.md`](SECURITY.md)를 확인하세요.
 
 ## 기타 의존성
 

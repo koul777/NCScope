@@ -20,14 +20,15 @@ def test_cli_dotenv_loader_sets_mcp_without_overriding_existing(tmp_path: Path, 
     env_path = tmp_path / ".env"
     env_path.write_text(
         "NCS_MCP_URL=http://from-dotenv.example/mcp\n"
-        "OPENAI_API_KEY=YOUR_KEY_HERE\n",
+        "OPENAI_API_KEY=sk-should-never-load\n",
         encoding="utf-8",
     )
 
     monkeypatch.delenv("NCS_MCP_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     runner._load_env_file(env_path)
     assert runner.os.getenv("NCS_MCP_URL") == "http://from-dotenv.example/mcp"
-    assert runner.os.getenv("OPENAI_API_KEY", "") != "YOUR_KEY_HERE"
+    assert runner.os.getenv("OPENAI_API_KEY", "") == ""
 
     monkeypatch.setenv("NCS_MCP_URL", "http://existing.example/mcp")
     env_path.write_text("NCS_MCP_URL=http://new.example/mcp\n", encoding="utf-8")
