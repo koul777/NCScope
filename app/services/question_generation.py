@@ -421,6 +421,11 @@ def _render_question_generation_prompt(
         "- 각 질문은 [KSA]의 factorName 원문 중 하나를 주 검증 초점으로 선택하고, question과 follow_ups 중 지정 위치에 그 factorName 원문을 그대로 반복합니다.\n"
         "- question과 follow_ups에 글자 그대로 'KSA'라고 쓰지 말고, 실제 factorName 원문을 복사해 넣습니다.\n"
         "- factorName은 근거 라벨이지 문장 자체가 아닙니다. 지식은 '활용/근거로', 기술은 '발휘/수행하여', 태도는 '요구된 상황에서 행동으로 보여준' 방식으로 자연스럽게 연결하고, '태도를 적용했다'처럼 어색하게 쓰지 않습니다.\n"
+        "- '{factorName} 능력과 관련하여 실제 경험이 있으십니까? 말씀해 주세요.'처럼 이름만 되묻는 질문은 금지합니다. 경험 유무가 아니라 관찰 가능한 판단·행동·산출물을 과제로 요구합니다.\n"
+        "- 지식은 자료와 예외상황에서 factorName을 판단 근거로 활용하고 적용 범위·오류 위험을 설명하게 합니다.\n"
+        "- 기술은 수행 순서·구체 조치·사용 자료나 도구·산출물·품질 확인을 보여주게 합니다.\n"
+        "- 태도는 마감 압박·이해관계 충돌·품질 위험에서 factorName이 드러나는 선택 행동을 보여주게 합니다. '태도 경험이 있습니까' 또는 '태도를 적용했습니까'로 묻지 않습니다.\n"
+        "- 경험면접 이외의 기법은 과거 경험 유무를 묻지 않고 해당 과제 수행으로 factorName을 관찰합니다.\n"
         "- 필수 형식어를 체크리스트처럼 나열하지 말고 하나의 실제 직무 상황과 의사결정 흐름으로 묶습니다.\n"
         "- 발표면접, 토론면접, 인바스켓면접, 직무지식면접은 follow_ups[0]에 factorName 원문과 능력단위명을 함께 넣고, 경험면접, 상황면접, 창의적 문제해결력면접은 follow_ups[1]에 넣습니다.\n"
         "- 질문끼리 내용이 겹치면 안 됩니다.\n"
@@ -454,8 +459,8 @@ def _render_question_generation_prompt(
         "- 인바스켓면접: 문서·요청 분류, 먼저 처리/보류 판단, 보고·위임·직접처리 선택을 확인합니다.\n"
         "- 직무지식면접: 기준·규정, 예외상황, 산출물 품질, 오류 리스크 또는 교육 순서를 확인합니다.\n\n"
         "[KSA 원문 보존 예시]\n"
-        "- 통과: question='문서작성에서 문서 요구사항 파악을 적용한 경험을 말씀해 주세요...' / follow_ups[1]='문서 요구사항 파악을 기준으로 어떤 행동을 선택했습니까?'\n"
-        "- 실패: question='문서작성에서 KSA를 적용한 경험...' / follow_ups[1]='그 판단의 이유는 무엇입니까?'처럼 factorName 원문이 빠진 문장.\n\n"
+        "- 통과: question='문서작성에서 문서 요구사항 파악을 위해 요구 문서와 독자를 구분하고 작성 기준을 정했던 경험을 말씀해 주세요. 당시 상황, 본인 행동과 판단 근거, 완성한 산출물과 결과를 설명해 주세요.' / follow_ups[1]='문서 요구사항 파악을 위해 어떤 자료를 확인하고 어떤 작성 기준을 선택했습니까?'\n"
+        "- 실패: question='문서 요구사항 파악 능력과 관련하여 실제 경험이 있으십니까?'처럼 이름만 되묻거나, follow_ups[1]='그 판단의 이유는 무엇입니까?'처럼 factorName 원문과 관찰 행동이 빠진 문장.\n\n"
         "[기법 선택]\n"
         "- 추가 컨텍스트에 선택 기법이 있으면 그 기법만 사용합니다.\n"
         "- 선택 기법이 없으면 경험면접, 상황면접, 발표면접, 토론면접, 인바스켓면접, 직무지식면접을 우선 섞고, 복합 문제해결 문맥이 있으면 창의적 문제해결력면접도 포함합니다.\n\n"
@@ -543,8 +548,11 @@ def _build_question_generation_prompt(
             continue
         seen_ksa.add(norm)
         src = str(row.get("factorSource", "")).strip()
+        factor_type = str(
+            row.get("ksaTypeName") or row.get("factorType") or row.get("ksa_type") or ""
+        ).strip()
         unit = str(row.get("compeUnitName", "")).strip()
-        ksa_lines.append(f"- {factor} | unit={unit} | source={src}")
+        ksa_lines.append(f"- {factor} | type={factor_type or '미분류'} | unit={unit} | source={src}")
 
     return _render_question_generation_prompt(
         ncs_lines=ncs_lines,

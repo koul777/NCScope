@@ -5,7 +5,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +16,7 @@ from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT_DIR = ROOT / "reports" / "question_quality_loop"
+_STATE_WRITE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -39,11 +42,32 @@ def _now() -> datetime:
 
 
 def _stamp() -> str:
-    return _now().strftime("%Y%m%d_%H%M%S")
+    # Sub-second precision keeps evidence paths readable; run_cycle also adds a
+    # random suffix so concurrent processes cannot claim the same directory.
+    return _now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+def _cycle_directory_name() -> str:
+    return f"cycle-{_stamp()}-{uuid.uuid4().hex[:8]}"
+
+
+def resolve_interval_minutes(requested_cycles: int, configured: float | None) -> float:
+    """Use immediate finite reruns while keeping unattended mode daily by default."""
+
+    cycles = max(0, int(requested_cycles))
+    if configured is None:
+        return 1440.0 if cycles == 0 else 0.0
+    interval = float(configured)
+    if interval < 0:
+        raise ValueError("--interval-minutes must be zero or greater")
+    return interval
 
 
 def build_stages(args: argparse.Namespace) -> list[Stage]:
     python = sys.executable
+    pytest_basetemp = (
+        f"--basetemp=.tmp/pytest-question-quality-loop-{os.getpid()}-{uuid.uuid4().hex}"
+    )
     stages = [
         Stage(
             name="quality-regression-tests",
@@ -52,7 +76,7 @@ def build_stages(args: argparse.Namespace) -> list[Stage]:
                 "-m",
                 "pytest",
                 "-q",
-                "--basetemp=.tmp/pytest-question-quality-loop",
+                pytest_basetemp,
                 "tests/test_interview_customization.py",
                 "tests/test_question_generation.py",
                 "tests/test_question_quality_runner.py",
@@ -61,6 +85,16 @@ def build_stages(args: argparse.Namespace) -> list[Stage]:
                 "tests/test_question_quality_persistence.py",
                 "tests/test_question_quality_eval_runner.py",
                 "tests/test_question_quality_orchestrator.py",
+                "tests/test_question_quality_runtime_orchestrator.py",
+                "tests/test_question_regeneration_simulation.py",
+                "tests/test_question_review_lifecycle_simulation.py",
+                "tests/test_question_review_concurrency_simulation.py",
+                "tests/test_question_review_live_http.py",
+                "tests/test_question_quality_loop.py",
+                "tests/test_question_history_context.py",
+                "tests/test_frontend_question_history_contract.py",
+                "tests/test_question_dedup_guard.py",
+                "tests/test_batch_deduplication.py",
                 "tests/test_ax_readiness.py",
             ),
             timeout_seconds=max(60, int(args.test_timeout_seconds)),
@@ -114,10 +148,40 @@ def build_stages(args: argparse.Namespace) -> list[Stage]:
                     str(max(1, int(args.questions_per_doc))),
                     "--follow-up-count",
                     "3",
+                    "--min-evaluated-doc-rate",
+                    str(min(1.0, max(0.0, float(args.alio_min_evaluated_doc_rate)))),
+                    "--min-template-ready-rate",
+                    str(
+                        min(
+                            1.0,
+                            max(
+                                0.0,
+                                float(getattr(args, "alio_min_template_ready_rate", 1.0)),
+                            ),
+                        )
+                    ),
                     "--report-dir",
                     str(ROOT / "reports"),
                 ),
                 timeout_seconds=max(120, int(args.alio_timeout_seconds)),
+            )
+        )
+    live_http_base_url = str(getattr(args, "live_http_base_url", "") or "").strip()
+    if live_http_base_url:
+        stages.append(
+            Stage(
+                name="live-http-review-smoke",
+                command=(
+                    python,
+                    "scripts/simulate_question_review_live_http.py",
+                    "--base-url",
+                    live_http_base_url,
+                    "--timeout",
+                    str(max(10, int(getattr(args, "live_http_timeout_seconds", 120)))),
+                    "--report-dir",
+                    str(ROOT / "reports" / "question_quality_simulation"),
+                ),
+                timeout_seconds=max(30, int(getattr(args, "live_http_timeout_seconds", 120)) * 3),
             )
         )
     return stages
@@ -221,15 +285,28 @@ def write_cycle_report(cycle_dir: Path, cycle_number: int, results: list[StageRe
 
 def write_state(report_dir: Path, payload: dict[str, object]) -> None:
     state_path = report_dir / "state.json"
-    temp_path = report_dir / "state.json.tmp"
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp_path.replace(state_path)
+    temp_path = report_dir / f".state-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+    try:
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        with _STATE_WRITE_LOCK:
+            for attempt in range(20):
+                try:
+                    temp_path.replace(state_path)
+                    break
+                except PermissionError:
+                    if attempt >= 19:
+                        raise
+                    # Windows can briefly deny os.replace while another process
+                    # is replacing or scanning the destination.
+                    time.sleep(0.01 * (attempt + 1))
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def run_cycle(args: argparse.Namespace, cycle_number: int) -> tuple[bool, Path]:
     report_dir = Path(args.report_dir).resolve()
     report_dir.mkdir(parents=True, exist_ok=True)
-    cycle_dir = report_dir / f"cycle-{_stamp()}"
+    cycle_dir = report_dir / _cycle_directory_name()
     cycle_dir.mkdir(parents=True, exist_ok=False)
     stages = build_stages(args)
     results: list[StageResult] = []
@@ -258,11 +335,33 @@ def main() -> int:
         description="Run the repeatable NCS interview-question quality improvement evidence loop."
     )
     parser.add_argument("--cycles", type=int, default=1, help="Number of cycles. Use 0 to run until interrupted.")
-    parser.add_argument("--interval-minutes", type=float, default=1440.0)
+    parser.add_argument(
+        "--interval-minutes",
+        type=float,
+        default=None,
+        help="Delay between cycles. Defaults to 0 for finite runs and 1440 for --cycles 0.",
+    )
     parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
     parser.add_argument("--official-collection", choices=("interview-model", "evaluation-sample", "all"), default="all")
     parser.add_argument("--official-limit", type=int, default=4)
-    parser.add_argument("--alio-limit", type=int, default=4)
+    parser.add_argument(
+        "--alio-limit",
+        type=int,
+        default=8,
+        help="Number of recent cached ALIO documents. Eight reduces false pass/fail variance from very small samples.",
+    )
+    parser.add_argument(
+        "--alio-min-evaluated-doc-rate",
+        type=float,
+        default=0.5,
+        help="Fail the ALIO stage when too few attempted documents reach question evaluation.",
+    )
+    parser.add_argument(
+        "--alio-min-template-ready-rate",
+        type=float,
+        default=1.0,
+        help="Fail when any adjusted ALIO question misses the quality gate by default.",
+    )
     parser.add_argument("--questions-per-doc", type=int, default=7)
     parser.add_argument("--model-eval", action="store_true", help="Use the configured OpenAI model; may incur API cost.")
     parser.add_argument("--skip-official", action="store_true")
@@ -271,9 +370,24 @@ def main() -> int:
     parser.add_argument("--test-timeout-seconds", type=int, default=300)
     parser.add_argument("--official-timeout-seconds", type=int, default=1800)
     parser.add_argument("--alio-timeout-seconds", type=int, default=900)
+    parser.add_argument(
+        "--live-http-base-url",
+        default="",
+        help="Optionally add a live generate-review-retry-rollback-regenerate gate for this app URL.",
+    )
+    parser.add_argument("--live-http-timeout-seconds", type=int, default=120)
     args = parser.parse_args()
 
+    if not 0.0 <= float(args.alio_min_evaluated_doc_rate) <= 1.0:
+        parser.error("--alio-min-evaluated-doc-rate must be between 0 and 1")
+    if not 0.0 <= float(args.alio_min_template_ready_rate) <= 1.0:
+        parser.error("--alio-min-template-ready-rate must be between 0 and 1")
+
     requested_cycles = max(0, int(args.cycles))
+    try:
+        interval_minutes = resolve_interval_minutes(requested_cycles, args.interval_minutes)
+    except ValueError as exc:
+        parser.error(str(exc))
     cycle_number = 0
     all_passed = True
     try:
@@ -284,7 +398,7 @@ def main() -> int:
             print(f"cycle report: {report_path}", flush=True)
             if requested_cycles != 0 and cycle_number >= requested_cycles:
                 break
-            time.sleep(max(1.0, float(args.interval_minutes) * 60.0))
+            time.sleep(max(1.0, interval_minutes * 60.0))
     except KeyboardInterrupt:
         print("quality loop interrupted", file=sys.stderr)
         return 130

@@ -16,6 +16,14 @@ from app.services.jd_strategy import fetch_ncs_ksa_by_units
 JD_TEXT = "\uc138\ubd84\ub958: \uacbd\uc601\uae30\ud68d\n\ub2f4\ub2f9\uc5c5\ubb34: \uacbd\uc601\uacc4\ud68d \uc218\ub9bd"
 
 
+def test_json_responses_declare_utf8_for_windows_clients() -> None:
+    with TestClient(main.app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].lower() == "application/json; charset=utf-8"
+
+
 def _upload_files() -> dict:
     return {
         "jd_file": ("jd.txt", JD_TEXT.encode("utf-8"), "text/plain"),
@@ -705,6 +713,82 @@ def test_mcp_search_matches_detail_not_small_category(mocker):
     assert [row["ncsClCd"] for row in rows] == ["sub-match"]
 
 
+def test_mcp_ksa_alias_fields_preserve_and_balance_knowledge_skill_attitude(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_unit_detail"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "data": {
+                "unit": {"unit_name": "문서관리", "classification": {"sub": "사무행정"}},
+                "elements": [
+                    {
+                        "element_id": "E1",
+                        "element_name": "문서 점검",
+                        "ksa": [
+                            {"factor_name": "책임 있는 보고 자세", "factorType": "A", "number": "A-1"},
+                            {"ksa_text": "문서 분류 기준", "ksa_type": "knowledge", "ksaNo": "K-1"},
+                            {"factorName": "오류 대조 점검", "ksaType": "스킬", "ksa_no": "S-1"},
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+
+    rows = ncs_mcp_client.get_ksa_by_units([{"ncsClCd": "U1"}], max_factors_per_unit=3)
+
+    assert [row["ksaTypeName"] for row in rows] == ["지식", "기술", "태도"]
+    assert [row["factorName"] for row in rows] == ["문서 분류 기준", "오류 대조 점검", "책임 있는 보고 자세"]
+    assert [row["ksaNo"] for row in rows] == ["K-1", "S-1", "A-1"]
+    assert all(row["isOfficialKsa"] is True for row in rows)
+
+
+def test_mcp_ksa_limit_balances_types_without_hiding_later_elements(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_unit_detail"})
+    first_element_rows = [
+        {"text": f"첫 요소 지식 {index}", "ksa_type": "knowledge", "ksa_no": f"K{index}"}
+        for index in range(1, 4)
+    ] + [
+        {"text": f"첫 요소 기술 {index}", "ksa_type": "skill", "ksa_no": f"S{index}"}
+        for index in range(1, 4)
+    ] + [
+        {"text": f"첫 요소 태도 {index}", "ksa_type": "attitude", "ksa_no": f"A{index}"}
+        for index in range(1, 4)
+    ]
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "data": {
+                "unit": {"unit_name": "문서관리", "classification": {"sub": "사무행정"}},
+                "elements": [
+                    {"element_id": "E1", "element_name": "작성", "ksa": first_element_rows},
+                    {
+                        "element_id": "E2",
+                        "element_name": "검토",
+                        "ksa": [
+                            {"text": "둘째 요소 지식", "ksa_type": "knowledge", "ksa_no": "K4"},
+                            {"text": "둘째 요소 기술", "ksa_type": "skill", "ksa_no": "S4"},
+                            {"text": "둘째 요소 태도", "ksa_type": "attitude", "ksa_no": "A4"},
+                        ],
+                    },
+                ],
+            }
+        },
+    )
+
+    rows = ncs_mcp_client.get_ksa_by_units([{"ncsClCd": "U1"}], max_factors_per_unit=6)
+
+    assert len(rows) == 6
+    assert [row["ksaTypeName"] for row in rows] == ["지식", "기술", "태도", "지식", "기술", "태도"]
+    assert {row["elementId"] for row in rows} == {"E1", "E2"}
+    assert sum(row["elementId"] == "E2" for row in rows) == 3
+    assert {row["factorName"] for row in rows if row["elementId"] == "E2"} == {
+        "둘째 요소 지식",
+        "둘째 요소 기술",
+        "둘째 요소 태도",
+    }
+
+
 def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     mocker.patch(
@@ -969,13 +1053,55 @@ def test_mcp_status_does_not_expose_endpoint_or_exception_details(monkeypatch):
     monkeypatch.setattr(
         ncs_mcp_client,
         "_tool_names",
-        lambda: (_ for _ in ()).throw(ncs_mcp_client.NcsMcpError(sentinel)),
+        lambda **_kwargs: (_ for _ in ()).throw(ncs_mcp_client.NcsMcpError(sentinel)),
     )
 
     status = ncs_mcp_client.ncs_mcp_status()
 
     assert status["lastError"] == "ncs_mcp_unreachable"
     assert "mcp-secret-sentinel" not in json.dumps(status)
+
+
+def test_mcp_tool_cache_is_scoped_to_the_configured_endpoint(monkeypatch):
+    current = {"endpoint": "http://mcp-a.example/mcp"}
+    calls: list[str] = []
+
+    monkeypatch.setattr(ncs_mcp_client, "_tools_cache", None)
+    monkeypatch.setattr(ncs_mcp_client, "_endpoint", lambda: current["endpoint"])
+
+    def fake_rpc(method, params=None):
+        _ = params
+        calls.append(current["endpoint"])
+        tool_name = "tool-a" if "mcp-a" in current["endpoint"] else "tool-b"
+        return {"tools": [{"name": tool_name}]}
+
+    monkeypatch.setattr(ncs_mcp_client, "_rpc", fake_rpc)
+    assert ncs_mcp_client._tool_names() == {"tool-a"}
+    assert ncs_mcp_client._tool_names() == {"tool-a"}
+    current["endpoint"] = "http://mcp-b.example/mcp"
+    assert ncs_mcp_client._tool_names() == {"tool-b"}
+    assert calls == ["http://mcp-a.example/mcp", "http://mcp-b.example/mcp"]
+
+
+def test_mcp_status_bypasses_discovery_cache_to_detect_outage(monkeypatch):
+    endpoint = "http://mcp.example/mcp"
+    monkeypatch.setattr(ncs_mcp_client, "_endpoint", lambda: endpoint)
+    monkeypatch.setattr(
+        ncs_mcp_client,
+        "_tools_cache",
+        (ncs_mcp_client.time.monotonic(), endpoint, {"ncs_search", "ncs_unit_detail"}),
+    )
+    monkeypatch.setattr(
+        ncs_mcp_client,
+        "_rpc",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ncs_mcp_client.NcsMcpError("offline")),
+    )
+
+    status = ncs_mcp_client.ncs_mcp_status()
+
+    assert status["configured"] is True
+    assert status["reachable"] is False
+    assert status["ksaAvailable"] is False
 
 
 def test_openai_http_error_does_not_expose_remote_body(monkeypatch):

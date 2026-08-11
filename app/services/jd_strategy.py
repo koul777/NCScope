@@ -2218,7 +2218,8 @@ def _build_ncs_code_template_fallback_question(
     elif method == "인바스켓면접":
         question = (
             f"[인바스켓과제] 제한시간 30분 안에 {context_label} 관련 요청, 오류 정정, 보고 문서가 동시에 들어왔습니다. "
-            f"'{k1}'을 기준으로 우선순위와 보고, 위임, 직접처리 판단을 제시해 주세요."
+            f"'{k1}'을 실제로 발휘해 우선순위와 보고, 위임, 직접처리 판단을 제시하고, "
+            "첫 조치와 기록 산출물을 포함해 주세요."
         )
         follow_ups = [
             f"{context_label} 업무에서 '{k1}'을 기준으로 가장 먼저 처리할 문서와 보류할 요청은 무엇입니까?",
@@ -2241,7 +2242,8 @@ def _build_ncs_code_template_fallback_question(
     elif method == "토론면접":
         question = (
             f"[토론과제] {context_label}에서 '{k1}' 기준을 강화해야 한다는 입장과 처리 효율을 우선해야 한다는 입장이 충돌합니다. "
-            "토론시간 20분 동안 1분 입장발표 후 반대 의견 검토, 조정 방식, 최종 합의안을 제시해 주세요."
+            "토론시간 20분 동안 1분 입장발표 후 반대 의견 검토, 조정 방식, 최종 합의안을 제시해 주세요. "
+            f"최종 합의안에는 '{k1}'의 실제 수행 절차와 품질 검증 산출물을 포함해 주세요."
         )
         follow_ups = [
             f"{context_label}의 '{k1}'에 대한 본인의 초기 입장발표를 뒷받침하는 핵심 근거는 무엇입니까?",
@@ -3537,6 +3539,11 @@ def _model_question_gate_contract() -> str:
         "- type과 question의 형식이 충돌하면 안 됩니다. 예: type=발표면접이면 question은 반드시 발표과제여야 합니다.\n"
         "- question과 follow_ups에 글자 그대로 'KSA'라고 쓰지 마세요. 반드시 [NCS평가요소]의 factorName 원문 중 하나를 복사해 넣으세요.\n"
         "- factorName은 근거 라벨이지 완성 문장이 아닙니다. 지식은 '활용/근거로', 기술은 '발휘/수행하여', 태도는 '요구된 상황에서 행동으로 보여준' 방식으로 연결하고, '태도를 적용했다'처럼 어색하게 쓰지 마세요.\n"
+        "- 금지 질문: '{factorName} 능력과 관련하여 실제 경험이 있으십니까? 말씀해 주세요.'처럼 factorName을 능력명으로 되묻기만 하는 문장. 경험 유무 자체가 아니라 관찰 가능한 판단·행동·산출물을 과제로 요구하세요.\n"
+        "- 지식 factorName은 주어진 자료·예외상황에서 무엇을 판단 근거로 활용했고 적용 범위와 오류 위험을 어떻게 설명하는지 측정하세요.\n"
+        "- 기술 factorName은 실제 수행 순서, 구체 조치, 사용한 도구·자료, 산출물과 품질 확인을 측정하세요.\n"
+        "- 태도 factorName은 마감 압박·이해관계 충돌·품질 위험 같은 선택 상황에서 어떤 행동을 일관되게 택하는지 측정하세요. '태도 경험이 있습니까'나 '태도를 적용했습니까'로 묻지 마세요.\n"
+        "- 면접기법이 경험면접이 아니면 과거 경험 유무를 묻지 말고, 해당 기법의 과제 수행 결과로 factorName을 관찰하세요.\n"
         "- 필수어를 체크리스트처럼 나열하지 말고 하나의 구체적인 직무 상황, 판단, 행동과 결과 흐름으로 묶으세요.\n"
         "- 각 질문은 자신에게 배정된 능력단위명(compeUnitName)과 factorName을 함께 반영해야 합니다. 다른 세분류나 다른 능력단위의 직무 맥락을 섞지 마세요.\n"
         "- follow_ups 중 최소 1개에는 질문에 배정된 능력단위명 또는 required_job_context 원문을 직접 포함하세요. 주질문에만 직무명을 넣고 follow_ups를 일반론으로 쓰면 실패입니다.\n"
@@ -3565,11 +3572,11 @@ def _model_question_gate_contract() -> str:
         "- 통과 예시: 지정 slot follow_up='문서 요구사항 파악을 기준으로 그 판단이나 행동을 선택한 이유는 무엇입니까?'처럼 F 원문이 직접 들어가야 합니다.\n"
         "- 출력 전 자체검사: question에 실제 factorName이 있는가, 지정 follow_up slot에 같은 factorName이 있는가, follow_ups 3개가 서로 다른 평가항목을 묻는가.\n"
         "- 아래 질문 골격을 그대로 따르되, {직무}, {능력단위}, {KSA}는 반드시 실제 NCS/KSA 표현으로 바꾸고 placeholder를 남기지 마세요.\n"
-        "- 경험면접 question 골격: {직무}에서 {KSA} 지식은 활용하고 기술은 발휘하거나, 해당 태도가 요구된 경험을 말씀해 주세요. 당시 상황, 본인 역할, 선택한 행동, 결과와 학습을 포함해 설명해 주세요.\n"
-        "- 상황면접 question 골격: {직무} 중 {KSA}와 관련한 구체적 상황입니다. 어떤 판단 기준으로 위험을 통제하고, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까?\n"
-        "- 발표면접 question 골격: [발표과제] {직무}에서 {KSA} 관련 자료가 주어졌다고 가정하고 준비시간 20분 후 현황을 진단하고 대안 2가지, 실행계획, 성과지표를 5분 발표하고 5분 질의응답 답변을 포함해 주세요.\n"
+        "- 경험면접 question 골격: {직무}에서 {KSA}가 실제로 필요했던 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. 당시 상황, 본인 역할, 선택한 행동, 판단 근거, 결과 지표와 학습을 포함해 설명해 주세요.\n"
+        "- 상황면접 question 골격: {직무} 중 {KSA}를 실제로 판단·수행해야 하는 구체적 상황입니다. 어떤 판단 기준으로 위험을 통제하고, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까? 지식이면 판단 근거, 기술이면 구체 조치와 산출물, 태도이면 압박 속 선택 행동을 답하도록 요구하세요.\n"
+        "- 발표면접 question 골격: [발표과제] {직무}에서 {KSA}를 실제로 적용해야 하는 자료가 주어졌다고 가정하고 준비시간 20분 후 현황을 진단하고 대안 2가지, 실행계획, 성과지표를 5분 발표하고 5분 질의응답 답변을 포함해 주세요. 지식이면 판단 근거, 기술이면 구체 조치와 산출물, 태도이면 제약 속 선택 행동을 발표하도록 요구하세요.\n"
         "- 토론면접 question 골격: [토론과제] {직무}에서 {KSA} 관련 두 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 반대 의견 검토, 조정 방식, 최종 합의안을 토론해 주세요.\n"
-        "- 인바스켓면접 question 골격: [인바스켓과제] 제한시간 안에 {직무} 관련 여러 문서와 요청이 들어왔습니다. {KSA}를 기준으로 우선순위, 보고, 위임, 직접처리 판단을 제시해 주세요.\n"
+        "- 인바스켓면접 question 골격: [인바스켓과제] 제한시간 안에 {직무} 관련 여러 문서와 요청이 들어왔습니다. {KSA}를 실제로 발휘해 우선순위, 보고, 위임, 직접처리 판단, 첫 조치와 작성할 산출물을 제시해 주세요.\n"
         "- 직무지식면접 question 골격: {직무}에서 {KSA}와 관련해 확인해야 할 절차, 기준, 산출물, 예외상황 대응과 품질 점검 방법을 설명해 주세요.\n"
         "- 창의적 문제해결력면접 question 골격: [창의적 문제해결력과제] {직무}에서 {KSA} 관련 복합 문제가 발생했습니다. 미래예측 관점에서 핵심 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법, 실현가능성, 의사결정 기준, 실행계획과 성과지표를 제시해 주세요.\n"
         "- follow_ups 골격 예시: 1) 먼저 확인할 상황·자료·문서는 무엇입니까? 2) {KSA}를 기준으로 그 판단이나 행동을 선택한 이유는 무엇입니까? 3) 결과 확인, 후속점검, 리스크 보완은 어떻게 하겠습니까?\n"
@@ -5204,7 +5211,7 @@ def rank_ksa_factors_by_query(
     query_text: str,
     unit_scores: dict[str, float] | None = None,
     target_count: int = 12,
-    per_unit_limit: int = 2,
+    per_unit_limit: int = 3,
     similarity_weight: float = 0.75,
     unit_weight: float = 0.25,
     ngram_min: int = 2,
@@ -5339,17 +5346,54 @@ def rank_ksa_factors_by_query(
         reverse=True,
     )
 
+    def _ksa_kind(row: dict[str, Any]) -> str:
+        raw = re.sub(
+            r"\s+",
+            "",
+            str(
+                row.get("ksaTypeName")
+                or row.get("factorType")
+                or row.get("ksa_type")
+                or row.get("ksa_type_name")
+                or ""
+            ),
+        ).lower()
+        if raw in {"k", "knowledge", "지식"} or "지식" in raw:
+            return "지식"
+        if raw in {"s", "skill", "skills", "기술"} or any(token in raw for token in ("기술", "스킬")):
+            return "기술"
+        if raw in {"a", "attitude", "태도"} or "태도" in raw:
+            return "태도"
+        return ""
+
+    available_types_by_unit: dict[str, set[str]] = {}
+    for row in scored_rows:
+        code = str(row.get("ncsClCd", "")).strip()
+        kind = _ksa_kind(row)
+        if code and kind:
+            available_types_by_unit.setdefault(code, set()).add(kind)
+
     selected: list[dict[str, Any]] = []
     per_unit_count: dict[str, int] = {}
+    selected_types_by_unit: dict[str, set[str]] = {}
     for row in scored_rows:
         code = str(row.get("ncsClCd", "")).strip()
         if not code:
             continue
-        if per_unit_count.get(code, 0) >= per_unit_cap:
+        current_count = per_unit_count.get(code, 0)
+        if current_count >= per_unit_cap:
+            continue
+        kind = _ksa_kind(row)
+        selected_types = selected_types_by_unit.setdefault(code, set())
+        unseen_types = available_types_by_unit.get(code, set()) - selected_types
+        remaining_slots = per_unit_cap - current_count
+        if unseen_types and remaining_slots <= len(unseen_types) and kind not in unseen_types:
             continue
         row.pop("__idx", None)
         selected.append(row)
-        per_unit_count[code] = per_unit_count.get(code, 0) + 1
+        per_unit_count[code] = current_count + 1
+        if kind:
+            selected_types.add(kind)
         if len(selected) >= keep_n:
             break
     return selected

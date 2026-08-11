@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 
-QUALITY_POLICY_VERSION = "ncs-official-task-evaluation-pair-v13-conditions-ax-evidence-gates"
+QUALITY_POLICY_VERSION = "ncs-official-task-evaluation-pair-v19-skill-object-action"
 
 ALLOWED_FEEDBACK_CODES = frozenset(
     {
@@ -20,6 +20,8 @@ ALLOWED_FEEDBACK_CODES = frozenset(
         "unnatural_wording",
         "focus_scenario_mismatch",
         "missing_task_conditions",
+        "missing_ksa_evidence",
+        "method_task_mismatch",
         "excellent_golden_candidate",
     }
 )
@@ -40,6 +42,7 @@ _FEEDBACK_FIELDS = frozenset(
         "method",
         "question_index",
         "review_token",
+        "expected_review_id",
     }
 )
 _API_KEY_VALUE_RE = re.compile(
@@ -58,6 +61,10 @@ _ESCALATION_CHECK_ALIASES = {
     "focus_scenario_mismatch": "focus_scenario_coherence",
     "missing_task_conditions": "standardized_task_conditions",
     "standardized_task_conditions": "standardized_task_conditions",
+    "missing_ksa_evidence": "ksa_measurement_task",
+    "ksa_measurement_task": "ksa_measurement_task",
+    "method_task_mismatch": "main_question_method_shape",
+    "main_question_method_shape": "main_question_method_shape",
 }
 _SENSITIVE_EXACT_KEYS = frozenset(
     {
@@ -94,6 +101,14 @@ _ISSUE_GUIDANCE_KO = {
     "unnatural_wording": "체크리스트식 표현을 피하고 자연스러운 한국어 질문으로 다듬기",
     "focus_scenario_mismatch": "평가 초점과 질문 시나리오를 일치시키기",
     "missing_task_conditions": "응시자 지시문, 동일 시간·자료 조건과 필수 산출물을 명시하기",
+    "missing_ksa_evidence": (
+        "K는 판단 근거·적용 범위·예외, S는 수행 단계·조치·산출물·품질 확인, "
+        "A는 압박·상충 요구 속 선택 행동과 감수한 결과가 답변에서 관찰되도록 바꾸기"
+    ),
+    "method_task_mismatch": (
+        "경험은 상황·본인 행동·결과, 상황은 판단 기준·행동 순서, 발표·토론·인바스켓은 "
+        "표준화된 자료·시간·산출물, 직무지식은 기준·적용·예외가 드러나는 과제로 바꾸기"
+    ),
 }
 
 
@@ -293,6 +308,19 @@ def derive_quality_control(
         review_required = True
         trigger("template_fallback")
 
+    orchestration = (
+        strategy_map.get("question_quality_orchestration")
+        if isinstance(strategy_map.get("question_quality_orchestration"), Mapping)
+        else {}
+    )
+    if str(orchestration.get("status") or "").strip().casefold() == "needs_review":
+        review_required = True
+        trigger("runtime_orchestration_needs_review")
+    if _positive_count(orchestration.get("repair_error_count")):
+        review_required = True
+        escalation_required = True
+        trigger("runtime_repair_error")
+
     effective_blockers = coverage_blockers
     if effective_blockers is None:
         effective_blockers = strategy_map.get("coverage_blockers")
@@ -320,7 +348,16 @@ def sanitize_feedback_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if sensitive:
         raise ValueError(f"sensitive feedback fields are not allowed: {', '.join(sensitive)}")
 
-    for value in payload.values():
+    # Machine-issued identifiers are validated against persisted hashes/IDs in
+    # the repository.  A URL-safe random review token can legitimately contain
+    # an ``sk-`` substring, so treating it as user-authored text creates a rare
+    # false positive that blocks every review operation for that run.
+    free_text_values = (
+        value
+        for key, value in payload.items()
+        if str(key) not in {"review_token", "run_id", "question_hash"}
+    )
+    for value in free_text_values:
         values = value if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)) else [value]
         if any(isinstance(item, str) and _API_KEY_VALUE_RE.search(item) for item in values):
             raise ValueError("API-key-like content is not allowed in feedback")
@@ -394,6 +431,14 @@ def sanitize_feedback_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         if not 1 <= question_index <= 500:
             raise ValueError("question_index must be between 1 and 500")
         sanitized["question_index"] = question_index
+
+    if "expected_review_id" in payload and payload.get("expected_review_id") is not None:
+        expected_review_id = payload.get("expected_review_id")
+        if isinstance(expected_review_id, bool) or not isinstance(expected_review_id, int):
+            raise ValueError("expected_review_id must be an integer")
+        if expected_review_id < 0:
+            raise ValueError("expected_review_id must be zero or greater")
+        sanitized["expected_review_id"] = expected_review_id
 
     return sanitized
 

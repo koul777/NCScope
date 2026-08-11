@@ -119,7 +119,8 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
     assert "Documents strict source-explicit coverage + template-ready: 1" in md_text
     assert "Documents passed model-origin quality gate: 1" in md_text
     assert "Documents passed model-origin quality + strict coverage: 1" in md_text
-    assert "Interview methods requested: 경험면접, 창의적 문제해결력면접 (1)" in md_text
+    assert "Unique interview methods requested: 2 (경험면접, 창의적 문제해결력면접)" in md_text
+    assert "Interview method configurations by document: 경험면접, 창의적 문제해결력면접 (documents=1)" in md_text
     assert "Model candidate questions received: 6" in md_text
     assert "Model-origin questions evaluated: 6" in md_text
     assert "Model-origin ready questions: 6" in md_text
@@ -129,6 +130,9 @@ def test_write_quality_reports_emits_summary_and_question_csv(tmp_path: Path) ->
     assert "Distinct question intents: 1" in md_text
     assert "Repeated question intent/focus duplicates: 0" in md_text
     assert "Coverage blocker types: none" in md_text
+    assert "## Human-readable representative questions" in md_text
+    assert "<summary>경험면접 / - / document requirement analysis</summary>" in md_text
+    assert "문서작성 경험을 말씀해 주세요." in md_text
     assert "| idx | status | model pass | full pass | template pass |" in md_text
     assert "| model cand | model-origin | full model | repaired fu | template fu |" in md_text
     assert "model kept" not in md_text
@@ -445,6 +449,22 @@ def test_quality_gate_failures_detects_low_evaluated_document_rate() -> None:
     ]
 
 
+def test_quality_gate_failures_rejects_one_bad_adjusted_question() -> None:
+    rows = [
+        {
+            "status": "needs_review",
+            "generated_questions": 28,
+            "ready_questions": 27,
+        }
+    ]
+
+    failures = runner.quality_gate_failures(rows, min_template_ready_rate=1.0)
+
+    assert failures == [
+        "template_adjusted_ready_rate 0.96 below minimum 1.00 (27/28 adjusted questions ready)"
+    ]
+
+
 def test_main_returns_quality_gate_failure_for_full_model_and_repaired_followups(
     tmp_path: Path,
     monkeypatch,
@@ -553,6 +573,13 @@ def test_main_rejects_invalid_min_evaluated_doc_rate(monkeypatch, tmp_path: Path
     assert str(exc.value) == "--min-evaluated-doc-rate must be between 0 and 1"
 
 
+def test_alio_audit_export_does_not_slice_adjusted_questions_at_300_characters() -> None:
+    source = Path(runner.__file__).read_text(encoding="utf-8")
+
+    assert '"question": question,' in source
+    assert '"question": question[:300]' not in source
+
+
 def test_evaluate_cached_document_builds_ready_quality_report(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "303003_1_직무기술서.txt"
     path.write_text("세분류: 사무행정\n직무내용: 문서 작성 및 관리", encoding="utf-8")
@@ -652,8 +679,9 @@ def test_evaluate_cached_document_model_mode_counts_model_questions(tmp_path: Pa
                     "competency": "문서작성",
                     "ncsClCd": "0202030201_25v3",
                     "question": (
-                        "문서작성 업무에서 문서 요구사항을 파악해 문제를 해결한 경험을 말씀해 주세요. "
-                        "당시 상황, 본인 행동, 결과를 포함해 설명해 주세요."
+                        "문서작성 업무에서 요구사항 누락으로 재작업 위험이 발생했던 경험을 말씀해 주세요. "
+                        "당시 상황에서 본인이 문서 요구사항 파악을 위해 직접 수행한 확인 절차와 행동, 작성 산출물의 "
+                        "정확성을 검증한 기준, 그 결과를 설명해 주세요."
                     ),
                     "follow_ups": [
                         "당시 상황에서 본인이 맡은 역할은 무엇이었습니까?",
@@ -716,8 +744,9 @@ def test_evaluate_cached_document_model_mode_preserves_main_question_with_templa
     path.write_text("세분류: 사무행정\n직무내용: 문서 요구사항 파악 및 문서 작성", encoding="utf-8")
 
     model_question = (
-        "문서작성 업무에서 문서 요구사항을 파악해 문제를 해결한 경험을 말씀해 주세요. "
-        "당시 상황, 본인 행동, 결과를 포함해 설명해 주세요."
+        "문서작성 업무에서 요구사항 누락으로 재작업 위험이 발생했던 경험을 말씀해 주세요. "
+        "당시 상황에서 본인이 문서 요구사항 파악을 위해 직접 수행한 확인 절차와 행동, 작성 산출물의 "
+        "정확성을 검증한 기준, 그 결과를 설명해 주세요."
     )
 
     def fake_search_units(details, max_units):

@@ -88,6 +88,11 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
     assert "질문 골격" in contract
     assert "[발표과제]" in contract
     assert "[토론과제]" in contract
+    assert "금지 질문" in contract
+    assert "판단 근거" in contract
+    assert "구체 조치" in contract
+    assert "압박 속 선택 행동" in contract
+    assert "경험 유무" in contract
     assert "[인바스켓과제]" in contract
     assert "[창의적 문제해결력과제]" in contract
     assert "{KSA}" in contract

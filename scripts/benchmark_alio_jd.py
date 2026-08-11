@@ -12,6 +12,7 @@ import zipfile
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -683,7 +684,7 @@ def benchmark_one(
 
 def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, Path, Path]:
     report_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}-{uuid4().hex[:8]}"
     csv_path = report_dir / f"alio_jd_benchmark_{stamp}.csv"
     detail_csv_path = report_dir / f"alio_jd_detail_diagnostics_{stamp}.csv"
     md_path = report_dir / f"alio_jd_benchmark_{stamp}.md"

@@ -8,6 +8,7 @@ import re
 import sys
 import time
 from datetime import datetime
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -777,7 +778,11 @@ def evaluate_cached_document(
                     "question_repeat_duplicate": (
                         question_repeat_duplicate if item_has_repeat_flag else ""
                     ),
-                    "question": question[:300],
+                    # Accepted task questions are already bounded by the main
+                    # quality gate (420/520 chars by method).  Preserve the
+                    # complete sentence in audit evidence; a 300-char slice
+                    # made valid discussion/creative tasks appear corrupted.
+                    "question": question,
                     "follow_ups": " | ".join(follow_ups),
                     "evaluation_points": " | ".join(evaluation_points),
                     "ksa_refs": " | ".join(ksa_refs),
@@ -801,7 +806,7 @@ def evaluate_cached_document(
 
 def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, Path, Path]:
     report_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}-{uuid4().hex[:8]}"
     md_path = report_dir / f"alio_question_quality_{stamp}.md"
     csv_path = report_dir / f"alio_question_quality_{stamp}.csv"
     item_csv_path = report_dir / f"alio_question_quality_items_{stamp}.csv"
@@ -961,6 +966,11 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
             blocker_type = value.split(":", 1)[1].strip() if ":" in value else value
             if blocker_type:
                 coverage_blocker_counts[blocker_type] = coverage_blocker_counts.get(blocker_type, 0) + 1
+    unique_requested_methods: list[str] = []
+    for method_config in method_config_counts:
+        for method in (part.strip() for part in method_config.split(",")):
+            if method and method not in unique_requested_methods:
+                unique_requested_methods.append(method)
     total_questions = sum(int(row.get("generated_questions") or 0) for row in rows)
     ready_questions = sum(int(row.get("ready_questions") or 0) for row in rows)
     model_candidate_questions = sum(int(row.get("model_candidate_questions") or 0) for row in rows)
@@ -1066,7 +1076,20 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         f"- Documents attempted: {len(rows)}",
         f"- Documents evaluated: {evaluated}",
         f"- Resolved benchmark modes: {', '.join(f'{key}={value}' for key, value in sorted(resolved_mode_counts.items()))}",
-        f"- Interview methods requested: {', '.join(f'{key} ({value})' for key, value in sorted(method_config_counts.items())) or 'unknown'}",
+        (
+            f"- Unique interview methods requested: {len(unique_requested_methods)} "
+            f"({', '.join(unique_requested_methods) or 'unknown'})"
+        ),
+        (
+            "- Interview method configurations by document: "
+            + (
+                ", ".join(
+                    f"{key} (documents={value})"
+                    for key, value in sorted(method_config_counts.items())
+                )
+                or "unknown"
+            )
+        ),
         f"- Documents strict source-explicit coverage + template-ready: {strict_template_passed}",
         f"- Documents passed model-origin quality gate: {model_quality_passed}",
         f"- Documents passed model-origin quality + strict coverage: {model_full_passed}",
@@ -1170,6 +1193,29 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
                 f"| {method} | {total} | {ready} | {rate} | {model_total} | {repaired_total} | {mixed_total} | {fallback_total} | "
                 f"{stats.get('official_sample_format_fail') or 0} |"
             )
+    representative_by_method: dict[str, dict[str, Any]] = {}
+    for item in question_rows:
+        method = str(item.get("type") or "unknown").strip() or "unknown"
+        if method in representative_by_method or not str(item.get("question") or "").strip():
+            continue
+        representative_by_method[method] = item
+    if representative_by_method:
+        lines.extend(["", "## Human-readable representative questions", ""])
+        for method, item in sorted(representative_by_method.items()):
+            focus = str(item.get("question_focus") or "").strip() or "-"
+            focus_type = str(item.get("question_focus_type") or "").strip() or "-"
+            lines.extend(
+                [
+                    f"<details><summary>{method} / {focus_type} / {focus}</summary>",
+                    "",
+                    f"- Question: {str(item.get('question') or '').strip()}",
+                    f"- Follow-ups: {str(item.get('follow_ups') or '').strip() or '-'}",
+                    f"- Evaluation: {str(item.get('evaluation_points') or '').strip() or '-'}",
+                    "",
+                    "</details>",
+                    "",
+                ]
+            )
     lines.extend(["", "## Quality Issues By Method", ""])
     if issue_stats_by_method:
         lines.append("| method | issue | questions |")
@@ -1237,6 +1283,7 @@ def quality_gate_failures(
     rows: list[dict[str, Any]],
     *,
     min_evaluated_doc_rate: float | None = None,
+    min_template_ready_rate: float | None = None,
     min_model_ready_rate: float | None = None,
     min_full_model_rate: float | None = None,
     fail_on_model_replacements: bool = False,
@@ -1268,6 +1315,8 @@ def quality_gate_failures(
     }
     attempted_docs = len(rows)
     evaluated_docs = sum(1 for row in rows if row.get("status") in evaluated_statuses)
+    generated_questions = sum(_metric_int(row, "generated_questions") for row in rows)
+    ready_questions = sum(_metric_int(row, "ready_questions") for row in rows)
 
     failures: list[str] = []
     if min_evaluated_doc_rate is not None:
@@ -1281,6 +1330,18 @@ def quality_gate_failures(
                 failures.append(
                     f"evaluated_doc_rate {rate:.2f} below minimum {threshold:.2f} "
                     f"({evaluated_docs}/{attempted_docs} documents reached question evaluation)"
+                )
+    if min_template_ready_rate is not None:
+        threshold = float(min_template_ready_rate)
+        if generated_questions <= 0:
+            if threshold > 0:
+                failures.append(f"no_generated_questions for min_template_ready_rate {threshold:.2f}")
+        else:
+            rate = ready_questions / generated_questions
+            if rate < threshold:
+                failures.append(
+                    f"template_adjusted_ready_rate {rate:.2f} below minimum {threshold:.2f} "
+                    f"({ready_questions}/{generated_questions} adjusted questions ready)"
                 )
     if min_model_ready_rate is not None:
         threshold = float(min_model_ready_rate)
@@ -1335,6 +1396,7 @@ def main() -> int:
     )
     parser.add_argument("--openai-api-key", default="")
     parser.add_argument("--min-evaluated-doc-rate", type=float, default=None)
+    parser.add_argument("--min-template-ready-rate", type=float, default=None)
     parser.add_argument("--min-model-ready-rate", type=float, default=None)
     parser.add_argument("--min-full-model-rate", type=float, default=None)
     parser.add_argument("--fail-on-model-replacements", action="store_true")
@@ -1358,6 +1420,8 @@ def main() -> int:
         raise SystemExit("--benchmark-mode model requires --openai-api-key or OPENAI_API_KEY")
     if args.min_evaluated_doc_rate is not None and not 0 <= float(args.min_evaluated_doc_rate) <= 1:
         raise SystemExit("--min-evaluated-doc-rate must be between 0 and 1")
+    if args.min_template_ready_rate is not None and not 0 <= float(args.min_template_ready_rate) <= 1:
+        raise SystemExit("--min-template-ready-rate must be between 0 and 1")
     if args.min_model_ready_rate is not None and not 0 <= float(args.min_model_ready_rate) <= 1:
         raise SystemExit("--min-model-ready-rate must be between 0 and 1")
     if args.min_full_model_rate is not None and not 0 <= float(args.min_full_model_rate) <= 1:
@@ -1391,6 +1455,7 @@ def main() -> int:
     failures = quality_gate_failures(
         rows,
         min_evaluated_doc_rate=args.min_evaluated_doc_rate,
+        min_template_ready_rate=args.min_template_ready_rate,
         min_model_ready_rate=args.min_model_ready_rate,
         min_full_model_rate=args.min_full_model_rate,
         fail_on_model_replacements=bool(args.fail_on_model_replacements),

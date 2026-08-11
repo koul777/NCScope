@@ -11,6 +11,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -856,7 +857,7 @@ def summarize_sample(title: str, member_rows: list[dict[str, Any]]) -> dict[str,
 
 def write_reports(samples: list[dict[str, Any]], members: list[dict[str, Any]], report_dir: Path) -> tuple[Path, Path, Path]:
     report_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}-{uuid4().hex[:8]}"
     md_path = report_dir / f"ncs_official_interview_samples_{stamp}.md"
     sample_csv = report_dir / f"ncs_official_interview_samples_{stamp}.csv"
     member_csv = report_dir / f"ncs_official_interview_sample_members_{stamp}.csv"

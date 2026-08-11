@@ -17,6 +17,7 @@ from app.main import (
     _natural_question_wording_ok,
     _focus_scenario_coherence_ok,
     _official_sample_format_ok,
+    _operational_focus_label,
     _followups_for_method,
     _parse_interview_methods,
     _parse_question_plan_json,
@@ -268,7 +269,7 @@ def test_adjust_questions_preserves_model_question_when_method_shape_is_valid() 
         ),
         (
             "토론면접",
-            "[토론과제] 사무행정 문서작성 업무에서 문서 요구사항 파악을 위한 보안 기준 강화 입장과 신속한 자료 공유 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 반대 의견을 고려해 본인의 초기 입장과 최종 합의 기준을 제시해 주세요.",
+            "[토론과제] 사무행정 문서작성 업무에서 문서 요구사항 파악을 위한 보안 기준 강화 입장과 신속한 자료 공유 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 반대 의견을 고려해 본인의 초기 입장과 최종 합의 기준을 제시해 주세요. 최종 합의안에는 문서 요구사항 파악 수행 절차와 품질 검증 산출물을 포함해 주세요.",
             [
                 "문서 요구사항 파악 관점에서 본인의 초기 입장을 뒷받침하는 핵심 근거는 무엇입니까?",
                 "반대 의견 중 수용할 수 있는 부분은 무엇입니까?",
@@ -278,7 +279,7 @@ def test_adjust_questions_preserves_model_question_when_method_shape_is_valid() 
         ),
         (
             "인바스켓면접",
-            "[인바스켓과제] 제한시간 30분 안에 사무행정 문서작성 요청, 자료 오류 정정 문서, 상급자 보고 요청이 동시에 들어왔습니다. 문서 요구사항 파악을 기준으로 우선순위와 보고, 위임, 직접처리 판단을 제시해 주세요.",
+            "[인바스켓과제] 제한시간 30분 안에 사무행정 문서작성 요청, 자료 오류 정정 문서, 상급자 보고 요청이 동시에 들어왔습니다. 문서 요구사항 파악을 실제로 수행해 우선순위와 보고, 위임, 직접처리 판단을 제시하고, 첫 조치와 기록 산출물을 포함해 주세요.",
             [
                 "여러 문서와 요청을 어떤 기준으로 분류하겠습니까?",
                 "문서 요구사항 파악을 기준으로 가장 먼저 처리할 문서와 보류할 요청은 무엇입니까?",
@@ -416,7 +417,7 @@ def test_adjust_questions_replaces_model_question_when_followups_are_generic() -
     assert question["question"] == model_question
     assert question["model_question_preserved"] is True
     assert "follow_up_quality" in question["model_replacement_reasons"]
-    assert "'문서 요구사항 파악'과 관련해" in " | ".join(question["follow_ups"])
+    assert "'문서 요구사항 파악'을 실제로 수행할 순서·조치·산출물" in " | ".join(question["follow_ups"])
 
 
 def test_adjust_questions_repairs_model_followups_by_injecting_focus() -> None:
@@ -523,13 +524,15 @@ def test_adjust_questions_repairs_presentation_followups_in_method_focus_slot() 
     question = out["interview_questions"][0]
     quality = out["question_quality_report"]["items"][0]
 
-    assert question["question_source"] == "model_main_repaired_followups"
-    assert "'도면 숙지 의지'를 발표 쟁점으로 볼 때" in question["follow_ups"][0]
-    assert "구조물해체 도면파악 업무에서" in question["follow_ups"][0]
-    assert raw_followups[0] in question["follow_ups"][0]
-    assert question["follow_ups"][1:] == raw_followups[1:]
+    assert question["question_source"] == "template_fallback"
+    assert question["model_question_preserved"] is False
+    assert "ksa_measurement_task" in question["model_replacement_reasons"]
+    assert "상충하는 요구와 압박 속에서 '도면 숙지 의지'가 드러나는 선택 행동" in question["question"]
+    assert "감수할 상충비용 또는 불이익" in question["question"]
+    assert any("도면 숙지 의지" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is True
     assert quality["issues"] == []
+    assert quality["checks"]["ksa_measurement_task"] is True
 
 
 def test_adjust_questions_injects_job_context_into_presentation_main_question() -> None:
@@ -573,18 +576,22 @@ def test_adjust_questions_injects_job_context_into_presentation_main_question() 
     question = out["interview_questions"][0]
     quality = out["question_quality_report"]["items"][0]
 
-    assert question["question_source"] == "model"
-    assert question["model_question_preserved"] is True
-    assert question["model_replacement_reasons"] == []
+    assert question["question_source"] == "template_fallback"
+    assert question["model_question_preserved"] is False
+    assert "ksa_measurement_task" in question["model_replacement_reasons"]
     assert question["model_question_raw"] == model_question
-    assert question["question"].startswith("[발표과제] 화물자동차운송운임산정 업무에서")
-    assert model_question in question["question"]
-    assert question["follow_ups"] == raw_followups
+    assert question["question"].startswith("[발표과제] 화물운송 세분류의 화물자동차운송운임산정 업무에서")
+    assert (
+        "상충하는 요구와 압박 속에서 '운임원가산정에 대한 분석적 태도'가 드러나는 "
+        "선택 행동과 그 선택으로 감수할 상충비용 또는 불이익"
+    ) in question["question"]
+    assert any("운임원가산정에 대한 분석적 태도" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is True
     assert quality["issues"] == []
+    assert quality["checks"]["ksa_measurement_task"] is True
 
 
-def test_adjust_questions_repairs_split_focus_and_context_in_experience_followups() -> None:
+def test_adjust_questions_replaces_shallow_focus_restatement_in_experience_question() -> None:
     plan = _parse_question_plan_json(
         json.dumps(
             {"items": [{"detail": "사회복지 사례관리", "enabled": True, "main_count": 1, "follow_up_count": 3}]},
@@ -625,12 +632,14 @@ def test_adjust_questions_repairs_split_focus_and_context_in_experience_followup
     question = out["interview_questions"][0]
     quality = out["question_quality_report"]["items"][0]
 
-    assert question["question_source"] == "model_main_repaired_followups"
-    assert question["question"] == model_question
-    assert question["model_question_preserved"] is True
+    assert question["question_source"] == "template_fallback"
+    assert question["question"] != model_question
+    assert question["model_question_preserved"] is False
     assert question["model_followups_raw"] == raw_followups
-    assert "'강점관점 개념'을 적용하는 과정에서 본인 행동과 선택 이유" in question["follow_ups"][1]
-    assert "사회복지사례관리 실행계획 수립 과정" in question["follow_ups"][1]
+    assert "ksa_measurement_task" in question["model_replacement_reasons"]
+    assert "적용 범위와 예외를 판별" in question["question"]
+    assert "결과 지표와 학습" in question["question"]
+    assert any("강점관점 개념" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is True
     assert quality["issues"] == []
 
@@ -839,14 +848,28 @@ def test_adjust_questions_repairs_real_alio_followup_anchor_variants(
     item = out["interview_questions"][0]
     quality = out["question_quality_report"]["items"][0]
 
-    assert item["question_source"] in {"model", "model_main_repaired_followups"}
-    if item["question_source"] == "model_main_repaired_followups":
-        assert item["model_replacement_reasons"] == ["follow_up_focus_injected"]
+    if method == "경험면접":
+        assert item["question_source"] == "template_fallback"
+        assert item["model_question_preserved"] is False
+        assert "ksa_measurement_task" in item["model_replacement_reasons"]
+        assert item["question"] != question
+        assert "결과 지표와 학습" in item["question"]
+    elif method == "인바스켓면접" and focus == "화물취급지침 교육스킬":
+        assert item["question_source"] == "template_fallback"
+        assert item["model_question_preserved"] is False
+        assert "ksa_measurement_task" in item["model_replacement_reasons"]
+        assert "실제로 수행할 구체적인 단계·조치, 산출물과 품질 확인 방법" in item["question"]
     else:
-        assert item["model_replacement_reasons"] == []
-    assert any(focus in follow_up for follow_up in item["follow_ups"])
+        assert item["question_source"] in {"model", "model_main_repaired_followups"}
+        if item["question_source"] == "model_main_repaired_followups":
+            assert item["model_replacement_reasons"] == ["follow_up_focus_injected"]
+        else:
+            assert item["model_replacement_reasons"] == []
+    prompt_focus = _operational_focus_label(focus, item.get("question_focus_type", ""))
+    assert any(prompt_focus in follow_up for follow_up in item["follow_ups"])
     assert quality["ready"] is True
     assert quality["issues"] == []
+    assert quality["checks"]["ksa_measurement_task"] is True
 
 
 def test_adjust_questions_replaces_model_question_when_only_followups_match_method() -> None:
@@ -1062,7 +1085,8 @@ def test_method_templates_use_domain_specific_field_scenarios() -> None:
     assert "조리 일정 변경 문서" in question["question"]
     assert "조리 일정 변경 문서가 동시에" in question["question"]
     assert "문서이 동시에" not in question["question"]
-    assert "'식재료 선별능력'을 기준" in question["question"]
+    assert "'식재료 선별'을 실제로 수행" in question["question"]
+    assert "선별능력을 실제로 수행" not in question["question"]
     assert "'식재료 선별능력'를" not in merged
     assert "자료 오류 정정" not in question["question"]
     assert "조리장" in merged
@@ -1100,9 +1124,201 @@ def test_situational_template_uses_domain_specific_risk_event() -> None:
     assert "반복 민원" in question["question"]
     assert "안전사고 위험 구역 발견" in question["question"]
     assert "안전사고 위험 구역 발견이 동시에" in question["question"]
-    assert "'청소범위 설정능력'과 관련해" in question["question"]
+    assert "'청소범위 설정'을 실제로 수행해야 하는 가운데" in question["question"]
+    assert "설정능력을 실제로 수행" not in question["question"]
     assert "'청소범위 설정능력'와" not in "\n".join([question["question"], *question["follow_ups"]])
     assert "자료 오류" not in question["question"]
+
+
+@pytest.mark.parametrize(
+    ("focus_type", "official_focus", "prompt_focus"),
+    [
+        ("기술", "소비자 패턴분석 능력", "소비자 패턴분석"),
+        ("기술", "문서 오류 검증 기술", "문서 오류 검증"),
+        ("지식", "문서 보안 법규 지식", "문서 보안 법규"),
+        ("태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 태도"),
+    ],
+)
+def test_official_ksa_suffix_is_removed_only_from_prompt_wording(
+    focus_type: str,
+    official_focus: str,
+    prompt_focus: str,
+) -> None:
+    question = _question_for_method(
+        "경험면접",
+        "문서관리",
+        official_focus,
+        "사무행정",
+        "문서 오류를 확인하고 품질을 관리한다.",
+        focus_type,
+    )
+
+    assert _operational_focus_label(official_focus, focus_type) == prompt_focus
+    assert prompt_focus in question
+    if prompt_focus != official_focus:
+        assert official_focus not in question
+    assert "능력을 직접 수행" not in question
+    assert "기술을 직접 수행" not in question
+    assert "지식을 판단 근거" not in question
+
+
+def test_skill_factor_object_uses_application_verb_for_method_or_tool() -> None:
+    method_question = _question_for_method(
+        "경험면접",
+        "스포츠시설 경영기획",
+        "수요예측 기법",
+        "스포츠시설운영관리",
+        "이용객 자료를 분석해 수요를 예측한다.",
+        "기술",
+    )
+    tool_question = _question_for_method(
+        "상황면접",
+        "문서관리",
+        "문서관리 시스템",
+        "사무행정",
+        "문서를 등록하고 오류를 검증한다.",
+        "기술",
+    )
+
+    assert "'수요예측 기법'을 직접 적용해" in method_question
+    assert "수요예측 기법'을 직접 수행" not in method_question
+    assert "'문서관리 시스템'을 실제로 활용해야" in tool_question
+    assert _natural_question_wording_ok(
+        {"type": "경험면접", "question_focus": "수요예측 기법", "question_focus_type": "기술"},
+        method_question,
+        [],
+    ) is True
+    assert _natural_question_wording_ok(
+        {"type": "경험면접", "question_focus": "수요예측 기법", "question_focus_type": "기술"},
+        method_question.replace("직접 적용해", "직접 수행해"),
+        [],
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "경험면접",
+        "상황면접",
+        "발표면접",
+        "토론면접",
+        "인바스켓면접",
+        "직무지식면접",
+        "창의적 문제해결력면접",
+    ],
+)
+def test_all_interview_methods_apply_technique_factor_as_observable_task(method: str) -> None:
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "detail": "스포츠시설운영관리",
+                        "enabled": True,
+                        "main_count": 1,
+                        "follow_up_count": 3,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        ["스포츠시설운영관리"],
+    )
+    code = "1204020201_22v3"
+    out = _adjust_generated_questions(
+        {"interview_questions": []},
+        plan,
+        [method],
+        ncs_matches=[
+            {
+                "ncsClCd": code,
+                "compeUnitName": "스포츠시설 경영기획",
+                "ncsSclasCdnm": "스포츠시설운영관리",
+                "ncsSubdCdnm": "스포츠시설운영관리",
+                "matchedDetailName": "스포츠시설운영관리",
+                "compeUnitDef": "이용객 자료를 분석해 수요를 예측하고 운영계획을 수립한다.",
+            }
+        ],
+        ncs_ksa=[
+            {
+                "ncsClCd": code,
+                "factorName": "수요예측 기법",
+                "ksaTypeName": "기술",
+                "factorSource": "ncs-mcp",
+                "ksaStatus": "official",
+            }
+        ],
+    )
+    out = _attach_ksa_evidence_to_strategy(
+        out,
+        [
+            {
+                "ncsClCd": code,
+                "factorName": "수요예측 기법",
+                "ksaTypeName": "기술",
+                "factorSource": "ncs-mcp",
+                "ksaStatus": "official",
+            }
+        ],
+    )
+
+    item = out["interview_questions"][0]
+    visible = "\n".join([item["question"], *item["follow_ups"]])
+    assert "수요예측 기법" in visible
+    assert "적용" in visible
+    assert "기법'을 직접 수행" not in visible
+    assert "기법'을 실제로 수행" not in visible
+    assert out["question_quality_report"]["items"][0]["ready"] is True
+
+
+def test_compound_skill_suffix_still_counts_as_followup_focus_context() -> None:
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "detail": "사회복지 사례관리",
+                        "enabled": True,
+                        "main_count": 1,
+                        "follow_up_count": 3,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        ["사회복지 사례관리"],
+    )
+    code = "0701020505_25v3"
+    out = _adjust_generated_questions(
+        {"interview_questions": []},
+        plan,
+        ["경험면접"],
+        ncs_matches=[
+            {
+                "ncsClCd": code,
+                "compeUnitName": "사회복지사례관리 실행계획 수립",
+                "ncsSclasCdnm": "사회복지 사례관리",
+                "ncsSubdCdnm": "사회복지 사례관리",
+                "matchedDetailName": "사회복지 사례관리",
+            }
+        ],
+        ncs_ksa=[
+            {
+                "ncsClCd": code,
+                "factorName": "갈등중재기술",
+                "ksaTypeName": "기술",
+            }
+        ],
+    )
+    out = _attach_ksa_evidence_to_strategy(
+        out,
+        [{"ncsClCd": code, "factorName": "갈등중재기술", "ksaTypeName": "기술"}],
+    )
+
+    item = out["interview_questions"][0]
+    assert "갈등중재기술" not in item["question"]
+    assert "'갈등중재'를 직접 수행" in item["question"]
+    assert out["question_quality_report"]["items"][0]["ready"] is True
 
 
 def test_domain_templates_choose_natural_korean_particles() -> None:
@@ -1137,7 +1353,7 @@ def test_domain_templates_choose_natural_korean_particles() -> None:
 
     assert "운임 산정 오류가 동시에" in merged
     assert "화주 요청 변경 내역이 주어졌다고" in merged
-    assert "'운임원가산정'과 관련해" in merged
+    assert "'운임원가산정'을 실제로 수행" in merged
     assert "'운임원가산정'와" not in merged
     assert "오류이 동시에" not in merged
 
@@ -1172,6 +1388,79 @@ def test_domain_templates_prioritize_leisure_over_generic_facility() -> None:
     assert "예약 현황표" in question
     assert "이용객 민원" in question
     assert "순찰 기록표" not in question
+
+
+def test_document_security_focus_does_not_switch_to_physical_guard_context() -> None:
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {"items": [{"detail": "사무행정", "enabled": True, "main_count": 1, "follow_up_count": 3}]},
+            ensure_ascii=False,
+        ),
+        ["사무행정"],
+    )
+
+    out = _adjust_generated_questions(
+        {"interview_questions": []},
+        plan,
+        ["발표면접"],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": "문서관리",
+                "ncsSclasCdnm": "사무행정",
+                "ncsSubdCdnm": "사무행정",
+                "matchedDetailName": "사무행정",
+                "compeUnitDef": "문서 보안 기준에 따라 기록과 결재 문서를 관리한다.",
+            }
+        ],
+        ncs_ksa=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "factorName": "문서 보안 법규 지식",
+                "ksaTypeName": "지식",
+            }
+        ],
+    )
+
+    question = out["interview_questions"][0]["question"]
+
+    assert "문서 보안 규정" in question
+    assert "접근권한 목록" in question
+    assert "보존·폐기 기록" in question
+    assert "순찰 기록" not in question
+    assert "경비 배치" not in question
+    assert "출입 통제 로그" not in question
+
+
+def test_cost_reduction_attitude_gets_a_real_cost_and_resource_tradeoff() -> None:
+    question = _question_for_method(
+        "상황면접",
+        "행사지원관리",
+        "원가절감 의지",
+        "총무",
+        "행사 운영 요구사항과 예산을 조정한다.",
+        focus_type="태도",
+    )
+
+    assert "예산·자원 제약" in question
+    assert "원가절감 의지" in question
+    assert "상충하는 요구와 압박" in question
+
+
+def test_tax_law_presentation_uses_tax_application_evidence() -> None:
+    question = _question_for_method(
+        "발표면접",
+        "부동산관리",
+        "세법",
+        "총무",
+        "보유 부동산의 세무 자료와 신고 일정을 관리한다.",
+        focus_type="지식",
+    )
+
+    assert "과세대상 자산대장" in question
+    assert "세액 산정표" in question
+    assert "예외·감면 검토서" in question
+    assert "적용 범위·예외" in question
 
 
 def test_domain_templates_prioritize_energy_and_water_operations() -> None:
@@ -1289,11 +1578,11 @@ def test_adjust_questions_uses_inbasket_template_when_selected() -> None:
 @pytest.mark.parametrize(
     ("method", "question_marker", "followup_marker", "evaluation_marker"),
     [
-        ("경험면접", "경험을 말씀해 주세요", "맡은 역할", "본인 역할과 행동"),
+        ("경험면접", "사례 한 가지를 선택해 주세요", "맡은 역할", "본인 역할과 행동"),
         ("상황면접", "어떤 기준으로 판단", "먼저 확인해야 할 사실", "판단 기준"),
         ("발표면접", "[발표과제]", "핵심 근거 자료", "논리적 구조화"),
         ("토론면접", "[토론과제]", "초기 입장", "최종 합의안 도출"),
-        ("인바스켓면접", "[인바스켓과제]", "어떻게 분류", "우선순위 판단"),
+        ("인바스켓면접", "[인바스켓과제]", "분류할 절차", "우선순위 판단"),
         ("직무지식면접", "확인해야 할 절차", "기준이나 규정", "절차·기준 이해"),
         ("창의적 문제해결력면접", "[창의적 문제해결력과제]", "핵심 문제정의", "미래예측과 문제 정의"),
     ],
@@ -1515,7 +1804,8 @@ def test_adjust_questions_repairs_inbasket_marker_when_prefix_makes_shape_valid(
     )
     model_question = (
         "사회복지사례관리 실행계획 수립 관련 여러 문서와 요청이 들어왔습니다. "
-        "정보수집 기술을 기준으로 우선순위, 보고, 위임, 직접처리 판단을 제시해 주세요."
+        "정보수집 기술을 실제로 발휘해 우선순위, 보고, 위임, 직접처리 판단을 제시하고, "
+        "각 문서에서 정보를 수집하는 첫 조치와 기록 산출물을 포함해 주세요."
     )
 
     out = _adjust_generated_questions(
@@ -1567,8 +1857,8 @@ def test_adjust_questions_prefers_official_ksa_factor_used_by_model_over_cyclic_
         ["사무행정"],
     )
     model_question = (
-        "문서작성 업무에서 문서 요구사항 파악을 적용했던 경험을 말씀해 주세요. "
-        "당시 상황, 본인 역할, 선택한 행동, 결과와 학습을 포함해 설명해 주세요."
+        "문서작성 업무의 문서 요구사항 파악 단계에서 두 부서의 요구가 충돌해 초안 승인이 지연된 실제 경험 한 가지를 선택해 주세요. "
+        "그 상황과 본인 역할, 실제로 한 대조·협의 행동, 수정 산출물과 승인 소요시간이라는 결과를 포함해 설명해 주세요."
     )
 
     out = _adjust_generated_questions(
@@ -1581,9 +1871,9 @@ def test_adjust_questions_prefers_official_ksa_factor_used_by_model_over_cyclic_
                     "ncsClCd": "0202030201_25v3",
                     "question": model_question,
                     "follow_ups": [
-                        "당시 상황과 본인 역할은 무엇이었습니까?",
-                        "문서 요구사항 파악을 적용하기 위해 어떤 행동을 선택했습니까?",
-                        "결과와 학습은 무엇이었습니까?",
+                        "당시 상충한 요구와 본인이 맡은 역할은 무엇이었습니까?",
+                        "문서 요구사항 파악 과정에서 어떤 문서를 어떤 순서로 대조했습니까?",
+                        "수정 산출물과 승인 소요시간의 변화는 무엇이었습니까?",
                     ],
                     "evaluation_points": [
                         "구체적 상황 설명",
@@ -1614,8 +1904,9 @@ def test_adjust_questions_prefers_official_ksa_factor_used_by_model_over_cyclic_
     question = out["interview_questions"][1]
 
     assert question["question_focus"].startswith("문서 요구사항 파악")
-    assert question["question_source"] == "model"
-    assert question["model_replacement_reasons"] == []
+    assert question["question_source"] == "model_main_repaired_followups"
+    assert question["model_question_preserved"] is True
+    assert question["model_replacement_reasons"] == ["follow_up_focus_injected"]
 
 
 def test_adjust_questions_does_not_promote_model_ksa_refs_when_official_ksa_exists() -> None:
@@ -2302,6 +2593,17 @@ def test_method_evaluation_points_reserve_ksa_slot_for_full_default_methods() ->
     assert "성과지표 설계" in points
 
 
+def test_method_evaluation_points_use_natural_korean_particles_for_ksa_type() -> None:
+    attitude = _method_evaluation_points("인바스켓면접", ["관찰하는 태도"], "태도")
+    knowledge_vowel = _method_evaluation_points("직무지식면접", ["메뉴 이해"], "지식")
+    knowledge_consonant = _method_evaluation_points("직무지식면접", ["문서 보안 규정"], "지식")
+
+    assert "'관찰하는 태도'가 드러난 행동 근거" in attitude
+    assert "'메뉴 이해'를 활용한 판단 근거" in knowledge_vowel
+    assert "'문서 보안 규정'을 활용한 판단 근거" in knowledge_consonant
+    assert all("'관찰하는 태도'이" not in point for point in attitude)
+
+
 def test_question_quality_report_requires_main_question_method_shape() -> None:
     strategy = {
         "interview_questions": [
@@ -2653,7 +2955,8 @@ def test_adjust_questions_preserves_same_focus_model_questions_when_scenario_dif
                     "question": (
                         f"[토론과제] {detail} {competency} 업무에서 {focus} 기준을 강화하는 입장과 "
                         "처리 속도를 우선하는 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 "
-                        "반대 의견을 검토하고 조정 방식과 최종 합의안을 제시해 주세요."
+                        "반대 의견을 검토하고 조정 방식과 최종 합의안을 제시해 주세요. "
+                        f"합의안에는 {focus} 수행 절차와 품질 검증 산출물을 포함해 주세요."
                     ),
                     "follow_ups": list(common_followups),
                     "evaluation_points": list(common_evaluation_points),
@@ -2662,7 +2965,8 @@ def test_adjust_questions_preserves_same_focus_model_questions_when_scenario_dif
                     "question": (
                         f"[토론과제] {detail} {competency} 업무에서 {focus} 관련 정보 공유를 확대해야 한다는 입장과 "
                         "보안 책임을 강화해야 한다는 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 "
-                        "반대 의견을 검토하고 조정 방식과 최종 합의안을 제시해 주세요."
+                        "반대 의견을 검토하고 조정 방식과 최종 합의안을 제시해 주세요. "
+                        f"합의안에는 {focus} 수행 절차와 품질 검증 산출물을 포함해 주세요."
                     ),
                     "follow_ups": list(common_followups),
                     "evaluation_points": list(common_evaluation_points),
@@ -3008,6 +3312,43 @@ def test_focus_selection_prefers_skill_over_attitude_for_behavior_question() -> 
     assert _select_ksa_focus_for_method(rows, "U1", "직무지식면접") == "문서 분류 기준 지식"
 
 
+@pytest.mark.parametrize(
+    ("method", "expected_focus"),
+    [
+        ("경험면접", "문서 오류 점검 능력"),
+        ("상황면접", "꼼꼼하게 확인하려는 태도"),
+        ("발표면접", "문서 분류 기준 지식"),
+        ("토론면접", "꼼꼼하게 확인하려는 태도"),
+        ("인바스켓면접", "꼼꼼하게 확인하려는 태도"),
+        ("직무지식면접", "문서 분류 기준 지식"),
+        ("창의적 문제해결력면접", "문서 분류 기준 지식"),
+    ],
+)
+def test_focus_selection_uses_method_specific_observability_priority(
+    method: str,
+    expected_focus: str,
+) -> None:
+    rows = [
+        {"ncsClCd": "U1", "factorName": "문서 분류 기준 지식", "ksaTypeName": "지식"},
+        {"ncsClCd": "U1", "factorName": "문서 오류 점검 능력", "ksaTypeName": "기술"},
+        {"ncsClCd": "U1", "factorName": "꼼꼼하게 확인하려는 태도", "ksaTypeName": "태도"},
+    ]
+
+    assert _select_ksa_focus_for_method(rows, "U1", method) == expected_focus
+
+
+def test_non_work_sample_methods_do_not_prioritize_a_hands_on_skill() -> None:
+    rows = [
+        {"ncsClCd": "COOK-1", "factorName": "곁들임 메뉴 구성", "ksaTypeName": "지식"},
+        {"ncsClCd": "COOK-1", "factorName": "면을 모양내어 담는 능력", "ksaTypeName": "기술"},
+        {"ncsClCd": "COOK-1", "factorName": "관찰하는 태도", "ksaTypeName": "태도"},
+    ]
+
+    assert _select_ksa_focus_for_method(rows, "COOK-1", "인바스켓면접") == "관찰하는 태도"
+    assert _select_ksa_focus_for_method(rows, "COOK-1", "창의적 문제해결력면접") == "곁들임 메뉴 구성"
+    assert _select_ksa_focus_for_method(rows, "COOK-1", "경험면접") == "면을 모양내어 담는 능력"
+
+
 def test_experience_template_expresses_attitude_as_observable_behavior() -> None:
     question = _question_for_method(
         "경험면접",
@@ -3025,9 +3366,27 @@ def test_experience_template_expresses_attitude_as_observable_behavior() -> None
         focus_type="태도",
     )
 
-    assert "'도면 숙지 의지'가 특히 요구됐던" in question
+    assert "'도면 숙지 의지'를 유지하기 위해 선택한 행동" in question
+    assert "그 행동으로 품질이나 결과를 지킨 근거" in question
+    assert "직무 경험, 프로젝트 또는 교육실습 사례 한 가지를 선택" in question
     assert "도면 숙지 의지를 적용" not in "\n".join([question, *follow_ups])
-    assert "실제 행동으로 어떻게 보여주었습니까" in follow_ups[1]
+    assert "드러난 실제 행동과 감수한 상충비용" in follow_ups[1]
+
+
+def test_discussion_template_expresses_attitude_as_joint_behavior_not_an_applied_noun() -> None:
+    question = _question_for_method(
+        "토론면접",
+        "비품관리",
+        "정확성 유지",
+        "총무",
+        "비품 기록의 정확성과 처리 속도를 조정한다.",
+        focus_type="태도",
+    )
+
+    assert "'정확성 유지'가 드러나는 운영 기준과 공동 행동" in question
+    assert "'정확성 유지'가 드러나는 공동 행동·점검 기준" in question
+    assert "태도를 어떻게 수행" not in question
+    assert "'정확성 유지'를 포함" not in question
 
 
 def test_natural_wording_gate_rejects_attitude_as_mechanical_application() -> None:
@@ -3037,6 +3396,135 @@ def test_natural_wording_gate_rejects_attitude_as_mechanical_application() -> No
         q,
         "도면 숙지 의지를 적용해 문제를 해결한 경험을 말씀해 주세요.",
         ["당시 본인 행동은 무엇이었습니까?"],
+    ) is False
+
+
+def test_natural_wording_gate_does_not_count_related_inside_ksa_label() -> None:
+    focus = "도로교통 관련 법규"
+    question = (
+        "[창의적 문제해결력과제] 화물자동차운전 업무에서 '도로교통 관련 법규'를 판단 근거로 "
+        "적용해야 하는 복합 문제가 발생했습니다. 주어진 운송 의뢰서와 배차표를 바탕으로 "
+        "핵심 문제, 대안 2가지, 검증 방법과 실행계획을 설명해 주세요."
+    )
+
+    assert _natural_question_wording_ok(
+        {"type": "창의적 문제해결력면접", "question_focus": focus, "question_focus_type": "지식"},
+        question,
+        [
+            f"'{focus}'의 적용 범위와 예외를 어떻게 판별하겠습니까?",
+            f"'{focus}'를 적용한 대안의 위험은 무엇입니까?",
+            f"'{focus}'를 잘못 적용하지 않았음을 어떻게 검증하겠습니까?",
+        ],
+    ) is True
+
+
+def test_creative_template_avoids_related_law_repetition() -> None:
+    question = _question_for_method(
+        "창의적 문제해결력면접",
+        "화물자동차운전",
+        "도로교통 관련 법규",
+        "화물운송",
+        "화물자동차를 안전하게 운행한다.",
+        "지식",
+    )
+
+    assert "'도로교통 관련 법규'를 판단 근거로 적용해야 하는 복합 문제" in question
+    assert "관련 법규'와 관련된" not in question
+
+
+def test_presentation_template_asks_knowledge_scope_once_without_related_repetition() -> None:
+    question = _question_for_method(
+        "발표면접",
+        "화물자동차운전",
+        "도로교통 관련 법규",
+        "화물운송",
+        "운행 조건을 확인하고 안전하게 운전한다.",
+        "지식",
+    )
+
+    assert "'도로교통 관련 법규'를 적용해 현황을 진단하는 데 필요한" in question
+    assert question.count("적용 범위·예외") == 1
+    assert "관련 법규'와 관련된" not in question
+
+
+def test_attitude_tasks_do_not_repeat_situation_interview_instruction() -> None:
+    discussion = _question_for_method(
+        "토론면접",
+        "문서관리",
+        "정확성 유지",
+        "사무행정",
+        "문서 품질을 확인한다.",
+        "태도",
+    )
+    inbasket = _question_for_method(
+        "인바스켓면접",
+        "문서관리",
+        "정확성 유지",
+        "사무행정",
+        "문서 품질을 확인한다.",
+        "태도",
+    )
+
+    assert discussion.count("상충하는 요구와 압박 속에서") == 0
+    assert "최종 합의안에는 '정확성 유지'가 드러나는 공동 행동·점검 기준" in discussion
+    assert inbasket.count("상충하는 요구와 압박 속에서도") == 1
+    assert inbasket.count("'정확성 유지'가 드러나는") == 1
+    assert "상충비용 또는 불이익" in inbasket
+
+
+@pytest.mark.parametrize(
+    ("method", "focus_type", "focus", "expected"),
+    [
+        ("경험면접", "지식", "문서 관리 규정", "적용 범위와 예외를 어떻게 판별"),
+        ("상황면접", "지식", "문서 관리 규정", "범위와 예외를 어떻게 구분"),
+        ("인바스켓면접", "지식", "문서 관리 규정", "기준·범위·예외"),
+        ("창의적 문제해결력면접", "지식", "문서 관리 규정", "예외 가능성을 검증"),
+        ("경험면접", "기술", "문서 오류 검증 기술", "순서·도구·조치와 산출물"),
+        ("상황면접", "기술", "문서 오류 검증 기술", "순서·조치·산출물과 예상 위험"),
+        ("인바스켓면접", "기술", "문서 오류 검증 기술", "분류할 절차와 산출물"),
+        ("창의적 문제해결력면접", "기술", "문서 오류 검증 기술", "분석 절차·산출물과 검증 방법"),
+        ("경험면접", "태도", "정확성 유지", "실제 행동과 감수한 상충비용"),
+        ("상황면접", "태도", "정확성 유지", "드러난 구체적 행동과 예상 위험"),
+        ("인바스켓면접", "태도", "정확성 유지", "드러나게 문서와 요청을 어떻게 분류"),
+        ("창의적 문제해결력면접", "태도", "정확성 유지", "드러날 행동과 상충비용"),
+    ],
+)
+def test_method_followups_operationalize_each_ksa_type(
+    method: str,
+    focus_type: str,
+    focus: str,
+    expected: str,
+) -> None:
+    follow_ups = _followups_for_method(
+        method,
+        "문서관리",
+        focus,
+        3,
+        focus_type=focus_type,
+    )
+
+    assert expected in " | ".join(follow_ups)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "문서 기준을 설명해 주세요.  또한 예외상황을 제시해 주세요.",
+        "절차와 산출물을 설명하고 또한 오류 예방 방법을 말씀해 주세요.",
+        "그 사례에서 소비자 패턴분석 능력을 직접 수행한 과정을 설명해 주세요.",
+        "문서 오류 검증 기술을 수행한 단계와 산출물을 설명해 주세요.",
+        "문서 보안 법규 지식을 판단 근거로 활용한 과정을 설명해 주세요.",
+        (
+            "문서관리 수행 중 오류가 발생하고 규정 변경 직후 구버전 양식이 혼재한 조건이고, "
+            "검토 담당자는 증빙 완결을 우선하는 조건인 상황에서 본인의 행동과 결과를 설명해 주세요."
+        ),
+    ],
+)
+def test_natural_wording_gate_rejects_spacing_and_conjunction_artifacts(question: str) -> None:
+    assert _natural_question_wording_ok(
+        {"question_focus": "문서 기준 지식", "question_focus_type": "지식"},
+        question,
+        ["예외 판단 근거는 무엇입니까?"],
     ) is False
 
 
@@ -3095,12 +3583,48 @@ def test_official_style_evaluation_guide_has_distinct_behavior_anchors(method: s
     assert _behavior_anchors_ok(guide) is True
     assert guide["dimensions"] == ["판단 근거", "실행 행동", "성과 확인", "위험 통제"]
     assert set(guide["anchors"]) == {"high", "medium", "low"}
+    assert guide["scale"] == "5단계 행동기반 평정"
+    assert [(level["score"], level["label"]) for level in guide["rating_levels"]] == [
+        (5, "탁월"),
+        (4, "우수"),
+        (3, "보통"),
+        (2, "미흡"),
+        (1, "부족"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("focus_type", "focus", "high_marker", "low_marker"),
+    [
+        ("지식", "문서 보안 법규 지식", "적용 범위·예외", "암기해 말할 뿐"),
+        ("기술", "문서 오류 검증 기술", "산출물의 품질", "기술 보유를 주장"),
+        ("태도", "정확성을 우선하려는 태도", "압박이나 이해 충돌", "가치나 의지를 선언"),
+    ],
+)
+def test_behavior_anchor_requires_distinct_observable_ksa_evidence(
+    focus_type: str,
+    focus: str,
+    high_marker: str,
+    low_marker: str,
+) -> None:
+    guide = _behavior_anchored_evaluation(
+        "상황면접",
+        focus,
+        ["판단 근거", "실행 행동", "결과 확인", "위험 통제"],
+        focus_type,
+    )
+
+    assert guide["focus_type"] == focus_type
+    assert high_marker in guide["anchors"]["high"]
+    assert low_marker in guide["anchors"]["low"]
+    assert "KSA 자기평가" in guide["interviewer_instruction"]
+    assert _behavior_anchors_ok(guide) is True
 
 
 def test_behavior_anchor_gate_rejects_label_only_scale() -> None:
     assert _behavior_anchors_ok(
         {
-            "scale": "3단계 행동기반 평정",
+            "scale": "5단계 행동기반 평정",
             "anchors": {"high": "상", "medium": "중", "low": "하"},
             "interviewer_instruction": "점수를 선택하세요.",
         }

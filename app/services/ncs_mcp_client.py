@@ -18,7 +18,7 @@ from app.settings import settings
 
 MCP_PROTOCOL_VERSION = "2025-03-26"
 _TOOLS_TTL = 300.0
-_tools_cache: tuple[float, set[str]] | None = None
+_tools_cache: tuple[float, str, set[str]] | None = None
 _last_error: str | None = None
 
 
@@ -114,18 +114,24 @@ def _payload(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _tool_names() -> set[str]:
+def _tool_names(*, force_refresh: bool = False) -> set[str]:
     global _tools_cache
     now = time.monotonic()
-    if _tools_cache and now - _tools_cache[0] < _TOOLS_TTL:
-        return _tools_cache[1]
+    endpoint = _endpoint()
+    if (
+        not force_refresh
+        and _tools_cache
+        and _tools_cache[1] == endpoint
+        and now - _tools_cache[0] < _TOOLS_TTL
+    ):
+        return _tools_cache[2]
     result = _rpc("tools/list")
     names = {
         str(item.get("name"))
         for item in result.get("tools", [])
         if isinstance(item, dict) and item.get("name")
     }
-    _tools_cache = (now, names)
+    _tools_cache = (now, endpoint, names)
     return names
 
 
@@ -286,11 +292,31 @@ def _detail_payload(result: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _first_ksa_value(row: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _canonical_ksa_type(row: dict[str, Any]) -> str:
+    raw = _first_ksa_value(row, "ksa_type", "ksaType", "ksa_type_name", "ksaTypeName", "factorType")
+    compact = re.sub(r"\s+", "", raw).lower()
+    if compact in {"k", "knowledge", "지식"} or "지식" in compact:
+        return "지식"
+    if compact in {"s", "skill", "skills", "기술"} or any(token in compact for token in ("기술", "스킬")):
+        return "기술"
+    if compact in {"a", "attitude", "태도"} or "태도" in compact:
+        return "태도"
+    return raw
+
+
 def _balanced_ksa(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     buckets: dict[str, list[dict[str, Any]]] = {"지식": [], "기술": [], "태도": []}
     other: list[dict[str, Any]] = []
     for row in rows:
-        kind = str(row.get("ksa_type") or row.get("ksaType") or row.get("ksa_type_name") or "").strip()
+        kind = _canonical_ksa_type(row)
         if kind in buckets:
             buckets[kind].append(row)
         else:
@@ -302,6 +328,35 @@ def _balanced_ksa(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]
                 selected.append(buckets[kind].pop(0))
     selected.extend(other[: max(0, limit - len(selected))])
     return selected[:limit]
+
+
+def _interleave_element_ksa(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Round-robin KSA rows so an early large element cannot hide later ones."""
+
+    queues: list[list[dict[str, Any]]] = []
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        element_rows: list[dict[str, Any]] = []
+        for row in element.get("ksa") or []:
+            if not isinstance(row, dict):
+                continue
+            annotated = dict(row)
+            annotated["_ncscope_element_id"] = element.get("element_id")
+            annotated["_ncscope_element_name"] = element.get("element_name", "")
+            element_rows.append(annotated)
+        if element_rows:
+            queues.append(element_rows)
+
+    interleaved: list[dict[str, Any]] = []
+    offsets = [0 for _queue in queues]
+    while any(offset < len(queue) for offset, queue in zip(offsets, queues)):
+        for index, queue in enumerate(queues):
+            if offsets[index] >= len(queue):
+                continue
+            interleaved.append(queue[offsets[index]])
+            offsets[index] += 1
+    return interleaved
 
 
 def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12) -> list[dict[str, Any]]:
@@ -320,40 +375,40 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
             {"unit_code": code, "include": ["elements", "criteria", "ksa"], "text_version": "raw"},
         )
         detail = _detail_payload(result)
-        selected_for_unit = 0
-        for element in detail.get("elements") or []:
-            if selected_for_unit >= per_unit_limit:
-                break
-            if not isinstance(element, dict):
-                continue
-            raw_ksa = [row for row in (element.get("ksa") or []) if isinstance(row, dict)]
-            remaining = max(0, per_unit_limit - selected_for_unit)
-            for row in _balanced_ksa(raw_ksa, remaining):
-                output.append(
-                    {
-                        "ncsClCd": code,
-                        "compeUnitName": unit.get("compeUnitName") or detail.get("unit", {}).get("unit_name", ""),
-                        "ncsSubdCdnm": unit.get("ncsSubdCdnm") or detail.get("unit", {}).get("classification", {}).get("sub", ""),
-                        "elementId": element.get("element_id"),
-                        "elementName": element.get("element_name", ""),
-                        "factorName": row.get("text", ""),
-                        "ksaTypeName": row.get("ksa_type", ""),
-                        "ksaNo": row.get("ksa_no", ""),
-                        "factorSource": "ncs-mcp",
-                        "source": "ncs-mcp",
-                        "ksaStatus": "official",
-                        "isOfficialKsa": True,
-                    }
-                )
-                selected_for_unit += 1
-                if selected_for_unit >= per_unit_limit:
-                    break
+        detail_unit = detail.get("unit") if isinstance(detail.get("unit"), dict) else {}
+        classification = (
+            detail_unit.get("classification")
+            if isinstance(detail_unit.get("classification"), dict)
+            else {}
+        )
+        interleaved = _interleave_element_ksa(
+            [element for element in (detail.get("elements") or []) if isinstance(element, dict)]
+        )
+        for row in _balanced_ksa(interleaved, per_unit_limit):
+            output.append(
+                {
+                    "ncsClCd": code,
+                    "compeUnitName": unit.get("compeUnitName") or detail_unit.get("unit_name", ""),
+                    "ncsSubdCdnm": unit.get("ncsSubdCdnm") or classification.get("sub", ""),
+                    "elementId": row.get("_ncscope_element_id"),
+                    "elementName": row.get("_ncscope_element_name", ""),
+                    "factorName": _first_ksa_value(row, "text", "ksa_text", "factorName", "factor_name"),
+                    "ksaTypeName": _canonical_ksa_type(row),
+                    "ksaNo": _first_ksa_value(row, "ksa_no", "ksaNo", "number"),
+                    "factorSource": "ncs-mcp",
+                    "source": "ncs-mcp",
+                    "ksaStatus": "official",
+                    "isOfficialKsa": True,
+                }
+            )
     return output
 
 
 def ncs_mcp_status() -> dict[str, Any]:
     try:
-        names = sorted(_tool_names())
+        # A readiness endpoint must probe the configured service. Reusing the
+        # five-minute discovery cache can report a stopped MCP as reachable.
+        names = sorted(_tool_names(force_refresh=True))
         return {
             "configured": bool(_endpoint()),
             "reachable": True,

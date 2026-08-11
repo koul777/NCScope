@@ -6,7 +6,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, text
 
 from app.db import SessionLocal
 from app.models import (
@@ -28,6 +28,10 @@ from app.models import (
 )
 
 
+class QuestionQualityReviewConflictError(RuntimeError):
+    """Raised when a review mutation targets a decision that is no longer active."""
+
+
 @contextmanager
 def db_session() -> Iterator:
     session = SessionLocal()
@@ -44,6 +48,26 @@ def db_session() -> Iterator:
 def _inst_code_from_name(name: str) -> str:
     h = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
     return f"INST_{h}"
+
+
+def _lock_question_quality_run(session: Any, run_id: str) -> QuestionQualityRun | None:
+    """Serialize review mutations for one run across threads and workers.
+
+    SQLite ignores ``SELECT ... FOR UPDATE``.  ``BEGIN IMMEDIATE`` obtains its
+    single writer reservation before reading active reviews, so concurrent
+    review/rollback requests cannot both make a decision from stale state.
+    Databases with row-lock support use ``FOR UPDATE`` on the run instead.
+    """
+
+    bind = session.get_bind()
+    if bind.dialect.name == "sqlite":
+        session.execute(text("BEGIN IMMEDIATE"))
+        return session.get(QuestionQualityRun, run_id)
+    return session.execute(
+        select(QuestionQualityRun)
+        .where(QuestionQualityRun.id == run_id)
+        .with_for_update()
+    ).scalar_one_or_none()
 
 
 def create_posting(payload: dict, requirements_by_attachment: dict[str, list[dict]]) -> dict:
@@ -402,7 +426,7 @@ def verify_question_quality_run_token(run_id: str, review_token: str) -> bool:
 def record_question_quality_review(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = str(payload.get("run_id") or "").strip()
     with db_session() as s:
-        run = s.get(QuestionQualityRun, run_id)
+        run = _lock_question_quality_run(s, run_id)
         if not run:
             raise LookupError("quality run not found")
         review_token = str(payload.get("review_token") or "").strip()
@@ -421,12 +445,45 @@ def record_question_quality_review(payload: dict[str, Any]) -> dict[str, Any]:
         if question_text and hashlib.sha256(question_text.encode("utf-8")).hexdigest() != question_hash:
             raise ValueError("question_text does not match question_hash")
         reviewer_ref = str(payload.get("reviewer_ref") or "local-reviewer")
+        reviewer_ref_hash = hashlib.sha256(reviewer_ref.encode("utf-8")).hexdigest()
+        verdict = str(payload.get("verdict") or "needs_edit")[:32]
+        issue_codes = list(payload.get("issue_codes") or [])[:20]
+        note_redacted = str(payload.get("note") or "")[:500] or None
         prior_active = s.execute(
             select(QuestionQualityReview)
             .where(QuestionQualityReview.run_id == run_id)
             .where(QuestionQualityReview.question_hash == question_hash)
             .where(QuestionQualityReview.active.is_(True))
         ).scalars().all()
+        if len(prior_active) == 1:
+            prior = prior_active[0]
+            prior_issue_codes = list((prior.issue_codes_json or {}).get("items") or [])
+            if (
+                prior.verdict == verdict
+                and prior_issue_codes == issue_codes
+                and (prior.question_text or "") == question_text
+                and prior.note_redacted == note_redacted
+                and prior.reviewer_ref_hash == reviewer_ref_hash
+            ):
+                return {
+                    "id": int(prior.id),
+                    "run_id": run_id,
+                    "question_hash": prior.question_hash,
+                    "verdict": prior.verdict,
+                    "issue_codes": prior_issue_codes,
+                    "run_decision": run.final_decision,
+                    "idempotent": True,
+                }
+        expected_review_id = payload.get("expected_review_id")
+        if expected_review_id is not None:
+            actual_review_id = int(prior_active[0].id) if len(prior_active) == 1 else 0
+            if len(prior_active) > 1 or actual_review_id != int(expected_review_id):
+                raise QuestionQualityReviewConflictError(
+                    "the active review changed; refresh the run before saving the decision again"
+                )
+        previous_active_review_id = (
+            int(prior_active[0].id) if len(prior_active) == 1 else None
+        )
         for prior in prior_active:
             prior.active = False
         review = QuestionQualityReview(
@@ -436,10 +493,13 @@ def record_question_quality_review(payload: dict[str, Any]) -> dict[str, Any]:
             ncs_code=str(evidence_item.get("ncs_code") or "")[:64] or None,
             method=str(evidence_item.get("method") or "")[:64] or None,
             question_text=question_text[:1600] or None,
-            verdict=str(payload.get("verdict") or "needs_edit")[:32],
-            issue_codes_json={"items": list(payload.get("issue_codes") or [])[:20]},
-            note_redacted=str(payload.get("note") or "")[:500] or None,
-            reviewer_ref_hash=hashlib.sha256(reviewer_ref.encode("utf-8")).hexdigest(),
+            verdict=verdict,
+            issue_codes_json={
+                "items": issue_codes,
+                "previous_active_review_id": previous_active_review_id,
+            },
+            note_redacted=note_redacted,
+            reviewer_ref_hash=reviewer_ref_hash,
             active=True,
         )
         s.add(review)
@@ -469,6 +529,7 @@ def record_question_quality_review(payload: dict[str, Any]) -> dict[str, Any]:
             "verdict": review.verdict,
             "issue_codes": list((review.issue_codes_json or {}).get("items") or []),
             "run_decision": run.final_decision,
+            "idempotent": False,
         }
 
 
@@ -479,9 +540,10 @@ def rollback_question_quality_review(
     question_hash: str,
     reviewer_ref: str = "local-reviewer",
     note: str = "",
+    expected_review_id: int | None = None,
 ) -> dict[str, Any]:
     with db_session() as s:
-        run = s.get(QuestionQualityRun, str(run_id or "").strip())
+        run = _lock_question_quality_run(s, str(run_id or "").strip())
         if not run:
             raise LookupError("quality run not found")
         token = str(review_token or "").strip()
@@ -495,6 +557,46 @@ def rollback_question_quality_review(
         }
         if q_hash not in allowed_hashes:
             raise ValueError("question_hash is not part of this quality run")
+        note_redacted = str(note or "")[:500] or None
+        reviewer_ref_hash = hashlib.sha256(
+            str(reviewer_ref or "local-reviewer").encode("utf-8")
+        ).hexdigest()
+        latest_event = s.execute(
+            select(QuestionQualityReview)
+            .where(QuestionQualityReview.run_id == run.id)
+            .where(QuestionQualityReview.question_hash == q_hash)
+            .order_by(desc(QuestionQualityReview.id))
+            .limit(1)
+        ).scalar_one_or_none()
+        latest_metadata = (
+            latest_event.issue_codes_json
+            if latest_event and isinstance(latest_event.issue_codes_json, dict)
+            else {}
+        )
+        if (
+            latest_event
+            and latest_event.verdict == "rollback"
+            and latest_event.note_redacted == note_redacted
+            and latest_event.reviewer_ref_hash == reviewer_ref_hash
+            and latest_metadata.get("rolled_back_review_id") is not None
+            and (
+                expected_review_id is None
+                or int(latest_metadata["rolled_back_review_id"]) == int(expected_review_id)
+            )
+        ):
+            return {
+                "run_id": run.id,
+                "question_hash": q_hash,
+                "rollback_event_id": int(latest_event.id),
+                "rolled_back_review_id": int(latest_metadata["rolled_back_review_id"]),
+                "restored_review_id": (
+                    int(latest_metadata["restored_review_id"])
+                    if latest_metadata.get("restored_review_id") is not None
+                    else None
+                ),
+                "run_decision": run.final_decision,
+                "idempotent": True,
+            }
         history = s.execute(
             select(QuestionQualityReview)
             .where(QuestionQualityReview.run_id == run.id)
@@ -502,11 +604,41 @@ def rollback_question_quality_review(
             .where(QuestionQualityReview.verdict != "rollback")
             .order_by(desc(QuestionQualityReview.id))
         ).scalars().all()
-        current = next((row for row in history if row.active), None)
+        active_history = [row for row in history if row.active]
+        current = active_history[0] if active_history else None
         if not current:
             raise ValueError("no active review to roll back")
-        current.active = False
-        previous = next((row for row in history if row.id != current.id), None)
+        if expected_review_id is not None and int(current.id) != int(expected_review_id):
+            raise QuestionQualityReviewConflictError(
+                "the active review changed; refresh the run before attempting rollback again"
+            )
+        # Serialized writes should leave one active row, but clean up every
+        # active row here so a legacy/corrupted state cannot survive rollback.
+        for active_review in active_history:
+            active_review.active = False
+        current_metadata = (
+            current.issue_codes_json
+            if isinstance(current.issue_codes_json, dict)
+            else {}
+        )
+        has_previous_pointer = "previous_active_review_id" in current_metadata
+        previous_id = current_metadata.get("previous_active_review_id")
+        previous = None
+        if previous_id is not None:
+            candidate = s.get(QuestionQualityReview, int(previous_id))
+            if (
+                candidate
+                and candidate.run_id == run.id
+                and candidate.question_hash == q_hash
+                and candidate.verdict != "rollback"
+                and candidate.id != current.id
+            ):
+                previous = candidate
+        elif not has_previous_pointer:
+            # Compatibility for decisions persisted before predecessor pointers
+            # were introduced. New rows always carry the key, including an
+            # explicit null when there was no prior active decision.
+            previous = next((row for row in history if row.id != current.id), None)
         if previous:
             previous.active = True
         rollback_event = QuestionQualityReview(
@@ -517,9 +649,13 @@ def rollback_question_quality_review(
             method=current.method,
             question_text=None,
             verdict="rollback",
-            issue_codes_json={"items": []},
-            note_redacted=str(note or "")[:500] or None,
-            reviewer_ref_hash=hashlib.sha256(str(reviewer_ref or "local-reviewer").encode("utf-8")).hexdigest(),
+            issue_codes_json={
+                "items": [],
+                "rolled_back_review_id": int(current.id),
+                "restored_review_id": int(previous.id) if previous else None,
+            },
+            note_redacted=note_redacted,
+            reviewer_ref_hash=reviewer_ref_hash,
             active=False,
         )
         s.add(rollback_event)
@@ -546,9 +682,11 @@ def rollback_question_quality_review(
         return {
             "run_id": run.id,
             "question_hash": q_hash,
+            "rollback_event_id": int(rollback_event.id),
             "rolled_back_review_id": int(current.id),
             "restored_review_id": int(previous.id) if previous else None,
             "run_decision": run.final_decision,
+            "idempotent": False,
         }
 
 

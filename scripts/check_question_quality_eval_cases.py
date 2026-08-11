@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from datetime import datetime
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,7 @@ def main() -> int:
     failures = validate_cases(cases)
     out_dir = Path(args.report_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    stamp = f"{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S_%f')}-{uuid4().hex[:8]}"
     report_path = out_dir / f"feedback-eval-{stamp}.json"
     payload = {
         "checked_at": datetime.now().astimezone().isoformat(),

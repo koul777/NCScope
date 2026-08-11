@@ -20,6 +20,7 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
             {
                 "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
                 "factorSource": "ncs-mcp",
+                "factorType": "\uae30\uc220",
                 "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
             }
         ],
@@ -34,6 +35,7 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
     assert "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd" in prompt
     assert "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d" in prompt
     assert "ncs-mcp" in prompt
+    assert "type=\uae30\uc220" in prompt
     assert "factorName 원문" in prompt
     assert "상황 프레임" in prompt
     assert "question_focus" in prompt
@@ -41,6 +43,8 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
     assert "글자 그대로 'KSA'라고 쓰지 말고" in prompt
     assert "첫 항목은 question_focus와 일치" in prompt
     assert "JSON" in prompt
+    assert "\uc774\ub984\ub9cc \ub418\ubb3b\ub294 \uc9c8\ubb38\uc740 \uae08\uc9c0" in prompt
+    assert "\uad00\ucc30 \uac00\ub2a5\ud55c \ud310\ub2e8\u00b7\ud589\ub3d9\u00b7\uc0b0\ucd9c\ubb3c" in prompt
     assert "\ufffd" not in prompt
 
 

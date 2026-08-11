@@ -45,3 +45,62 @@ def test_rank_ksa_respects_per_unit_limit() -> None:
 
     assert by_code.get("A", 0) <= 2
     assert by_code.get("B", 0) <= 2
+
+
+def test_rank_ksa_preserves_type_diversity_before_same_type_duplicates() -> None:
+    rows = [
+        {
+            "ncsClCd": "A",
+            "compeUnitName": "문서관리",
+            "factorName": "문서 보안 기준 지식",
+            "ksaTypeName": "knowledge",
+        },
+        {
+            "ncsClCd": "A",
+            "compeUnitName": "문서관리",
+            "factorName": "문서 분류 기준 지식",
+            "ksaTypeName": "지식",
+        },
+        {
+            "ncsClCd": "A",
+            "compeUnitName": "문서관리",
+            "factorName": "문서 오류 점검 기술",
+            "ksaTypeName": "skill",
+        },
+        {
+            "ncsClCd": "A",
+            "compeUnitName": "문서관리",
+            "factorName": "정확성을 유지하려는 태도",
+            "ksaTypeName": "attitude",
+        },
+    ]
+
+    ranked = rank_ksa_factors_by_query(
+        ksa_rows=rows,
+        query_text="문서 보안 기준과 문서 분류 지식",
+        unit_scores={"A": 1.0},
+        target_count=3,
+        per_unit_limit=3,
+    )
+
+    assert ranked[0]["factorName"] == "문서 보안 기준 지식"
+    assert {row["ksaTypeName"] for row in ranked} == {"knowledge", "skill", "attitude"}
+
+
+def test_rank_ksa_two_slot_limit_chooses_two_distinct_available_types() -> None:
+    rows = [
+        {"ncsClCd": "A", "compeUnitName": "문서관리", "factorName": "보안 지식", "ksaTypeName": "지식"},
+        {"ncsClCd": "A", "compeUnitName": "문서관리", "factorName": "분류 지식", "ksaTypeName": "지식"},
+        {"ncsClCd": "A", "compeUnitName": "문서관리", "factorName": "점검 기술", "ksaTypeName": "기술"},
+    ]
+
+    ranked = rank_ksa_factors_by_query(
+        ksa_rows=rows,
+        query_text="보안 지식과 분류 지식",
+        unit_scores={"A": 1.0},
+        target_count=2,
+        per_unit_limit=2,
+    )
+
+    assert len(ranked) == 2
+    assert {row["ksaTypeName"] for row in ranked} == {"지식", "기술"}
