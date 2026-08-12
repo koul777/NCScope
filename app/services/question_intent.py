@@ -25,9 +25,9 @@ QUESTION_INTENT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("growth_plan", ("입사후", "성장계획", "성장목표", "기여방안", "기여할수", "포부", "경력개발", "향후계획")),
     ("public_ethics", ("공공성", "윤리", "청렴", "공정성", "공정한", "공정하게", "책임감")),
     ("creative_problem", ("창의적문제해결력", "미래예측", "문제정의", "대안", "검증", "실현가능성", "의사결정")),
-    ("presentation_task", ("발표과제", "준비시간", "발표", "진단", "대안", "성과지표", "질의응답")),
-    ("discussion_task", ("토론과제", "토론시간", "입장발표", "반박", "합의", "충돌")),
-    ("inbasket_priority", ("인바스켓", "제한시간", "문서", "우선순위", "보고", "위임", "직접처리")),
+    ("presentation_task", ("발표과제", "발표", "진단", "대안", "성과지표", "질의응답")),
+    ("discussion_task", ("토론과제", "입장발표", "반박", "합의", "충돌")),
+    ("inbasket_priority", ("인바스켓", "문서", "우선순위", "보고", "위임", "직접처리")),
     ("job_knowledge", ("절차", "기준", "제출물", "예외상황", "규정", "오류")),
     ("data_analysis", ("자료", "데이터", "분석", "근거", "지표")),
     ("planning_execution", ("계획", "수립", "예산", "흐름", "실행", "일정", "자원", "우선순위")),
@@ -73,6 +73,12 @@ def classify_question_intent(question: Any, *, unknown: str = "") -> str:
             or compact_question_intent_text("사례") in compact
         )
     )
+    # A fully formed behavioural-experience prompt can legitimately contain
+    # planning, data, risk, and procedure vocabulary.  Those are the evidence
+    # being probed, not the interview format, so the explicit STAR-like shape
+    # must win before narrower topic classifiers.
+    if experience_overlap and experience_hits >= 4:
+        return "experience_behavior"
 
     job_knowledge_markers = pattern_map.get("job_knowledge", ())
     job_knowledge_hits = sum(

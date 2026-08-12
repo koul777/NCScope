@@ -42,14 +42,17 @@ BENCHMARK_MODES = {"template", "model", "auto"}
 FULL_MODEL_QUESTION_SOURCE = "model"
 MODEL_MAIN_TEMPLATE_FOLLOWUPS_SOURCE = "model_main_template_followups"
 MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE = "model_main_repaired_followups"
+MODEL_MAIN_QUALITY_REPAIRED_FIELDS_SOURCE = "model_main_quality_repaired_fields"
 MODEL_QUESTION_SOURCES = {
     FULL_MODEL_QUESTION_SOURCE,
     MODEL_MAIN_TEMPLATE_FOLLOWUPS_SOURCE,
     MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE,
+    MODEL_MAIN_QUALITY_REPAIRED_FIELDS_SOURCE,
 }
 MODEL_ORIGIN_READY_SOURCES = {
     FULL_MODEL_QUESTION_SOURCE,
     MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE,
+    MODEL_MAIN_QUALITY_REPAIRED_FIELDS_SOURCE,
 }
 
 
@@ -617,6 +620,22 @@ def evaluate_cached_document(
                     model_main_template_followup_questions += 1
                 elif source == MODEL_MAIN_REPAIRED_FOLLOWUPS_SOURCE:
                     model_main_repaired_followup_questions += 1
+                elif source == MODEL_MAIN_QUALITY_REPAIRED_FIELDS_SOURCE:
+                    # Public-language/evidence repair preserves the model's
+                    # substantive task while changing only unsafe fields.
+                    repaired_fields = {
+                        str(value or "").strip()
+                        for value in (
+                            list(q_obj.get("candidate_surface_repairs") or [])
+                            + list(q_obj.get("quality_repaired_fields") or [])
+                        )
+                        if str(value or "").strip()
+                    }
+                    if repaired_fields and repaired_fields.issubset(
+                        {"question", "follow_ups", "evaluation_points", "assessment_guide", "task_conditions"}
+                    ):
+                        model_full_questions += 1
+                        model_ready_questions += int(is_ready)
                 if source in MODEL_ORIGIN_READY_SOURCES:
                     model_origin_ready_questions += int(is_ready)
             elif source == "template_fallback":

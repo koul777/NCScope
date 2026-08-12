@@ -2,7 +2,6 @@
 
 import json
 import os
-from xml.etree import ElementTree as ET
 
 from app.services.jd_strategy import (
     _count_hangul,
@@ -38,91 +37,34 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
 
     required_terms = [
         "경험면접",
-        "경험",
-        "상황",
-        "본인",
-        "행동",
-        "결과",
         "상황면접",
-        "판단",
-        "기준",
-        "순서",
-        "위험",
         "발표면접",
-        "발표",
-        "진단",
-        "대안",
-        "실행",
-        "성과지표",
         "토론면접",
-        "토론",
-        "충돌",
-        "입장",
-        "반대",
-        "합의",
         "인바스켓면접",
-        "인바스켓",
-        "제한시간",
-        "문서",
-        "우선순위",
-        "보고",
-        "위임",
-        "직접처리",
         "직무지식면접",
-        "절차",
-        "산출물",
-        "예외상황",
         "창의적 문제해결력면접",
-        "창의적",
-        "문제",
-        "정의",
-        "검증",
+        "required_factorName",
+        "required_surface_focus",
+        "required_task_statement",
+        "required_observable_behavior",
+        "evidence_id",
+        "question",
+        "follow_ups",
+        "evaluation_points",
+        "task_conditions",
+        "[토론과제]",
+        "적용 범위·예외",
+        "공동 합의",
     ]
     for term in required_terms:
         assert term in contract
 
-    assert "템플릿으로 교체" in contract
-    assert "model-origin 품질 실패" in contract
-    assert "follow_ups" in contract
-    assert "직무/NCS/KSA 핵심어" in contract
-    assert "질문 골격" in contract
-    assert "[발표과제]" in contract
-    assert "[토론과제]" in contract
-    assert "금지 질문" in contract
-    assert "판단 근거" in contract
-    assert "구체 조치" in contract
-    assert "압박 속 선택 행동" in contract
-    assert "경험 유무" in contract
-    assert "[인바스켓과제]" in contract
-    assert "[창의적 문제해결력과제]" in contract
-    assert "{KSA}" in contract
-    assert "follow_ups[0]" in contract
-    assert "원문 그대로 반복" in contract
-    assert "factorName 원문" in contract
-    assert "placeholder를 남기지" in contract
-    assert "글자 그대로 'KSA'" in contract
-    assert "required_factorName" in contract
-    assert "지정 follow_up slot" in contract
-    assert "기본 slot은 follow_ups[1]" in contract
-    assert "임시 변수 F" in contract
-    assert "F 원문" in contract
-    assert "required_job_context" in contract
-    assert "주질문에만 직무명을 넣고 follow_ups를 일반론" in contract
-    assert "required_followup_focus_slot" in contract
-    assert "required_followup_focus_example" in contract
-    assert "follow_ups[1]이 아니라 follow_ups[0]" in contract
-    assert "required_job_context 순서" in contract
-    assert "{직무} 현황 진단" in contract
-    assert "창의적 문제해결력 follow_ups[1]" in contract
-    assert "경험면접 follow_ups[1]" in contract
-    assert "당시 어려움은 무엇입니까" in contract
-    assert "상황면접 follow_ups[1]" in contract
-    assert "그 판단 기준은 무엇입니까" in contract
-    assert "F 원문으로 시작" in contract
-    assert "실패 예시" in contract
-    assert "통과 예시" in contract
-    assert "그 판단" in contract
+    assert "복사하거나 따옴표로 인용하지 마세요" in contract
+    assert "시간과 제출요건은 별도 task_conditions" in contract
+    assert "현장 사건과 서로 양립하기 어려운 두 정책 대안" in contract
     assert "출력 전 자체검사" in contract
+    assert "원문 그대로 반복" not in contract
+    assert "임시 변수 F" not in contract
 
 
 def test_planned_question_sequence_for_prompt_expands_detail_order_and_methods():
@@ -186,9 +128,11 @@ def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor(
     assert result[0]["compeUnitName"] == "Document Writing"
     assert result[0]["required_job_context"] == "Document Writing"
     assert result[0]["required_factorName"] == "Requirement Analysis"
+    assert result[0]["evidence_id"].startswith("ksa_")
     assert result[0]["required_scenario_frame"]
     assert result[0]["required_followup_focus_slot"] == 1
-    assert "Requirement Analysis" in result[0]["required_followup_focus_example"]
+    assert result[0]["required_surface_focus"] in result[0]["required_followup_focus_example"]
+    assert "Requirement Analysis" not in result[0]["required_followup_focus_example"]
     assert "Document Writing" in result[0]["required_followup_focus_example"]
     assert result[1]["ncsClCd"] == "U2"
     assert result[1]["compeUnitName"] == "Document Control"
@@ -196,7 +140,8 @@ def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor(
     assert result[1]["required_factorName"] == "Record Classification"
     assert result[1]["required_scenario_frame"]
     assert result[1]["required_followup_focus_slot"] == 1
-    assert "Record Classification" in result[1]["required_followup_focus_example"]
+    assert result[1]["required_surface_focus"] in result[1]["required_followup_focus_example"]
+    assert "Record Classification" not in result[1]["required_followup_focus_example"]
 
 
 def test_planned_question_sequence_adds_scenario_frame_without_matched_unit():
@@ -247,17 +192,21 @@ def test_planned_question_sequence_for_prompt_sets_method_specific_followup_focu
 
     assert result[0]["required_followup_focus_slot"] == 0
     assert "발표 쟁점" in result[0]["required_followup_focus_example"]
-    assert "Evidence Analysis" in result[0]["required_followup_focus_example"]
+    assert result[0]["required_surface_focus"] in result[0]["required_followup_focus_example"]
+    assert "Evidence Analysis" not in result[0]["required_followup_focus_example"]
     assert result[1]["required_followup_focus_slot"] == 0
-    assert "토론 쟁점" in result[1]["required_followup_focus_example"]
-    assert "Position Rationale" in result[1]["required_followup_focus_example"]
+    assert "문서와 사실" in result[1]["required_followup_focus_example"]
+    assert result[1]["required_surface_focus"] in result[1]["required_followup_focus_example"]
+    assert "Position Rationale" not in result[1]["required_followup_focus_example"]
     assert result[2]["required_followup_focus_slot"] == 1
     assert "원인과 대안" in result[2]["required_followup_focus_example"]
-    assert "Alternative Validation" in result[2]["required_followup_focus_example"]
+    assert result[2]["required_surface_focus"] in result[2]["required_followup_focus_example"]
+    assert "Alternative Validation" not in result[2]["required_followup_focus_example"]
     assert "Creative Unit" in result[2]["required_followup_focus_example"]
     assert result[3]["required_followup_focus_slot"] == 1
     assert "상황의 판단 기준" in result[3]["required_followup_focus_example"]
-    assert "Risk Control" in result[3]["required_followup_focus_example"]
+    assert result[3]["required_surface_focus"] in result[3]["required_followup_focus_example"]
+    assert "Risk Control" not in result[3]["required_followup_focus_example"]
     assert "Situation Unit" in result[3]["required_followup_focus_example"]
 
 
@@ -288,15 +237,18 @@ def test_planned_question_sequence_for_prompt_includes_strict_method_examples():
     debate_question = result[0]["required_question_example"]
     assert debate_question.startswith("[토론과제]")
     assert "충돌" in debate_question
-    assert "토론시간" in debate_question
-    assert "입장발표" in debate_question
-    assert "반대" in debate_question
-    assert "합의" in debate_question
-    assert "Position Rationale" in debate_question
+    assert "근거" in debate_question
+    assert "위험" in debate_question
+    assert "공동 합의" in debate_question
+    assert "토론시간" not in debate_question
+    assert "입장발표" not in debate_question
+    assert "Position Rationale" not in debate_question
+    assert result[0]["required_surface_focus"] in debate_question
     assert "Discussion Unit" in debate_question
 
     inbasket_followup = result[1]["required_followup_focus_example"]
-    assert "Document Priority" in inbasket_followup
+    assert "Document Priority" not in inbasket_followup
+    assert result[1]["required_surface_focus"] in inbasket_followup
     assert "Inbasket Unit" in inbasket_followup
     assert "문서·요청 우선순위" in inbasket_followup
     assert "보고·위임·직접처리 판단" in inbasket_followup

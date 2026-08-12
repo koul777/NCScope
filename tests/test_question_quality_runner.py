@@ -734,7 +734,8 @@ def test_evaluate_cached_document_model_mode_counts_model_questions(tmp_path: Pa
     assert row["model_quality_passed"] is True
     assert row["passed"] is True
     assert len(question_rows) == 1
-    assert question_rows[0]["question_source"] == "model"
+    assert question_rows[0]["question_source"] == "model_main_quality_repaired_fields"
+    assert "문서 요구사항 파악" not in question_rows[0]["question"]
 
 
 def test_evaluate_cached_document_model_mode_preserves_main_question_with_template_followups(
@@ -830,12 +831,15 @@ def test_evaluate_cached_document_model_mode_preserves_main_question_with_templa
     assert row["passed"] is False
     assert len(question_rows) == 1
     assert question_rows[0]["question_source"] == "model_main_template_followups"
-    assert question_rows[0]["question"] == model_question
+    assert question_rows[0]["question"] != model_question
+    assert "문서 요구사항 파악" not in question_rows[0]["question"]
+    assert "문서 요구사항 확인 절차" in question_rows[0]["question"]
     assert question_rows[0]["model_question_raw"] == model_question
     assert "추가로 설명" in question_rows[0]["model_followups_raw"]
     assert question_rows[0]["model_question_preserved"] is True
     assert "follow_up_quality" in question_rows[0]["model_replacement_reasons"]
-    assert "문서 요구사항 파악" in str(question_rows[0]["follow_ups"])
+    assert "문서 요구사항 파악" not in str(question_rows[0]["follow_ups"])
+    assert "문서 요구사항 확인 절차" in str(question_rows[0]["follow_ups"])
 
 
 def test_evaluate_cached_document_model_mode_counts_repaired_model_followups(
@@ -928,9 +932,12 @@ def test_evaluate_cached_document_model_mode_counts_repaired_model_followups(
     assert row["passed"] is True
     assert len(question_rows) == 1
     assert question_rows[0]["question_source"] == "model_main_repaired_followups"
-    assert question_rows[0]["question"] == model_question
+    assert question_rows[0]["question"] != model_question
+    assert "문서 요구사항 파악" not in question_rows[0]["question"]
+    assert "문서 요구사항 확인 절차" in question_rows[0]["question"]
     assert "follow_up_focus_injected" in question_rows[0]["model_replacement_reasons"]
-    assert "'문서 요구사항 파악'과 관련해" in question_rows[0]["follow_ups"]
+    assert "문서 요구사항 파악" not in question_rows[0]["follow_ups"]
+    assert "문서 요구사항 확인 절차와 관련해" in question_rows[0]["follow_ups"]
     assert "그 판단에 따른 행동의 이유" in question_rows[0]["follow_ups"]
 
 

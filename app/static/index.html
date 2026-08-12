@@ -1500,6 +1500,45 @@
         if (single && !fus.includes(single)) fus.unshift(single);
         return fus;
       };
+      const sourceLabels = {
+        model: 'AI 초안 유지',
+        model_main_template_followups: 'AI 주질문 유지 · 꼬리질문 보강',
+        model_main_repaired_followups: 'AI 주질문 유지 · 꼬리질문 품질 보강',
+        model_main_quality_repaired_fields: 'AI 초안 유지 · 평가요소 보강',
+        template_fallback: 'NCS 기준 재구성',
+        quality_orchestrator_repair: '품질검사 후 재구성',
+        rule_fallback: 'NCS 규칙 기반 생성',
+      };
+      const qualityReasonLabels = {
+        no_model_question: 'AI 초안 없음',
+        blind_hiring_cue: '블라인드 채용 위험 제거',
+        operating_conditions_in_main: '시간·운영조건 분리',
+        main_question_method_shape: '면접기법 구조 보강',
+        main_question_official_sample_shape: '공식 NCS 과제 형식 보강',
+        decision_dilemma_quality: '토론 쟁점 구체화',
+        debate_option_defensibility: '토론 선택지 현실성 보강',
+        debate_outcome_flexibility: '미합의 처리기준 보강',
+        debate_case_neutrality: '토론 정답 유도 제거',
+        ksa_measurement_task: 'NCS 평가요소 측정성 보강',
+        follow_up_focus_injected: '꼬리질문 직무초점 보강',
+        follow_up_quality: '꼬리질문 변별력 보강',
+        duplicate_question_intent: '중복 평가의도 교체',
+        evaluation_points_quality: '평가항목 관찰가능성 보강',
+        case_materials_sufficient: '판단자료 구체화',
+        inbasket_authority_context: '보고·위임 권한정보 보강',
+        behavior_anchored_evaluation: '행동기반 평정척도 보강',
+        standardized_task_conditions: '응시조건 표준화',
+        natural_wording: '질문 문장 자연화',
+      };
+      const qualityReasonLabel = (raw) => {
+        const original = String(raw || '').trim();
+        const normalized = original
+          .replace(/^quality_field_repair_/, '')
+          .replace(/^quality_gate_/, '')
+          .replace(/^orchestrator_/, '')
+          .replace(/^full_quality_/, '');
+        return qualityReasonLabels[normalized] || '현장형 품질기준 보강';
+      };
 
       for (const [i, q] of pageItems.entries()) {
         const box = document.createElement('div');
@@ -1526,11 +1565,7 @@
         if (source) {
           const sourceEl = document.createElement('span');
           sourceEl.className = ['template_fallback', 'quality_orchestrator_repair'].includes(source) ? 'pill warn' : 'pill good';
-          sourceEl.textContent = source === 'template_fallback'
-            ? '템플릿 보정'
-            : source === 'quality_orchestrator_repair'
-              ? '검토 후 재구성'
-              : `AI 원문: ${source}`;
+          sourceEl.textContent = sourceLabels[source] || '품질검사 완료';
           head.appendChild(sourceEl);
         }
         box.appendChild(head);
@@ -1545,10 +1580,16 @@
         const replacementReasons = Array.isArray(q.model_replacement_reasons)
           ? q.model_replacement_reasons.filter(x => String(x || '').trim())
           : [];
-        if (replacementReasons.length) {
+        const qualityRepairReasons = Array.isArray(q.quality_repair_reasons)
+          ? q.quality_repair_reasons.filter(x => String(x || '').trim())
+          : [];
+        const visibleReasons = [...new Set(
+          [...replacementReasons, ...qualityRepairReasons].map(qualityReasonLabel)
+        )];
+        if (visibleReasons.length) {
           const reason = document.createElement('div');
           reason.className = 'sub';
-          reason.textContent = `품질 보정 사유: ${replacementReasons.join(', ')}`;
+          reason.textContent = `품질 보강: ${visibleReasons.join(' · ')}`;
           box.appendChild(reason);
         }
 
@@ -1591,6 +1632,18 @@
           const materials = Array.isArray(conditions.provided_materials) ? conditions.provided_materials : [];
           const outputs = Array.isArray(conditions.required_outputs) ? conditions.required_outputs : [];
           if (materials.length) conditionRows.push(`제공자료: ${materials.join(', ')}`);
+          const caseMaterials = Array.isArray(conditions.case_materials)
+            ? conditions.case_materials.filter(row => row && row.source && row.field && row.value)
+            : [];
+          if (caseMaterials.length) {
+            conditionRows.push('사례자료:');
+            caseMaterials.forEach((row) => {
+              conditionRows.push(`  · ${String(row.source)} / ${String(row.field)}: ${String(row.value)}`);
+            });
+          } else {
+            const caseFacts = Array.isArray(conditions.case_facts) ? conditions.case_facts : [];
+            if (caseFacts.length) conditionRows.push(`사례사실: ${caseFacts.join(' · ')}`);
+          }
           if (outputs.length) conditionRows.push(`필수 산출: ${outputs.join(', ')}`);
           if (conditions.standardization) conditionRows.push(`표준화: ${String(conditions.standardization)}`);
           conditionRows.forEach((value) => {
