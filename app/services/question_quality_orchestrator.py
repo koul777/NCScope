@@ -300,6 +300,7 @@ def _ksa_type_operationalized(item: dict[str, Any], question: str) -> bool:
     if kind == "기술" and (compact_focus or compact_operational_focus):
         linked_markers = (
             "발휘", "수행", "행동", "조치", "실행", "작성", "검증", "점검", "산출", "결과", "성과", "품질",
+            "적용", "해결",
         )
         linked_patterns = [
             re.escape(focus_value)

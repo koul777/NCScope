@@ -39,3 +39,27 @@ def test_all_methods_and_ksa_types_pass_the_template_quality_matrix() -> None:
     assert report["summary"]["exact_surface_duplicate_count"] == 0
     assert report["summary"]["passed"] is True
     assert report["issue_counts"] == {}
+
+
+def test_creative_task_operationalizes_long_equipment_operation_skill() -> None:
+    row = _row(
+        "식육 추출 가공품 추출기 및 여과장치 운영 기술",
+        "기술",
+        code="2101010309_17v2",
+    )
+    row.update(
+        {
+            "major_name": "식품가공",
+            "sub_name": "식육가공",
+            "unit_name": "식육 추출 가공품 제조",
+            "unit_definition": "추출기와 여과장치를 운영해 식육 추출 가공품을 제조한다.",
+            "element_name": "추출 및 여과하기",
+        }
+    )
+
+    report = benchmark_rows([row], methods=["창의적 문제해결력면접"])
+
+    assert report["summary"]["passed"] is True, json.dumps(
+        report["failures"], ensure_ascii=False, indent=2
+    )
+    assert report["issue_counts"] == {}
