@@ -4,8 +4,10 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
+from app.services.question_surface import public_task_object
 
-RUNTIME_QUESTION_ORCHESTRATION_POLICY = "ncs_ksa_runtime_orchestration_v6"
+
+RUNTIME_QUESTION_ORCHESTRATION_POLICY = "ncs_ksa_runtime_orchestration_v7"
 
 
 _METHOD_OBSERVATION_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
@@ -20,17 +22,17 @@ _METHOD_OBSERVATION_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("순서", "행동", "조치", "보고", "실행", "위험"),
     ),
     "발표면접": (
-        ("발표", "준비시간", "질의응답"),
+        ("발표", "질의응답"),
         ("자료", "진단", "분석", "원인"),
         ("대안", "실행", "성과지표", "우선순위"),
     ),
     "토론면접": (
-        ("토론", "입장발표", "입장", "충돌"),
-        ("반대", "경청", "조정", "근거"),
-        ("합의", "합의안", "실행"),
+        ("토론", "입장", "충돌"),
+        ("타당", "위험", "조정", "근거", "경청", "반대"),
+        ("합의", "합의안", "공동", "실행"),
     ),
     "인바스켓면접": (
-        ("인바스켓", "제한시간", "동시", "문서", "요청"),
+        ("인바스켓", "동시", "문서", "요청"),
         ("우선순위", "분류", "보류"),
         ("보고", "위임", "직접처리", "첫", "조치"),
     ),
@@ -133,12 +135,27 @@ def _question_focus(item: dict[str, Any]) -> str:
 
 def _operational_focus(item: dict[str, Any]) -> str:
     """Return the action noun used when an official factor has a type suffix."""
+    surface = str((item or {}).get("question_focus_surface") or "").strip()
+    if surface:
+        return surface
     focus = _question_focus(item)
+    kind = _ksa_type(item)
+    public_focus, _source = public_task_object(
+        factor_name=focus,
+        ksa_type=kind,
+        element_name=(item or {}).get("elementName") or "",
+        competency_name=(item or {}).get("competency") or (item or {}).get("compeUnitName") or "",
+        competency_definition=(item or {}).get("compeUnitDef") or "",
+    )
+    if public_focus:
+        return public_focus
     candidate = re.sub(
         r"\s*(?:관련\s*)?(?:능력|기술|스킬|지식)\s*$",
         "",
         focus,
     ).strip()
+    if re.search(r"(?:에대한|에관한|을위한|를위한|하는|되는|대한|위한|의)$", _compact(candidate)):
+        return focus
     return candidate if len(_compact(candidate)) >= 2 else focus
 
 
@@ -147,18 +164,24 @@ def _focus_visible(item: dict[str, Any], question: str) -> bool:
     if not focus:
         return False
     compact_question = _compact(question)
-    compact_focus = _compact(focus)
-    compact_operational_focus = _compact(_operational_focus(item))
-    if (
-        compact_focus
-        and compact_focus in compact_question
-        or compact_operational_focus
-        and compact_operational_focus in compact_question
+    surface_focus = str((item or {}).get("question_focus_surface") or "").strip()
+    operational_focus = _operational_focus(item)
+    visible_candidates = [surface_focus, operational_focus]
+    # Older callers do not provide a separately rendered public surface.  In
+    # that compatibility path, an exact appearance of the supplied focus is
+    # still valid evidence that the task is grounded.  Runtime-generated rows
+    # always carry ``question_focus_surface`` and therefore remain governed by
+    # the safer candidate-facing wording.
+    if not surface_focus:
+        visible_candidates.append(focus)
+    if any(
+        compact_candidate and compact_candidate in compact_question
+        for compact_candidate in (_compact(value) for value in visible_candidates)
     ):
         return True
     tokens = [
         token
-        for token in re.findall(r"[0-9A-Za-z가-힣]{2,}", focus)
+        for token in re.findall(r"[0-9A-Za-z가-힣]{2,}", surface_focus or operational_focus or focus)
         if token not in {"능력", "기술", "지식", "태도", "관련", "업무", "수행"}
     ]
     if not tokens:
@@ -203,7 +226,7 @@ def _generic_focus_self_report(item: dict[str, Any], question: str) -> bool:
         dict.fromkeys(
             value
             for value in (
-                _compact(_question_focus(item)),
+                _compact((item or {}).get("question_focus_surface") or _question_focus(item)),
                 _compact(_operational_focus(item)),
             )
             if value
@@ -252,7 +275,7 @@ def _ksa_type_operationalized(item: dict[str, Any], question: str) -> bool:
     compact = _compact(question)
     if not kind:
         return True
-    compact_focus = _compact(_question_focus(item))
+    compact_focus = _compact((item or {}).get("question_focus_surface") or _question_focus(item))
     compact_operational_focus = _compact(_operational_focus(item))
     evidence_text = compact
     for focus_value in (compact_focus, compact_operational_focus):
@@ -260,7 +283,7 @@ def _ksa_type_operationalized(item: dict[str, Any], question: str) -> bool:
             evidence_text = evidence_text.replace(focus_value, "")
     marker_groups = {
         "지식": (
-            ("활용", "근거", "기준", "절차", "분석", "적용"),
+            ("활용", "근거", "기준", "절차", "분석", "적용", "확인"),
             ("판단", "예외", "오류", "위험", "산출", "품질", "범위", "해결", "결과", "성과"),
         ),
         "기술": (
@@ -310,6 +333,8 @@ def evaluate_ksa_measurement(item: dict[str, Any]) -> dict[str, Any]:
         or _BARE_EXPERIENCE_RE.search(question)
         or _generic_focus_self_report(item, question)
     )
+    evidence_required = bool((item or {}).get("question_evidence_required"))
+    evidence_linked = bool(str((item or {}).get("question_evidence_id") or "").strip())
     checks = {
         "has_question": bool(question),
         "has_supported_method": method in _METHOD_OBSERVATION_GROUPS,
@@ -319,6 +344,7 @@ def evaluate_ksa_measurement(item: dict[str, Any]) -> dict[str, Any]:
         "elicits_response": _elicits_candidate_response(question),
         "sufficient_task_detail": _has_sufficient_task_detail(question),
         "not_ksa_restatement": not shallow_restatement,
+        "evidence_linked": evidence_linked if evidence_required else True,
     }
     issues = [name for name, passed in checks.items() if not passed]
     return {

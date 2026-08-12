@@ -818,7 +818,51 @@ def question_quality_metrics() -> dict[str, Any]:
                 key = str(code or "").strip()
                 if key:
                     issue_counts[key] = issue_counts.get(key, 0) + 1
+        source_counts: dict[str, int] = {}
+        replacement_reason_counts: dict[str, int] = {}
+        quality_repair_reason_counts: dict[str, int] = {}
+        quality_check_counts: dict[str, dict[str, int]] = {}
+        evidence_linked_questions = 0
+        ready_questions = 0
+        readiness_observed_questions = 0
+        generated_questions = 0
+        for payload in s.execute(select(QuestionQualityRun.evidence_json)).scalars().all():
+            for item in (payload or {}).get("question_items") or []:
+                if not isinstance(item, dict):
+                    continue
+                generated_questions += 1
+                if isinstance(item.get("ready"), bool):
+                    readiness_observed_questions += 1
+                    if item.get("ready") is True:
+                        ready_questions += 1
+                source = str(item.get("question_source") or "unknown").strip() or "unknown"
+                source_counts[source] = source_counts.get(source, 0) + 1
+                if str(item.get("question_evidence_id") or "").strip():
+                    evidence_linked_questions += 1
+                for reason in item.get("model_replacement_reasons") or []:
+                    key = str(reason or "").strip()
+                    if key:
+                        replacement_reason_counts[key] = replacement_reason_counts.get(key, 0) + 1
+                for reason in item.get("quality_repair_reasons") or []:
+                    key = str(reason or "").strip()
+                    if key:
+                        quality_repair_reason_counts[key] = quality_repair_reason_counts.get(key, 0) + 1
+                statuses = item.get("check_statuses") if isinstance(item.get("check_statuses"), dict) else {}
+                for check_name, raw_status in statuses.items():
+                    name = str(check_name or "").strip()
+                    status = str(raw_status or "").strip().lower()
+                    if not name or status not in {"pass", "fail", "not_applicable"}:
+                        continue
+                    counts = quality_check_counts.setdefault(
+                        name,
+                        {"pass": 0, "fail": 0, "not_applicable": 0},
+                    )
+                    counts[status] += 1
         decisions = {str(verdict): int(count) for verdict, count in decision_rows}
+        quality_gate_failure_rates = {
+            name: round(counts["fail"] / max(1, counts["pass"] + counts["fail"]), 4)
+            for name, counts in quality_check_counts.items()
+        }
         return {
             "runs": run_count,
             "reviews": review_count,
@@ -831,6 +875,22 @@ def question_quality_metrics() -> dict[str, Any]:
             "rejection_rate": round(decisions.get("reject", 0) / max(1, active_review_count), 4),
             "escalation_rate": round(escalation_count / max(1, run_count), 4),
             "issue_counts": dict(sorted(issue_counts.items())),
+            "question_sources": dict(sorted(source_counts.items())),
+            "replacement_reason_counts": dict(sorted(replacement_reason_counts.items())),
+            "quality_repair_reason_counts": dict(sorted(quality_repair_reason_counts.items())),
+            "quality_gate_counts": dict(sorted(quality_check_counts.items())),
+            "quality_gate_failure_rates": dict(sorted(quality_gate_failure_rates.items())),
+            "generated_question_ready_rate": (
+                round(ready_questions / readiness_observed_questions, 4)
+                if readiness_observed_questions
+                else None
+            ),
+            "readiness_observed_questions": readiness_observed_questions,
+            "template_fallback_rate": round(
+                source_counts.get("template_fallback", 0) / max(1, generated_questions),
+                4,
+            ),
+            "evidence_link_rate": round(evidence_linked_questions / max(1, generated_questions), 4),
         }
 
 

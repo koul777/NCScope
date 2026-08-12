@@ -141,3 +141,18 @@ def test_frontend_prefers_official_five_level_behavior_scale() -> None:
     assert "guide.rating_levels" in script
     assert "ratingLevels.length === 5" in script
     assert "visibleLevels.forEach" in script
+
+
+def test_frontend_uses_recruiter_facing_quality_labels_and_structured_case_data() -> None:
+    script = _inline_script()
+
+    assert "NCS 기준 재구성" in script
+    assert "NCS 평가요소 측정성 보강" in script
+    assert "토론 정답 유도 제거" in script
+    assert "품질 보강:" in script
+    assert "품질 보정 사유:" not in script
+    assert "case_materials" in script
+    assert "사례자료:" in script
+    assert "row.source" in script
+    assert "row.field" in script
+    assert "row.value" in script

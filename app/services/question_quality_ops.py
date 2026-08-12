@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 
-QUALITY_POLICY_VERSION = "ncs-official-task-evaluation-pair-v19-skill-object-action"
+QUALITY_POLICY_VERSION = "ncs-official-task-evaluation-pair-v23-decision-grade-materials"
 
 ALLOWED_FEEDBACK_CODES = frozenset(
     {
@@ -59,8 +59,14 @@ _ESCALATION_CHECK_ALIASES = {
     "focus_scenario": "focus_scenario_coherence",
     "focus_scenario_coherence": "focus_scenario_coherence",
     "focus_scenario_mismatch": "focus_scenario_coherence",
+    "decision_dilemma_quality": "focus_scenario_coherence",
+    "debate_option_defensibility": "focus_scenario_coherence",
+    "debate_outcome_flexibility": "focus_scenario_coherence",
+    "debate_case_neutrality": "focus_scenario_coherence",
     "missing_task_conditions": "standardized_task_conditions",
     "standardized_task_conditions": "standardized_task_conditions",
+    "case_materials_sufficient": "standardized_task_conditions",
+    "inbasket_authority_context": "standardized_task_conditions",
     "missing_ksa_evidence": "ksa_measurement_task",
     "ksa_measurement_task": "ksa_measurement_task",
     "method_task_mismatch": "main_question_method_shape",

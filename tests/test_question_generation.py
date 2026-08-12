@@ -36,12 +36,14 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
     assert "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d" in prompt
     assert "ncs-mcp" in prompt
     assert "type=\uae30\uc220" in prompt
-    assert "factorName 원문" in prompt
+    assert "official_factor" in prompt
+    assert "evidence_id=" in prompt
+    assert "public_focus=" in prompt
+    assert "지원자용 question, follow_ups, evaluation_points에 복사하거나" in prompt
     assert "상황 프레임" in prompt
     assert "question_focus" in prompt
-    assert "question과 follow_ups 중 지정 위치" in prompt
-    assert "글자 그대로 'KSA'라고 쓰지 말고" in prompt
-    assert "첫 항목은 question_focus와 일치" in prompt
+    assert "question_evidence_id" in prompt
+    assert "ksa_refs 첫 항목과 일치" in prompt
     assert "JSON" in prompt
     assert "\uc774\ub984\ub9cc \ub418\ubb3b\ub294 \uc9c8\ubb38\uc740 \uae08\uc9c0" in prompt
     assert "\uad00\ucc30 \uac00\ub2a5\ud55c \ud310\ub2e8\u00b7\ud589\ub3d9\u00b7\uc0b0\ucd9c\ubb3c" in prompt
@@ -60,19 +62,22 @@ def test_prompt_describes_all_supported_interview_methods():
     for method in ["경험면접", "상황면접", "발표면접", "토론면접", "창의적 문제해결력면접", "인바스켓면접", "직무지식면접"]:
         assert method in prompt
     assert "STAR 방식" in prompt
-    assert "제한시간 안에 여러 문서" in prompt
+    assert "동시에 들어온 여러 문서" in prompt
     assert "절차, 기준, 산출물" in prompt
     assert "[주질문 필수어]" in prompt
     assert "경험, 상황, 본인, 행동, 결과" in prompt
     assert "미래예측" in prompt
     assert "문제정의, 원인 가설, 창의적 대안" in prompt
-    assert "인바스켓, 제한시간, 문서, 우선순위, 보고, 위임, 직접처리" in prompt
+    assert "인바스켓, 문서, 우선순위, 보고, 위임, 직접처리" in prompt
+    assert "별도 task_conditions에만" in prompt
     assert "[꼬리질문 품질 기준]" in prompt
-    assert "최소 1개는 직무/NCS/KSA 핵심어" in prompt
-    assert "발표면접, 토론면접, 인바스켓면접, 직무지식면접은 follow_ups[0]" in prompt
-    assert "경험면접, 상황면접, 창의적 문제해결력면접은 follow_ups[1]" in prompt
-    assert "[KSA 원문 보존 예시]" in prompt
-    assert '"question_focus": "주 검증 factorName"' in prompt
+    assert "최소 1개는 직무명 또는 public_focus" in prompt
+    assert "발표·토론·인바스켓·직무지식면접은 follow_ups[0]" in prompt
+    assert "경험·상황·창의적 문제해결력면접은 follow_ups[1]" in prompt
+    assert "[공식 근거와 지원자 문장 분리 예시]" in prompt
+    assert '"question_evidence_id": "ksa_..."' in prompt
+    assert '"question_focus_surface": "지원자용 업무 초점"' in prompt
+    assert '"question_focus": "내부 주 검증 official_factor"' in prompt
     assert '"type": "경험면접|상황면접|발표면접|토론면접|창의적 문제해결력면접|인바스켓면접|직무지식면접"' in prompt
 
 

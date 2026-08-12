@@ -89,6 +89,41 @@ def _run_payload(question: str = "문서 오류를 확인한 경험을 설명해
     }
 
 
+def test_quality_metrics_separate_gate_failures_repairs_and_not_applicable(isolated_quality_db) -> None:
+    payload = _run_payload()
+    item = payload["evidence"]["question_items"][0]
+    item.update(
+        {
+            "ready": False,
+            "question_source": "template_fallback",
+            "question_evidence_id": "ncs-evidence-1",
+            "model_replacement_reasons": ["ksa_measurement_task"],
+            "quality_repair_reasons": ["quality_field_repair_case_materials_sufficient"],
+            "check_statuses": {
+                "ksa_measurement_task": "pass",
+                "case_materials_sufficient": "fail",
+                "debate_case_neutrality": "not_applicable",
+            },
+        }
+    )
+    repository.create_question_quality_run(payload)
+
+    metrics = repository.question_quality_metrics()
+
+    assert metrics["generated_question_ready_rate"] == 0.0
+    assert metrics["quality_repair_reason_counts"] == {
+        "quality_field_repair_case_materials_sufficient": 1
+    }
+    assert metrics["quality_gate_counts"]["case_materials_sufficient"] == {
+        "pass": 0,
+        "fail": 1,
+        "not_applicable": 0,
+    }
+    assert metrics["quality_gate_counts"]["debate_case_neutrality"]["not_applicable"] == 1
+    assert metrics["quality_gate_failure_rates"]["case_materials_sufficient"] == 1.0
+    assert metrics["quality_gate_failure_rates"]["debate_case_neutrality"] == 0.0
+
+
 def test_quality_review_persists_and_becomes_next_generation_feedback(isolated_quality_db) -> None:
     question = "문서 오류를 확인한 경험을 설명해 주세요."
     run = repository.create_question_quality_run(_run_payload(question))

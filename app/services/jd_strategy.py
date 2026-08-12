@@ -11,7 +11,6 @@ import csv
 import hashlib
 import sqlite3
 import subprocess
-import tempfile
 import zlib
 import uuid
 import shutil
@@ -23,8 +22,6 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
-from app.services.external_api import fetch_ncs
-from app.services.ncs import map_ncs
 from app.services.openai_http import (
     check_openai_connectivity_with_retries,
     post_chat_completions_with_retries,
@@ -33,9 +30,9 @@ from app.services.question_generation import _generate_questions_with_openai_fro
 from app.services.question_intent import (
     FOCUS_SCOPED_GENERAL_QUESTION_INTENTS,
     GENERAL_QUESTION_INTENTS,
-    QUESTION_INTENT_PATTERNS,
     classify_question_intent,
 )
+from app.services.question_surface import build_question_task_frame
 from app.services.ncs_mcp_client import (
     NcsMcpError,
     get_ksa_by_units,
@@ -2157,6 +2154,7 @@ def _build_ncs_code_template_fallback_question(
     ncs_code: str,
     ksa_terms: list[str],
     evidence_terms: list[str] | None = None,
+    evidence_rows: list[dict[str, Any]] | None = None,
     index: int,
 ) -> dict[str, Any]:
     method = _NCS_CODE_TEMPLATE_FALLBACK_METHODS[index % len(_NCS_CODE_TEMPLATE_FALLBACK_METHODS)]
@@ -2189,86 +2187,310 @@ def _build_ncs_code_template_fallback_question(
         if re.sub(r"\s+", "", term).lower() in official_terms
     ]
 
+    evidence_row = next(
+        (
+            row
+            for row in (evidence_rows or [])
+            if isinstance(row, dict)
+            and re.sub(r"\s+", "", str(row.get("factorName") or "")).lower()
+            == re.sub(r"\s+", "", k1).lower()
+        ),
+        None,
+    )
+    task_frame = build_question_task_frame(
+        evidence_row=evidence_row,
+        factor_name=k1,
+        ksa_type=(evidence_row or {}).get("ksaTypeName") or (evidence_row or {}).get("factorType") or "",
+        element_name=(evidence_row or {}).get("elementName") or "",
+        competency_name=label,
+        competency_definition=str((unit or {}).get("compeUnitDef") or "").strip(),
+    )
+    surface_focus = str(task_frame.get("task_object") or "업무 판단과 수행 기준").strip()
+    ksa_kind = str(task_frame.get("ksa_type") or "").strip()
+
     if method == "상황면접":
         question = (
-            f"{context_label} 업무에서 '{k1}' 관련 자료 오류와 일정 지연이 동시에 발생한 상황입니다. "
-            "어떤 기준으로 판단하고 위험을 통제하며 어떤 순서로 행동하시겠습니까?"
+            f"{context_label} 업무에서 {surface_focus}에 따라 판단해야 하는데, 핵심 자료 오류와 일정 지연이 "
+            "동시에 발생한 상황입니다. 먼저 확인할 사실과 판단 기준, 위험을 통제할 행동·보고 순서를 설명해 주세요."
         )
         follow_ups = [
             "먼저 확인해야 할 사실과 기준은 무엇입니까?",
-            f"{context_label} 업무에서 '{k1}'을 기준으로 그 행동을 선택한 이유는 무엇입니까?",
+            f"{context_label} 업무에서 {surface_focus}에 따라 그 행동을 선택한 이유는 무엇입니까?",
             "결과가 기대와 다르면 어떤 후속 조치를 하시겠습니까?",
         ]
         evaluation_points = ["사실 확인", "판단 기준", "행동 순서", "위험 통제"]
     elif method == "직무지식면접":
         question = (
-            f"{context_label}에서 '{k1}' 관련 확인해야 할 절차, 기준, 산출물과 예외상황 대응 방안을 설명해 주세요."
+            f"{context_label}에서 {surface_focus}에 관해 확인해야 할 절차와 기준, 적용 범위, 산출물, "
+            "예외상황 대응 및 오류 예방 방법을 설명해 주세요."
         )
         follow_ups = [
-            f"{context_label} 업무에서 '{k1}'과 관련한 기준이나 규정은 무엇입니까?",
+            f"{context_label} 업무에서 {surface_focus}의 근거가 되는 문서나 사실은 무엇입니까?",
             "예외상황에서 기준 적용을 어떻게 조정하겠습니까?",
             "산출물 품질과 오류 예방은 어떻게 점검하겠습니까?",
         ]
         evaluation_points = ["절차·기준 이해", "예외상황 판단", "산출물 품질", "오류 예방"]
     elif method == "인바스켓면접":
         question = (
-            f"[인바스켓과제] 제한시간 30분 안에 {context_label} 관련 요청, 오류 정정, 보고 문서가 동시에 들어왔습니다. "
-            f"'{k1}'을 실제로 발휘해 우선순위와 보고, 위임, 직접처리 판단을 제시하고, "
+            f"[인바스켓과제] {context_label} 관련 요청, 오류 정정, 보고 문서가 동시에 들어왔습니다. "
+            f"{surface_focus}에 따라 우선순위와 보고, 위임, 직접처리 판단을 제시하고, "
             "첫 조치와 기록 산출물을 포함해 주세요."
         )
         follow_ups = [
-            f"{context_label} 업무에서 '{k1}'을 기준으로 가장 먼저 처리할 문서와 보류할 요청은 무엇입니까?",
-            f"'{k1}' 기준으로 보고, 위임, 직접처리를 어떻게 나누겠습니까?",
-            "제한시간 이후 기록과 후속 확인은 어떻게 남기겠습니까?",
+            f"{context_label} 업무에서 {surface_focus}에 따라 가장 먼저 처리할 문서와 보류할 요청은 무엇입니까?",
+            "보고, 위임, 직접처리를 나눈 판단 근거는 무엇입니까?",
+            "처리 이후 기록과 후속 확인은 어떻게 남기겠습니까?",
         ]
         evaluation_points = ["우선순위 판단", "문서·요청 분류", "보고·위임·직접처리", "시간관리"]
     elif method == "발표면접":
         question = (
-            f"[발표과제] {context_label}에서 '{k1}' 관련 현황 자료와 오류 사례가 주어졌다고 가정하고 "
-            "준비시간 20분 후 문제를 진단하고 대안 2가지, 실행계획, 성과지표를 5분 발표한 뒤 "
-            "5분 질의응답에 답변해 주세요."
+            f"[발표과제] {context_label}에서 {surface_focus}에 관한 현황 자료와 오류 사례가 주어졌습니다. "
+            "자료를 바탕으로 문제를 진단하고 대안 2가지, 실행계획과 성과지표를 발표한 뒤 "
+            "질의응답에 답변해 주세요."
         )
         follow_ups = [
-            f"{context_label}의 '{k1}' 현황 진단에 활용한 핵심 근거자료는 무엇입니까?",
+            f"{context_label}의 {surface_focus} 현황을 진단할 때 활용한 핵심 근거자료는 무엇입니까?",
             "대안 중 우선순위를 가장 높게 둔 방안과 이유는 무엇입니까?",
             "질의응답에서 반대 의견이 나오면 어떤 근거로 답변하시겠습니까?",
         ]
         evaluation_points = ["자료 분석", "논리적 구조화", "대안 실행가능성", "성과지표"]
     elif method == "토론면접":
+        approval_change_focus = "승인" in k1 and "변경" in k1
+        if approval_change_focus:
+            scenario = (
+                "변경심의는 3영업일 뒤, 기존 범위 검수 준비 마감은 5영업일 뒤이고, "
+                "변경 범위 착수·최종 인력배치·비용 집행에는 사전 승인이 필요하지만 "
+                "영향분석·가용성 확인·잠정안 작성의 착수 해당 여부는 절차에 명시되지 않았습니다"
+            )
+            opposing_positions = (
+                "절차 해석이 확정될 때까지 핵심 인력을 기존 승인 범위에 전담시키고 PM만 문서 영향분석을 하자는 입장과 "
+                "변경 범위 실행·확정·비용 집행은 하지 않되 핵심 인력의 하루 2시간을 영향분석과 가용성 확인에 배정하자는 입장"
+            )
+        elif ksa_kind == "기술":
+            scenario = "오류 위험과 처리 지연이 함께 발생했고 두 대안 모두 업무상 비용이 있는 상황입니다"
+            opposing_positions = (
+                "오류를 막기 위해 모든 건에 표준 절차를 끝까지 적용하자는 입장과 "
+                "긴급·저위험 건은 핵심 단계만 먼저 처리하고 사후 점검하자는 입장"
+            )
+        elif ksa_kind == "태도":
+            scenario = "원칙의 일관성과 협업 지연 위험을 동시에 고려해야 하는 상황입니다"
+            opposing_positions = (
+                "일관성과 책임을 위해 원칙을 예외 없이 지키자는 입장과 "
+                "협업 지연을 줄이기 위해 상황별 재량을 허용하자는 입장"
+            )
+        else:
+            scenario = "핵심 근거 일부가 늦게 도착해 검증 정확성과 처리 지연 위험을 함께 판단해야 하는 상황입니다"
+            opposing_positions = (
+                "근거가 모두 확인될 때까지 적용을 보류하자는 입장과 "
+                "긴급·저위험 건은 조건부로 먼저 처리한 뒤 사후 검증하자는 입장"
+            )
         question = (
-            f"[토론과제] {context_label}에서 '{k1}' 기준을 강화해야 한다는 입장과 처리 효율을 우선해야 한다는 입장이 충돌합니다. "
-            "토론시간 20분 동안 1분 입장발표 후 반대 의견 검토, 조정 방식, 최종 합의안을 제시해 주세요. "
-            f"최종 합의안에는 '{k1}'의 실제 수행 절차와 품질 검증 산출물을 포함해 주세요."
+            f"[토론과제] {context_label} 업무에서 {surface_focus}에 따라 판단해야 하는 가운데 {scenario}. "
+            f"{opposing_positions}이 충돌합니다. 각 입장의 근거와 위험, 타당성을 검토하세요. "
+            "합의할 수 있다면 공통 실행안을, 합의가 어렵다면 미합의 쟁점과 결정권자 이송 기준을 제시해 주세요."
         )
         follow_ups = [
-            f"{context_label}의 '{k1}'에 대한 본인의 초기 입장발표를 뒷받침하는 핵심 근거는 무엇입니까?",
-            "반대 의견 중 수용할 수 있는 부분은 무엇입니까?",
-            "최종 합의안에 반드시 포함되어야 할 기준은 무엇입니까?",
+            f"{context_label}의 {surface_focus}에 관한 초기 입장을 정하기 전에 어떤 문서와 사실을 확인하겠습니까?",
+            "상대 입장에서 수용할 부분과 수용하기 어려운 부분을 어떤 기준으로 구분하겠습니까?",
+            "공통안의 적용 범위·예외·검증·실행 책임 또는 미합의 이송 기준을 어떻게 정하겠습니까?",
         ]
-        evaluation_points = ["입장발표 근거", "경청과 상호작용", "갈등 조정", "최종 합의안"]
+        evaluation_points = [
+            "사실·규정에 근거한 초기 입장",
+            "대안별 영향 비교",
+            "반대 근거 검토와 쟁점 조정",
+            "공통안 또는 미합의 이송안의 실행 가능성",
+        ]
     elif method == "창의적 문제해결력면접":
         question = (
-            f"[창의적 문제해결력과제] {context_label}에서 '{k1}' 관련 반복 문제가 발생했습니다. "
+            f"[창의적 문제해결력과제] {context_label}에서 {surface_focus}와 관련된 반복 문제가 발생했습니다. "
             "미래예측 관점에서 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법과 "
             "실현가능성, 의사결정 기준, 실행계획을 제시해 주세요."
         )
         follow_ups = [
             "핵심 문제정의를 위해 먼저 확인할 변화 신호는 무엇입니까?",
-            f"{context_label}의 '{k1}' 관련 원인 가설은 어떻게 세우고 검증하겠습니까?",
+            f"{context_label}의 {surface_focus}와 관련된 원인 가설은 어떻게 세우고 검증하겠습니까?",
             "선택한 대안의 리스크와 보완책은 무엇입니까?",
         ]
         evaluation_points = ["미래예측과 문제 정의", "창의적 사고와 대안 도출", "검증 방법과 실현가능성", "의사결정과 실행계획"]
     else:
         question = (
-            f"{context_label} 수행 과정에서 '{k1}'과 '{k2}'를 적용해 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. "
+            f"{context_label} 수행 과정에서 {surface_focus}에 따라 판단하거나 조치해 문제를 해결한 경험을 말씀해 주세요. "
             "당시 상황, 본인 역할, 선택한 행동, 결과와 학습을 포함해 설명해 주세요."
         )
         follow_ups = [
             "당시 상황과 본인이 맡은 구체적인 역할을 설명해 주세요.",
-            f"{context_label} 업무에서 '{k1}'을 적용하기 위해 실제로 취한 행동은 무엇이었습니까?",
+            f"{context_label} 업무에서 {surface_focus}에 따라 실제로 취한 행동은 무엇이었습니까?",
             "결과를 어떤 기준으로 확인했고 다시 한다면 무엇을 개선하시겠습니까?",
         ]
         evaluation_points = ["상황과 역할", "판단 근거", "실행 행동", "성과와 학습"]
+
+    generic_case_facts = [
+        f"{context_label} 관련 긴급 요청 1건과 일반 요청 2건이 같은 처리일에 접수됨",
+        f"{surface_focus} 판단에 필요한 필수 확인자료 1건이 누락됨",
+        "결재 또는 보고 마감까지 2시간이 남아 있음",
+    ]
+    approval_change_case_facts = [
+        "변경심의 결과는 3영업일 뒤 확정될 예정임",
+        "기존 승인 범위의 검수 준비 마감은 5영업일 뒤임",
+        "핵심 인력 1명은 기존 승인 범위 작업에 배정되어 있음",
+        "변경 범위 착수·최종 인력배치·비용 집행에는 사전 승인이 필요함",
+        "영향분석·가용성 확인·잠정안 작성의 착수 해당 여부는 절차에 명시되지 않음",
+    ]
+    generic_case_materials = [
+        {"source": "접수 현황표", "field": "요청 건수", "value": "긴급 1건, 일반 2건"},
+        {"source": "자료 점검표", "field": "누락 자료", "value": "필수 확인자료 1건"},
+        {"source": "처리 일정표", "field": "남은 시간", "value": "결재 또는 보고 마감까지 2시간"},
+    ]
+    approval_change_case_materials = [
+        {"source": "변경요청서", "field": "심의 상태", "value": "승인 대기, 결정 예정 D+3"},
+        {"source": "기존 범위 일정표", "field": "검수 준비 마감", "value": "D+5"},
+        {"source": "역할·책임표", "field": "핵심 인력 가용성", "value": "1명, 기존 승인 범위 작업 중"},
+        {"source": "변경관리 절차서", "field": "사전 승인 대상", "value": "변경 범위 착수·최종 인력배치·비용 집행"},
+        {"source": "변경관리 절차서", "field": "해석 공백", "value": "영향분석·가용성 확인·잠정안 작성의 착수 해당 여부 미기재"},
+    ]
+
+    task_conditions: dict[str, Any] = {
+        "candidate_instruction": "제시된 직무 상황을 기준으로 판단 근거, 구체적 행동과 결과 확인 방법을 구분해 답변하십시오.",
+        "time_plan": [],
+        "provided_materials": ["별도 자료 없음"],
+        "required_outputs": ["판단 근거", "구체적 행동", "결과 확인 또는 후속점검"],
+        "standardization": "모든 지원자에게 동일한 자료, 기본 과제, 시간 조건과 허용된 후속질문 범위를 적용합니다.",
+        "timing_basis": "기관 운영기준에서 동일 응답시간을 사전 확정합니다.",
+    }
+    if method == "토론면접":
+        task_conditions.update(
+            {
+                "candidate_instruction": "근거 있는 초기 입장을 밝히고 상대 의견을 검토하십시오. 공통 실행안을 찾되 합의가 어렵다면 남은 쟁점과 결정권자 이송 기준을 제시하십시오.",
+                "time_plan": [
+                    {"phase": "개별 입장발표", "minutes": 1},
+                    {"phase": "전체 토론", "minutes": 20},
+                ],
+                "provided_materials": (
+                    ["변경요청서", "기존 범위 일정표", "역할·책임표", "변경관리 절차서", "토론 쟁점과 상반된 입장"]
+                    if approval_change_focus
+                    else ["접수 현황표", "자료 점검표", "처리 일정표", "토론 쟁점과 상반된 입장"]
+                ),
+                "case_facts": approval_change_case_facts if approval_change_focus else generic_case_facts,
+                "case_materials": approval_change_case_materials if approval_change_focus else generic_case_materials,
+                "required_outputs": [
+                    "초기 입장과 확인 근거",
+                    "반대 입장의 수용·불수용 기준",
+                    "공통안의 적용 범위·예외·검증·실행 책임 또는 미합의 이송 기준",
+                ],
+                "timing_basis": "기관 운영기준에 따라 사전 확정한 동일 시간구조를 적용합니다.",
+            }
+        )
+    elif method == "상황면접":
+        task_conditions.update(
+            {
+                "candidate_instruction": "상황카드의 사실만을 사용해 확인 항목, 판단 기준, 행동·보고·후속조치 순서를 설명하십시오.",
+                "time_plan": [{"phase": "개별 답변", "minutes": 5}],
+                "provided_materials": ["접수 현황표", "자료 점검표", "처리 일정표"],
+                "case_facts": generic_case_facts,
+                "case_materials": generic_case_materials,
+                "required_outputs": ["사실 확인 항목", "판단 기준과 위험 통제", "행동·보고·후속조치 순서"],
+                "timing_basis": "기관 운영기준에 따라 사전 확정한 동일 응답시간을 적용합니다.",
+            }
+        )
+    elif method == "발표면접":
+        task_conditions.update(
+            {
+                "candidate_instruction": "제공자료를 근거로 현황과 원인을 구분하고 대안·실행계획·성과지표를 발표한 뒤 질의응답에 답하십시오.",
+                "time_plan": [
+                    {"phase": "준비", "minutes": 20},
+                    {"phase": "발표", "minutes": 5},
+                    {"phase": "질의응답", "minutes": 5},
+                ],
+                "provided_materials": ["접수 현황표", "자료 점검표", "처리 일정표"],
+                "case_facts": [
+                    *generic_case_facts,
+                    "최근 4주 동안 같은 유형의 오류가 3건 반복됨",
+                ],
+                "case_materials": generic_case_materials,
+                "required_outputs": ["현황·원인 진단", "대안 2가지와 우선순위", "실행계획과 성과지표"],
+                "timing_basis": "기관 운영기준에 따라 사전 확정한 동일 시간구조를 적용합니다.",
+            }
+        )
+    elif method == "인바스켓면접":
+        task_conditions.update(
+            {
+                "candidate_instruction": "동시에 접수된 문서를 분류해 처리 우선순위와 보고·위임·직접처리 결정을 기록하십시오.",
+                "time_plan": [{"phase": "문서 검토 및 의사결정", "minutes": 30}],
+                "provided_materials": ["접수 현황표", "자료 점검표", "처리 일정표", "업무분장표", "전결규정"],
+                "case_facts": [
+                    *generic_case_facts,
+                    "상급자 보고가 필요한 예외 요청 1건이 포함되어 있음",
+                    "응시자 역할은 실무 담당자이며 사실 확인·단순 자료 정정·담당자 협조 요청은 직접처리할 수 있음",
+                    "대외 회신·일정 변경·예외 승인은 팀장 결재가 필요함",
+                ],
+                "case_materials": [
+                    *generic_case_materials,
+                    {"source": "업무분장표", "field": "응시자 역할·직접처리 범위", "value": "실무 담당자, 사실 확인·단순 자료 정정·담당자 협조 요청"},
+                    {"source": "전결규정", "field": "팀장 결재 대상", "value": "대외 회신·일정 변경·예외 승인"},
+                ],
+                "required_outputs": ["문서별 우선순위", "보고·위임·직접처리 판단", "첫 조치와 후속점검"],
+                "timing_basis": "기관 운영기준에 따라 사전 확정한 동일 시간구조를 적용합니다.",
+            }
+        )
+    elif method == "창의적 문제해결력면접":
+        task_conditions.update(
+            {
+                "candidate_instruction": "변화 신호를 근거로 문제를 재정의하고 복수 대안을 비교해 검증·실행·보완 계획을 설명하십시오.",
+                "time_plan": [
+                    {"phase": "준비", "minutes": 20},
+                    {"phase": "해결안 설명", "minutes": 7},
+                    {"phase": "질의응답", "minutes": 5},
+                ],
+                "case_materials": generic_case_materials,
+                "provided_materials": ["접수 현황표", "자료 점검표", "처리 일정표"],
+                "case_facts": [
+                    *generic_case_facts,
+                    "현재 방식으로 처리하면 다음 달 동일 오류가 2건 이상 재발할 가능성이 있음",
+                ],
+                "required_outputs": ["문제 정의와 원인 가설", "대안 2가지와 검증방법", "실행계획·성과지표·리스크 보완"],
+                "timing_basis": "기관 운영기준에 따라 사전 확정한 동일 시간구조를 적용합니다.",
+            }
+        )
+
+    if method in {"상황면접", "토론면접", "인바스켓면접", "창의적 문제해결력면접"}:
+        authority_facts = [
+            "응시자 역할은 실무 담당자이며 사실 확인·자료 수집·초안 작성·담당자 협조 요청은 직접 수행할 수 있음",
+            "대외 회신·일정 변경·예외 승인은 팀장 결재가 필요하고 자료 대조는 품질담당자에게 협조 요청할 수 있음",
+        ]
+        authority_materials = [
+            {
+                "source": "업무분장표",
+                "field": "응시자 역할·직접 수행 범위",
+                "value": "실무 담당자, 사실 확인·자료 수집·초안 작성·담당자 협조 요청",
+            },
+            {
+                "source": "전결규정",
+                "field": "팀장 결재·협조 요청 범위",
+                "value": "대외 회신·일정 변경·예외 승인 / 자료 대조 협조",
+            },
+        ]
+        task_conditions["case_facts"] = list(dict.fromkeys([
+            *task_conditions.get("case_facts", []),
+            *authority_facts,
+        ]))
+        existing_rows = [
+            row
+            for row in task_conditions.get("case_materials", [])
+            if isinstance(row, dict)
+        ]
+        existing_sources = {
+            str(row.get("source") or "").strip()
+            for row in existing_rows
+        }
+        task_conditions["case_materials"] = [
+            *existing_rows,
+            *[row for row in authority_materials if row["source"] not in existing_sources],
+        ]
+        task_conditions["provided_materials"] = list(dict.fromkeys([
+            *task_conditions.get("provided_materials", []),
+            "업무분장표",
+            "전결규정",
+        ]))
 
     return {
         "question": question,
@@ -2277,10 +2499,15 @@ def _build_ncs_code_template_fallback_question(
         "ncsClCd": code,
         "ncs_detail": detail,
         "question_focus": k1,
+        "question_focus_surface": surface_focus,
+        "question_task_frame": task_frame,
+        "question_evidence_id": str(task_frame.get("evidence_id") or ""),
+        "question_evidence_required": bool(task_frame.get("evidence_id")),
         "question_focus_source": "official_ksa" if evidence_refs and evidence_refs[0] == k1 else "synthetic_template",
         "evaluation_points": evaluation_points,
         "ksa_refs": evidence_refs,
         "follow_ups": follow_ups,
+        "task_conditions": task_conditions,
         "question_source": "template_fallback",
         "model_question_preserved": False,
     }
@@ -2450,6 +2677,7 @@ def generate_interview_questions_by_ncs_code(
                     ncs_code=uc,
                     ksa_terms=unit_ksa,
                     evidence_terms=unit_evidence,
+                    evidence_rows=unit_ksa_rows,
                     index=len(distributed),
                 )
             if picked:
@@ -2470,9 +2698,9 @@ def generate_interview_questions_by_ncs_code(
     if len(generated) < desired_count and allow_template_fallback:
         used_template_fallback = True
         fallback_focuses = ["업무 우선순위 설정", "이해관계자 협업", "성과 점검 및 개선"]
-        ksa_by_code: dict[str, list[str]] = {}
-        ksa_by_name: dict[str, list[str]] = {}
-        unscoped_ksa: list[str] = []
+        ksa_by_code: dict[str, list[dict[str, Any]]] = {}
+        ksa_by_name: dict[str, list[dict[str, Any]]] = {}
+        unscoped_ksa: list[dict[str, Any]] = []
         for row in ncs_ksa or []:
             factor = str(row.get("factorName", "")).strip()
             if not factor:
@@ -2480,20 +2708,25 @@ def generate_interview_questions_by_ncs_code(
             unit_code = str(row.get("ncsClCd", "")).strip()
             unit_name = str(row.get("compeUnitName", "")).strip()
             if unit_code:
-                ksa_by_code.setdefault(unit_code, []).append(factor)
+                ksa_by_code.setdefault(unit_code, []).append(row)
             if unit_name:
-                ksa_by_name.setdefault(unit_name, []).append(factor)
+                ksa_by_name.setdefault(unit_name, []).append(row)
             if not unit_code and not unit_name:
-                unscoped_ksa.append(factor)
+                unscoped_ksa.append(row)
         existing = {normalize_question_dedup_key(str(x.get("question", ""))) for x in generated}
         idx = 0
         while len(generated) < desired_count and idx < desired_count * 4:
             unit = ncs_matches[idx % len(ncs_matches)] if ncs_matches else {}
             unit_code = str(unit.get("ncsClCd", "")).strip()
             unit_name = str(unit.get("compeUnitName", "")).strip()
-            unit_evidence = list(ksa_by_code.get(unit_code) or ksa_by_name.get(unit_name) or [])
-            if not unit_evidence and len(ncs_matches) <= 1:
-                unit_evidence = list(unscoped_ksa)
+            unit_evidence_rows = list(ksa_by_code.get(unit_code) or ksa_by_name.get(unit_name) or [])
+            if not unit_evidence_rows and len(ncs_matches) <= 1:
+                unit_evidence_rows = list(unscoped_ksa)
+            unit_evidence = [
+                str(row.get("factorName") or "").strip()
+                for row in unit_evidence_rows
+                if str(row.get("factorName") or "").strip()
+            ]
             unit_ksa = list(unit_evidence) or list(fallback_focuses)
             q = _build_ncs_code_template_fallback_question(
                 unit=unit,
@@ -2501,6 +2734,7 @@ def generate_interview_questions_by_ncs_code(
                 ncs_code=unit_code or code,
                 ksa_terms=unit_ksa,
                 evidence_terms=unit_evidence,
+                evidence_rows=unit_evidence_rows,
                 index=idx,
             )
             qtext = str(q.get("question", "")).strip()
@@ -2536,9 +2770,14 @@ def generate_interview_questions_by_ncs_code(
             "ncsClCd": str(q.get("ncsClCd", "")).strip(),
             "ncs_detail": str(q.get("ncs_detail") or "").strip(),
             "question_focus": _primary_question_focus(q),
+            "question_focus_surface": str(q.get("question_focus_surface") or "").strip(),
+            "question_task_frame": dict(q.get("question_task_frame") or {}),
+            "question_evidence_id": str(q.get("question_evidence_id") or "").strip(),
+            "question_evidence_required": bool(q.get("question_evidence_required")),
             "question_focus_source": str(q.get("question_focus_source", "")).strip(),
             "ksa_refs": list(q.get("ksa_refs", []) or []) if isinstance(q.get("ksa_refs"), list) else [],
             "follow_ups": list(q.get("follow_ups", []) or []),
+            "task_conditions": dict(q.get("task_conditions") or {}),
             "question_source": str(q.get("question_source", "")).strip(),
             "model_question_preserved": bool(q.get("model_question_preserved")),
         }
@@ -3504,8 +3743,8 @@ def _fallback_structured_interview_guide_summary() -> str:
     return (
         "원칙: 주질문1개+꼬리질문3개(사례구체화/어려움대처/결과교훈). "
         "type=경험면접/상황면접/발표면접/토론면접/인바스켓면접/직무지식면접/창의적 문제해결력면접 중 선택. "
-        "경험면접은 STAR 행동증거, 상황면접은 판단 기준과 행동 순서, 발표면접은 준비시간·발표·질의응답을 포함한 분석·대안·실행계획, "
-        "토론면접은 토론시간·입장발표·경청·조정·합의, 인바스켓면접은 제한시간 내 우선순위와 첫 조치, "
+        "경험면접은 STAR 행동증거, 상황면접은 판단 기준과 행동 순서, 발표면접은 자료 분석·대안·실행계획·발표·질의응답, "
+        "토론면접은 구체적 입장 충돌·근거 검토·경청·조정·합의, 인바스켓면접은 복수 문서의 우선순위와 첫 조치, "
         "직무지식면접은 절차·기준·산출물·예외상황 적용, 창의적 문제해결력면접은 미래예측·실현가능성·의사결정을 검증. 개방형 단일의도."
     )
 
@@ -3514,15 +3753,15 @@ def _structured_interview_guide_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "STRUCTURED_INTERVIEW_GUIDE.md"))
 
 
-def _model_question_gate_contract() -> str:
+def _legacy_model_question_gate_contract() -> str:
     return (
         "[모델 질문 보존 게이트]\n"
         "- 아래 필수어는 주질문(question)에 직접 포함하세요. 빠지면 템플릿으로 교체되어 model-origin 품질 실패로 기록됩니다.\n"
         "- 경험면접 question 필수어: 경험, 상황, 본인, 행동, 결과. evaluation_points에는 구체적 상황 설명 또는 본인 역할과 행동 또는 성과와 학습 포함.\n"
         "- 상황면접 question 필수어: 상황, 판단, 기준, 순서, 위험. evaluation_points에는 판단 기준 또는 위험요인 인식 또는 이해관계자 대응 포함.\n"
-        "- 발표면접 question 필수어: 발표, 준비시간, 진단, 대안, 실행, 성과지표, 질의응답. evaluation_points에는 자료 분석력 또는 논리적 구조화 또는 대안의 실행가능성 또는 질의응답 대응 포함.\n"
-        "- 토론면접 question 필수어: 토론시간, 입장발표, 충돌, 입장, 반대, 합의. evaluation_points에는 입장발표 근거 또는 경청과 상호작용 또는 갈등 조정 또는 최종 합의안 도출 포함.\n"
-        "- 인바스켓면접 question 필수어: 인바스켓, 제한시간, 문서, 우선순위, 보고, 위임, 직접처리. evaluation_points에는 우선순위 판단 또는 문서·요청 분류 또는 시간관리 포함.\n"
+        "- 발표면접 question 필수어: 발표, 진단, 대안, 실행, 성과지표, 질의응답. evaluation_points에는 자료 분석력 또는 논리적 구조화 또는 대안의 실행가능성 또는 질의응답 대응 포함.\n"
+        "- 토론면접 question 필수어: 토론, 충돌, 입장, 근거, 합의. evaluation_points에는 입장발표 근거 또는 경청과 상호작용 또는 갈등 조정 또는 최종 합의안 도출 포함.\n"
+        "- 인바스켓면접 question 필수어: 인바스켓, 문서, 우선순위, 보고, 위임, 직접처리. evaluation_points에는 우선순위 판단 또는 문서·요청 분류 또는 시간관리 포함.\n"
         "- 직무지식면접 question 필수어: 절차, 기준, 산출물, 예외상황. evaluation_points에는 절차·기준 이해 또는 직무지식 적용 또는 산출물 품질 포함.\n"
         "- 창의적 문제해결력면접 question 필수어: 창의적, 미래예측, 문제, 정의, 대안, 검증, 실현가능성, 의사결정, 실행. evaluation_points에는 미래예측과 문제 정의 또는 창의적 사고와 대안 도출 또는 검증 방법 또는 실현가능성 또는 의사결정과 실행계획 포함.\n"
         "- type과 question의 형식이 충돌하면 안 됩니다. 예: type=발표면접이면 question은 반드시 발표과제여야 합니다.\n"
@@ -3563,13 +3802,36 @@ def _model_question_gate_contract() -> str:
         "- 아래 질문 골격을 그대로 따르되, {직무}, {능력단위}, {KSA}는 반드시 실제 NCS/KSA 표현으로 바꾸고 placeholder를 남기지 마세요.\n"
         "- 경험면접 question 골격: {직무}에서 {KSA}가 실제로 필요했던 문제를 해결하거나 성과를 낸 경험을 말씀해 주세요. 당시 상황, 본인 역할, 선택한 행동, 판단 근거, 결과 지표와 학습을 포함해 설명해 주세요.\n"
         "- 상황면접 question 골격: {직무} 중 {KSA}를 실제로 판단·수행해야 하는 구체적 상황입니다. 어떤 판단 기준으로 위험을 통제하고, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까? 지식이면 판단 근거, 기술이면 구체 조치와 산출물, 태도이면 압박 속 선택 행동을 답하도록 요구하세요.\n"
-        "- 발표면접 question 골격: [발표과제] {직무}에서 {KSA}를 실제로 적용해야 하는 자료가 주어졌다고 가정하고 준비시간 20분 후 현황을 진단하고 대안 2가지, 실행계획, 성과지표를 5분 발표하고 5분 질의응답 답변을 포함해 주세요. 지식이면 판단 근거, 기술이면 구체 조치와 산출물, 태도이면 제약 속 선택 행동을 발표하도록 요구하세요.\n"
-        "- 토론면접 question 골격: [토론과제] {직무}에서 {KSA} 관련 두 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 반대 의견 검토, 조정 방식, 최종 합의안을 토론해 주세요.\n"
-        "- 인바스켓면접 question 골격: [인바스켓과제] 제한시간 안에 {직무} 관련 여러 문서와 요청이 들어왔습니다. {KSA}를 실제로 발휘해 우선순위, 보고, 위임, 직접처리 판단, 첫 조치와 작성할 산출물을 제시해 주세요.\n"
+        "- 발표면접 question 골격: [발표과제] {직무}에서 {KSA}를 실제로 적용해야 하는 자료가 주어졌습니다. 현황을 진단하고 대안 2가지, 실행계획과 성과지표를 발표한 뒤 질의응답에 답하게 하세요. 지식이면 판단 근거, 기술이면 구체 조치와 산출물, 태도이면 제약 속 선택 행동을 발표하도록 요구하세요.\n"
+        "- 토론면접 question 골격: [토론과제] {직무}에서 {KSA} 관련 두 입장이 충돌합니다. 반대 의견 검토, 조정 방식과 최종 합의안을 토론하게 하세요.\n"
+        "- 인바스켓면접 question 골격: [인바스켓과제] {직무} 관련 여러 문서와 요청이 동시에 들어왔습니다. {KSA}를 실제로 발휘해 우선순위, 보고, 위임, 직접처리 판단, 첫 조치와 작성할 산출물을 제시하게 하세요.\n"
+        "- 준비·발표·토론·질의응답 시간과 제출 방식은 question 본문에 쓰지 말고 별도 task_conditions에만 둡니다.\n"
         "- 직무지식면접 question 골격: {직무}에서 {KSA}와 관련해 확인해야 할 절차, 기준, 산출물, 예외상황 대응과 품질 점검 방법을 설명해 주세요.\n"
         "- 창의적 문제해결력면접 question 골격: [창의적 문제해결력과제] {직무}에서 {KSA} 관련 복합 문제가 발생했습니다. 미래예측 관점에서 핵심 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법, 실현가능성, 의사결정 기준, 실행계획과 성과지표를 제시해 주세요.\n"
         "- follow_ups 골격 예시: 1) 먼저 확인할 상황·자료·문서는 무엇입니까? 2) {KSA}를 기준으로 그 판단이나 행동을 선택한 이유는 무엇입니까? 3) 결과 확인, 후속점검, 리스크 보완은 어떻게 하겠습니까?\n"
         "- 면접기법별 지정 slot 예시: 발표 follow_ups[0]={KSA}를 발표 쟁점으로 볼 때 {직무} 현황 진단의 근거자료는 무엇입니까? / 토론 follow_ups[0]={KSA}를 토론 쟁점으로 볼 때 {직무} 입장발표 근거는 무엇입니까? / 인바스켓 follow_ups[0]={KSA}를 처리 기준으로 삼아 {직무} 우선순위를 정한 이유는 무엇입니까? / 직무지식 follow_ups[0]={KSA}와 관련한 기준으로 {직무} 절차를 어떻게 확인하겠습니까? / 창의적 문제해결력 follow_ups[1]={KSA}와 관련한 원인과 대안 관점에서 {직무} 문제를 어떻게 검증하겠습니까?\n"
+    )
+
+
+def _model_question_gate_contract() -> str:
+    """Contract for evidence-grounded questions without exposing raw KSA labels."""
+
+    return (
+        "[모델 질문 보존 게이트 v2]\n"
+        "- [질문별 생성 순서]의 required_factorName은 평가위원용 공식 근거입니다. question, follow_ups, evaluation_points에 복사하거나 따옴표로 인용하지 마세요.\n"
+        "- 지원자에게 보이는 문장에는 required_surface_focus, required_task_statement, required_observable_behavior를 사용하세요.\n"
+        "- evidence_id는 근거 연결용 식별자입니다. 출력 문장에 노출하지 말고 배정된 근거를 바꾸지 마세요.\n"
+        "- 각 질문에는 required_job_context와 required_scenario_frame을 반영하고, 관찰 가능한 판단·행동·산출물을 요구하세요.\n"
+        "- 경험면접은 상황·본인 역할·행동·결과, 상황면접은 구체 상황·판단 기준·행동 순서·위험을 측정하세요.\n"
+        "- 발표면접은 자료·진단·대안·실행·성과지표, 토론면접은 구체적인 두 입장의 충돌·근거 검토·공동 합의를 측정하세요.\n"
+        "- 인바스켓면접은 문서 분류·우선순위·보고·위임·직접처리, 직무지식면접은 절차·기준·예외·산출물 품질을 측정하세요.\n"
+        "- 창의적 문제해결력면접은 문제 정의·원인 가설·대안·검증·실행가능성을 측정하세요.\n"
+        "- 발표·토론·인바스켓의 시간과 제출요건은 별도 task_conditions로 제공되므로 주질문에 체크리스트처럼 반복하지 마세요.\n"
+        "- 토론면접 question은 '[토론과제]'로 시작하고 현장 사건과 서로 양립하기 어려운 두 정책 대안을 2~3문장으로 제시하세요.\n"
+        "- 토론면접 꼬리질문은 ① 확인 자료·사실 ② 수용·불수용 경계와 기준 ③ 합의안의 적용 범위·예외·검증 기준과 실행 책임·후속점검을 각각 검증하세요.\n"
+        "- follow_ups 중 최소 1개에는 required_job_context 또는 required_surface_focus를 포함하되 공식 factorName 원문은 노출하지 마세요.\n"
+        "- evaluation_points는 성향 라벨이 아니라 답변에서 관찰할 수 있는 근거·판단·행동·산출물로 작성하세요.\n"
+        "- 출력 전 자체검사: 공식 factorName이 노출되지 않았는가, 직무 사건이 구체적인가, 각 꼬리질문이 서로 다른 증거를 측정하는가.\n"
     )
 
 
@@ -3632,6 +3894,21 @@ def _planned_factor_for_prompt(
     return factors[(max(1, int(question_index or 1)) - 1) % len(factors)]
 
 
+def _planned_factor_row_for_prompt(
+    ncs_code: str,
+    factor_name: str,
+    ncs_ksa: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    code = str(ncs_code or "").strip()
+    factor_key = _norm_text(factor_name)
+    for row in ncs_ksa or []:
+        if not isinstance(row, dict) or str(row.get("ncsClCd") or "").strip() != code:
+            continue
+        if factor_key and _norm_text(str(row.get("factorName") or "")) == factor_key:
+            return dict(row)
+    return {}
+
+
 def _planned_followup_focus_slot_for_prompt(method: str) -> int:
     return {
         "경험면접": 1,
@@ -3654,7 +3931,7 @@ def _planned_followup_focus_example_for_prompt(method: str, job_context: str, fa
     if method == "발표면접":
         return f"{factor_name}을 발표 쟁점으로 볼 때 {context} 현황 진단의 근거자료는 무엇입니까?"
     if method == "토론면접":
-        return f"{factor_name}을 토론 쟁점으로 볼 때 {context} 입장발표의 근거는 무엇입니까?"
+        return f"{context}에서 {factor_name}과 관련한 입장을 정하기 전에 어떤 문서와 사실을 확인하겠습니까?"
     if method == "인바스켓면접":
         return f"{factor_name}을 처리 기준으로 삼아 {context} 문서·요청 우선순위와 보고·위임·직접처리 판단을 어떻게 정하겠습니까?"
     if method == "직무지식면접":
@@ -3704,7 +3981,7 @@ def _planned_scenario_frame_for_prompt(method: str, offset: int) -> str:
             "민원 확대 가능성과 마감 임박 업무가 겹친 상황",
             "상급자 보고, 협업 요청, 현장 확인이 동시에 필요한 상황",
             "안전·품질 이슈와 처리 속도 요구가 동시에 있는 상황",
-            "자료 확인, 위임, 직접처리 판단을 제한시간 안에 해야 하는 상황",
+            "자료 확인, 위임, 직접처리 판단이 동시에 필요한 상황",
         ),
         "직무지식면접": (
             "기준 적용 절차와 예외상황 처리",
@@ -3746,11 +4023,11 @@ def _planned_question_example_for_prompt(method: str, job_context: str, factor_n
     if method == "상황면접":
         return f"{context} 중 {factor_name}와 관련한 구체적 상황입니다. 어떤 판단 기준으로 위험을 통제하고, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까?"
     if method == "발표면접":
-        return f"[발표과제] {context}에서 {factor_name} 관련 자료가 주어졌다고 가정하고 준비시간 20분 후 현황을 진단하고 대안 2가지, 실행계획, 성과지표를 5분 발표하고 5분 질의응답 답변을 포함해 주세요."
+        return f"[발표과제] {context}에서 {factor_name} 관련 자료가 주어졌습니다. 현황을 진단하고 대안 2가지, 실행계획과 성과지표를 발표한 뒤 질의응답에 답해 주세요."
     if method == "토론면접":
-        return f"[토론과제] {context}에서 {factor_name} 적용을 강화해야 한다는 입장과 업무 효율·자원 제약을 우선해야 한다는 입장이 충돌합니다. 토론시간 20분 동안 1분 입장발표 후 반대 의견 검토, 조정 방식, 최종 합의안을 토론해 주세요."
+        return f"[토론과제] {context}에서 {factor_name}을 예외 없이 적용해야 한다는 입장과 제한된 일정에서 조건부 예외를 허용해야 한다는 입장이 충돌합니다. 각 입장의 근거와 위험을 검토하고 실행 가능한 공동 합의안을 도출해 주세요."
     if method == "인바스켓면접":
-        return f"[인바스켓과제] 제한시간 안에 {context} 관련 여러 문서와 요청이 들어왔습니다. {factor_name}을 기준으로 우선순위, 보고, 위임, 직접처리 판단을 제시해 주세요."
+        return f"[인바스켓과제] {context} 관련 여러 문서와 요청이 동시에 들어왔습니다. {factor_name}을 기준으로 우선순위, 보고, 위임, 직접처리 판단을 제시해 주세요."
     if method == "직무지식면접":
         return f"{context}에서 {factor_name}와 관련해 확인해야 할 절차, 기준, 산출물, 예외상황 대응과 품질 점검 방법을 설명해 주세요."
     if method == "창의적 문제해결력면접":
@@ -3804,6 +4081,22 @@ def _planned_question_sequence_for_prompt(
             if ncs_code:
                 factor_offsets_by_code[ncs_code] = factor_offset + 1
             required_context = compe_unit_name or ncs_sub_detail or detail
+            factor_row = _planned_factor_row_for_prompt(ncs_code, required_factor, ncs_ksa)
+            task_frame = build_question_task_frame(
+                evidence_row=factor_row or None,
+                factor_name=required_factor,
+                ksa_type=(
+                    factor_row.get("ksaTypeName")
+                    or factor_row.get("factorType")
+                    or factor_row.get("ksa_type")
+                    or ""
+                ),
+                element_name=factor_row.get("elementName") or factor_row.get("element_name") or "",
+                competency_name=compe_unit_name,
+                competency_definition=str(unit.get("compeUnitDef", "")).strip(),
+                decision_dilemma=scenario_frame,
+            )
+            surface_focus = task_frame["task_object"]
             planned_item.update(
                 {
                     "ncsClCd": ncs_code,
@@ -3811,18 +4104,22 @@ def _planned_question_sequence_for_prompt(
                     "compeUnitDef": str(unit.get("compeUnitDef", "")).strip()[:240],
                     "ncsSubdCdnm": ncs_sub_detail,
                     "required_job_context": required_context,
+                    "evidence_id": task_frame.get("evidence_id", ""),
                     "required_factorName": required_factor,
+                    "required_surface_focus": surface_focus,
+                    "required_task_statement": task_frame["task_statement"],
+                    "required_observable_behavior": task_frame["observable_behavior"],
                     "required_scenario_frame": scenario_frame,
                     "required_question_example": _planned_question_example_for_prompt(
                         method,
                         required_context,
-                        required_factor,
+                        surface_focus,
                     ),
                     "required_followup_focus_slot": _planned_followup_focus_slot_for_prompt(method),
                     "required_followup_focus_example": _planned_followup_focus_example_for_prompt(
                         method,
                         required_context,
-                        required_factor,
+                        surface_focus,
                     ),
                 }
             )
@@ -3950,16 +4247,15 @@ def build_strategy_with_openai(
             sequence_rules = (
                 f"[질문별 생성 순서]{json.dumps(planned_sequence, ensure_ascii=False)}\n"
                 "- interview_questions 배열 순서는 [질문별 생성 순서]의 index와 정확히 같아야 합니다.\n"
-                "- 각 index의 detail은 해당 문항의 세분류이며, question/follow_ups/evaluation_points에는 그 detail과 같은 NCS 후보의 compeUnitName, required_job_context, required_factorName만 사용하세요.\n"
-                "- required_factorName이 있으면 question과 지정 follow_up slot에 반드시 원문 그대로 1회 이상 반복하세요.\n"
-                "- 각 index의 required_factorName 값을 F라고 보고, 지정 follow_up slot 문장은 반드시 F 원문으로 시작하거나 F 원문을 직접 포함해야 합니다.\n"
+                "- 각 index의 detail은 해당 문항의 세분류입니다. question/follow_ups/evaluation_points에는 같은 NCS 후보의 required_job_context와 required_surface_focus만 사용하세요.\n"
+                "- required_factorName은 내부 공식 근거이므로 지원자용 문장에 복사하거나 인용하지 마세요. evidence_id로만 근거를 연결하세요.\n"
+                "- required_task_statement와 required_observable_behavior가 요구하는 판단·행동·산출물을 측정하세요.\n"
                 "- 각 index의 required_job_context 값을 J라고 보고, follow_ups 중 최소 1개는 J 원문을 직접 포함해야 합니다.\n"
                 "- 각 index의 required_scenario_frame 값을 S라고 보고, question은 S의 상황 축을 직접 반영해야 합니다. S가 다르면 질문의 상황도 달라야 합니다.\n"
-                "- 각 index에 required_question_example이 있으면 question은 그 예시와 같은 면접기법 구조를 따르고 F와 J를 모두 포함하세요.\n"
-                "- 각 index의 required_followup_focus_slot 값이 0이면 follow_ups[0], 1이면 follow_ups[1]을 지정 slot으로 보고, required_followup_focus_example과 같은 구조로 F와 J를 모두 넣으세요.\n"
-                "- type=토론면접이면 required_question_example처럼 '[토론과제]'로 시작하고 두 입장 충돌, 토론시간, 입장발표, 반대 의견, 조정, 합의를 모두 포함하세요.\n"
+                "- 각 index에 required_question_example이 있으면 같은 면접기법 구조를 따르고 required_surface_focus와 J를 반영하세요.\n"
+                "- required_followup_focus_slot의 문장은 required_followup_focus_example과 같은 구조로 required_surface_focus와 J를 반영하세요.\n"
+                "- type=토론면접이면 '[토론과제]'로 시작하고 현장 사건, 구체적인 두 입장 충돌, 근거 검토와 공동 합의를 포함하세요. 시간·입장발표 조건은 넣지 마세요.\n"
                 "- type=인바스켓면접이면 required_followup_focus_example처럼 지정 follow_up slot에 문서·요청 우선순위와 보고·위임·직접처리 판단을 함께 쓰세요.\n"
-                "- required_factorName이 있으면 다른 factorName, 능력단위명, 세분류명을 required_factorName 대신 쓰지 마세요.\n"
                 "- 각 index의 type은 반드시 [질문별 생성 순서]의 type과 같아야 합니다. 이전 index의 직무 표현을 다음 index로 재사용하지 마세요.\n"
                 "- index별 detail/type이 맞지 않으면 해당 모델 질문은 템플릿으로 교체됩니다.\n"
             )
@@ -3982,7 +4278,7 @@ def build_strategy_with_openai(
             "[질문 의도 다양성]\n"
             "- 일반 질문(지원동기, 직무이해, 협업/갈등, 강점/보완점, 공공성/윤리, 입사 후 기여)은 허용됩니다.\n"
             "- 다만 같은 일반 의도는 전체 세트에서 1회만 사용하세요. 예: 지원동기, 관심 계기, 입사 이유를 각각 따로 만들지 마세요.\n"
-            "- 직무/NCS 질문은 같은 면접기법을 반복하더라도 required_factorName, compeUnitName, required_scenario_frame, 판단 상황이 서로 달라야 합니다.\n"
+            "- 직무/NCS 질문은 같은 면접기법을 반복하더라도 required_surface_focus, compeUnitName, required_scenario_frame, 판단 상황이 서로 달라야 합니다.\n"
             "- 질문마다 내부 의도는 motivation, job_understanding, experience, situation, ncs_task, collaboration, ethics, problem_solving 중 하나로 다르게 설계하세요.\n\n"
         )
 
@@ -3994,7 +4290,7 @@ def build_strategy_with_openai(
         "목표: NCS 능력단위 기반 구조화 면접 질문 생성\n"
         "언어: 모든 문자열은 한국어\n"
         "출력 스키마: {"
-        '"interview_questions":[{"type":"경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접|창의적 문제해결력면접","competency":"능력단위명","ncsClCd":"코드","question":"주질문(1개, required_factorName 원문 포함)","follow_ups":["꼬리질문1(지정 slot이면 required_factorName+required_job_context 포함)","꼬리질문2(지정 slot이면 required_factorName+required_job_context 포함)","꼬리질문3"],"evaluation_points":["평가항목1","평가항목2","평가항목3","평가항목4"]}],'
+        '"interview_questions":[{"type":"경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접|창의적 문제해결력면접","competency":"능력단위명","ncsClCd":"코드","question":"현장형 주질문 1개","follow_ups":["확인 근거","판단 기준","후속 검증"],"evaluation_points":["관찰 가능한 평가항목1","평가항목2","평가항목3","평가항목4"]}],'
         '"ncs_link":[{"ncsClCd":"...","compeUnitName":"...","why":"..."}]'
         "}\n\n"
         "[구조화 면접 원칙]\n"
@@ -4008,14 +4304,15 @@ def build_strategy_with_openai(
         f"- type/method는 선택 면접기법({', '.join(method_names)}) 중 하나만 사용\n"
         "- 지원자가 해당 업무를 직접 맡아보지 않았을 수 있음을 전제로, 유사 경험 또는 가정형 답변이 가능하도록 질문할 것\n"
         "- 일반 질문은 허용하지만 같은 의도 반복은 금지: 지원동기/관심계기/입사이유처럼 의미가 같은 질문은 1개만 생성\n"
-        "- 직무/NCS 질문은 서로 다른 required_factorName, 업무 맥락, required_scenario_frame, 판단 상황을 사용해 질문 의도가 겹치지 않게 생성\n"
+        "- 직무/NCS 질문은 서로 다른 required_surface_focus, 업무 맥락, required_scenario_frame, 판단 상황을 사용해 질문 의도가 겹치지 않게 생성\n"
         "\n"
         "[주질문 작성 필수 기준]\n"
         "1. 경험면접: 직무 맥락이 분명한 과거 행동·유사경험을 STAR 방식으로 질문\n"
         "2. 상황면접: 실제 직무에서 발생 가능한 구체적 시나리오를 제시하고 판단 기준·행동 순서를 질문\n"
         "3. 발표면접: 분석할 자료나 과제를 제시하고 현황진단·대안·실행계획·성과지표를 발표하게 질문\n"
         "4. 토론면접: 이해관계가 갈리는 직무 이슈를 제시하고 근거 제시·경청·조정·합의 형성을 확인\n"
-        "5. 인바스켓면접: 제한시간 내 다수 문서·요청·일정 충돌을 제시하고 우선순위와 첫 조치를 질문\n"
+        "5. 인바스켓면접: 다수 문서·요청·일정 충돌을 제시하고 우선순위와 첫 조치를 질문\n"
+        "- 준비·발표·토론·질의응답 시간과 제출 방식은 question 본문이 아니라 task_conditions로 분리\n"
         "6. 직무지식면접: 절차·법규·기준·산출물과 예외상황 적용을 질문\n"
         "7. 창의적 문제해결력면접: 미래예측, 복합 문제의 본질 정의, 원인 가설, 창의적 대안, 검증 방법, 실현가능성, 의사결정, 실행계획을 질문\n"
         "\n"
@@ -4085,7 +4382,7 @@ def build_strategy_with_openai(
             "목표: NCS 능력단위 기반 구조화 면접 질문 생성\n"
             "언어: 한국어\n"
             "스키마: {"
-            '"interview_questions":[{"type":"경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접|창의적 문제해결력면접","competency":"...","ncsClCd":"...","question":"주질문1개(required_factorName 포함)","follow_ups":["꼬리질문1(지정 slot이면 required_factorName+required_job_context 포함)","꼬리질문2(지정 slot이면 required_factorName+required_job_context 포함)","꼬리질문3"],"evaluation_points":["..."]}],'
+            '"interview_questions":[{"type":"경험면접|상황면접|발표면접|토론면접|인바스켓면접|직무지식면접|창의적 문제해결력면접","competency":"...","ncsClCd":"...","question":"현장형 주질문1개","follow_ups":["확인 근거","판단 기준","후속 검증"],"evaluation_points":["관찰 가능한 평가항목"]}],'
             '"ncs_link":[{"ncsClCd":"...","compeUnitName":"...","why":"..."}]'
             "}\n"
             "규칙:\n"
@@ -4098,7 +4395,7 @@ def build_strategy_with_openai(
             "- evaluation_points는 NCS 수행준거 기반 4~6개\n"
             "- 지원자가 직접 수행한 경험이 없을 수 있으므로, 유사 사례/가정형 답변이 가능하도록 질문할 것\n"
             "- 일반 질문은 허용하되 지원동기/직무이해/협업/공공성 등 같은 의도는 반복하지 말 것\n"
-            "- 직무/NCS 질문은 required_factorName, required_scenario_frame, 업무 상황을 문항마다 다르게 쓸 것\n"
+            "- 직무/NCS 질문은 required_surface_focus, required_scenario_frame, 업무 상황을 문항마다 다르게 쓸 것\n"
             f"{slim_priority}"
             f"[ncs_matches]{json.dumps((ncs_matches or [])[:5], ensure_ascii=False)}\n"
             f"[ncs_factors]{json.dumps((ncs_ksa or [])[:20], ensure_ascii=False)}\n"

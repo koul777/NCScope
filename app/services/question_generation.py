@@ -14,6 +14,11 @@ from app.services.question_intent import (
     QUESTION_INTENT_PATTERNS,
     classify_question_intent,
 )
+from app.services.question_surface import (
+    build_question_task_frame,
+    replace_official_ksa_surface,
+    stable_ksa_evidence_id,
+)
 from app.settings import settings
 
 
@@ -59,7 +64,7 @@ _METHOD_DEFAULT_FOLLOW_UPS = {
     "인바스켓면접": [
         "여러 문서와 요청을 어떤 기준으로 분류하겠습니까?",
         "우선순위, 보고, 위임, 직접처리 판단은 어떻게 하겠습니까?",
-        "제한시간 이후 기록과 후속 점검은 어떻게 남기겠습니까?",
+        "처리 이후 기록과 후속 점검은 어떻게 남기겠습니까?",
     ],
     "직무지식면접": [
         "반드시 확인해야 할 절차와 기준은 무엇입니까?",
@@ -417,50 +422,50 @@ def _render_question_generation_prompt(
         "- 각 질문은 하나의 역량만 검증합니다.\n"
         "- 각 질문마다 follow_ups 3개를 포함합니다.\n"
         "- follow_ups는 주질문, 구체화, 판단 근거, 결과/교훈 순서로 깊어져야 합니다.\n"
-        "- follow_ups 3개는 선택 면접기법의 평가 행동을 각각 다르게 파고들고, 최소 1개는 직무/NCS/KSA 핵심어를 직접 포함합니다.\n"
-        "- 각 질문은 [KSA]의 factorName 원문 중 하나를 주 검증 초점으로 선택하고, question과 follow_ups 중 지정 위치에 그 factorName 원문을 그대로 반복합니다.\n"
-        "- question과 follow_ups에 글자 그대로 'KSA'라고 쓰지 말고, 실제 factorName 원문을 복사해 넣습니다.\n"
-        "- factorName은 근거 라벨이지 문장 자체가 아닙니다. 지식은 '활용/근거로', 기술은 '발휘/수행하여', 태도는 '요구된 상황에서 행동으로 보여준' 방식으로 자연스럽게 연결하고, '태도를 적용했다'처럼 어색하게 쓰지 않습니다.\n"
-        "- '{factorName} 능력과 관련하여 실제 경험이 있으십니까? 말씀해 주세요.'처럼 이름만 되묻는 질문은 금지합니다. 경험 유무가 아니라 관찰 가능한 판단·행동·산출물을 과제로 요구합니다.\n"
-        "- 지식은 자료와 예외상황에서 factorName을 판단 근거로 활용하고 적용 범위·오류 위험을 설명하게 합니다.\n"
+        "- follow_ups 3개는 선택 면접기법의 평가 행동을 각각 다르게 파고들고, 최소 1개는 직무명 또는 public_focus를 포함합니다.\n"
+        "- 각 질문은 [KSA]에서 evidence_id 하나를 주 검증 근거로 선택합니다. official_factor는 내부 근거 라벨이며 지원자용 question, follow_ups, evaluation_points에 복사하거나 따옴표로 인용하지 않습니다.\n"
+        "- 지원자용 문장에는 같은 행의 public_focus, task_statement, observable_behavior를 사용합니다.\n"
+        "- official_factor 이름만 되묻는 질문은 금지하며, 관찰 가능한 판단·행동·산출물을 과제로 요구합니다.\n"
+        "- 지식은 자료와 예외상황에서 판단 근거, 적용 범위와 오류 위험을 설명하게 합니다.\n"
         "- 기술은 수행 순서·구체 조치·사용 자료나 도구·산출물·품질 확인을 보여주게 합니다.\n"
-        "- 태도는 마감 압박·이해관계 충돌·품질 위험에서 factorName이 드러나는 선택 행동을 보여주게 합니다. '태도 경험이 있습니까' 또는 '태도를 적용했습니까'로 묻지 않습니다.\n"
-        "- 경험면접 이외의 기법은 과거 경험 유무를 묻지 않고 해당 과제 수행으로 factorName을 관찰합니다.\n"
+        "- 태도는 마감 압박·이해관계 충돌·품질 위험에서 일관된 선택 행동과 후속 책임을 보여주게 합니다.\n"
+        "- 경험면접 이외의 기법은 과거 경험 유무를 묻지 않고 해당 과제 수행으로 판단·행동·산출물을 관찰합니다.\n"
         "- 필수 형식어를 체크리스트처럼 나열하지 말고 하나의 실제 직무 상황과 의사결정 흐름으로 묶습니다.\n"
-        "- 발표면접, 토론면접, 인바스켓면접, 직무지식면접은 follow_ups[0]에 factorName 원문과 능력단위명을 함께 넣고, 경험면접, 상황면접, 창의적 문제해결력면접은 follow_ups[1]에 넣습니다.\n"
+        "- 발표·토론·인바스켓·직무지식면접은 follow_ups[0]에서 확인 자료·사실·기준을 묻고, 경험·상황·창의적 문제해결력면접은 follow_ups[1]에서 판단 이유나 구체 행동을 묻습니다.\n"
         "- 질문끼리 내용이 겹치면 안 됩니다.\n"
-        "- 같은 면접기법이나 같은 factorName을 반복할 때는 상황 프레임을 다르게 사용합니다: 일정 지연, 자료 불일치, 이해관계자 충돌, 예외상황, 자원 제약, 품질 리스크.\n"
+        "- 같은 면접기법이나 같은 evidence_id를 반복할 때는 상황 프레임을 다르게 사용합니다: 일정 지연, 자료 불일치, 이해관계자 충돌, 예외상황, 자원 제약, 품질 리스크.\n"
         "- evaluation_points는 4~6개의 측정 가능한 문장으로 작성합니다.\n"
-        "- question_focus에는 question에 직접 쓴 주 검증 factorName 원문 1개를 넣습니다.\n"
-        "- ksa_refs에는 해당 질문과 직접 연결되는 factorName 원문 2~4개를 넣고, 첫 항목은 question_focus와 일치시킵니다.\n"
+        "- question_evidence_id에는 선택한 evidence_id를, question_focus_surface에는 같은 행의 public_focus를 넣습니다.\n"
+        "- question_focus와 ksa_refs는 평가위원용 내부 필드입니다. question_focus에는 official_factor 하나를 넣고 ksa_refs 첫 항목과 일치시키되 지원자용 문장에는 노출하지 않습니다.\n"
         "- 민감하거나 차별적인 질문은 생성하지 않습니다.\n\n"
         "[면접 기법]\n"
         "- 경험면접: 과거 행동 또는 유사 경험을 STAR 방식으로 확인합니다.\n"
         "- 상황면접: 가상의 직무 상황에서 판단 기준, 행동 순서, 위험 대응을 확인합니다.\n"
-        "- 발표면접: 준비시간 후 자료 분석, 대안 구성, 실행계획, 성과지표를 발표하고 질의응답 대응을 확인합니다.\n"
-        "- 토론면접: 토론시간 안에 입장발표, 반대 의견 검토, 경청, 조정, 최종 합의 형성을 확인합니다.\n"
+        "- 발표면접: 자료 분석, 대안 구성, 실행계획, 성과지표를 발표하고 질의응답 대응을 확인합니다.\n"
+        "- 토론면접: 현장 사건에서 양립하기 어려운 두 정책 대안의 근거와 위험을 검토하고 공동 합의를 형성하는 과정을 확인합니다.\n"
         "- 창의적 문제해결력면접: 미래예측, 창의적 사고, 상황 판단, 혁신적 사고, 논리 분석, 실현가능성, 문제해결, 의사결정을 과제로 확인합니다.\n"
-        "- 인바스켓면접: 제한시간 안에 여러 문서와 요청의 우선순위와 첫 조치를 확인합니다.\n"
+        "- 인바스켓면접: 동시에 들어온 여러 문서와 요청의 우선순위와 첫 조치를 확인합니다.\n"
         "- 직무지식면접: 절차, 기준, 산출물, 예외상황 적용 능력을 확인합니다.\n\n"
         "[주질문 필수어]\n"
         "- 경험면접: question에 경험, 상황, 본인, 행동, 결과를 직접 포함합니다.\n"
         "- 상황면접: question에 상황, 판단, 기준, 순서, 위험을 직접 포함합니다.\n"
-        "- 발표면접: question에 발표과제, 준비시간, 발표, 진단, 대안, 실행, 성과지표, 질의응답을 직접 포함합니다.\n"
-        "- 토론면접: question에 토론과제, 토론시간, 입장발표, 충돌, 입장, 반대, 합의를 직접 포함합니다.\n"
+        "- 발표면접: question에 발표과제, 발표, 진단, 대안, 실행, 성과지표, 질의응답을 직접 포함합니다.\n"
+        "- 토론면접: question에 토론과제, 현장 사건, 충돌하는 두 입장, 근거, 위험, 합의를 직접 포함합니다. 시간과 제출요건은 별도 task_conditions에서 관리하므로 반복하지 않습니다.\n"
         "- 창의적 문제해결력면접: question에 창의적 문제해결력과제, 미래예측, 문제, 정의, 대안, 검증, 실현가능성, 의사결정, 실행을 직접 포함합니다.\n"
-        "- 인바스켓면접: question에 인바스켓, 제한시간, 문서, 우선순위, 보고, 위임, 직접처리를 직접 포함합니다.\n"
+        "- 인바스켓면접: question에 인바스켓, 문서, 우선순위, 보고, 위임, 직접처리를 직접 포함합니다.\n"
+        "- 준비·발표·토론·질의응답 시간과 제출 방식은 question에 쓰지 말고 별도 task_conditions에만 둡니다.\n"
         "- 직무지식면접: question에 절차, 기준, 산출물, 예외상황을 직접 포함합니다.\n\n"
         "[꼬리질문 품질 기준]\n"
         "- 경험면접: 상황, 역할, 행동, 기준, 성과/개선을 순차적으로 확인합니다.\n"
         "- 상황면접: 확인할 사실, 판단 기준, 위험요인, 이해관계자 대응 또는 후속 조치를 확인합니다.\n"
         "- 발표면접: 진단 근거자료, 대안 우선순위, 반대 의견 답변, 질의응답 대응, 실행 일정이나 성과지표를 확인합니다.\n"
-        "- 토론면접: 입장발표 근거, 반대 의견 수용 범위, 조정 방식, 합의안 기준을 확인합니다.\n"
+        "- 토론면접: 확인할 문서·사실, 상대 근거의 타당성, 수용·불수용 기준, 합의안의 적용 범위·예외·검증 기준과 실행 책임을 확인합니다.\n"
         "- 창의적 문제해결력면접: 미래예측, 문제정의, 원인 가설, 창의적 대안, 검증 방법, 실현가능성과 의사결정을 확인합니다.\n"
         "- 인바스켓면접: 문서·요청 분류, 먼저 처리/보류 판단, 보고·위임·직접처리 선택을 확인합니다.\n"
         "- 직무지식면접: 기준·규정, 예외상황, 산출물 품질, 오류 리스크 또는 교육 순서를 확인합니다.\n\n"
-        "[KSA 원문 보존 예시]\n"
-        "- 통과: question='문서작성에서 문서 요구사항 파악을 위해 요구 문서와 독자를 구분하고 작성 기준을 정했던 경험을 말씀해 주세요. 당시 상황, 본인 행동과 판단 근거, 완성한 산출물과 결과를 설명해 주세요.' / follow_ups[1]='문서 요구사항 파악을 위해 어떤 자료를 확인하고 어떤 작성 기준을 선택했습니까?'\n"
-        "- 실패: question='문서 요구사항 파악 능력과 관련하여 실제 경험이 있으십니까?'처럼 이름만 되묻거나, follow_ups[1]='그 판단의 이유는 무엇입니까?'처럼 factorName 원문과 관찰 행동이 빠진 문장.\n\n"
+        "[공식 근거와 지원자 문장 분리 예시]\n"
+        "- 통과: official_factor='승인된 변경에 대한 지식'은 내부 필드에만 두고, question에는 public_focus='승인된 변경 관련 판단 기준'을 사용해 적용 범위·예외·검증 기준을 묻습니다.\n"
+        "- 실패: official_factor를 따옴표로 인용하거나 '승인된 변경에 대한'처럼 불완전하게 잘라 지원자에게 노출하는 문장.\n\n"
         "[기법 선택]\n"
         "- 추가 컨텍스트에 선택 기법이 있으면 그 기법만 사용합니다.\n"
         "- 선택 기법이 없으면 경험면접, 상황면접, 발표면접, 토론면접, 인바스켓면접, 직무지식면접을 우선 섞고, 복합 문제해결 문맥이 있으면 창의적 문제해결력면접도 포함합니다.\n\n"
@@ -475,7 +480,9 @@ def _render_question_generation_prompt(
         '      "question": "주질문",\n'
         '      "follow_ups": ["구체화", "판단 근거", "결과/교훈"],\n'
         '      "evaluation_points": ["항목1", "항목2", "항목3", "항목4"],\n'
-        '      "question_focus": "주 검증 factorName",\n'
+        '      "question_evidence_id": "ksa_...",\n'
+        '      "question_focus_surface": "지원자용 업무 초점",\n'
+        '      "question_focus": "내부 주 검증 official_factor",\n'
         '      "ksa_refs": ["KSA1", "KSA2"]\n'
         "    }\n"
         "  ]\n"
@@ -530,10 +537,16 @@ def _build_question_generation_prompt(
     extra_context: str = "",
 ) -> str:
     ncs_lines: list[str] = []
+    units_by_code: dict[str, dict[str, Any]] = {}
+    units_by_name: dict[str, dict[str, Any]] = {}
     for row in (ncs_matches or [])[:8]:
         code = str(row.get("ncsClCd", "")).strip()
         name = str(row.get("compeUnitName", "")).strip()
         desc = str(row.get("compeUnitDef", "")).strip()
+        if code:
+            units_by_code[code] = row
+        if name:
+            units_by_name[name] = row
         if code and name:
             ncs_lines.append(f"- {code} | {name} | {desc[:220]}")
 
@@ -552,7 +565,23 @@ def _build_question_generation_prompt(
             row.get("ksaTypeName") or row.get("factorType") or row.get("ksa_type") or ""
         ).strip()
         unit = str(row.get("compeUnitName", "")).strip()
-        ksa_lines.append(f"- {factor} | type={factor_type or '미분류'} | unit={unit} | source={src}")
+        code = str(row.get("ncsClCd") or "").strip()
+        unit_row = units_by_code.get(code) or units_by_name.get(unit) or {}
+        frame = build_question_task_frame(
+            evidence_row=row,
+            factor_name=factor,
+            ksa_type=factor_type,
+            element_name=row.get("elementName") or row.get("element_name") or "",
+            competency_name=unit or unit_row.get("compeUnitName") or "",
+            competency_definition=row.get("compeUnitDef") or unit_row.get("compeUnitDef") or "",
+        )
+        ksa_lines.append(
+            "- "
+            f"evidence_id={frame['evidence_id']} | official_factor={factor} | "
+            f"public_focus={frame['task_object']} | task_statement={frame['task_statement']} | "
+            f"observable_behavior={frame['observable_behavior']} | type={factor_type or '미분류'} | "
+            f"unit={unit} | source={src}"
+        )
 
     return _render_question_generation_prompt(
         ncs_lines=ncs_lines,
@@ -694,6 +723,17 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "follow_up": follow_ups[0],
         "ksa_refs": ksa_refs,
     }
+    evidence_id = str(item.get("question_evidence_id") or item.get("evidence_id") or "").strip()
+    surface_focus = str(item.get("question_focus_surface") or item.get("public_focus") or "").strip()
+    if evidence_id:
+        normalized["question_evidence_id"] = evidence_id
+        normalized["question_evidence_required"] = True
+    if surface_focus:
+        normalized["question_focus_surface"] = surface_focus
+    if isinstance(item.get("question_task_frame"), dict):
+        normalized["question_task_frame"] = dict(item.get("question_task_frame") or {})
+    if isinstance(item.get("task_conditions"), dict):
+        normalized["task_conditions"] = dict(item.get("task_conditions") or {})
     focus = str(item.get("question_focus") or item.get("focus") or item.get("primary_focus") or "").strip()
     if ksa_refs:
         normalized["question_focus"] = focus if focus in ksa_refs else ksa_refs[0]
@@ -753,6 +793,131 @@ def _parse_openai_response(response_text: str) -> list[dict[str, Any]]:
         if _question_already_seen(normalized, seen):
             continue
         out.append(normalized)
+    return out
+
+
+def _attach_candidate_surface_evidence(
+    item: dict[str, Any],
+    *,
+    ncs_ksa: list[dict[str, Any]] | None,
+    ncs_matches: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Link a model item to official evidence and repair only exposed fields.
+
+    The official factor stays in internal grounding fields.  If the model copied
+    that label into candidate-visible text, only those fields are rewritten with
+    the grammatical public task object; the model's scenario and main intent are
+    otherwise preserved.
+    """
+
+    out = dict(item or {})
+    official_rows = [row for row in (ncs_ksa or []) if isinstance(row, dict)]
+    if not official_rows:
+        return out
+
+    evidence_id = str(out.get("question_evidence_id") or "").strip()
+    focus = str(out.get("question_focus") or "").strip()
+    refs = [
+        str(value or "").strip()
+        for value in (out.get("ksa_refs") or [])
+        if str(value or "").strip()
+    ] if isinstance(out.get("ksa_refs"), list) else []
+    declared_factors = {re.sub(r"\s+", "", value).casefold() for value in [focus, *refs] if value}
+    code = str(out.get("ncsClCd") or "").strip()
+
+    selected: dict[str, Any] | None = None
+    if evidence_id:
+        selected = next(
+            (row for row in official_rows if stable_ksa_evidence_id(row) == evidence_id),
+            None,
+        )
+    if selected is None and declared_factors:
+        selected = next(
+            (
+                row
+                for row in official_rows
+                if re.sub(r"\s+", "", str(row.get("factorName") or "")).casefold() in declared_factors
+                and (not code or not str(row.get("ncsClCd") or "").strip() or str(row.get("ncsClCd") or "").strip() == code)
+            ),
+            None,
+        )
+    if selected is None:
+        return out
+
+    unit_code = str(selected.get("ncsClCd") or code).strip()
+    unit_name = str(selected.get("compeUnitName") or out.get("competency") or "").strip()
+    unit_row = next(
+        (
+            row
+            for row in (ncs_matches or [])
+            if isinstance(row, dict)
+            and (
+                (unit_code and str(row.get("ncsClCd") or "").strip() == unit_code)
+                or (unit_name and str(row.get("compeUnitName") or "").strip() == unit_name)
+            )
+        ),
+        {},
+    )
+    frame = build_question_task_frame(
+        evidence_row=selected,
+        factor_name=selected.get("factorName") or focus,
+        ksa_type=selected.get("ksaTypeName") or selected.get("factorType") or selected.get("ksa_type") or "",
+        element_name=selected.get("elementName") or selected.get("element_name") or "",
+        competency_name=unit_name or unit_row.get("compeUnitName") or "",
+        competency_definition=selected.get("compeUnitDef") or unit_row.get("compeUnitDef") or "",
+    )
+    primary_surface = str(frame.get("task_object") or "").strip()
+    if not primary_surface:
+        return out
+
+    replacement_pairs: list[tuple[str, str]] = []
+    for row in official_rows:
+        raw_factor = str(row.get("factorName") or "").strip()
+        factor_key = re.sub(r"\s+", "", raw_factor).casefold()
+        if len(factor_key) < 4 or (row is not selected and factor_key not in declared_factors):
+            continue
+        row_frame = frame if row is selected else build_question_task_frame(
+            evidence_row=row,
+            factor_name=raw_factor,
+            ksa_type=row.get("ksaTypeName") or row.get("factorType") or row.get("ksa_type") or "",
+            element_name=row.get("elementName") or row.get("element_name") or "",
+            competency_name=row.get("compeUnitName") or unit_name,
+            competency_definition=row.get("compeUnitDef") or unit_row.get("compeUnitDef") or "",
+        )
+        public_surface = str(row_frame.get("task_object") or "").strip()
+        if public_surface and public_surface != raw_factor:
+            replacement_pairs.append((raw_factor, public_surface))
+
+    repaired_fields: list[str] = []
+
+    def _repair_text(value: Any, field_name: str) -> str:
+        text = str(value or "").strip()
+        repaired = text
+        for raw_factor, public_surface in replacement_pairs:
+            repaired, _ = replace_official_ksa_surface(repaired, raw_factor, public_surface)
+        if repaired != text:
+            repaired_fields.append(field_name)
+        return repaired
+
+    out["question"] = _repair_text(out.get("question"), "question")
+    out["follow_ups"] = [
+        _repair_text(value, "follow_ups")
+        for value in (out.get("follow_ups") or [])
+        if str(value or "").strip()
+    ]
+    if out["follow_ups"]:
+        out["follow_up"] = out["follow_ups"][0]
+    out["evaluation_points"] = [
+        _repair_text(value, "evaluation_points")
+        for value in (out.get("evaluation_points") or [])
+        if str(value or "").strip()
+    ]
+    out["question_focus_surface"] = primary_surface
+    out["question_task_frame"] = frame
+    out["question_evidence_id"] = str(frame.get("evidence_id") or "")
+    out["question_evidence_required"] = True
+    if repaired_fields:
+        out["candidate_surface_repairs"] = sorted(set(repaired_fields))
     return out
 
 
@@ -835,7 +1000,14 @@ def _generate_questions_with_openai_from_ncs(
         except Exception:
             continue
 
-        parsed = _parse_openai_response(_extract_message_content(data))
+        parsed = [
+            _attach_candidate_surface_evidence(
+                row,
+                ncs_ksa=ncs_ksa,
+                ncs_matches=ncs_matches,
+            )
+            for row in _parse_openai_response(_extract_message_content(data))
+        ]
         if not parsed:
             continue
 

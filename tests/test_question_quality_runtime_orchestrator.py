@@ -655,8 +655,9 @@ def test_runtime_orchestration_rebuilds_history_duplicate_and_keeps_count() -> N
     assert result["question_quality_report"]["passed"] is True
 
 
-def test_runtime_metadata_counts_full_quality_failures_as_unresolved() -> None:
+def test_runtime_repairs_invalid_task_conditions_without_replacing_question() -> None:
     strategy, plan, ksa = _runtime_strategy()
+    original_question = strategy["interview_questions"][0]["question"]
     strategy["interview_questions"][0]["task_conditions"] = {
         "candidate_instruction": "",
         "time_plan": [],
@@ -672,10 +673,15 @@ def test_runtime_metadata_counts_full_quality_failures_as_unresolved() -> None:
     )
 
     metadata = result["question_quality_orchestration"]
-    assert metadata["status"] == "needs_review"
-    assert metadata["full_quality_unresolved_count"] == 1
-    assert metadata["unresolved_count"] == 1
-    assert "full_quality_standardized_task_conditions" in metadata["items"][0]["final_issues"]
+    repaired = result["interview_questions"][0]
+    assert metadata["status"] == "passed"
+    assert metadata["full_quality_unresolved_count"] == 0
+    assert metadata["unresolved_count"] == 0
+    assert repaired["question"] == original_question
+    assert repaired["quality_repaired_fields"] == ["task_conditions"]
+    assert repaired["task_conditions"]["candidate_instruction"]
+    assert repaired["task_conditions"]["provided_materials"]
+    assert repaired["task_conditions"]["required_outputs"]
 
 
 def test_runtime_empty_generation_reports_one_unresolved_candidate_failure() -> None:
@@ -763,7 +769,16 @@ def test_runtime_thirty_generations_across_methods_and_ksa_types_pass_full_gate(
                 question = result["interview_questions"][0]["question"]
                 metadata = result["question_quality_orchestration"]
                 report = result["question_quality_report"]
-                assert metadata["status"] == "passed", (method, focus_type, cycle + 1, metadata)
+                assert metadata["status"] == "passed", (
+                    method,
+                    focus_type,
+                    cycle + 1,
+                    report["items"][0]["issues"],
+                    result["interview_questions"][0].get("question_focus_surface"),
+                    result["interview_questions"][0].get("follow_ups"),
+                    result["interview_questions"][0].get("evaluation_points"),
+                    metadata,
+                )
                 assert metadata["unresolved_count"] == 0
                 assert report["passed"] is True, (method, focus_type, cycle + 1, report)
                 assert question not in history
