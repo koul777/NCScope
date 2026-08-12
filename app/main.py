@@ -218,7 +218,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="1.2.0", lifespan=_lifespan)
+app = FastAPI(title="NCScope", version="1.3.0", lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
 queue = QueueManager(max_retries=2)
