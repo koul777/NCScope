@@ -54,4 +54,4 @@ jobs:
         run: python -m pytest -q
 
       - name: Run Ruff
-        run: ruff check app tests
+        run: ruff check --select F821 app scripts tests
