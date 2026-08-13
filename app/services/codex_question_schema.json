@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NCScope Codex interview question response",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "interview_questions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "경험면접",
+              "상황면접",
+              "발표면접",
+              "토론면접",
+              "창의적 문제해결력면접",
+              "인바스켓면접",
+              "직무지식면접"
+            ]
+          },
+          "competency": {
+            "type": "string",
+            "description": "평가위원용 내부 능력단위 metadata. 지원자 질문 문장에 복사하지 않는다.",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "ncsClCd": {
+            "type": "string",
+            "description": "선택한 근거 행의 NCS 코드 metadata.",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "question": {
+            "type": "string",
+            "description": "실제 사건·문서·이해관계자·제약·판단 행동으로 구성하며 능력단위명·세분류명·KSA 원문을 붙여 시작하지 않는 지원자용 주질문.",
+            "minLength": 20,
+            "maxLength": 1200
+          },
+          "follow_ups": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "minLength": 10,
+              "maxLength": 600
+            }
+          },
+          "evaluation_points": {
+            "type": "array",
+            "description": "질문과 꼬리질문에서 직접 관찰할 수 있는 서로 다른 평가 근거를 정확히 4개 작성한다. 질문하지 않은 숨은 기준은 금지한다.",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 300
+            }
+          },
+          "question_evidence_id": {
+            "type": "string",
+            "description": "선택한 내부 근거 행의 식별자. 입력값을 그대로 보존한다.",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "question_focus_surface": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        },
+        "required": [
+          "type",
+          "competency",
+          "ncsClCd",
+          "question",
+          "follow_ups",
+          "evaluation_points",
+          "question_evidence_id",
+          "question_focus_surface"
+        ]
+      }
+    }
+  },
+  "required": ["interview_questions"]
+}

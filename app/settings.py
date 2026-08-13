@@ -93,8 +93,46 @@ class Settings:
         mb = max(1.0, min(202.0, mb))
         return int(mb * 1024 * 1024)
 
+    def rate_limit_enabled(self) -> bool:
+        return os.getenv("RATE_LIMIT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y"}
+
+    def rate_limit_window_sec(self) -> float:
+        try:
+            value = float(os.getenv("RATE_LIMIT_WINDOW_SEC", "60").strip())
+        except ValueError:
+            value = 60.0
+        return max(5.0, min(3600.0, value))
+
+    def rate_limit_requests_per_window(self) -> int:
+        try:
+            value = int(os.getenv("RATE_LIMIT_REQUESTS_PER_WINDOW", "120").strip())
+        except ValueError:
+            value = 120
+        return max(1, min(10_000, value))
+
+    def generation_rate_limit_requests_per_window(self) -> int:
+        try:
+            value = int(os.getenv("GENERATION_RATE_LIMIT_REQUESTS_PER_WINDOW", "30").strip())
+        except ValueError:
+            value = 30
+        return max(1, min(2_000, value))
+
+    def generation_max_concurrency(self) -> int:
+        try:
+            value = int(os.getenv("GENERATION_MAX_CONCURRENCY", "8").strip())
+        except ValueError:
+            value = 8
+        return max(1, min(128, value))
+
     def resolve_openai_key(self, request_key: str = "") -> str:
-        """Return only the request-scoped key; server/environment fallback is removed."""
+        """Return only the credential supplied for the current operation.
+
+        Public generation is BYOK: a browser submits the key in the request
+        body and the server uses it only for that operation.  Deliberately do
+        not fall back to ``OPENAI_API_KEY`` so an omitted browser credential
+        cannot silently consume an institution-owned account.
+        """
+
         return str(request_key or "").strip()
 
     def openai_key_source(self, request_key: str = "") -> str:

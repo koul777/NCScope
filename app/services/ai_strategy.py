@@ -4,7 +4,6 @@ AI Strategy - 채용공고 순위 및 전략 수립 (레거시 - 선택사항)
 """
 
 from typing import Any
-from app.settings import settings
 
 
 def rank_postings_with_openai(

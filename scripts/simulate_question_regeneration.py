@@ -38,6 +38,50 @@ FOCUSES = {
 }
 
 
+def _deterministic_review_policy_satisfied(
+    metadata: dict[str, Any],
+    report: dict[str, Any],
+    *,
+    question_count: int,
+) -> bool:
+    """Return whether deterministic output was safely held for human review.
+
+    These simulations intentionally exercise the rule/template generation path.
+    Such output may still satisfy the structural KSA audit, but it must not be
+    promoted to interview-ready without the field-realism gate.
+    """
+    report_items = [
+        item for item in (report.get("items") or []) if isinstance(item, dict)
+    ]
+    metadata_items = [
+        item for item in (metadata.get("items") or []) if isinstance(item, dict)
+    ]
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    return bool(
+        question_count > 0
+        and metadata.get("status") == "needs_review"
+        and metadata.get("quality_report_passed") is False
+        and int(metadata.get("question_count_gap") or 0) == 0
+        and int(metadata.get("repair_error_count") or 0) == 0
+        and int(metadata.get("full_quality_unresolved_count") or 0) == question_count
+        and report.get("passed") is False
+        and int(summary.get("ready_count") or 0) == 0
+        and int(summary.get("needs_review_count") or 0) == question_count
+        and len(report_items) == question_count
+        and all(
+            item.get("ready") is False
+            and "field_realism" in (item.get("issues") or [])
+            and (item.get("check_statuses") or {}).get("field_realism") == "fail"
+            for item in report_items
+        )
+        and len(metadata_items) == question_count
+        and all(
+            set(item.get("final_issues") or []) == {"full_quality_field_realism"}
+            for item in metadata_items
+        )
+    )
+
+
 def _candidate(method: str, focus_type: str, focus: str, *, shallow: bool) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     code = "SIM-REGEN-001"
     subject = "문서관리"
@@ -130,6 +174,7 @@ def run_simulation(
     cases: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     total_repairs = 0
+    total_review_required = 0
 
     for method in selected_methods:
         for focus_type in selected_focus_types:
@@ -137,6 +182,7 @@ def run_simulation(
             history: list[str] = []
             generated: list[str] = []
             repaired_cycles = 0
+            review_required_cycles = 0
             case_failures: list[dict[str, Any]] = []
             first_question = ""
             last_question = ""
@@ -168,10 +214,16 @@ def run_simulation(
                 cycle_issues: list[str] = []
                 if len(questions) != 1:
                     cycle_issues.append("question_count")
-                if metadata.get("status") != "passed" or int(metadata.get("unresolved_count") or 0) != 0:
-                    cycle_issues.append("runtime_orchestration")
-                if report.get("passed") is not True:
-                    cycle_issues.append("full_quality_gate")
+                held_for_review = _deterministic_review_policy_satisfied(
+                    metadata,
+                    report,
+                    question_count=len(questions),
+                )
+                if held_for_review:
+                    review_required_cycles += 1
+                    total_review_required += 1
+                else:
+                    cycle_issues.append("deterministic_review_policy")
                 if measurement.get("passed") is not True:
                     cycle_issues.extend(f"ksa_{issue}" for issue in (measurement.get("issues") or ["measurement"]))
                 if duplicated:
@@ -207,6 +259,7 @@ def run_simulation(
                     "generated_count": len(generated),
                     "unique_count": len(set(generated)),
                     "repaired_cycles": repaired_cycles,
+                    "review_required_cycles": review_required_cycles,
                     "failure_count": len(case_failures),
                     "first_question": first_question,
                     "last_question": last_question,
@@ -215,7 +268,7 @@ def run_simulation(
 
     total_cycles = len(cases) * cycle_count
     return {
-        "schema_version": "question_regeneration_simulation_v1",
+        "schema_version": "question_regeneration_simulation_v2",
         "runtime_policy": RUNTIME_QUESTION_ORCHESTRATION_POLICY,
         "generated_at": datetime.now().astimezone().isoformat(),
         "status": "passed" if not failures else "failed",
@@ -226,6 +279,7 @@ def run_simulation(
         "focus_type_count": len(selected_focus_types),
         "total_cycles": total_cycles,
         "total_repairs": total_repairs,
+        "review_required_count": total_review_required,
         "failure_count": len(failures),
         "invariants": {
             "no_empty_result": not any("empty_question" in failure["issues"] for failure in failures),
@@ -234,11 +288,12 @@ def run_simulation(
                 any(issue.startswith("ksa_") for issue in failure["issues"])
                 for failure in failures
             ),
-            "all_full_quality_gates_passed": not any(
-                "full_quality_gate" in failure["issues"] for failure in failures
-            ),
-            "no_unresolved_orchestration": not any(
-                "runtime_orchestration" in failure["issues"] for failure in failures
+            "deterministic_outputs_require_review": (
+                total_review_required == total_cycles
+                and not any(
+                    "deterministic_review_policy" in failure["issues"]
+                    for failure in failures
+                )
             ),
         },
         "cases": cases,
@@ -262,6 +317,7 @@ def write_report(result: dict[str, Any], report_dir: Path) -> tuple[Path, Path]:
         f"- 조합별 반복: {result['cycles_per_case']}회",
         f"- 총 생성 사이클: {result['total_cycles']}회",
         f"- 자동 보정: {result['total_repairs']}회",
+        f"- 현장성 검토 필요: {result['review_required_count']}회",
         f"- 실패: {result['failure_count']}회",
         f"- 이력 창: 최근 {result['history_window']}개",
         "",
@@ -275,14 +331,15 @@ def write_report(result: dict[str, Any], report_dir: Path) -> tuple[Path, Path]:
             "",
             "## 조합별 결과",
             "",
-            "| 면접기법 | KSA | 반복 | 고유 | 보정 | 실패 |",
-            "| --- | --- | ---: | ---: | ---: | ---: |",
+            "| 면접기법 | KSA | 반복 | 고유 | 보정 | 검토 필요 | 실패 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for case in result["cases"]:
         lines.append(
             f"| {case['method']} | {case['focus_type']} | {case['cycles']} | "
-            f"{case['unique_count']} | {case['repaired_cycles']} | {case['failure_count']} |"
+            f"{case['unique_count']} | {case['repaired_cycles']} | "
+            f"{case['review_required_cycles']} | {case['failure_count']} |"
         )
     lines.extend(["", "## 사람이 확인할 대표 문항", ""])
     for case in result["cases"]:

@@ -581,7 +581,7 @@ def test_alio_audit_export_does_not_slice_adjusted_questions_at_300_characters()
     assert '"question": question[:300]' not in source
 
 
-def test_evaluate_cached_document_builds_ready_quality_report(tmp_path: Path, monkeypatch) -> None:
+def test_evaluate_cached_document_flags_template_fallback_for_field_realism(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "303003_1_직무기술서.txt"
     path.write_text("세분류: 사무행정\n직무내용: 문서 작성 및 관리", encoding="utf-8")
 
@@ -622,10 +622,11 @@ def test_evaluate_cached_document_builds_ready_quality_report(tmp_path: Path, mo
         ksa_factors_per_unit=4,
     )
 
-    assert row["status"] == "template_ready"
+    assert row["status"] == "needs_review"
     assert row["detail_source"] == "explicit"
     assert row["generated_questions"] == 6
-    assert row["ready_questions"] == 6
+    assert row["ready_questions"] == 0
+    assert row["needs_review_questions"] == 6
     assert row["model_candidate_questions"] == 0
     assert row["model_questions"] == 0
     assert row["model_full_questions"] == 0
@@ -634,12 +635,17 @@ def test_evaluate_cached_document_builds_ready_quality_report(tmp_path: Path, mo
     assert row["model_replaced_by_template_questions"] == 0
     assert row["template_inserted_questions"] == 6
     assert row["template_fallback_questions"] == 6
-    assert row["strict_template_passed"] is True
+    assert row["template_fallback_ready_questions"] == 0
+    assert row["coverage_passed"] is True
+    assert row["template_adjusted_passed"] is False
+    assert row["strict_template_passed"] is False
     assert row["model_quality_passed"] is False
     assert row["passed"] is False
-    assert row["coverage_adjusted_score"] == 1.0
-    assert row["average_score"] == 1.0
+    assert row["coverage_adjusted_score"] == 0.0
+    assert 0.0 < row["average_score"] < 1.0
     assert len(question_rows) == 6
+    assert {item["question_source"] for item in question_rows} == {"template_fallback"}
+    assert {item["issues"] for item in question_rows} == {"field_realism"}
 
 
 def test_evaluate_cached_document_model_mode_counts_model_questions(tmp_path: Path, monkeypatch) -> None:
@@ -1020,8 +1026,10 @@ def test_evaluate_cached_document_model_mode_counts_replaced_model_question(tmp_
         openai_api_key="test-key",
     )
 
-    assert row["status"] == "template_ready"
+    assert row["status"] == "needs_review"
     assert row["generated_questions"] == 1
+    assert row["ready_questions"] == 0
+    assert row["needs_review_questions"] == 1
     assert row["model_candidate_questions"] == 1
     assert row["model_questions"] == 0
     assert row["model_full_questions"] == 0
@@ -1030,11 +1038,15 @@ def test_evaluate_cached_document_model_mode_counts_replaced_model_question(tmp_
     assert row["model_replaced_by_template_questions"] == 1
     assert row["template_inserted_questions"] == 0
     assert row["template_fallback_questions"] == 1
+    assert row["template_fallback_ready_questions"] == 0
+    assert row["coverage_passed"] is True
+    assert row["template_adjusted_passed"] is False
     assert row["model_quality_passed"] is False
     assert row["passed"] is False
-    assert row["strict_template_passed"] is True
+    assert row["strict_template_passed"] is False
     assert len(question_rows) == 1
     assert question_rows[0]["question_source"] == "template_fallback"
+    assert question_rows[0]["issues"] == "field_realism"
     assert question_rows[0]["model_question_raw"] == "How would you do this?"
     assert question_rows[0]["model_question_preserved"] is False
     assert "main_question_method_shape" in question_rows[0]["model_replacement_reasons"]
@@ -1198,20 +1210,27 @@ def test_evaluate_cached_document_fails_when_extracted_detail_is_unmatched(tmp_p
         ksa_factors_per_unit=4,
     )
 
-    assert row["status"] == "template_ready_partial_detail_coverage", [
+    assert row["status"] == "needs_review", [
         (item.get("type"), item.get("issues"), item.get("question"))
         for item in question_rows
         if item.get("ready") is not True
     ]
     assert row["passed"] is False
     assert row["generated_questions"] == 6
-    assert row["ready_questions"] == 6
+    assert row["ready_questions"] == 0
+    assert row["needs_review_questions"] == 6
     assert row["coverage_adjusted_score"] == 0.0
+    assert row["coverage_passed"] is False
+    assert row["template_adjusted_passed"] is False
     assert row["strict_template_passed"] is False
     assert row["model_quality_passed"] is False
     assert row["unmatched_detail_count"] == 1
+    assert row["uncovered_detail_count"] == 1
     assert row["unmatched_details"] == "카지노 고객 지원"
+    assert "catalog_gap_or_nonstandard_source_label" in row["coverage_blocker_type"]
+    assert '"coverage_status": "unmatched"' in row["coverage_blocker_details"]
     assert len(question_rows) == 6
+    assert {item["issues"] for item in question_rows} == {"field_realism"}
 
 
 def test_evaluate_cached_document_separates_skipped_details_from_unmatched(tmp_path: Path, monkeypatch) -> None:
@@ -1263,12 +1282,16 @@ def test_evaluate_cached_document_separates_skipped_details_from_unmatched(tmp_p
         ksa_factors_per_unit=4,
     )
 
-    assert row["status"] == "template_ready_partial_detail_coverage", [
+    assert row["status"] == "needs_review", [
         (item.get("type"), item.get("issues"), item.get("question"))
         for item in question_rows
         if item.get("ready") is not True
     ]
     assert row["passed"] is False
+    assert row["ready_questions"] == 0
+    assert row["needs_review_questions"] == 6
+    assert row["coverage_passed"] is False
+    assert row["template_adjusted_passed"] is False
     assert row["checked_detail_count"] == 1
     assert row["max_details_per_doc"] == 1
     assert row["max_units_per_detail"] == 8
@@ -1281,6 +1304,7 @@ def test_evaluate_cached_document_separates_skipped_details_from_unmatched(tmp_p
     assert row["unmatched_details"] == ""
     assert row["skipped_details"] == "B; C"
     assert len(question_rows) == 6
+    assert {item["issues"] for item in question_rows} == {"field_realism"}
 
 
 def test_evaluate_cached_document_aggregates_mixed_coverage_blockers(tmp_path: Path, monkeypatch) -> None:
@@ -1341,7 +1365,11 @@ def test_evaluate_cached_document_aggregates_mixed_coverage_blockers(tmp_path: P
         ksa_factors_per_unit=4,
     )
 
-    assert row["status"] == "template_ready_partial_detail_coverage"
+    assert row["status"] == "needs_review"
+    assert row["ready_questions"] == 0
+    assert row["needs_review_questions"] == 3
+    assert row["coverage_passed"] is False
+    assert row["template_adjusted_passed"] is False
     assert row["unit_name_detail_count"] == 1
     assert row["unmatched_detail_count"] == 2
     assert row["skipped_detail_count"] == 1
@@ -1356,6 +1384,7 @@ def test_evaluate_cached_document_aggregates_mixed_coverage_blockers(tmp_path: P
     assert "간호수행: manual_review_healthcare_specialized_label" in row["review_action"]
     assert "B: increase_max_details_per_doc_or_manual_select" in row["review_action"]
     assert len(question_rows) == 3
+    assert {item["issues"] for item in question_rows} == {"field_realism"}
 
 
 def test_evaluate_cached_document_does_not_promote_element_level_false_friend(tmp_path: Path, monkeypatch) -> None:
@@ -1680,8 +1709,12 @@ def test_evaluate_cached_document_accepts_exact_unit_name_resolution(tmp_path: P
         ksa_factors_per_unit=4,
     )
 
-    assert row["status"] == "template_ready_unit_name_resolved"
+    assert row["status"] == "needs_review"
     assert row["passed"] is False
+    assert row["ready_questions"] == 0
+    assert row["needs_review_questions"] == 6
+    assert row["coverage_passed"] is False
+    assert row["template_adjusted_passed"] is False
     assert row["strict_template_passed"] is False
     assert row["coverage_adjusted_score"] == 0.0
     assert row["exact_detail_count"] == 0
@@ -1691,7 +1724,9 @@ def test_evaluate_cached_document_accepts_exact_unit_name_resolution(tmp_path: P
     assert "manual_review_unit_name" in row["review_action"]
     assert row["unit_name_details"] == "카지노 고객 지원"
     assert row["unmatched_detail_count"] == 0
+    assert row["uncovered_detail_count"] == 0
     assert len(question_rows) == 6
+    assert {item["issues"] for item in question_rows} == {"field_realism"}
 
 
 def test_evaluate_cached_document_does_not_strict_pass_contextual_detail(tmp_path: Path, monkeypatch) -> None:
@@ -1748,10 +1783,16 @@ def test_evaluate_cached_document_does_not_strict_pass_contextual_detail(tmp_pat
         ksa_factors_per_unit=4,
     )
 
-    assert row["status"] == "template_ready_contextual_detail"
+    assert row["status"] == "needs_review"
     assert row["passed"] is False
+    assert row["ready_questions"] == 0
+    assert row["needs_review_questions"] == 6
+    assert row["coverage_passed"] is False
+    assert row["template_adjusted_passed"] is False
     assert row["strict_template_passed"] is False
     assert row["coverage_adjusted_score"] == 0.0
     assert row["detail_source"] == "contextual"
-    assert row["ready_questions"] == 6
+    assert "contextual_detail_source_not_strict" in row["coverage_blocker_type"]
+    assert "manual_review_contextual_detail_source" in row["review_action"]
     assert len(question_rows) == 6
+    assert {item["issues"] for item in question_rows} == {"field_realism"}

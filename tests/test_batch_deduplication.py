@@ -6,7 +6,6 @@ generation function produces some repeated questions across rounds.
 """
 
 import hashlib
-from unittest.mock import patch, MagicMock
 
 
 def _apply_deduplication_logic(generated_questions_per_round, batch_count):

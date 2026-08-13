@@ -38,6 +38,8 @@ def test_ax_all_operational_gates_reach_native() -> None:
 
 
 def test_ax_ops_endpoint_stays_enabled_when_first_gates_lack_operating_evidence(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_ADMIN_ENDPOINTS", "true")
+    monkeypatch.setenv("ADMIN_TOKEN", "test-admin-token")
     monkeypatch.setattr(
         main,
         "question_quality_metrics",
@@ -55,7 +57,7 @@ def test_ax_ops_endpoint_stays_enabled_when_first_gates_lack_operating_evidence(
         lambda: {"configured": True, "reachable": True, "ksaAvailable": True},
     )
 
-    result = main.ops_ax_readiness()
+    result = main.ops_ax_readiness("test-admin-token")
 
     assert result["assessment"]["base_stage"] == "AI-Enabled"
     assert result["assessment"]["items"][3]["status"] == "pilot"

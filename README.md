@@ -1,4 +1,4 @@
-# NCScope v1.3
+# NCScope v1.4
 
 [![CI](https://github.com/koul777/NCScope/actions/workflows/ci.yml/badge.svg)](https://github.com/koul777/NCScope/actions/workflows/ci.yml)
 
@@ -16,16 +16,31 @@ NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 
 
 운영 전제: NCScope 결과물은 공식 면접문항 확정안이 아니라 보조자료 초안입니다. 최종 문항은 기관 담당자와 평가위원이 블라인드 채용 기준, 채용공고, 직무기술서, 내부 평가기준에 맞게 검토·수정해야 합니다.
 
-공식 서비스와의 관계, 데이터 사용, 면접 운영 책임에 대한 고지는 [`NOTICE.md`](NOTICE.md)를 참고하세요. API key와 업로드 문서 처리 기준은 [`SECURITY.md`](SECURITY.md)에 정리했습니다. Kordoc 등 외부 구성요소 고지는 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)에 분리했습니다.
+공식 서비스와의 관계, 데이터 사용, 면접 운영 책임에 대한 고지는 [`NOTICE.md`](NOTICE.md)를 참고하세요. 요청 단위 OpenAI API 키의 위험과 업로드 문서 처리 기준은 [`SECURITY.md`](SECURITY.md)에 정리했습니다. Kordoc 등 외부 구성요소 고지는 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)에 분리했습니다.
 
 화면은 네 단계로 구성됩니다.
 
-1. API 설정
+1. 요청 단위 OpenAI API 키 입력
 2. 직무기술서 세분류 검토
 3. 공고문 핵심텍스트 보완
 4. 로컬 NCS DB KSA 기반 질문 생성
 
 ## 업데이트 내역
+
+### v1.4 · 2026-08-14 · 질문 근거 무결성·현장성·운영 보안 강화
+
+v1.4는 질문 생성 전후의 품질 경계를 세분화하고, 공개 서비스의 생성 경로와 요청 단위 자격증명 계약을 더 엄격하게 고정한 릴리스입니다.
+
+- 공개 UI와 API는 `openai_api`만 허용합니다. Codex·Claude 개인 구독 CLI, provider 선택·fallback, 서버 환경변수 키 대체 경로는 공개 요청에서 차단합니다.
+- OpenAI API 키는 현재 탭 메모리에만 유지하고 생성 요청마다 전달합니다. UI에 키 지우기와 HTTPS 전송 경고를 추가하고, query string·로그·DB·응답에 키가 남지 않도록 경계를 강화했습니다.
+- 공식 KSA에서 서버가 배정한 `evidence_id`와 모델이 반환한 원시 근거 ID를 분리 보존합니다. 누락·불일치·다른 문항 근거 재사용은 자동 정규화하지 않고 최종 품질 경계에서 거부합니다.
+- 질문이 실제 업무 사건·판단·행동·산출물을 요구하는지, 제시되지 않은 수치·조항을 억지로 회상시키지 않는지, 질문과 평가포인트가 같은 행동증거를 측정하는지를 각각 독립 게이트로 검사합니다.
+- 경험·상황·발표·토론·인바스켓·직무지식·창의적 문제해결력면접의 문장 현실성과 K/S/A 의미 정렬을 확대 코퍼스 및 의미 오라클 회귀 테스트로 보강했습니다.
+- 기관용 OpenAI 생성은 최초 요청, 경량 복구, 품질 재생성의 의미 요청 예산을 명시하고 실제 사용 횟수를 결과에 기록합니다. 품질 재시도에도 근거 배정과 전송 횟수 제한을 동일하게 적용합니다.
+- 요청 크기·요청률·생성 동시성 제한, 레거시 NCS 프록시 관리자 보호, 승인된 OpenAI gateway 단일화, proxy·APM body 기록 금지 지침을 추가했습니다.
+- Kordoc 표·레이아웃 파싱과 직무기술서 세분류 추출 회귀 범위를 넓히고, Ruff를 CI 품질 게이트에 포함했습니다.
+- `인사, 프로젝트관리`처럼 여러 세분류를 쉼표·줄바꿈·슬래시로 함께 입력해도 각각의 공식 NCS 세분류로 분리 조회하도록 직접입력·업로드 경계를 보강했습니다.
+- 검증 결과: 전체 테스트 `4,236 passed, 72 skipped`, Ruff 통과, 로컬 NCS_MCP 실제 결합 검색에서 인사 14개와 프로젝트관리 11개 등 총 25개 능력단위 조회를 확인했습니다.
 
 ### v1.3 · 2026-08-13 · 현장형 NCS 면접과제 및 검증 체계 고도화
 
@@ -39,6 +54,7 @@ NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 
 - 유효한 모델 주질문은 보존하면서 문제가 있는 필드만 보정하고, 보정 후 전체 문항을 다시 검사하도록 품질 오케스트레이션을 강화했습니다.
 - 대규모 코퍼스 감사, 면접방식×KSA 매트릭스, 반복 생성, 검토 수명주기, 동시성 및 실제 HTTP 흐름 검증 도구를 추가했습니다.
 - 검증 결과: 깨끗한 커밋 사본 `723 passed`, 확대 매트릭스 `1,512/1,512`, 공식 KSA `574,279`행 엄격 이슈 0건, ALIO 생성 가능 문항 `28/28` 통과.
+- 공개 UI와 API의 생성 경로를 `openai_api`로 고정하고, 사용자가 입력한 키를 저장하지 않은 채 생성 요청마다 전달하는 request-scoped BYOK 경계로 전환했습니다. 서버 환경변수 키는 fallback으로 사용하지 않습니다.
 - 앱 화면 버전은 `v1.3`, API 및 패키지 메타데이터 버전은 `1.3.0`으로 올렸습니다.
 
 ### v1.2 · 2026-08-11 · 질문 품질 오케스트레이션 및 API 키 경계 강화
@@ -52,8 +68,8 @@ NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 
 - 브라우저가 생성 run과 문항 hash별 검토 상태를 유지하고, 검토 저장 중 재생성을 막으며, 반려·수정요청을 같은 NCS 코드의 다음 생성 문맥에 환류합니다.
 - 공식 NCS 표본 프로파일, ALIO 품질 벤치마크, 재생성·리뷰 수명주기·동시성·실제 HTTP 시뮬레이션과 회귀 테스트를 추가했습니다.
 - 검증 결과: 전체 테스트 `667 passed`, 공식 NCS·ALIO를 포함한 품질 루프 4개 단계 전체 통과.
-- OpenAI API 키는 화면/API 요청의 `openai_api_key` 또는 품질평가 CLI의 `--openai-api-key`로만 전달합니다. `.env`, `OPENAI_API_KEY`, 서버 fallback 및 fallback 토큰 경로는 제거했습니다.
-- 앱과 API 메타데이터 버전을 `1.2.0`으로 올리고, 화면에서도 요청 단위 키 전용 정책을 안내합니다.
+- 당시에는 브라우저 키 입력을 제거했지만, 현재 v1.4 운영 계약은 요청 단위 BYOK로 변경되었습니다. 최신 보안 지침은 아래와 [`SECURITY.md`](SECURITY.md)를 따릅니다.
+- 앱과 API 메타데이터 버전을 `1.2.0`으로 올렸습니다. 현재 자격증명 정책은 아래 v1.4 운영 지침을 따릅니다.
 
 ## v1.1 업데이트 (이전 버전)
 
@@ -101,7 +117,7 @@ Kordoc 문서 파싱 및 세분류 후보 추출
 - 면접기법별 주질문 형식, 꼬리질문 깊이, 평가포인트, KSA 근거, 직무 맥락 품질 게이트 적용
 - ALIO 실문서 기반 질문 품질 리포트와 모델 원문/템플릿 보정 분리 측정
 - NCS 블라인드 채용 면접과제·평가양식 샘플 프로파일링으로 면접기법별 형식 검증
-- OpenAI API key를 화면에서 요청 단위로 입력 가능
+- 사용자가 요청마다 제공하는 OpenAI API 키로 질문 생성
 - 로컬 NCS DB 검색 서버 연결 기반의 경량 배포 구조
 - 공식 NCS 사이트 자산을 사용하지 않는 비공식 독자 인터페이스
 
@@ -113,7 +129,7 @@ Windows에서 이 저장소를 받은 뒤 `START_NCSCOPE.bat`를 더블클릭하
 
 실행 파일은 다음 순서로 동작합니다.
 
-1. `.env`가 있으면 환경변수를 불러옵니다.
+1. `.env`가 있으면 비밀이 아닌 환경설정을 불러옵니다. `OPENAI_API_KEY`는 dotenv 로더가 읽지 않으며 서버 키 fallback도 지원하지 않습니다.
 2. `NCS_MCP_URL`이 로컬 주소이고 아직 켜져 있지 않으면 `C:\workspace\NCS_MCP` 또는 `..\NCS_MCP`의 로컬 NCS DB 검색 서버를 자동으로 시작합니다.
 3. NCScope 앱을 `http://127.0.0.1:8015`에서 실행합니다.
 4. 브라우저를 자동으로 엽니다.
@@ -134,15 +150,37 @@ NCS_MCP_URL=http://127.0.0.1:8778/mcp
 http://127.0.0.1:8015
 ```
 
-### 2. OpenAI API key 입력
+### 2. 요청 단위 OpenAI API 키 입력
 
-화면의 `OpenAI API key` 칸에 키를 입력할 수 있습니다.
+브라우저와 공개 API의 질문 생성 경로는 `openai_api`로 고정됩니다. Codex·Claude
+CLI, 개인 구독 로그인, provider 선택 및 provider fallback은 지원하지 않습니다.
+사용자가 화면에 입력한 OpenAI API 키는 생성할 때마다 JSON body 또는 multipart
+form의 `openai_api_key`로 NCScope 서버를 거쳐 승인된 `OPENAI_BASE_URL`에
+전달됩니다. URL query에는 키를 넣을 수 없습니다.
 
-- 입력한 키는 브라우저 저장소나 서버 DB에 저장하지 않습니다.
-- 해당 생성 요청에만 FormData/JSON으로 전달됩니다.
-- 키를 입력하지 않으면 템플릿 기반 생성 경로를 사용합니다.
-- 서버 환경변수나 `.env`에서 OpenAI API 키를 자동으로 가져오지 않습니다. 필요한 경우 화면에 입력하거나 API 요청 body/form에 `openai_api_key`를 포함하세요.
-- 응답 JSON에는 키 원문이 포함되지 않고 `request` 또는 `missing` 상태만 표시됩니다.
+NCScope는 키를 `localStorage`, `sessionStorage`, `IndexedDB`, Cookie, 파일,
+`.env`, DB, 로그, 감사로그 또는 응답에 저장하지 않습니다. 서버 환경변수
+`OPENAI_API_KEY`도 fallback으로 사용하지 않으므로 요청 키를 생략하면 HTTP 400
+`openai_api_key_required`가 반환됩니다. loopback 개발 환경 외에는 반드시
+HTTPS로 접속하고 reverse proxy·WAF·APM의 요청 body 기록을 꺼야 합니다.
+
+이 방식은 키를 JavaScript에 하드코딩하거나 번들링하는 방식은 아니지만, 키가
+브라우저 런타임과 NCScope 서버를 통과하는 request-scoped BYOK입니다. OpenAI의
+[API 키 안전 지침](https://developers.openai.com/api/reference/overview#authentication)은
+클라이언트 측 브라우저·앱에 키를 노출하지 않고 서버의 환경변수나 키 관리
+서비스에서 불러오도록 권고합니다. 따라서 이 배포 방식은 공식 권고의 서버 소유
+비밀키 모델과 같지 않으며, 기관은 브라우저 확장·XSS·TLS 종단 프록시·서버 메모리
+노출 위험을 별도로 승인해야 합니다. 상세 통제는 [`SECURITY.md`](SECURITY.md)를
+참고하세요.
+
+`GET /api/generation-provider/status`는 키를 받거나 인증하지 않습니다.
+`provider=openai_api`, `auth_mode=request_scoped_api_key`, `status=key_required`와
+`authenticated=false`를 반환해 요청 단위 입력이 필요함을 알립니다.
+
+주 질문 생성은 최초 생성, 1회 slim 복구, 품질 실패 시 전체 세트 1회 재생성을
+합쳐 최대 3회의 모델 생성 요청으로 제한됩니다. 각 요청의 전송 시도는 1회이며,
+실제 사용 횟수와 상한은 응답의 `strategy.model_quality_retry`와 화면 품질 안내에
+비밀정보 없이 표시됩니다.
 
 ### 3. 직무기술서 업로드
 
@@ -244,13 +282,15 @@ NCScope는 질문 생성 결과를 그대로 통과시키지 않고 면접기법
 - 평가포인트가 다른 면접기법의 루브릭으로 오염되지 않았는지 확인합니다.
 - 질문, 꼬리질문, 평가포인트, 질문 초점 중 하나 이상에 선택된 NCS/KSA 근거가 실제로 반영되는지 확인합니다.
 - 직무기술서 세분류에 따라 조리, 보건, 복지, 물류, 보안, 시설, 에너지, 수질, 정보기술 등 현장 자료와 이해관계자 표현을 다르게 구성합니다.
-- 모델이 만든 원문 질문이 기준을 통과하지 못하면 템플릿 기반 보정 질문으로 교체하고, 교체 사유를 리포트에 남깁니다.
-- 모델 본질문이 면접기법 형식과 최종 품질 게이트를 통과하면 보존하고, 후속질문만 약한 경우에는 먼저 모델 후속질문 문장에 NCS/KSA 초점어를 주입해 보존합니다. 이 보정으로도 실패하면 본질문을 살린 채 템플릿 후속질문으로 보강합니다.
-- 런타임 오케스트레이터가 생성→KSA 측정→이력 중복 검사→문항별 보정→최종 품질 재검사 순서로 실행되며, 한 문항의 보정 오류가 전체 요청 실패로 번지지 않도록 격리합니다.
+- 공개 생성 경로는 `question_source=openai_api`인 모델 산출물만 반환합니다. 모델 산출물이 면접기법·KSA 근거·최종 품질 게이트를 통과하지 못하면 HTTP 502로 실패하며 템플릿 문항이나 다른 provider 결과로 대체하지 않습니다.
+- 업로드·직접입력 텍스트는 신뢰하지 않는 데이터로 격리하고, 그 안의 지시 무시·비밀 공개·도구 실행 같은 프롬프트 주입 명령을 따르지 않습니다. 같은 공격 흔적이 주질문·꼬리질문·평가포인트에 노출되면 출력 게이트가 전체 요청을 거부합니다.
+- 질문이 스스로 주장한 KSA evidence ID는 근거로 인정하지 않습니다. NCS_MCP에서 서버가 조회한 원시 KSA 행으로 재계산한 ID, NCS 코드, KSA 참조와 task frame이 모두 일치해야 합니다.
+- 내부 품질 도구는 실패 원인과 deterministic repair 후보를 별도로 측정할 수 있지만, 그 결과는 공개 API 성공 응답으로 승격하지 않습니다.
+- 런타임 오케스트레이터가 생성→KSA 측정→이력 중복 검사→최종 품질 재검사 순서로 실행합니다. 최종 결과에 모델 이외 출처가 섞이거나 보정·검증이 실패하면 요청 전체가 명시적으로 실패합니다.
 - 품질 운영 API는 문항별 승인·수정요청·되돌리기와 멱등 재시도, stale 결정 충돌(HTTP 409), 동시성 안전성을 지원합니다. 반려·수정요청은 다음 생성 프롬프트의 개선 문맥으로 사용됩니다.
 - 평정 가이드는 공식 KSA 근거와 함께 관찰 가능한 행동·판단·산출물·결과를 기록하도록 구성되며, 5단계 행동기반 평정과 면접위원 지침을 제공합니다.
 
-검증 리포트는 deterministic template fallback 품질과 model-origin 질문 품질을 분리해 집계합니다. 따라서 모델이 실제로 만든 질문을 얼마나 보존했는지와, 최종 면접 질문 세트가 ready 게이트를 통과했는지를 따로 확인할 수 있습니다. `model_quality_passed`는 본질문과 후속질문이 모두 모델 산출물로 보존된 질문만 통과로 세며, 본질문을 보존하고 후속질문에 초점어만 주입한 경우나 템플릿으로 보강한 경우는 별도 집계합니다.
+과거 검증 리포트는 deterministic template fallback 품질과 model-origin 질문 품질을 분리해 집계했습니다. 현재 공개 생성 경로는 OpenAI API 모델 결과만 허용하고 provider 또는 최종 품질 게이트 실패를 템플릿으로 대체하지 않습니다. `model_quality_passed`는 본질문과 후속질문이 모두 모델 산출물로 보존된 질문만 통과로 셉니다.
 
 ## 결과물 예시
 
@@ -263,7 +303,7 @@ NCScope는 질문 생성 결과를 그대로 통과시키지 않고 면접기법
       "type": "경험면접",
       "competency": "경영계획 수립",
       "ncsClCd": "0201010103_22v2",
-      "question_source": "model, model_main_repaired_followups, model_main_template_followups 또는 template_fallback",
+      "question_source": "model",
       "question": "사업 목표를 수립하거나 조정한 경험 중 가장 어려웠던 사례를 말씀해 주세요.",
       "follow_ups": [
         "당시 목표 설정의 근거는 무엇이었습니까?",
@@ -291,18 +331,18 @@ NCScope는 앱과 로컬 NCS DB 검색 서버(NCS_MCP)를 분리해서 배포합
 | Kordoc | PDF/HWP/HWPX/DOCX/TXT/이미지 및 ZIP 내부 지원 문서 파싱 |
 | NCS_MCP | 로컬 NCS DB 검색 서버. 공식 NCS 능력단위·수행준거·KSA 조회 담당 |
 | serving DB | 약 117MB 경량 read-only SQLite DB |
-| OpenAI API | 구조화 면접 질문 생성 및 선택적 재정렬 |
+| OpenAI API | 생성 요청마다 사용자가 제공한 키로 질문 생성 |
 
 ```text
 사용자
-  ↓
+  ↓ HTTPS에서 키 입력(브라우저 영속 저장 안 함)
 NCScope UI
-  ↓
-FastAPI
+  ↓ 요청마다 openai_api_key를 body/form으로 전달
+FastAPI(키를 파일·DB·로그에 저장하지 않음)
   ├─ Kordoc 문서 파싱
   ├─ Human review gate
   ├─ NCS_MCP_URL → 로컬 NCS DB 검색 서버에서 공식 NCS/KSA 조회
-  └─ OpenAI API → 질문 생성
+  └─ OPENAI_BASE_URL → 요청 키로 승인된 단일 gateway에서 질문 생성
 ```
 
 ## 설치 방법
@@ -361,13 +401,17 @@ NCS_MCP 필수 도구:
 Copy-Item .env.example .env
 ```
 
-보안상 FastAPI 앱 import 시점에는 `.env`를 자동으로 읽지 않습니다. 로컬 실행은 `.\run_local.ps1`을 권장합니다. 이 스크립트는 현재 프로세스에만 비밀이 아닌 `.env` 설정을 읽어 들이며, OpenAI API 키와 fallback 관련 변수는 무시합니다.
+보안상 FastAPI 앱 import 시점에는 `.env`를 자동으로 읽지 않습니다. 로컬 실행은 `.\run_local.ps1`을 권장합니다. 이 스크립트는 현재 프로세스에 비밀이 아닌 `.env` 설정만 읽어 들이며 `OPENAI_API_KEY`는 무시합니다. OpenAI API 키는 서버에 설정하지 않고 화면에서 요청 단위로 입력합니다.
 
 ```powershell
 $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
+$env:OPENAI_BASE_URL="https://api.openai.com/v1"
 $env:MAX_UPLOAD_MB="30"
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 ```
+
+키를 환경변수, 문서, 명령행 또는 셸 기록에 넣지 마세요. 브라우저 화면에서만
+입력하며, loopback 외 배포에서는 HTTPS가 먼저 구성되어 있어야 합니다.
 
 또는:
 
@@ -381,9 +425,12 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | --- | --- | --- | --- |
 | `NCSCOPE_LOAD_DOTENV` | 선택 | `false` | 앱 import 시 `.env` 자동 로드 여부. 배포/테스트 기본값은 비활성화 |
 | `NCS_MCP_URL` | 필수 | 없음 | 로컬 NCS DB 검색 서버(NCS_MCP) Streamable HTTP 주소 |
+| `INTERVIEW_GENERATION_PROVIDER` | 선택 | `openai_api` | 공개 UI/API의 고정 provider. 다른 값은 거부 |
+| `OPENAI_API_KEY` | 사용 금지 | 없음 | 서버 env fallback 없음. 실제 키는 생성 요청마다 body/form의 `openai_api_key`로 전달 |
+| `OPENAI_BASE_URL` | 선택 | `https://api.openai.com/v1` | 기관 관리자가 승인한 단일 OpenAI 호환 gateway |
 | `OPENAI_MODEL` | 선택 | `gpt-4o-mini` | 일반 모델 설정 |
 | `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
-| `OPENAI_HTTP_CURL_FALLBACK_ENABLED` | 선택 | `false` | Python HTTP 실패 시 curl fallback 사용. 사용자 key 노출 위험 때문에 opt-in |
+| `OPENAI_HTTP_CURL_FALLBACK_ENABLED` | 선택 | `false` | Python HTTP 실패 시 curl fallback 사용. 요청 키 노출 위험 때문에 opt-in |
 | `DATABASE_URL` | 선택 | `sqlite:///./ncscope.db` | 앱용 소형 DB |
 | `MAX_UPLOAD_MB` | 선택 | `30` | 업로드 제한 |
 | `MAX_REQUEST_BODY_MB` | 선택 | `MAX_UPLOAD_MB×2+2` | multipart·JSON을 포함한 HTTP 요청 전체 제한 |
@@ -438,7 +485,7 @@ Form:
 - `jd_file`: 원본 직무기술서
 - `notice_file`: 선택 공고문
 - `jd_review_json`: 사람이 검토·확정한 JSON
-- `openai_api_key`: 선택 요청 단위 OpenAI 키. 서버나 `.env`에서 자동 fallback하지 않음
+- `generation_provider`: 생략하거나 `openai_api`만 사용. 다른 provider는 거부
 - `duty_text`: 선택 담당업무 보정 텍스트
 - `evaluation_text`: 선택 평가항목 텍스트
 
@@ -465,6 +512,7 @@ JSON:
 
 ```json
 {
+  "openai_api_key": "<요청 시 입력한 키>",
   "notice_text": "담당업무 ...",
   "evaluation_text": "평가항목 ...",
   "selected_ncs": [
@@ -472,12 +520,16 @@ JSON:
       "ncsClCd": "0201010103_22v2",
       "compeUnitName": "경영계획 수립"
     }
-  ],
-  "openai_api_key": "선택 입력"
+  ]
 }
 ```
 
-민감한 공고문·이력서 텍스트와 OpenAI key는 URL query string이 아니라 JSON body 또는 multipart form으로 전달해야 합니다.
+모든 생성 endpoint는 `openai_api_key`를 JSON body 또는 multipart form으로 받아
+해당 요청에만 사용합니다. 위 값은 형식 표시용 placeholder이며 실제 키를 문서,
+테스트, 명령행 또는 로그에 복사하지 마세요. 요청 키가 없으면 서버 환경변수와
+관계없이 HTTP 400 `openai_api_key_required`를 반환합니다. OpenAI 호출 또는 최종
+품질 게이트가 실패하면 비밀값과 upstream 원문을 제거한 HTTP 502
+`openai_api_generation_failed`를 반환하며 템플릿 질문으로 대체하지 않습니다.
 
 ## 검증 방법
 
@@ -507,14 +559,7 @@ python scripts\evaluate_alio_question_quality.py --benchmark-mode template --lim
 python scripts\benchmark_ncs_official_interview_samples.py --collection all --limit 5
 ```
 
-`evaluate_alio_question_quality.py`는 기본적으로 `.env`에서 `NCS_MCP_URL` 등 비밀이 아닌 설정만 읽고, 해당 값이 없으면 리포트를 만들기 전에 실패합니다. OpenAI API 키는 `.env`나 환경변수에서 읽지 않습니다. 환경 파일 검사를 끄려면 `--no-load-dotenv`를 지정할 수 있습니다.
-
-모델 원문 질문까지 강하게 검증하려면 `--openai-api-key`로 요청 단위 키를 전달합니다.
-
-```powershell
-$env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
-python scripts\evaluate_alio_question_quality.py --benchmark-mode model --openai-api-key "..." --min-evaluated-doc-rate 0.50 --min-model-ready-rate 1.0 --min-full-model-rate 1.0 --fail-on-repaired-followups --fail-on-model-replacements --fail-on-template-insertions
-```
+`evaluate_alio_question_quality.py`는 기본적으로 `.env`에서 `NCS_MCP_URL` 등 비밀이 아닌 설정만 읽고, 해당 값이 없으면 리포트를 만들기 전에 실패합니다. 환경 파일 검사를 끄려면 `--no-load-dotenv`를 지정할 수 있습니다. 실제 API 모델 검증은 키를 리포트·fixture·명령행에 남기지 않는 별도 통합 환경에서 요청 단위로 수행하고, 실행 후 제한된 project key를 폐기·교체하세요.
 
 확장 직무기술서 세분류 벤치마크(28건):
 
@@ -630,7 +675,7 @@ docker run --rm -p 8015:8000 `
   ncscope-app
 ```
 
-Docker 이미지에는 앱만 포함합니다. NCS 데이터 조회는 별도 로컬 NCS DB 검색 서버(NCS_MCP)를 통해 수행합니다. OpenAI API 키는 배포 환경변수로 주입하지 않고 화면/API 요청 단위로 전달합니다.
+Docker 이미지에는 앱만 포함합니다. NCS 데이터 조회는 별도 로컬 NCS DB 검색 서버(NCS_MCP)를 통해 수행합니다. 컨테이너나 secret manager에 `OPENAI_API_KEY`를 주입하지 마세요. 사용자가 브라우저에 입력한 키는 HTTPS 생성 요청마다 NCScope 서버를 통과하므로, 외부 공개 시 TLS를 강제하고 proxy·WAF·APM의 body 기록을 꺼야 합니다. `OPENAI_BASE_URL`에는 승인된 gateway 한 곳만 설정합니다.
 
 자세한 배포 절차는 `DEPLOYMENT.md`를 참고하세요.
 

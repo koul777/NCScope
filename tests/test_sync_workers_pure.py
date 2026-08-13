@@ -1,7 +1,6 @@
 """Tests for pure functions in app.services.sync_workers module."""
 
 import json
-from xml.etree import ElementTree as ET
 
 from app.services.sync_workers import (
     _as_list,

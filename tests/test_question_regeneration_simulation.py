@@ -5,7 +5,7 @@ from scripts.simulate_question_review_lifecycle import run_simulation as run_lif
 from app.services.question_quality_orchestrator import RUNTIME_QUESTION_ORCHESTRATION_POLICY
 
 
-def test_repeated_generation_simulation_covers_methods_and_ksa_without_failures() -> None:
+def test_repeated_generation_flags_deterministic_questions_for_review_without_operational_failures() -> None:
     result = run_simulation(cycles=4, history_window=200)
 
     assert result["status"] == "passed"
@@ -14,9 +14,11 @@ def test_repeated_generation_simulation_covers_methods_and_ksa_without_failures(
     assert result["total_cycles"] == 7 * len(FOCUSES) * 4
     assert result["failure_count"] == 0
     assert result["total_repairs"] >= result["case_count"]
+    assert result["review_required_count"] == result["total_cycles"]
     assert all(result["invariants"].values())
     assert all(case["generated_count"] == 4 for case in result["cases"])
     assert all(case["unique_count"] == 4 for case in result["cases"])
+    assert all(case["review_required_cycles"] == 4 for case in result["cases"])
 
 
 def test_regeneration_report_exposes_representative_questions_for_human_review(tmp_path) -> None:
@@ -39,8 +41,13 @@ def test_review_lifecycle_simulation_survives_decision_changes_rollbacks_and_rec
     assert result["cycles"] == 6
     assert result["reconnect_count"] == 2
     assert result["unique_question_count"] == 6
+    assert result["review_required_count"] == 6
     assert result["failure_count"] == 0
     assert all(result["invariants"].values())
     assert all(case["http_statuses"] == [200, 200, 200, 200, 200, 200] for case in result["cases"])
     assert all(case["rejected_statuses"] == [422, 422, 409] for case in result["cases"])
     assert all(case["restored_verdict"] == case["first_verdict"] for case in result["cases"])
+    assert all(case["quality_status"] == "needs_review" for case in result["cases"])
+    assert all(case["quality_report_passed"] is False for case in result["cases"])
+    assert all(case["review_required"] is True for case in result["cases"])
+    assert all(case["escalation_required"] is True for case in result["cases"])

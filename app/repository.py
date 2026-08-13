@@ -6,7 +6,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from sqlalchemy import desc, func, select, text
+from sqlalchemy import delete, desc, func, select, text
 
 from app.db import SessionLocal
 from app.models import (
@@ -24,12 +24,71 @@ from app.models import (
     QuestionQualityEvalCase,
     QuestionQualityReview,
     QuestionQualityRun,
+    ReviewSession,
     UserProfile,
 )
 
 
 class QuestionQualityReviewConflictError(RuntimeError):
     """Raised when a review mutation targets a decision that is no longer active."""
+
+
+def create_review_session(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist short-lived review metadata without storing the document body."""
+
+    session_id = str(payload.get("id") or "").strip()
+    if not session_id:
+        raise ValueError("review session id is required")
+    with db_session() as s:
+        s.add(
+            ReviewSession(
+                id=session_id,
+                filename=str(payload.get("filename") or "")[:160],
+                created_at_epoch=float(payload.get("created_at") or 0.0),
+                document_sha256=str(payload.get("document_sha256") or "")[:64],
+                markdown_sha256=str(payload.get("markdown_sha256") or "")[:64],
+                markdown_size=max(0, int(payload.get("markdown_size") or 0)),
+            )
+        )
+    return payload
+
+
+def get_review_session(session_id: str, *, now: float, ttl_sec: float) -> dict[str, Any] | None:
+    """Load a review session across workers and discard expired metadata."""
+
+    with db_session() as s:
+        rec = s.get(ReviewSession, str(session_id or "").strip())
+        if not rec:
+            return None
+        if now - float(rec.created_at_epoch or 0.0) > float(ttl_sec):
+            s.delete(rec)
+            return None
+        return {
+            "id": rec.id,
+            "filename": rec.filename,
+            "created_at": float(rec.created_at_epoch),
+            "document_sha256": rec.document_sha256,
+            "markdown_sha256": rec.markdown_sha256,
+            "markdown_size": int(rec.markdown_size or 0),
+        }
+
+
+def prune_review_sessions(*, now: float, ttl_sec: float, max_count: int) -> None:
+    """Bound the short-lived review metadata table."""
+
+    cutoff = float(now) - float(ttl_sec)
+    with db_session() as s:
+        s.execute(delete(ReviewSession).where(ReviewSession.created_at_epoch < cutoff))
+        keep = max(1, int(max_count))
+        ids = list(
+            s.execute(
+                select(ReviewSession.id)
+                .order_by(ReviewSession.created_at_epoch.desc())
+                .offset(keep)
+            ).scalars()
+        )
+        if ids:
+            s.execute(delete(ReviewSession).where(ReviewSession.id.in_(ids)))
 
 
 @contextmanager

@@ -5,6 +5,7 @@ import csv
 import functools
 import hashlib
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ import secrets
 import threading
 import time
 import zipfile
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -23,13 +25,12 @@ from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Req
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.init_db import init_db
-from app.repository import create_posting as repo_create_posting
-from app.repository import fetch_posting_for_report, get_posting as repo_get_posting
+from app.repository import get_posting as repo_get_posting
 from app.repository import list_postings as repo_list_postings
 from app.repository import recommend_postings as repo_recommend_postings
 from app.repository import record_audit_log
-from app.repository import save_match_result
 from app.repository import create_question_quality_run
+from app.repository import create_review_session, get_review_session, prune_review_sessions
 from app.repository import QuestionQualityReviewConflictError
 from app.repository import get_question_quality_run
 from app.repository import list_question_quality_eval_cases
@@ -39,24 +40,18 @@ from app.repository import question_quality_metrics
 from app.repository import record_question_quality_review
 from app.repository import rollback_question_quality_review
 from app.repository import verify_question_quality_run_token
-from app.schemas import AiInterviewRequest, AiInterviewResponse, PostingCreate, ReportCreate, ReportOut
 from app.services.ai_strategy import build_strategy_with_openai, rank_postings_with_openai
 from app.services.external_api import fetch_ncs, fetch_ncs_highschool_course, fetch_public_inst, fetch_recruitment
 from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description, structure_job_notice
 from app.services.ncs_mcp_client import NcsMcpError, ncs_mcp_status, search_units_by_detail, suggest_units_by_text
 from app.services.jd_strategy import (
-    ai_pick_sclass_from_csv,
+    _planned_question_sequence_for_prompt,
     ai_extract_ncs_cl_codes,
-    ai_extract_sclass_candidates,
     build_notice_context_from_jd,
     build_ncs_context_pack,
-    build_strategy_with_rule_fallback,
     build_strategy_with_openai as build_jd_strategy_with_openai,
     extract_detail_categories_from_jd,
     extract_small_categories_from_jd,
-    infer_sclass_candidates_reverse_dictionary,
-    infer_sclass_candidates_from_text_catalog,
-    lookup_ncs_codes_by_sclass,
     extract_subcategory_text,
     extract_pdf_text,
     extract_focus_terms_from_pdf_vision,
@@ -66,7 +61,6 @@ from app.services.jd_strategy import (
     fetch_ncs_units_hrdk_by_keywords,
     fetch_ncs_units_hrdk_by_sclass_names,
     fetch_ncs_units_hrdk_by_verified_sclass,
-    fetch_ncs_units_v18_by_sclass,
     generate_interview_questions_by_ncs_code,
     generate_personalized_interview_questions,
     generate_diverse_interview_questions,
@@ -76,8 +70,6 @@ from app.services.jd_strategy import (
     normalize_question_dedup_key,
     review_ocr_terms_with_openai,
     rerank_ncs_matches,
-    resolve_sclass_candidates_with_catalog,
-    verify_sclass_candidates_with_ncs_api,
 )
 from app.services.ncs import map_ncs
 from app.services.question_intent import (
@@ -96,6 +88,18 @@ from app.services.question_quality_orchestrator import (
     RUNTIME_QUESTION_ORCHESTRATION_POLICY,
     evaluate_ksa_measurement,
     orchestrate_question_set,
+)
+from app.services.question_precision_grounding import (
+    PRECISION_GROUNDING_POLICY,
+    evaluate_question_precision_grounding,
+)
+from app.services.question_evaluation_alignment import (
+    EVALUATION_ELICITATION_POLICY,
+    evaluate_evaluation_elicitation_alignment,
+)
+from app.services.question_realism import (
+    REALISM_POLICY_VERSION,
+    evaluate_question_realism,
 )
 from app.services.question_surface import (
     build_question_task_frame,
@@ -211,6 +215,102 @@ class JsonCharsetMiddleware:
         await self.app(scope, receive, send_with_json_charset)
 
 
+class ExpensiveRequestLimitMiddleware:
+    """Apply lightweight local backpressure to document/question APIs.
+
+    This is intentionally process-local and only protects the application when
+    it is reached directly. Production deployments should also enforce the
+    same limits at the reverse proxy or shared rate-limit service.
+    """
+
+    _EXPENSIVE_PREFIXES = ("/api/jd/", "/api/questions/")
+    _EXPENSIVE_PATHS = frozenset({"/api/ncs/units/options"})
+
+    def __init__(self, app):
+        self.app = app
+        self._lock = threading.Lock()
+        self._events: dict[tuple[str, str], deque[float]] = {}
+        self._generation_slots = threading.BoundedSemaphore(settings.generation_max_concurrency())
+
+    @classmethod
+    def _is_expensive(cls, path: str) -> bool:
+        return path.startswith(cls._EXPENSIVE_PREFIXES) or path in cls._EXPENSIVE_PATHS
+
+    @staticmethod
+    def _client_key(scope) -> str:
+        client = scope.get("client")
+        if isinstance(client, (tuple, list)) and client:
+            return str(client[0] or "unknown")
+        return "unknown"
+
+    def _consume_rate_limit(self, key: tuple[str, str]) -> tuple[bool, int]:
+        now = time.monotonic()
+        window = settings.rate_limit_window_sec()
+        limit = (
+            settings.generation_rate_limit_requests_per_window()
+            if key[1] == "generation"
+            else settings.rate_limit_requests_per_window()
+        )
+        with self._lock:
+            events = self._events.setdefault(key, deque())
+            while events and now - events[0] >= window:
+                events.popleft()
+            if len(events) >= limit:
+                retry_after = max(1, int(window - (now - events[0])))
+                return False, retry_after
+            events.append(now)
+            if len(self._events) > 10_000:
+                stale_keys = [
+                    event_key
+                    for event_key, values in self._events.items()
+                    if not values or now - values[-1] >= window
+                ]
+                for event_key in stale_keys[:2_000]:
+                    self._events.pop(event_key, None)
+            return True, 0
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not settings.rate_limit_enabled():
+            await self.app(scope, receive, send)
+            return
+
+        path = str(scope.get("path") or "")
+        if not self._is_expensive(path):
+            await self.app(scope, receive, send)
+            return
+
+        is_generation = scope.get("method") == "POST" and (
+            path.startswith("/api/jd/") or path.startswith("/api/questions/")
+        )
+        bucket = "generation" if is_generation else "expensive"
+        allowed, retry_after = self._consume_rate_limit((self._client_key(scope), bucket))
+        if not allowed:
+            response = JSONResponse(
+                status_code=429,
+                content={"detail": "request rate limit exceeded"},
+                headers={"Retry-After": str(retry_after)},
+            )
+            await response(scope, receive, send)
+            return
+
+        slot_acquired = False
+        if is_generation:
+            slot_acquired = self._generation_slots.acquire(blocking=False)
+            if not slot_acquired:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "generation concurrency limit reached"},
+                    headers={"Retry-After": "1"},
+                )
+                await response(scope, receive, send)
+                return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if slot_acquired:
+                self._generation_slots.release()
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     init_db()
@@ -218,9 +318,10 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="1.3.0", lifespan=_lifespan)
+app = FastAPI(title="NCScope", version="1.4.0", lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
+app.add_middleware(ExpensiveRequestLimitMiddleware)
 queue = QueueManager(max_retries=2)
 logger = logging.getLogger("ncscope")
 
@@ -250,7 +351,11 @@ async def add_no_cache_headers(request, call_next):
     """Ensure no caching for dynamic question generation APIs"""
     response = await call_next(request)
 
-    if "questions" in request.url.path or request.url.path == "/":
+    if (
+        request.url.path.startswith("/api/questions/")
+        or request.url.path.startswith("/api/jd/")
+        or request.url.path == "/"
+    ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -283,11 +388,31 @@ OPERATIONAL_REVIEW_NOTICE = (
     "and institution-specific evaluation standards."
 )
 MODEL_PRESERVED_QUESTION_SOURCES = {
+    "openai_api",
+    "openai_api_quality_repaired_fields",
+    "codex_cli",
+    "codex_cli_quality_repaired_fields",
+    "claude_code",
+    "claude_code_quality_repaired_fields",
     "model",
     "model_main_template_followups",
     "model_main_repaired_followups",
     "model_main_quality_repaired_fields",
 }
+
+
+def _subscription_cli_source_base(value: Any) -> str:
+    """Return a trusted free-form model source with exact evidence metadata."""
+
+    source = str(value or "").strip()
+    for prefix in ("openai_api", "codex_cli", "claude_code"):
+        if source == prefix or source.startswith(f"{prefix}_"):
+            return prefix
+    return ""
+
+
+def _is_subscription_cli_source(value: Any) -> bool:
+    return bool(_subscription_cli_source_base(value))
 _BLIND_HIRING_CUE_RE = re.compile(
     r"(가족|부모|형제|배우자|자녀|나이|연령|출신\s*학교|학교명|학벌|출신\s*지역|출신지역|고향|"
     r"생년\s*월일|출생\s*(?:연도|년도|일|지)|몇\s*살|만\s*\d+\s*세|"
@@ -370,7 +495,10 @@ def _detail_lookup_coverage(
     ncs_items: list[dict[str, Any]] | None,
 ) -> tuple[list[str], list[str]]:
     requested: dict[str, str] = {}
-    for term in lookup_terms or []:
+    normalized_lookup_terms = _parse_sclass_terms(
+        "\n".join(str(term or "").strip() for term in (lookup_terms or []))
+    )
+    for term in normalized_lookup_terms:
         text = str(term or "").strip()
         key = _norm_detail_coverage_key(text)
         if text and key and key not in requested:
@@ -445,8 +573,11 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
         for row in candidates or []:
             if not isinstance(row, dict):
                 continue
-            detail = str(row.get("detail") or row.get("name") or row.get("ncs_detail") or "").strip()
-            if not detail:
+            detail_value = str(
+                row.get("detail") or row.get("name") or row.get("ncs_detail") or ""
+            ).strip()
+            details = _parse_sclass_terms(detail_value)
+            if not details:
                 continue
             enabled = row.get("enabled", True)
             enabled_bool = not (enabled is False or str(enabled).strip().lower() in {"0", "false", "no", "n"})
@@ -458,14 +589,15 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
                 follow_up_count = int(row.get("follow_up_count", row.get("followups", 3)) or 0)
             except Exception:
                 follow_up_count = 3
-            items.append(
-                {
-                    "detail": detail,
-                    "enabled": enabled_bool,
-                    "main_count": max(0, min(10, main_count)),
-                    "follow_up_count": max(0, min(5, follow_up_count)),
-                }
-            )
+            for detail in details:
+                items.append(
+                    {
+                        "detail": detail,
+                        "enabled": enabled_bool,
+                        "main_count": max(0, min(10, main_count)),
+                        "follow_up_count": max(0, min(5, follow_up_count)),
+                    }
+                )
 
     seen: set[str] = set()
     normalized: list[dict[str, Any]] = []
@@ -725,6 +857,27 @@ def _evidence_row_for_focus(
     return dict(same_code[0]) if same_code else {}
 
 
+def _evidence_row_for_id(
+    ncs_ksa: list[dict[str, Any]] | None,
+    ncs_code: str,
+    evidence_id: Any,
+) -> dict[str, Any]:
+    """Resolve a model-selected evidence id without exposing KSA labels in prompts."""
+
+    code = str(ncs_code or "").strip()
+    expected = str(evidence_id or "").strip()
+    if not expected:
+        return {}
+    for row in ncs_ksa or []:
+        if not isinstance(row, dict):
+            continue
+        if code and str(row.get("ncsClCd") or "").strip() != code:
+            continue
+        if stable_ksa_evidence_id(row) == expected:
+            return dict(row)
+    return {}
+
+
 def _question_task_frame(
     *,
     focus: str,
@@ -912,6 +1065,65 @@ def _pick_unit_for_detail(
     return dict(pool[offset % len(pool)])
 
 
+def _unit_matches_planned_detail(row: dict[str, Any], target_detail: str) -> bool:
+    detail_key = _norm_sclass_key(target_detail)
+    if not detail_key or not isinstance(row, dict):
+        return False
+    authoritative = {
+        _norm_sclass_key(str(row.get("matchedDetailName", ""))),
+        _norm_sclass_key(str(row.get("reviewed_detail", ""))),
+        _norm_sclass_key(str(row.get("confirmed_detail", ""))),
+        _norm_sclass_key(str(row.get("ncs_detail", ""))),
+        _norm_sclass_key(str(row.get("ncsSubdCdnm", ""))),
+        _norm_sclass_key(str(row.get("ncsSclasCdnm", ""))),
+    }
+    authoritative.discard("")
+    matched_keywords = {
+        _norm_sclass_key(str(value))
+        for value in (row.get("matched_keywords") or [])
+        if str(value).strip()
+    } if isinstance(row.get("matched_keywords"), list) else set()
+    return detail_key in authoritative or detail_key in matched_keywords
+
+
+def _ensure_question_plan_unit_coverage(
+    question_plan: dict[str, Any],
+    ranked_matches: list[dict[str, Any]] | None,
+    candidate_units: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Keep at least one authoritative NCS unit for every planned detail."""
+
+    covered = _dedupe_units_by_code(ranked_matches)
+    selected_terms = [
+        str(value).strip()
+        for value in (question_plan.get("selected_terms") or [])
+        if str(value).strip()
+    ] if isinstance(question_plan, dict) else []
+    for detail in selected_terms:
+        if any(_unit_matches_planned_detail(row, detail) for row in covered):
+            continue
+        candidate = next(
+            (
+                dict(row)
+                for row in (candidate_units or [])
+                if isinstance(row, dict) and _unit_matches_planned_detail(row, detail)
+            ),
+            {},
+        )
+        if not candidate:
+            continue
+        candidate["matchedDetailName"] = (
+            str(candidate.get("matchedDetailName") or "").strip() or detail
+        )
+        candidate["score"] = float(candidate.get("score", 1.0) or 1.0)
+        candidate["matched_keywords"] = list(
+            dict.fromkeys([detail, *list(candidate.get("matched_keywords") or [])])
+        )
+        covered.append(candidate)
+        covered = _dedupe_units_by_code(covered)
+    return covered
+
+
 def _method_evaluation_points(
     method: str,
     ksa_terms: list[str],
@@ -951,8 +1163,12 @@ def _method_evaluation_points(
         if len(ksa_points) >= 1:
             break
     if ksa_points:
-        points = points[: max(0, 5 - len(ksa_points))] + ksa_points
-    return points[:5]
+        # Keep all four method anchors while making the fourth dimension carry
+        # the selected KSA's observable evidence. Replacing an anchor with a
+        # fifth KSA-only point either broke method validity or exceeded the
+        # shared exact-four scoring contract.
+        points[-1] = f"{points[-1]} · {ksa_points[0]}"
+    return points[:4]
 
 
 def _behavior_anchored_evaluation(
@@ -966,7 +1182,7 @@ def _behavior_anchored_evaluation(
     official_focus = str(focus or "핵심 수행기준").strip() or "핵심 수행기준"
     focus_label = str(surface_focus or official_focus).strip() or "핵심 수행기준"
     normalized_focus_type = _normalize_ksa_type(focus_type, official_focus)
-    dimensions = [str(x).strip() for x in (evaluation_points or []) if str(x).strip()][:5]
+    dimensions = [str(x).strip() for x in (evaluation_points or []) if str(x).strip()][:4]
     behavior = {
         "경험면접": (
             "상황·과제·본인 역할·행동·결과·학습을 구분하고 선택 기준과 결과 지표를 근거로 설명한다",
@@ -2755,24 +2971,66 @@ def _adjust_generated_questions(
     for idx, row in enumerate(source_questions):
         item = dict(row)
         planned = sequence[idx] if idx < len(sequence) else {}
+        planned_evidence_id = str(planned.get("evidence_id") or "").strip()
+        planned_ncs_code = str(planned.get("ncsClCd") or "").strip()
+        planned_evidence = (
+            _evidence_row_for_id(ncs_ksa, planned_ncs_code, planned_evidence_id)
+            if planned_evidence_id
+            else {}
+        )
+        source_hint = str(item.get("question_source") or "").strip()
+        cli_source_base = _subscription_cli_source_base(source_hint)
+        is_subscription_cli_candidate = bool(cli_source_base)
+        provider_evidence = (
+            planned_evidence
+            or _evidence_row_for_id(ncs_ksa, "", item.get("question_evidence_id"))
+            if is_subscription_cli_candidate
+            else {}
+        )
+        if planned_evidence_id:
+            item["question_evidence_assignment_valid"] = bool(
+                planned_evidence
+                and str(row.get("question_evidence_id") or "").strip()
+                == planned_evidence_id
+            )
         target_detail = str(planned.get("detail", "")).strip()
         detail_key = _norm_sclass_key(target_detail)
         offset = detail_offsets.get(detail_key, 0)
         unit = _pick_unit_for_detail(target_detail, offset, ncs_matches)
         detail_offsets[detail_key] = offset + 1
 
-        if unit:
-            item["ncsClCd"] = str(unit.get("ncsClCd", "")).strip() or str(item.get("ncsClCd", "")).strip()
-            item["competency"] = str(unit.get("compeUnitName", "")).strip() or str(item.get("competency", "")).strip()
-            item["compeUnitDef"] = str(unit.get("compeUnitDef", "")).strip() or str(item.get("compeUnitDef", "")).strip()
-            item["ncsSubdCdnm"] = str(unit.get("ncsSubdCdnm", "")).strip() or str(item.get("ncsSubdCdnm", "")).strip()
-            item["ncsSclasCdnm"] = str(unit.get("ncsSclasCdnm", "")).strip() or str(item.get("ncsSclasCdnm", "")).strip()
-            item["matchedDetailName"] = str(unit.get("matchedDetailName", "")).strip() or target_detail
+        provider_code = str(provider_evidence.get("ncsClCd") or "").strip()
+        provider_unit = next(
+            (
+                dict(candidate)
+                for candidate in (ncs_matches or [])
+                if isinstance(candidate, dict)
+                and provider_code
+                and str(candidate.get("ncsClCd") or "").strip() == provider_code
+            ),
+            {},
+        )
+        selected_unit = (
+            provider_unit
+            if is_subscription_cli_candidate and provider_evidence
+            else unit
+        )
+        if selected_unit:
+            item["ncsClCd"] = str(selected_unit.get("ncsClCd", "")).strip() or provider_code or str(item.get("ncsClCd", "")).strip()
+            item["competency"] = (
+                str(provider_evidence.get("compeUnitName", "")).strip()
+                or str(selected_unit.get("compeUnitName", "")).strip()
+                or str(item.get("competency", "")).strip()
+            )
+            item["compeUnitDef"] = str(selected_unit.get("compeUnitDef", "")).strip() or str(item.get("compeUnitDef", "")).strip()
+            item["ncsSubdCdnm"] = str(selected_unit.get("ncsSubdCdnm", "")).strip() or str(item.get("ncsSubdCdnm", "")).strip()
+            item["ncsSclasCdnm"] = str(selected_unit.get("ncsSclasCdnm", "")).strip() or str(item.get("ncsSclasCdnm", "")).strip()
+            item["matchedDetailName"] = str(selected_unit.get("matchedDetailName", "")).strip() or target_detail
             item["ncs_detail"] = (
                 target_detail
-                or str(unit.get("matchedDetailName", "")).strip()
-                or str(unit.get("ncsSubdCdnm", "")).strip()
-                or str(unit.get("ncsSclasCdnm", "")).strip()
+                or str(selected_unit.get("matchedDetailName", "")).strip()
+                or str(selected_unit.get("ncsSubdCdnm", "")).strip()
+                or str(selected_unit.get("ncsSclasCdnm", "")).strip()
                 or str(item.get("ncs_detail", "")).strip()
             )
         elif target_detail:
@@ -2799,9 +3057,30 @@ def _adjust_generated_questions(
         if not raw_followups and str(item.get("follow_up", "")).strip():
             raw_followups = _clean_question_items([item.get("follow_up")], limit=1)
         original_model_followups = list(raw_followups)
-        inferred_focus = _infer_model_focus_from_official_ksa(ncs_ksa, ncs_code, raw_question, raw_followups)
+        provided_evidence = _evidence_row_for_id(
+            ncs_ksa,
+            ncs_code,
+            planned_evidence_id or item.get("question_evidence_id"),
+        )
+        requested_focus = _clean_question_text(item.get("question_focus"), max_chars=60)
+        if not planned_evidence_id and not provided_evidence and requested_focus:
+            requested_focus_row = _evidence_row_for_focus(ncs_ksa, ncs_code, requested_focus)
+            if _ksa_key(requested_focus_row.get("factorName")) == _ksa_key(requested_focus):
+                provided_evidence = requested_focus_row
+        provided_focus = _clean_question_text(provided_evidence.get("factorName"), max_chars=60)
+        inferred_focus = (
+            ""
+            if planned_evidence_id
+            else _infer_model_focus_from_official_ksa(
+                ncs_ksa,
+                ncs_code,
+                raw_question,
+                raw_followups,
+            )
+        )
         focus = (
-            inferred_focus
+            provided_focus
+            or inferred_focus
             or _select_ksa_focus_for_method(
                 ncs_ksa=ncs_ksa,
                 ncs_code=ncs_code,
@@ -2813,7 +3092,7 @@ def _adjust_generated_questions(
         item["question_focus"] = focus
         focus_type = _ksa_type_for_focus(ncs_ksa, ncs_code, focus)
         item["question_focus_type"] = focus_type
-        focus_evidence = _evidence_row_for_focus(ncs_ksa, ncs_code, focus)
+        focus_evidence = provided_evidence or _evidence_row_for_focus(ncs_ksa, ncs_code, focus)
         task_frame = _question_task_frame(
             focus=focus,
             focus_type=focus_type,
@@ -2827,27 +3106,48 @@ def _adjust_generated_questions(
         item["question_evidence_id"] = task_frame.get("evidence_id", "")
         item["question_evidence_required"] = bool(focus_evidence)
         normalized_model_question = _normalize_model_task_marker(method, raw_question)
-        normalized_model_question = _normalize_model_job_context(method, item, normalized_model_question)
+        # Subscription CLI providers receive the JD, notice and exact KSA
+        # evidence and are expected to
+        # translate them into a real work incident.  Injecting the NCS
+        # competency/detail label here turns that behavioral question back into
+        # the mechanical "<module> 업무에서 ..." wording we are avoiding.
+        if not is_subscription_cli_candidate:
+            normalized_model_question = _normalize_model_job_context(
+                method, item, normalized_model_question
+            )
         raw_evaluation_points = _clean_question_items(item.get("evaluation_points"), limit=6)
         original_model_evaluation_points = list(raw_evaluation_points)
         candidate_surface_repaired_fields: set[str] = set()
-        normalized_model_question, repaired = _repair_candidate_surface_text(
-            normalized_model_question,
-            focus,
-            task_frame["task_object"],
-        )
+        if is_subscription_cli_candidate:
+            repaired = False
+        else:
+            normalized_model_question, repaired = _repair_candidate_surface_text(
+                normalized_model_question,
+                focus,
+                task_frame["task_object"],
+            )
         if repaired:
             candidate_surface_repaired_fields.add("question")
         repaired_followups_for_surface: list[str] = []
         for value in raw_followups:
-            repaired_value, repaired = _repair_candidate_surface_text(value, focus, task_frame["task_object"])
+            if is_subscription_cli_candidate:
+                repaired_value, repaired = value, False
+            else:
+                repaired_value, repaired = _repair_candidate_surface_text(
+                    value, focus, task_frame["task_object"]
+                )
             repaired_followups_for_surface.append(repaired_value)
             if repaired:
                 candidate_surface_repaired_fields.add("follow_ups")
         raw_followups = repaired_followups_for_surface
         repaired_evaluation_points: list[str] = []
         for value in raw_evaluation_points:
-            repaired_value, repaired = _repair_candidate_surface_text(value, focus, task_frame["task_object"])
+            if is_subscription_cli_candidate:
+                repaired_value, repaired = value, False
+            else:
+                repaired_value, repaired = _repair_candidate_surface_text(
+                    value, focus, task_frame["task_object"]
+                )
             repaired_evaluation_points.append(repaired_value)
             if repaired:
                 candidate_surface_repaired_fields.add("evaluation_points")
@@ -2899,8 +3199,28 @@ def _adjust_generated_questions(
                     followup_replacement_reasons.append("follow_up_focus_injected")
                 else:
                     followup_replacement_reasons.append("follow_up_quality")
-        use_model_question = bool(raw_question and not main_replacement_reasons)
-        use_raw_model_followups = bool(use_model_question and not followup_replacement_reasons)
+        cli_hard_replacement_reasons = {
+            "no_model_question",
+            "blind_hiring_cue",
+        }
+        cli_requires_replacement = bool(
+            is_subscription_cli_candidate
+            and any(
+                reason in cli_hard_replacement_reasons
+                for reason in main_replacement_reasons
+            )
+        )
+        use_model_question = bool(
+            raw_question
+            and (
+                not main_replacement_reasons
+                or (is_subscription_cli_candidate and not cli_requires_replacement)
+            )
+        )
+        use_raw_model_followups = bool(
+            use_model_question
+            and (not followup_replacement_reasons or is_subscription_cli_candidate)
+        )
         use_repaired_model_followups = bool(
             use_model_question
             and repaired_followups
@@ -2936,7 +3256,13 @@ def _adjust_generated_questions(
         )
 
         item["question"] = normalized_model_question if use_model_question else template_question
-        if use_model_question and use_raw_model_followups:
+        if use_model_question and is_subscription_cli_candidate:
+            item["question_source"] = (
+                f"{cli_source_base}_quality_repaired_fields"
+                if candidate_surface_repaired_fields
+                else cli_source_base
+            )
+        elif use_model_question and use_raw_model_followups:
             item["question_source"] = (
                 "model_main_quality_repaired_fields"
                 if candidate_surface_repaired_fields
@@ -2949,7 +3275,13 @@ def _adjust_generated_questions(
         else:
             item["question_source"] = "template_fallback"
         item["model_question_preserved"] = bool(use_model_question)
-        item["model_replacement_reasons"] = [] if use_model_question and use_raw_model_followups else model_replacement_reasons
+        if is_subscription_cli_candidate and use_model_question:
+            item["model_quality_warnings"] = model_replacement_reasons
+            item["model_replacement_reasons"] = []
+        else:
+            item["model_replacement_reasons"] = (
+                [] if use_model_question and use_raw_model_followups else model_replacement_reasons
+            )
         if use_raw_model_followups:
             item["follow_ups"] = raw_followups_final
         elif use_repaired_model_followups:
@@ -2957,11 +3289,18 @@ def _adjust_generated_questions(
         else:
             item["follow_ups"] = template_followups
         item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
-        item["evaluation_points"] = (
-            _merge_question_items(raw_evaluation_points, method_eval_points, 6)
-            if use_model_question
-            else method_eval_points
-        )
+        if use_model_question and is_subscription_cli_candidate:
+            # OpenAI/Codex/Claude drafts are reviewed under one exact-four
+            # contract.  Preserve an invalid 3/5/6-item response so the final
+            # quality report can block readiness without replacing the model's
+            # question body or laundering the count through deterministic fill.
+            item["evaluation_points"] = list(raw_evaluation_points)
+        elif use_model_question:
+            item["evaluation_points"] = _merge_question_items(
+                raw_evaluation_points, method_eval_points, 4
+            )
+        else:
+            item["evaluation_points"] = method_eval_points
         item["task_conditions"] = _task_conditions_for_method(
             method=method,
             subject=subject,
@@ -3002,7 +3341,11 @@ def _adjust_generated_questions(
             ):
                 repeat_near_duplicate = False
         duplicate_replaced = False
-        if repeat_signature and repeat_near_duplicate:
+        if (
+            repeat_signature
+            and repeat_near_duplicate
+            and not is_subscription_cli_candidate
+        ):
             alternate_focus = _pick_alternate_question_focus(
                 current_focus=focus,
                 ksa_terms=ksa_terms,
@@ -3145,6 +3488,22 @@ def _adjust_generated_questions(
             continue
         probe_item = probe_items.get(pos + 1) or {}
         if probe_item.get("ready") is True:
+            continue
+        if _is_subscription_cli_source(source):
+            existing_warnings = [
+                str(reason).strip()
+                for reason in (item.get("model_quality_warnings") or [])
+                if str(reason).strip()
+            ] if isinstance(item.get("model_quality_warnings"), list) else []
+            quality_warnings = [
+                f"quality_gate_{issue}"
+                for issue in (probe_item.get("issues") or [])
+                if str(issue).strip()
+            ] if isinstance(probe_item.get("issues"), list) else []
+            item["model_quality_warnings"] = list(
+                dict.fromkeys([*existing_warnings, *quality_warnings])
+            )
+            item["model_question_preserved"] = True
             continue
         fallback = fallback_rows[pos] if pos < len(fallback_rows) else {}
         raw_issues = {
@@ -3445,18 +3804,86 @@ def _require_ncs_mcp_url() -> str:
     )
 
 
+def _public_question_rows(result: Any) -> list[dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    questions: list[dict[str, Any]] = []
+    for key in ("main_questions", "questions", "interview_questions"):
+        rows = result.get(key)
+        if isinstance(rows, list):
+            questions.extend(row for row in rows if isinstance(row, dict))
+    return questions
+
+
+def _public_questions_precision_grounded(result: Any) -> bool:
+    """Recheck every public question without trusting provider-owned evidence.
+
+    A future server-issued material registry can be passed explicitly at this
+    boundary.  Until that registry exists, fields embedded in model output are
+    intentionally ignored so a provider cannot self-attest that a hidden
+    amount, formula, or clause excerpt was supplied to the candidate.
+    """
+
+    questions = _public_question_rows(result)
+    return bool(questions) and all(
+        evaluate_question_precision_grounding(question).get("passed") is True
+        for question in questions
+    )
+
+
 def _require_official_ksa_result(result: dict[str, Any]) -> None:
+    """Fail closed unless every public question is traceable and panel-ready.
+
+    Official KSA labels are internal evidence, not candidate-facing copy.  A
+    question therefore proves its grounding through an exact stable evidence
+    identifier plus the semantic and realism gates, rather than by repeating a
+    raw NCS factor in the question text.
+    """
+
     if result.get("ncs_ksa_available") is not True:
         raise HTTPException(
             status_code=502,
             detail="Official NCS KSA is unavailable from NCS_MCP; question generation was stopped.",
         )
 
-    questions: list[dict[str, Any]] = []
-    for key in ("main_questions", "questions"):
-        rows = result.get(key)
-        if isinstance(rows, list):
-            questions.extend(row for row in rows if isinstance(row, dict))
+    questions = _public_question_rows(result)
+
+    def _supporting_evidence_ids(question: dict[str, Any]) -> set[str]:
+        """Return IDs attested by the service-owned NCS evidence registry.
+
+        Do not inspect ``question_task_frame`` or question-local evidence rows
+        here.  Those fields may originate in model output and therefore cannot
+        prove their own authenticity.
+        """
+
+        evidence_ids: set[str] = set()
+        rows = result.get("official_ksa_evidence")
+        if not isinstance(rows, list):
+            return evidence_ids
+        question_code = str(
+            question.get("ncsClCd") or question.get("ncs_code") or ""
+        ).strip()
+        refs = {
+            _ksa_key(value)
+            for value in (question.get("ksa_refs") or [])
+            if str(value or "").strip()
+        }
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_code = str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
+            row_factor = str(row.get("factorName") or row.get("factor_name") or "").strip()
+            if not row_code or not row_factor:
+                continue
+            if not question_code or row_code != question_code:
+                continue
+            if not refs or _ksa_key(row_factor) not in refs:
+                continue
+            row_id = str(row.get("evidence_id") or "").strip()
+            computed_id = stable_ksa_evidence_id(row)
+            if row_id == computed_id:
+                evidence_ids.add(computed_id)
+        return evidence_ids
 
     invalid_indices: list[int] = []
     for index, question in enumerate(questions, start=1):
@@ -3465,41 +3892,73 @@ def _require_official_ksa_result(result: dict[str, Any]) -> None:
             for value in (question.get("ksa_refs") or [])
             if str(value).strip()
         ] if isinstance(question.get("ksa_refs"), list) else []
-        question_text = str(question.get("question") or "").strip()
         follow_ups = [
-            str(value).strip()
+            value
             for value in (question.get("follow_ups") or [])
-            if str(value).strip()
+            if str(value).strip() or isinstance(value, dict)
         ] if isinstance(question.get("follow_ups"), list) else []
-        visible_text = _compact_question_text(" ".join([question_text, *follow_ups]))
-        has_visible_ref = any(
-            _compact_question_text(ref) in visible_text
-            for ref in refs
-            if _compact_question_text(ref)
+        evaluation_point_sets = [
+            value
+            for value in (
+                question.get("evaluation_points"),
+                question.get("eval_points"),
+            )
+            if value is not None
+        ]
+        evaluation_points = next(
+            (value for value in evaluation_point_sets if isinstance(value, list)),
+            None,
         )
-        method = str(
-            question.get("type") or question.get("question_type") or ""
-        ).strip()
-        method_shape_ok = (
-            method not in QUALITY_INTERVIEW_METHODS
-            or _method_shape_ok(method, question_text)
+        evaluation_points_ok = bool(evaluation_point_sets) and all(
+            isinstance(values, list)
+            and len(values) == 4
+            and all(str(value).strip() for value in values)
+            for values in evaluation_point_sets
         )
+        if evaluation_points_ok and len(evaluation_point_sets) > 1:
+            normalized_point_sets = {
+                tuple(str(value).strip() for value in values)
+                for values in evaluation_point_sets
+                if isinstance(values, list)
+            }
+            evaluation_points_ok = len(normalized_point_sets) == 1
+        evidence_id = str(question.get("question_evidence_id") or "").strip()
+        supporting_ids = _supporting_evidence_ids(question)
+        stable_evidence_id = bool(re.fullmatch(r"ksa_[0-9a-f]{24}", evidence_id))
+        evidence_consistent = bool(evidence_id and evidence_id in supporting_ids)
+        task_frame = question.get("question_task_frame")
+        task_frame_evidence_id = (
+            str(task_frame.get("evidence_id") or "").strip()
+            if isinstance(task_frame, dict)
+            else ""
+        )
+        task_frame_consistent = bool(
+            task_frame_evidence_id and task_frame_evidence_id == evidence_id
+        )
+        measurement = evaluate_ksa_measurement(question)
+        realism = evaluate_question_realism(question)
+        precision_grounding = evaluate_question_precision_grounding(question)
         if not (
             str(question.get("question_focus_source") or "").strip() == "official_ksa"
             and refs
             and str(question.get("ncsClCd") or question.get("ncs_code") or "").strip()
-            and has_visible_ref
-            and method_shape_ok
+            and str(question.get("question_source") or "").strip() == "openai_api"
+            and stable_evidence_id
+            and evidence_consistent
+            and task_frame_consistent
+            and isinstance(evaluation_points, list)
+            and evaluation_points_ok
+            and len(follow_ups) == 3
+            and bool(measurement.get("passed"))
+            and bool(realism.get("passed"))
+            and bool(precision_grounding.get("passed"))
         ):
             invalid_indices.append(index)
 
-    if invalid_indices:
+    if not questions or invalid_indices:
         raise HTTPException(
             status_code=502,
-            detail=(
-                "Question generation produced unverified or invalid NCS KSA grounding "
-                f"for question indices: {invalid_indices[:10]}"
-            ),
+            detail="Question generation produced unverified or invalid NCS KSA grounding.",
         )
 
 
@@ -3615,7 +4074,7 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                     continue
                 try:
                     member_bytes = archive.read(info)
-                except (RuntimeError, OSError, zipfile.BadZipFile) as exc:
+                except (RuntimeError, OSError, zipfile.BadZipFile):
                     warnings.append(f"{member_label}: ZIP member could not be read")
                     continue
                 try:
@@ -3806,6 +4265,99 @@ def _request_ip_hash(request: Request | None) -> str:
     return _sha256_text(host)
 
 
+_CODEX_PROXY_HEADER_NAMES = frozenset(
+    {
+        "client-ip",
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+    }
+)
+
+
+_GENERATION_PROVIDER_ALIASES = {
+    "codex": "codex_cli",
+    "codex_cli": "codex_cli",
+    "claude": "claude_code",
+    "claude_code": "claude_code",
+    "openai": "openai_api",
+    "openai_api": "openai_api",
+}
+_SUBSCRIPTION_CLI_PROVIDERS = frozenset({"codex_cli", "claude_code"})
+
+
+def _configured_generation_provider() -> str:
+    """Return the only provider exposed by the public-sector application."""
+
+    return "openai_api"
+
+
+def _request_generation_provider(value: Any = "") -> str:
+    raw_provider = str(value or "").strip().lower()
+    provider = _GENERATION_PROVIDER_ALIASES.get(raw_provider, raw_provider) if raw_provider else "openai_api"
+    if provider != "openai_api":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "generation_provider must be 'openai_api'; personal Codex and "
+                "Claude Code subscription logins are disabled for institutional use"
+            ),
+        )
+    return provider
+
+
+def _require_local_subscription_cli_request(
+    request: Request | None,
+    provider: str,
+) -> None:
+    """Keep cached subscription logins inside the local workstation boundary."""
+
+    if provider not in _SUBSCRIPTION_CLI_PROVIDERS:
+        return
+    try:
+        has_proxy_headers = bool(request) and any(
+            name in request.headers for name in _CODEX_PROXY_HEADER_NAMES
+        )
+    except Exception:
+        # If the request metadata cannot be inspected, do not risk exposing the
+        # workstation's cached subscription login through an intermediary.
+        has_proxy_headers = True
+    if has_proxy_headers:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{provider} generation is available only from this local workstation",
+        )
+    host = ""
+    try:
+        host = str((request.client.host if request and request.client else "") or "").strip()
+    except Exception:
+        host = ""
+    normalized_host = host.strip("[]").casefold()
+    try:
+        is_loopback = bool(ipaddress.ip_address(normalized_host).is_loopback)
+    except ValueError:
+        # Starlette's in-process TestClient uses the synthetic host
+        # ``testclient``. It cannot originate a network request and is needed
+        # for exercising the real upload path in local regression tests.
+        is_loopback = normalized_host in {"localhost", "testclient"}
+    if not is_loopback:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{provider} generation is available only from this local workstation",
+        )
+
+
+def _require_local_codex_request(request: Request | None) -> None:
+    """Backward-compatible guard used by existing Codex boundary tests."""
+
+    _require_local_subscription_cli_request(
+        request,
+        "codex_cli",
+    )
+
+
 def _record_audit_event(
     request: Request | None,
     *,
@@ -3825,7 +4377,7 @@ def _record_audit_event(
         return
 
 
-def _prune_review_sessions(now: float | None = None) -> None:
+def _prune_review_sessions(now: float | None = None, *, persist: bool = False) -> None:
     current = float(now if now is not None else time.time())
     expired = [
         session_id
@@ -3834,14 +4386,22 @@ def _prune_review_sessions(now: float | None = None) -> None:
     ]
     for session_id in expired:
         _REVIEW_SESSION_BY_ID.pop(session_id, None)
-    if len(_REVIEW_SESSION_BY_ID) <= _REVIEW_SESSION_MAX:
-        return
-    oldest = sorted(
-        _REVIEW_SESSION_BY_ID.items(),
-        key=lambda item: float(item[1].get("created_at", 0.0) or 0.0),
-    )
-    for session_id, _ in oldest[: max(0, len(_REVIEW_SESSION_BY_ID) - _REVIEW_SESSION_MAX)]:
-        _REVIEW_SESSION_BY_ID.pop(session_id, None)
+    if len(_REVIEW_SESSION_BY_ID) > _REVIEW_SESSION_MAX:
+        oldest = sorted(
+            _REVIEW_SESSION_BY_ID.items(),
+            key=lambda item: float(item[1].get("created_at", 0.0) or 0.0),
+        )
+        for session_id, _ in oldest[: max(0, len(_REVIEW_SESSION_BY_ID) - _REVIEW_SESSION_MAX)]:
+            _REVIEW_SESSION_BY_ID.pop(session_id, None)
+    if persist:
+        try:
+            prune_review_sessions(
+                now=current,
+                ttl_sec=_REVIEW_SESSION_TTL_SEC,
+                max_count=_REVIEW_SESSION_MAX,
+            )
+        except Exception:
+            logger.warning("review_session_metadata_prune_failed", exc_info=True)
 
 
 def _public_review_session(session: dict[str, Any]) -> dict[str, Any]:
@@ -3867,9 +4427,15 @@ def _create_review_session(upload_bytes: bytes, structured: dict[str, Any], file
         "markdown_size": len(markdown.encode("utf-8")),
     }
     with _REVIEW_SESSION_LOCK:
-        _prune_review_sessions(session["created_at"])
+        _prune_review_sessions(session["created_at"], persist=True)
         _REVIEW_SESSION_BY_ID[session["id"]] = session
         _prune_review_sessions(session["created_at"])
+    try:
+        create_review_session(session)
+    except Exception:
+        # Keep the existing local fallback if the optional persistence DB is
+        # temporarily unavailable; normal single-process behavior is unchanged.
+        logger.warning("review_session_metadata_persist_failed", exc_info=True)
     return _public_review_session(session)
 
 
@@ -3889,7 +4455,20 @@ def _validate_review_session(review_payload: dict[str, Any], upload_bytes: bytes
         )
     with _REVIEW_SESSION_LOCK:
         _prune_review_sessions()
-        session = dict(_REVIEW_SESSION_BY_ID.pop(session_id, {}) or {})
+        session = dict(_REVIEW_SESSION_BY_ID.get(session_id, {}) or {})
+    if not session:
+        try:
+            session = dict(
+                get_review_session(
+                    session_id,
+                    now=time.time(),
+                    ttl_sec=_REVIEW_SESSION_TTL_SEC,
+                )
+                or {}
+            )
+        except Exception:
+            logger.warning("review_session_metadata_load_failed", exc_info=True)
+            session = {}
     if not session:
         raise HTTPException(status_code=409, detail="jd_review_json.review_session_id is expired or unknown")
     if session.get("document_sha256") != _sha256_bytes(upload_bytes):
@@ -3904,11 +4483,21 @@ def _validate_review_session(review_payload: dict[str, Any], upload_bytes: bytes
 
 
 def _sanitize_request_openai_key(value: str | None) -> str:
+    """Validate a BYOK credential without retaining or reflecting it."""
+
     key = str(value or "").strip()
     if not key:
         return ""
-    if len(key) > 300 or any(ch.isspace() for ch in key):
-        raise HTTPException(status_code=400, detail="openai_api_key is invalid")
+    if len(key) > 512 or any(ord(char) < 33 or ord(char) > 126 for char in key):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "openai_api_key_invalid",
+                "provider": "openai_api",
+                "message": "OpenAI API 키 형식이 올바르지 않습니다.",
+                "retryable": False,
+            },
+        )
     return key
 
 
@@ -3922,14 +4511,16 @@ def _require_allowed_openai_key(
     request: Request | None = None,
 ) -> None:
     del request
-    if settings.resolve_openai_key(request_key):
+    if str(request_key or "").strip():
         return
     raise HTTPException(
         status_code=400,
-        detail=(
-            "openai_api_key is required in the request body or form data. "
-            "Server and .env API key fallback is not supported."
-        ),
+        detail={
+            "code": "openai_api_key_required",
+            "provider": "openai_api",
+            "message": "OpenAI API 키를 입력해 주세요.",
+            "retryable": False,
+        },
     )
 
 
@@ -4332,7 +4923,7 @@ def _normalize_model_job_context(method: str, q: dict[str, Any], text: str) -> s
 
 
 def _evaluation_points_quality_ok(method: str, evaluation_points: list[str]) -> bool:
-    if not 4 <= len(evaluation_points) <= 5:
+    if len(evaluation_points) != 4:
         return False
     compact_points = [re.sub(r"\s+", "", str(point or "")) for point in evaluation_points]
     if any(point in _VAGUE_EVALUATION_POINT_KEYS for point in compact_points):
@@ -4408,8 +4999,26 @@ def _job_specific_context_ok(q: dict[str, Any], question: str, follow_ups: list[
         for term in primary_terms
         if re.sub(r"\s+", "", term).lower() in compact_text
     ]
+    if not primary_hits and _is_subscription_cli_source(q.get("question_source")):
+        primary_hits = [
+            term
+            for term in primary_terms
+            if any(
+                len(variant) >= 2 and variant in compact_text
+                for variant in {
+                    re.sub(r"\s+", "", term).lower(),
+                    re.sub(
+                        r"(?:관리|운영|지원|기획|평가|수립)$",
+                        "",
+                        re.sub(r"\s+", "", term).lower(),
+                    ),
+                }
+            )
+        ]
     if not primary_hits:
         return False
+    if _is_subscription_cli_source(q.get("question_source")):
+        return True
     terms = _job_context_terms(q)
     hits = [term for term in terms if re.sub(r"\s+", "", term).lower() in compact_text]
     required = 1 if len(terms) == 1 else 2
@@ -4446,7 +5055,15 @@ def _main_question_job_context_ok(q: dict[str, Any], question: str) -> bool:
     if not terms:
         return True
     compact_question = re.sub(r"\s+", "", str(question or "")).lower()
-    return any(re.sub(r"\s+", "", term).lower() in compact_question for term in terms)
+    for term in terms:
+        compact_term = re.sub(r"\s+", "", term).lower()
+        variants = {
+            compact_term,
+            re.sub(r"(?:관리|운영|지원|기획|평가|수립)$", "", compact_term),
+        }
+        if any(len(variant) >= 2 and variant in compact_question for variant in variants):
+            return True
+    return False
 
 
 def _follow_ups_quality_ok(method: str, q: dict[str, Any], follow_ups: list[str]) -> bool:
@@ -4697,14 +5314,41 @@ def _focus_scenario_coherence_ok(method: str, q: dict[str, Any], question: str) 
 
 
 _DILEMMA_CONSEQUENCE_DIMENSIONS: tuple[tuple[str, ...], ...] = (
-    ("승인", "규정", "절차", "근거", "책임", "보안", "안전", "품질", "정확", "오류", "위험"),
+    (
+        "승인",
+        "규정",
+        "절차",
+        "근거",
+        "책임",
+        "보안",
+        "안전",
+        "품질",
+        "정확",
+        "오류",
+        "위험",
+        "검증",
+    ),
     ("일정", "납기", "마감", "지연", "속도", "신속", "SLA", "연속성", "가동률", "회전율"),
     ("비용", "예산", "정산", "인력", "자원", "효율", "수익"),
-    ("민원", "불편", "편의", "수요", "요청", "협업", "자기결정", "수용성", "이용자", "고객"),
+    (
+        "민원",
+        "불편",
+        "편의",
+        "수요",
+        "요청",
+        "협업",
+        "자기결정",
+        "수용성",
+        "이용자",
+        "고객",
+        "만족",
+        "참여",
+    ),
 )
 _DILEMMA_DECISION_ACTIONS = (
     "금지", "허용", "보류", "착수", "집행", "처리", "강화", "완화", "우선",
     "준수", "공유", "배분", "배정", "유지", "확보", "준비", "적용", "예외", "조건부", "중단", "검증",
+    "확정", "합의", "조정", "선택", "결정",
 )
 
 
@@ -4721,7 +5365,22 @@ def _decision_dilemma_quality_ok(method: str, question: str) -> bool:
     )
     has_event = any(
         marker in compact
-        for marker in ("발생", "요청", "대기", "불일치", "누락", "재발", "임박", "변경", "부족", "지연")
+        for marker in (
+            "발생",
+            "요청",
+            "요구",
+            "대기",
+            "불일치",
+            "누락",
+            "재발",
+            "임박",
+            "변경",
+            "부족",
+            "지연",
+            "낮",
+            "하락",
+            "달성",
+        )
     )
     return bool(opposing_options and decision_action and consequence_dimensions >= 2 and has_event)
 
@@ -4801,10 +5460,39 @@ def _quality_check_statuses(
     material_only = {"case_materials_sufficient"}
     task_methods = {"상황면접", "발표면접", "토론면접", "인바스켓면접", "창의적 문제해결력면접"}
     authority_methods = {"상황면접", "토론면접", "인바스켓면접", "창의적 문제해결력면접"}
+    source = str(question.get("question_source") or "").strip()
+    subscription_cli_semantic_replacements = {
+        "method_shape",
+        "main_question_method_shape",
+        "main_question_job_context",
+        "follow_up_quality",
+        "evaluation_points_quality",
+        "ksa_grounded",
+        "official_sample_format",
+        "operating_conditions_separated",
+        "job_specific_context",
+    }
+    strict_realism_sources = {
+        "template_fallback",
+        "rule_fallback",
+        "simulation_candidate",
+        "quality_orchestrator_repair",
+        "deterministic",
+        "deterministic_template",
+    }
     statuses: dict[str, str] = {}
     for name, passed in checks.items():
         applicable = True
-        if name in debate_only:
+        if (
+            _is_subscription_cli_source(source)
+            and name in subscription_cli_semantic_replacements
+        ):
+            # These legacy gates infer quality from exact template keywords.
+            # Subscription CLI drafts use an exact evidence id plus the independent field-
+            # realism gate, so requiring those words would perversely reward
+            # the canned questions we are replacing.
+            applicable = False
+        elif name in debate_only:
             applicable = method == "토론면접"
         elif name in material_only:
             applicable = method in task_methods
@@ -4818,6 +5506,12 @@ def _quality_check_statuses(
             applicable = bool(question.get("model_question_preserved"))
         elif name == "evidence_linked":
             applicable = bool(question.get("question_evidence_required"))
+        elif name == "field_realism":
+            # Enforce the panel-readiness gate for subscription CLI paths and for
+            # wholly deterministic fallbacks.  Legacy OpenAI/model sources keep
+            # the realism diagnostics in the report during migration without
+            # changing their long-standing readiness contract.
+            applicable = _is_subscription_cli_source(source) or source in strict_realism_sources
         statuses[name] = "pass" if applicable and passed else "fail" if applicable else "not_applicable"
     return statuses
 
@@ -4829,6 +5523,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(questions, list):
         strategy["question_quality_report"] = {
             "policy": QUALITY_POLICY_VERSION,
+            "precision_grounding_policy": PRECISION_GROUNDING_POLICY,
             "passed": False,
             "summary": {
                 "question_count": 0,
@@ -4837,6 +5532,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
                 "average_score": 0.0,
                 "ready_count": 0,
                 "needs_review_count": 0,
+                "precision_grounding_failed_count": 0,
             },
             "items": [],
         }
@@ -4897,6 +5593,9 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
         if repeat_duplicate and _raw_model_scenarios_are_distinct(q, previous_repeat_items):
             repeat_duplicate = False
         has_specific_context = not any(marker in question for marker in ("해당 직무", "핵심 수행기준"))
+        realism = evaluate_question_realism(q)
+        precision_grounding = evaluate_question_precision_grounding(q)
+        evaluation_alignment = evaluate_evaluation_elicitation_alignment(q)
         checks = {
             "supported_method": method in QUALITY_INTERVIEW_METHODS,
             "method_shape": _method_shape_ok(method, merged),
@@ -4904,7 +5603,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
             "main_question_job_context": _main_question_job_context_ok(q, question),
             "follow_up_depth": len(follow_ups) >= 3,
             "follow_up_quality": _follow_ups_quality_ok(method, q, follow_ups),
-            "evaluation_points": len(evaluation_points) >= 4,
+            "evaluation_points": len(evaluation_points) == 4,
             "evaluation_points_quality": _evaluation_points_quality_ok(method, evaluation_points),
             "ncs_grounded": bool(ncs_code and str(q.get("competency") or "").strip()),
             "detail_grounded": bool(str(q.get("ncs_detail") or q.get("ncsSclasCdnm") or "").strip()),
@@ -4935,6 +5634,8 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
             "decision_authority_context": _decision_authority_context_ok(method, q.get("task_conditions")),
             "inbasket_authority_context": _inbasket_authority_context_ok(method, q.get("task_conditions")),
             "behavior_anchored_evaluation": _behavior_anchors_ok(q.get("assessment_guide")),
+            "field_realism": bool(realism.get("passed")),
+            "precision_grounding": bool(precision_grounding.get("passed")),
         }
         check_statuses = _quality_check_statuses(method, q, checks)
         applicable_statuses = [status for status in check_statuses.values() if status != "not_applicable"]
@@ -4960,6 +5661,42 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
                 "question_intent": _question_intent_key(question),
                 "question_repeat_signature": repeat_signature,
                 "question_repeat_duplicate": repeat_duplicate,
+                "question_source": str(q.get("question_source") or "").strip(),
+                "realism_policy": REALISM_POLICY_VERSION,
+                "realism_score": int(realism.get("score") or 0),
+                "realism_issue_codes": list(realism.get("issue_codes") or []),
+                "realism_issues": list(realism.get("issues") or []),
+                "realism_checks": dict(realism.get("checks") or {}),
+                "precision_grounding_policy": PRECISION_GROUNDING_POLICY,
+                "precision_grounding_issue_codes": list(
+                    precision_grounding.get("issue_codes") or []
+                ),
+                "precision_grounding_issues": list(
+                    precision_grounding.get("issues") or []
+                ),
+                "precision_grounding_demands": list(
+                    precision_grounding.get("demands") or []
+                ),
+                "precision_grounding_metrics": dict(
+                    precision_grounding.get("metrics") or {}
+                ),
+                # v1 remains shadow-only while its bounded semantic lattice is
+                # calibrated on additional real institutions.  Expose its
+                # fail/review evidence now; do not silently convert it into a
+                # readiness veto until the evaluation corpus is broad enough.
+                "evaluation_alignment_policy": EVALUATION_ELICITATION_POLICY,
+                "evaluation_alignment_decision": str(
+                    evaluation_alignment.get("decision") or ""
+                ),
+                "evaluation_alignment_checks": dict(
+                    evaluation_alignment.get("checks") or {}
+                ),
+                "evaluation_alignment_issues": list(
+                    evaluation_alignment.get("issues") or []
+                ),
+                "evaluation_alignment_metrics": dict(
+                    evaluation_alignment.get("metrics") or {}
+                ),
                 "score": score,
                 "ready": ready,
                 "checks": checks,
@@ -4977,6 +5714,9 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     passed = bool(count_matches_plan and items and ready_count == len(items))
     strategy["question_quality_report"] = {
         "policy": QUALITY_POLICY_VERSION,
+        "precision_grounding_policy": PRECISION_GROUNDING_POLICY,
+        "evaluation_alignment_policy": EVALUATION_ELICITATION_POLICY,
+        "evaluation_alignment_enforcement": "shadow",
         "passed": passed,
         "summary": {
             "question_count": len(items),
@@ -4985,6 +5725,22 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
             "average_score": avg,
             "ready_count": ready_count,
             "needs_review_count": len(items) - ready_count,
+            "precision_grounding_failed_count": sum(
+                not bool((item.get("checks") or {}).get("precision_grounding"))
+                for item in items
+            ),
+            "evaluation_alignment_pass_count": sum(
+                item.get("evaluation_alignment_decision") == "pass"
+                for item in items
+            ),
+            "evaluation_alignment_review_count": sum(
+                item.get("evaluation_alignment_decision") == "review"
+                for item in items
+            ),
+            "evaluation_alignment_fail_count": sum(
+                item.get("evaluation_alignment_decision") == "fail"
+                for item in items
+            ),
         },
         "items": items,
     }
@@ -4999,14 +5755,14 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
         return strategy
 
     evidence_rows: list[dict[str, str]] = []
-    seen_rows: set[tuple[str, str]] = set()
+    seen_rows: set[str] = set()
     for raw in ncs_ksa or []:
         if not isinstance(raw, dict):
             continue
         row = _clean_ksa_evidence_row(raw)
         if not row["factorName"]:
             continue
-        key = (row["ncsClCd"], _ksa_key(row["factorName"]))
+        key = row["evidence_id"]
         if key in seen_rows:
             continue
         seen_rows.add(key)
@@ -5027,7 +5783,10 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
         def add(row: dict[str, str]) -> None:
             if len(picked) >= 4:
                 return
-            key = (row["ncsClCd"], _ksa_key(row["factorName"]))
+            # Two official KSA rows may legitimately share the same visible
+            # factor label while belonging to different elements/numbers.
+            # Evidence identity—not display text—is the audit boundary.
+            key = (row["ncsClCd"], row["evidence_id"])
             if key in picked_keys:
                 return
             picked_keys.add(key)
@@ -5037,6 +5796,25 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
         if not code or not preferred:
             return []
         fallback = preferred
+
+        preferred_id = str(question.get("question_evidence_id") or "").strip()
+        if _is_subscription_cli_source(question.get("question_source")):
+            # Model-backed public candidates must preserve the exact evidence
+            # assignment emitted for their prompt index.  Inferring the first
+            # convenient row here would turn a missing, invented, or swapped ID
+            # into apparently valid audit evidence.
+            if not preferred_id:
+                return []
+            return [
+                row
+                for row in fallback
+                if row["evidence_id"] == preferred_id
+            ][:1]
+        if preferred_id:
+            for row in fallback:
+                if row["evidence_id"] == preferred_id:
+                    add(row)
+                    break
 
         for ref_key in ref_keys:
             if not ref_key:
@@ -5132,8 +5910,14 @@ def _run_runtime_question_quality_orchestration(
         item = dict(raw_item)
         method = str(item.get("type") or item.get("method") or "경험면접").strip()
         ncs_code = str(item.get("ncsClCd") or "").strip()
+        provided_focus_evidence = _evidence_row_for_id(
+            ncs_ksa,
+            ncs_code,
+            item.get("question_evidence_id"),
+        )
         focus = _clean_question_text(
-            item.get("question_focus")
+            provided_focus_evidence.get("factorName")
+            or item.get("question_focus")
             or ((item.get("ksa_refs") or [""])[0] if isinstance(item.get("ksa_refs"), list) else ""),
             max_chars=60,
         )
@@ -5145,7 +5929,7 @@ def _run_runtime_question_quality_orchestration(
             or item.get("ncsSclasCdnm")
             or ""
         ).strip()
-        focus_evidence = _evidence_row_for_focus(ncs_ksa, ncs_code, focus)
+        focus_evidence = provided_focus_evidence or _evidence_row_for_focus(ncs_ksa, ncs_code, focus)
         task_frame = _question_task_frame(
             focus=focus or "핵심 수행기준",
             focus_type=focus_type,
@@ -5262,7 +6046,12 @@ def _run_runtime_question_quality_orchestration(
         index: int,
         reasons: list[str],
         attempt: int,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
+        if _is_subscription_cli_source(original.get("question_source")):
+            # A deterministic rewrite is usually less interview-realistic than
+            # the original provider draft. Keep it visible for human review
+            # and let the final quality report expose the unresolved issues.
+            return None
         item = dict(original)
         method = str(item.get("type") or item.get("method") or "경험면접").strip()
         if method not in QUALITY_INTERVIEW_METHODS:
@@ -5392,10 +6181,61 @@ def _run_runtime_question_quality_orchestration(
         and normalized_generation_offset > 0
         and str(item.get("question_source") or "").strip() in deterministic_sources
     }
+
+    def audit_question(item: dict[str, Any]) -> dict[str, Any]:
+        source = str(item.get("question_source") or "").strip()
+        measurement = evaluate_ksa_measurement(item)
+        precision_grounding = evaluate_question_precision_grounding(item)
+        precision_issues = [
+            f"precision_grounding_{code}"
+            for code in (precision_grounding.get("issue_codes") or [])
+            if str(code).strip()
+        ]
+        measurement_issues = [
+            str(code).strip()
+            for code in (measurement.get("issues") or [])
+            if str(code).strip()
+        ]
+        checks = dict(measurement.get("checks") or {})
+        checks["precision_grounding"] = bool(precision_grounding.get("passed"))
+        if not _is_subscription_cli_source(source):
+            return {
+                "passed": bool(measurement.get("passed"))
+                and bool(precision_grounding.get("passed")),
+                "issues": list(
+                    dict.fromkeys([*measurement_issues, *precision_issues])
+                ),
+                "checks": checks,
+            }
+        realism = evaluate_question_realism(item)
+        realism_issues = [
+            f"field_realism_{code}"
+            for code in (realism.get("issue_codes") or [])
+            if str(code).strip()
+        ]
+        checks.update(
+            {
+                f"field_realism_{name}": passed
+                for name, passed in (realism.get("checks") or {}).items()
+            }
+        )
+        return {
+            "passed": bool(realism.get("passed"))
+            and bool(measurement.get("passed"))
+            and bool(precision_grounding.get("passed")),
+            "issues": list(
+                dict.fromkeys(
+                    [*measurement_issues, *realism_issues, *precision_issues]
+                )
+            ),
+            "checks": checks,
+        }
+
     orchestrated_questions, metadata = orchestrate_question_set(
         questions,
         avoid_questions=avoid_questions,
         repair_question=repair_question,
+        audit_question=audit_question,
         max_repair_attempts=36,
         required_repair_reasons=required_repair_reasons,
     )
@@ -5754,6 +6594,537 @@ def _filter_ncs_code_result_against_avoid_list(
     result["total_count"] = len(main_questions) + len(follow_up_questions)
 
 
+def _generation_provider_descriptor(provider: str = "") -> dict[str, Any]:
+    provider = (
+        _GENERATION_PROVIDER_ALIASES.get(str(provider).strip().lower(), str(provider).strip().lower())
+        if str(provider).strip()
+        else _configured_generation_provider()
+    )
+    if provider == "codex_cli":
+        return {
+            "provider": "codex_cli",
+            "provider_label": "Codex · ChatGPT 로그인",
+            "auth_mode": "chatgpt_subscription",
+            "requires_request_api_key": False,
+            "local_only": True,
+        }
+    if provider == "claude_code":
+        return {
+            "provider": "claude_code",
+            "provider_label": "Claude Code · Claude 로그인",
+            "auth_mode": "claude_subscription",
+            "requires_request_api_key": False,
+            "local_only": True,
+        }
+    if provider == "openai_api":
+        return {
+            "provider": "openai_api",
+            "provider_label": "OpenAI API",
+            "auth_mode": "request_scoped_api_key",
+            "requires_request_api_key": True,
+            "credential_managed_by": "request",
+            "local_only": False,
+        }
+    return {
+        "provider": provider,
+        "provider_label": provider or "설정 오류",
+        "auth_mode": "misconfigured",
+        "requires_request_api_key": False,
+        "local_only": False,
+    }
+
+
+def _subscription_cli_provider_http_error(
+    exc: BaseException,
+    *,
+    provider: str,
+) -> HTTPException | None:
+    """Surface local subscription-CLI failures instead of degrading silently."""
+
+    provider = _GENERATION_PROVIDER_ALIASES.get(
+        str(provider or "").strip().lower(),
+        str(provider or "").strip().lower(),
+    )
+    code = str(getattr(exc, "code", "") or "").strip()
+    if provider not in _SUBSCRIPTION_CLI_PROVIDERS or not code:
+        return None
+
+    retryable = bool(getattr(exc, "retryable", False))
+    provider_label = "Codex" if provider == "codex_cli" else "Claude Code"
+    message = f"{provider_label} generation failed"
+    status_code = 502
+
+    if code.endswith("_usage_limit_reached"):
+        status_code = 429
+        message = (
+            f"{provider_label} 구독 사용량 한도에 도달했습니다. "
+            "잠시 후 다시 시도하거나 로그인 상태를 확인하세요."
+        )
+    elif code.endswith("_authentication_required"):
+        status_code = 503
+        login_command = "codex login" if provider == "codex_cli" else "claude auth login"
+        message = (
+            f"{provider_label} 로그인 상태를 확인할 수 없습니다. "
+            f"PowerShell에서 {login_command}을 실행한 뒤 다시 시도하세요."
+        )
+    elif code.endswith("_unavailable"):
+        status_code = 503
+        message = f"{provider_label} CLI를 찾을 수 없습니다. 먼저 설치 상태를 확인하세요."
+    elif code.endswith("_timeout"):
+        status_code = 504
+        message = f"{provider_label} 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요."
+    elif code.endswith("_input_too_large"):
+        status_code = 413
+        message = f"{provider_label}에 전달할 문서 입력이 너무 큽니다. 입력 범위를 줄여 주세요."
+    elif code.endswith("_invalid_output"):
+        status_code = 502
+        message = f"{provider_label}가 유효한 구조화 결과를 반환하지 않았습니다. 다시 시도해 주세요."
+    elif code.endswith("_execution_failed"):
+        status_code = 502
+        message = f"{provider_label} 실행 중 오류가 발생했습니다. 잠시 후 다시 시도하세요."
+    else:
+        return None
+
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "provider": provider,
+            "message": message,
+            "retryable": retryable,
+        },
+    )
+
+
+def _institution_api_provider_http_error(exc: BaseException) -> HTTPException:
+    """Return a stable, non-sensitive failure for request-scoped API use."""
+
+    normalized = str(exc or "").casefold()
+    if "openai_http_401" in normalized or "openai_http_403" in normalized:
+        return HTTPException(
+            status_code=401,
+            detail={
+                "code": "openai_api_authentication_failed",
+                "provider": "openai_api",
+                "message": "입력한 OpenAI API 키를 인증하지 못했습니다.",
+                "retryable": False,
+            },
+        )
+    if "openai_http_429" in normalized:
+        return HTTPException(
+            status_code=429,
+            detail={
+                "code": "openai_api_usage_limit_reached",
+                "provider": "openai_api",
+                "message": "OpenAI API 사용량 또는 요청 한도를 확인해 주세요.",
+                "retryable": True,
+            },
+        )
+    return HTTPException(
+        status_code=502,
+        detail={
+            "code": "openai_api_generation_failed",
+            "provider": "openai_api",
+            "message": "OpenAI API에서 질문을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            "retryable": True,
+        },
+    )
+
+
+def _require_institution_api_model_output(strategy: Any) -> None:
+    """Reject an explicit model failure before any deterministic repair runs."""
+
+    if not isinstance(strategy, dict):
+        raise RuntimeError("institution_api_invalid_generation_result")
+    questions = strategy.get("interview_questions")
+    has_question = isinstance(questions, list) and any(
+        isinstance(item, dict) and str(item.get("question") or "").strip()
+        for item in questions
+    )
+    explicit_failure = bool(str(strategy.get("error") or "").strip()) or (
+        str(strategy.get("question_generation_policy") or "").strip()
+        == "model_only_no_template_fallback"
+    )
+    if explicit_failure or not has_question:
+        raise RuntimeError("institution_api_empty_generation")
+
+
+_INSTITUTION_QUALITY_RETRY_POLICY = "institution-openai-quality-retry-v1"
+_INSTITUTION_RETRYABLE_QUALITY_CODES = frozenset(
+    {
+        "deterministic_fallback",
+        "question_evidence_assignment_failed",
+        "question_quality_report_failed",
+        "question_quality_orchestration_failed",
+        "precision_grounding_failed",
+    }
+)
+
+
+def _institution_question_rejection_codes(
+    result: Any,
+    *,
+    require_quality_metadata: bool = False,
+) -> list[str]:
+    """Return stable server-owned reasons why public question output is unsafe.
+
+    The codes intentionally carry no model text, KSA labels, exception strings,
+    or precision evidence.  They can therefore be used in a bounded repair
+    prompt and audit metadata without reflecting sensitive request data.
+    """
+
+    if not isinstance(result, dict):
+        return ["invalid_question_result"]
+
+    questions: list[dict[str, Any]] = []
+    for key in ("main_questions", "questions", "interview_questions"):
+        rows = result.get(key)
+        if isinstance(rows, list):
+            questions.extend(row for row in rows if isinstance(row, dict))
+
+    codes: list[str] = []
+    if result.get("error"):
+        codes.append("result_error")
+    if not any(str(row.get("question") or "").strip() for row in questions):
+        codes.append("empty_question_set")
+
+    forbidden_sources = {
+        "template_fallback",
+        "rule_fallback",
+        "quality_orchestrator_repair",
+    }
+    if bool(result.get("template_fallback_used")) or any(
+        str(row.get("question_source") or "").strip() in forbidden_sources
+        for row in questions
+    ):
+        codes.append("deterministic_fallback")
+
+    evidence_assignment = result.get("question_evidence_assignment")
+    if (
+        isinstance(evidence_assignment, dict)
+        and evidence_assignment.get("applicable") is True
+        and evidence_assignment.get("passed") is not True
+    ):
+        codes.append("question_evidence_assignment_failed")
+
+    quality_report = result.get("question_quality_report")
+    if require_quality_metadata and not isinstance(quality_report, dict):
+        codes.append("question_quality_report_missing")
+    elif isinstance(quality_report, dict) and quality_report.get("passed") is not True:
+        codes.append("question_quality_report_failed")
+
+    orchestration = result.get("question_quality_orchestration")
+    if require_quality_metadata and not isinstance(orchestration, dict):
+        codes.append("question_quality_orchestration_missing")
+    elif isinstance(orchestration, dict) and str(
+        orchestration.get("status") or ""
+    ).strip() != "passed":
+        codes.append("question_quality_orchestration_failed")
+
+    if not _public_questions_precision_grounded(result):
+        codes.append("precision_grounding_failed")
+    return list(dict.fromkeys(codes))
+
+
+def _require_institution_api_question_output(result: Any) -> None:
+    """Reject empty, deterministic, or failed-quality public API output."""
+
+    if _institution_question_rejection_codes(result):
+        raise RuntimeError("institution_api_question_generation_failed")
+
+
+def _raw_model_question_texts(strategy: Any, *, max_items: int = 20) -> list[str]:
+    if not isinstance(strategy, dict):
+        return []
+    questions = strategy.get("interview_questions")
+    if not isinstance(questions, list):
+        return []
+    texts: list[str] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        text = _clean_question_text(
+            item.get("model_question_raw") or item.get("question"),
+            max_chars=160,
+        )
+        if text:
+            texts.append(text)
+        if len(texts) >= max(1, int(max_items)):
+            break
+    return texts
+
+
+_QUESTION_EVIDENCE_ASSIGNMENT_POLICY = "planned-question-evidence-assignment-v1"
+
+
+def _planned_question_evidence_assignments(
+    *,
+    question_plan: dict[str, Any],
+    interview_methods: list[str],
+    ncs_matches: list[dict[str, Any]],
+    ncs_ksa: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[tuple[int, str]]]:
+    """Rebuild the exact server-side sequence that was embedded in the prompt."""
+
+    target_count = int(question_plan.get("total_main_count") or 0)
+    planned_sequence = _planned_question_sequence_for_prompt(
+        question_plan,
+        interview_methods,
+        target_count,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+    if not planned_sequence:
+        return dict(question_plan), []
+
+    runtime_plan = dict(question_plan)
+    runtime_plan["question_sequence"] = [dict(item) for item in planned_sequence]
+    locks: list[tuple[int, str]] = []
+    for fallback_index, item in enumerate(planned_sequence, start=1):
+        evidence_id = str(item.get("evidence_id") or "").strip()
+        try:
+            index = int(item.get("index") or fallback_index)
+        except (TypeError, ValueError):
+            index = fallback_index
+        if not re.fullmatch(r"ksa_[0-9a-f]{24}", evidence_id):
+            continue
+        if not _evidence_row_for_id(ncs_ksa, str(item.get("ncsClCd") or ""), evidence_id):
+            continue
+        locks.append((index, evidence_id))
+    return runtime_plan, locks
+
+
+def _raw_model_evidence_assignment_report(
+    strategy: Any,
+    evidence_locks: list[tuple[int, str]],
+) -> dict[str, Any]:
+    """Compare raw model IDs with the prompt plan before enrichment can repair them."""
+
+    expected = dict(evidence_locks)
+    questions = strategy.get("interview_questions") if isinstance(strategy, dict) else None
+    rows = questions if isinstance(questions, list) else []
+    mismatched_indexes: list[int] = []
+    for index, evidence_id in evidence_locks:
+        raw_item = rows[index - 1] if 0 < index <= len(rows) else None
+        raw_id = (
+            str(raw_item.get("question_evidence_id") or "").strip()
+            if isinstance(raw_item, dict)
+            else ""
+        )
+        if raw_id != evidence_id:
+            mismatched_indexes.append(index)
+    return {
+        "policy": _QUESTION_EVIDENCE_ASSIGNMENT_POLICY,
+        "applicable": bool(expected),
+        "passed": not mismatched_indexes if expected else True,
+        "expected_count": len(expected),
+        "matched_count": len(expected) - len(mismatched_indexes),
+        "mismatch_count": len(mismatched_indexes),
+        "mismatched_indexes": mismatched_indexes,
+    }
+
+
+def _quality_retry_context(
+    *,
+    trigger_codes: list[str],
+    previous_questions: list[str],
+    evidence_locks: list[tuple[int, str]],
+    original_context: str,
+) -> str:
+    safe_codes = sorted(
+        code for code in dict.fromkeys(trigger_codes)
+        if code in _INSTITUTION_RETRYABLE_QUALITY_CODES
+    )
+    lock_payload = [[index, evidence_id] for index, evidence_id in evidence_locks]
+    instruction = (
+        "[서버 품질 재생성 지침]\n"
+        "- 이전 후보 세트를 복사하거나 일부 수정하지 말고 전 문항을 새로 작성하세요.\n"
+        "- NCS 내부 명칭을 질문 문장에 노출하지 말고 사건·판단·행동·산출물로 번역하세요.\n"
+        "- 주질문은 핵심 판단 1개와 필수 산출물 1개에 집중하세요.\n"
+        "- 꼬리질문 3개 중 최소 2개는 지원자의 직전 답변 슬롯을 받아 묻고, 평가기준은 정확히 4개 모두 질문에서 관찰 가능해야 합니다.\n"
+        f"- 서버 품질 코드: {','.join(safe_codes)}\n"
+        f"- index별 evidence_id 잠금(JSON): {json.dumps(lock_payload, ensure_ascii=True, separators=(',', ':'))}"
+    )
+    previous_context = _build_avoid_questions_context(previous_questions, max_items=8)
+    # build_strategy_with_openai consumes the first 2,000 characters. Keep the
+    # repair contract and evidence locks first; ordinary history is lower priority.
+    return _join_generation_context(instruction, previous_context, original_context)[:2000]
+
+
+async def _generate_quality_gated_institution_strategy(
+    *,
+    build_kwargs: dict[str, Any],
+    question_plan: dict[str, Any],
+    interview_methods: list[str],
+    ncs_matches: list[dict[str, Any]],
+    ncs_ksa: list[dict[str, Any]],
+    avoid_questions: list[str],
+    generation_offset: int | None,
+) -> dict[str, Any]:
+    """Generate once and perform one bounded retry only for quality rejection."""
+
+    runtime_question_plan, planned_evidence_locks = _planned_question_evidence_assignments(
+        question_plan=question_plan,
+        interview_methods=interview_methods,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+
+    async def run_once(local_build_kwargs: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        loop = asyncio.get_running_loop()
+        generated = await loop.run_in_executor(
+            None,
+            functools.partial(build_jd_strategy_with_openai, **local_build_kwargs),
+        )
+        _require_institution_api_model_output(generated)
+        evidence_assignment = _raw_model_evidence_assignment_report(
+            generated,
+            planned_evidence_locks,
+        )
+        raw_questions = _raw_model_question_texts(generated)
+        processed = _adjust_generated_questions(
+            generated,
+            runtime_question_plan,
+            interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
+        )
+        processed = _attach_ksa_evidence_to_strategy(processed, ncs_ksa)
+        processed = _run_runtime_question_quality_orchestration(
+            processed,
+            question_plan=runtime_question_plan,
+            ncs_ksa=ncs_ksa,
+            avoid_questions=avoid_questions,
+            generation_offset=generation_offset,
+        )
+        processed["question_evidence_assignment"] = evidence_assignment
+        return processed, raw_questions
+
+    first_build_kwargs = dict(build_kwargs)
+    first_build_kwargs.setdefault("max_model_requests", 2)
+    first_build_kwargs.setdefault("transport_max_attempts", 1)
+    strategy, previous_questions = await run_once(first_build_kwargs)
+    first_generation_request_count = int(
+        strategy.get("provider_generation_request_count") or 0
+    )
+    trigger_codes = _institution_question_rejection_codes(
+        strategy,
+        require_quality_metadata=True,
+    )
+    if not trigger_codes:
+        strategy["model_quality_retry"] = {
+            "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
+            "provider": "openai_api",
+            "attempted": False,
+            "retry_count": 0,
+            "attempt_count": 1,
+            "outcome": "not_needed",
+            "trigger_codes": [],
+            "previous_candidate_count": 0,
+            "evidence_lock_count": len(planned_evidence_locks),
+            "provider_generation_request_count": first_generation_request_count,
+            "provider_generation_request_limit": 3,
+            "transport_attempt_limit_per_generation_request": 1,
+        }
+        return strategy
+
+    if any(code not in _INSTITUTION_RETRYABLE_QUALITY_CODES for code in trigger_codes):
+        raise RuntimeError("institution_api_question_generation_failed")
+
+    evidence_locks = list(planned_evidence_locks)
+    logger.warning(
+        "institution_question_quality_retry_started provider=openai_api codes=%s candidates=%s evidence_locks=%s",
+        ",".join(sorted(trigger_codes)),
+        len(previous_questions),
+        len(evidence_locks),
+    )
+    retry_kwargs = dict(build_kwargs)
+    retry_context = _quality_retry_context(
+        trigger_codes=trigger_codes,
+        previous_questions=previous_questions,
+        evidence_locks=evidence_locks,
+        original_context=str(first_build_kwargs.get("extra_context") or ""),
+    )
+    request_secret = str(first_build_kwargs.get("api_key_override") or "").strip()
+    if request_secret:
+        retry_context = retry_context.replace(request_secret, "[redacted]")
+    retry_kwargs["extra_context"] = retry_context
+    # The first builder invocation already owns its one provider-recovery
+    # (slim prompt) budget.  The outer retry is specifically the single
+    # quality regeneration, so it must not silently open another slim retry.
+    retry_kwargs["max_model_requests"] = 1
+    retry_kwargs["transport_max_attempts"] = 1
+    retried, _unused_questions = await run_once(retry_kwargs)
+    total_generation_request_count = first_generation_request_count + int(
+        retried.get("provider_generation_request_count") or 0
+    )
+    retry_codes = _institution_question_rejection_codes(
+        retried,
+        require_quality_metadata=True,
+    )
+    if retry_codes:
+        logger.warning(
+            "institution_question_quality_retry_failed provider=openai_api codes=%s",
+            ",".join(sorted(set(retry_codes))),
+        )
+        _require_institution_api_question_output(retried)
+        raise RuntimeError("institution_api_question_generation_failed")
+
+    logger.info(
+        "institution_question_quality_retry_passed provider=openai_api evidence_locks=%s",
+        len(evidence_locks),
+    )
+    retried["model_quality_retry"] = {
+        "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
+        "provider": "openai_api",
+        "attempted": True,
+        "retry_count": 1,
+        "attempt_count": 2,
+        "outcome": "passed_after_retry",
+        "trigger_codes": sorted(trigger_codes),
+        "previous_candidate_count": len(previous_questions),
+        "evidence_lock_count": len(evidence_locks),
+        "provider_generation_request_count": total_generation_request_count,
+        "provider_generation_request_limit": 3,
+        "transport_attempt_limit_per_generation_request": 1,
+    }
+    return retried
+
+
+def _verify_institution_openai_api(api_key: str) -> tuple[bool, str]:
+    """One-shot credential check retained for internal diagnostics and tests.
+
+    Public status and health endpoints never call this function because a
+    request-scoped secret must not be submitted to those GET endpoints.
+    """
+
+    from app.services.openai_http import check_openai_connectivity_with_retries
+
+    return check_openai_connectivity_with_retries(api_key, max_attempts=1)
+
+
+@app.get("/api/generation-provider/status")
+def generation_provider_status(
+    request: Request,
+    provider: str = Query(default=""),
+) -> dict[str, Any]:
+    """Report the request-scoped BYOK contract without accepting a secret."""
+
+    _reject_sensitive_query_params(request, destination="generation request body")
+    active_provider = _request_generation_provider(provider)
+    descriptor = _generation_provider_descriptor(active_provider)
+    descriptor["configured_default"] = _configured_generation_provider()
+    return {
+        **descriptor,
+        "status": "key_required",
+        "available": True,
+        "authenticated": False,
+        "credential_configured": False,
+        "message": "화면에 OpenAI API 키를 입력해 주세요. 키는 생성 요청에만 사용됩니다.",
+        "login_command": "",
+    }
+
+
 @app.get("/health")
 def health(request: Request) -> dict:
     del request
@@ -5765,8 +7136,11 @@ def health(request: Request) -> dict:
             "public_inst": bool(settings.public_inst_key()),
             "ncs": bool(settings.ncs_key()),
             "openai": False,
+            "openai_institution_managed": False,
             "openai_request_scoped": True,
+            "openai_authenticated": False,
         },
+        "question_generation": _generation_provider_descriptor(),
         "ncs_source": "remote-mcp",
         "ncs_mcp": mcp,
     }
@@ -5848,12 +7222,13 @@ def ncs_unit_options(
     term = str(q or "").strip()
     if not term:
         return {"count": 0, "items": [], "source": "ncs-mcp", "message": "Enter a confirmed NCS detail classification."}
+    terms = _parse_sclass_terms(term)
     try:
-        items = search_units_by_detail([term], max_units=limit)
+        items = search_units_by_detail(terms, max_units=limit)
         source = "ncs-mcp"
         message = ""
         if not items:
-            items = suggest_units_by_text([term], max_units=min(limit, 50))
+            items = suggest_units_by_text(terms, max_units=min(limit, 50))
             source = "ncs-mcp-suggest"
             message = "Exact detail-class match was not found. Review suggested NCS units manually."
     except NcsMcpError as exc:
@@ -5923,7 +7298,8 @@ def ncs_sclass_ksa(
 
 
 @app.get("/api/ops/metrics")
-def ops_metrics() -> dict:
+def ops_metrics(x_admin_token: str | None = Header(default=None)) -> dict:
+    _require_admin(x_admin_token)
     return {"queue": queue.stats()}
 
 
@@ -5933,12 +7309,13 @@ def _require_admin(x_admin_token: str | None) -> None:
     expected = settings.admin_token()
     if not expected:
         raise HTTPException(status_code=403, detail="ADMIN_TOKEN is required")
-    if x_admin_token != expected:
+    if not secrets.compare_digest(str(x_admin_token or ""), expected):
         raise HTTPException(status_code=401, detail="invalid admin token")
 
 
 @app.get("/api/ops/quality-metrics")
-def ops_question_quality_metrics() -> dict:
+def ops_question_quality_metrics(x_admin_token: str | None = Header(default=None)) -> dict:
+    _require_admin(x_admin_token)
     try:
         return {
             "quality_policy_version": QUALITY_POLICY_VERSION,
@@ -5950,7 +7327,8 @@ def ops_question_quality_metrics() -> dict:
 
 
 @app.get("/api/ops/ax-readiness")
-def ops_ax_readiness() -> dict:
+def ops_ax_readiness(x_admin_token: str | None = Header(default=None)) -> dict:
+    _require_admin(x_admin_token)
     metrics = question_quality_metrics()
     mcp = ncs_mcp_status()
     state_path = BASE_DIR.parent / "reports" / "question_quality_loop" / "state.json"
@@ -6197,8 +7575,10 @@ def ncs_proxy(
     data_type: str | None = Query(default=None, alias="type"),
     ncs_job_cd: str | None = Query(default=None),
     ncs_cl_cd: str | None = Query(default=None),
+    x_admin_token: str | None = Header(default=None),
 ) -> dict:
     _require_legacy_ncs_api_enabled()
+    _require_admin(x_admin_token)
     query: dict = {}
     if page_no is not None:
         query["pageNo"] = page_no
@@ -6515,6 +7895,7 @@ async def jd_strategy_upload(
     notice_file: UploadFile | None = File(default=None),
     strengths: str = Form(default=""),
     openai_api_key: str = Form(default=""),
+    generation_provider: str = Form(default=""),
     manual_sclass: str = Form(default=""),
     manual_sclass_add: str = Form(default=""),
     manual_sclass_remove: str = Form(default=""),
@@ -6530,8 +7911,10 @@ async def jd_strategy_upload(
 ) -> dict:
     # 최적값 고정 (사용자 노출 제거)
     _reject_sensitive_query_params(request, destination="form data")
+    request_generation_provider = _request_generation_provider(generation_provider)
     run_top_k, run_ksa_units, run_ksa_factors = FAST_NCS_TOP_K, FAST_KSA_UNITS, FAST_KSA_FACTORS_PER_UNIT
     request_openai_api_key = _sanitize_request_openai_key(openai_api_key)
+    _require_allowed_openai_key(request_openai_api_key, request)
 
     async def _read_text(upload: UploadFile | None, label: str) -> tuple[str, bytes, str]:
         if not upload:
@@ -6676,8 +8059,6 @@ async def jd_strategy_upload(
         score_margin=_to_float_or(os.getenv("NCS_VERIFIED_SCORE_MARGIN", "0.18"), 0.18),
         min_confidence=_to_float_or(os.getenv("NCS_VERIFIED_MIN_CONFIDENCE", "0.62"), 0.62),
     )
-    reverse_sclass_candidates: list[dict] = sclass_bundle["reverse_sclass_candidates"]
-    direct_sclass_candidates_raw: list[dict] = sclass_bundle["direct_sclass_candidates_raw"]
     csv_sclass_candidates: list[dict] = sclass_bundle["csv_sclass_candidates"]
     verified_sclass: list[dict] = sclass_bundle["verified_sclass"]
 
@@ -6690,11 +8071,13 @@ async def jd_strategy_upload(
     if not ncs_query_terms:
         ncs_query_terms = [t for t in (reviewed_keywords or inferred_keywords or seeds[:8]) if t]
 
-    reviewed_detail_terms = [
-        str(value).strip()
-        for value in (reviewed_fields.get("ncs_detail_candidates") or [])
-        if str(value).strip()
-    ]
+    reviewed_detail_terms = _parse_sclass_terms(
+        "\n".join(
+            str(value).strip()
+            for value in (reviewed_fields.get("ncs_detail_candidates") or [])
+            if str(value).strip()
+        )
+    )
     question_plan = _parse_question_plan_json(question_plan_json, reviewed_detail_terms)
     interview_methods = _parse_interview_methods(interview_methods_json)
     if question_plan["selected_terms"]:
@@ -6914,6 +8297,11 @@ async def jd_strategy_upload(
             status_code=422,
             detail=f"Local NCS DB units were found through NCS_MCP, but no NCS matches survived ranking: {ncs_query_terms[:8]}",
         )
+    ncs_matches = _ensure_question_plan_unit_coverage(
+        question_plan,
+        ncs_matches,
+        ncs_items,
+    )
 
     # NCS 평가요소를 수집해 OpenAI 입력에 함께 전달한다.
     # 전체 KSA 후보를 넓게 수집한 뒤, JD 핵심 + 담당업무 텍스트 기준 TF-IDF로 상위만 선별한다.
@@ -7001,71 +8389,40 @@ async def jd_strategy_upload(
     avoid_context = _join_generation_context(avoid_context, _quality_feedback_context(ncs_matches))
     enable_ai_refine = bool(inferred_keywords or reviewed_keywords or ai_ncs_code_candidates)
 
+    build_kwargs = {
+        "jd_text": jd_text,
+        "notice_text": notice_context,
+        "strengths": strengths,
+        "region": "",
+        "ncs_matches": ncs_matches,
+        "ncs_ksa": ncs_ksa,
+        "ncs_context": ncs_context,
+        "duty_text": duty_text_clean,
+        "evaluation_text": evaluation_text_clean,
+        "desired_job": "",
+        "api_key_override": request_openai_api_key,
+        "target_count_override": question_plan["total_main_count"],
+        "follow_up_count": question_plan["follow_up_count"],
+        "question_plan": question_plan,
+        "interview_methods": interview_methods,
+        "extra_context": avoid_context,
+        "generation_provider": request_generation_provider,
+    }
     try:
-        loop = asyncio.get_event_loop()
-        strategy = await loop.run_in_executor(
-            None,
-            functools.partial(
-                build_jd_strategy_with_openai,
-                jd_text=jd_text,
-                notice_text=notice_context,
-                strengths=strengths,
-                region="",
-                ncs_matches=ncs_matches,
-                ncs_ksa=ncs_ksa,
-                ncs_context=ncs_context,
-                duty_text=duty_text_clean,
-                evaluation_text=evaluation_text_clean,
-                desired_job="",
-                api_key_override=request_openai_api_key,
-                target_count_override=question_plan["total_main_count"],
-                follow_up_count=question_plan["follow_up_count"],
-                question_plan=question_plan,
-                interview_methods=interview_methods,
-                extra_context=avoid_context,
-            ),
-        )
-        strategy = _adjust_generated_questions(
-            strategy,
-            question_plan,
-            interview_methods,
+        strategy = await _generate_quality_gated_institution_strategy(
+            build_kwargs=build_kwargs,
+            question_plan=question_plan,
+            interview_methods=interview_methods,
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
+            avoid_questions=request_avoid_questions,
+            generation_offset=generation_offset,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(
-            "jd_strategy_model_generation_failed",
-            exc_info=(type(e), e, e.__traceback__),
-        )
-        strategy = build_strategy_with_rule_fallback(
-            ncs_matches=ncs_matches,
-            ncs_ksa=ncs_ksa,
-            error_message="model_generation_failed",
-            target_count=question_plan["total_main_count"] or 24,
-        )
-        try:
-            strategy = _adjust_generated_questions(
-                strategy,
-                question_plan,
-                interview_methods,
-                ncs_matches=ncs_matches,
-                ncs_ksa=ncs_ksa,
-            )
-        except Exception:
-            # The runtime quality orchestrator below can audit and repair the
-            # rule fallback directly.  A second-stage formatter defect should
-            # degrade the response for review, not turn generation into HTTP 500.
-            logger.error("jd_strategy_fallback_adjustment_failed", exc_info=True)
-            strategy = dict(strategy) if isinstance(strategy, dict) else {"interview_questions": []}
-            strategy["fallback_adjustment_status"] = "degraded_to_runtime_recheck"
-    strategy = _attach_ksa_evidence_to_strategy(strategy, ncs_ksa)
-    strategy = _run_runtime_question_quality_orchestration(
-        strategy,
-        question_plan=question_plan,
-        ncs_ksa=ncs_ksa,
-        avoid_questions=request_avoid_questions,
-        generation_offset=generation_offset,
-    )
+        logger.error("jd_strategy_generation_or_quality_failed provider=openai_api")
+        raise _institution_api_provider_http_error(e) from e
     _register_question_quality_evidence(
         strategy,
         source_endpoint="/api/jd/strategy/upload",
@@ -7108,6 +8465,7 @@ async def jd_strategy_upload(
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,
+        "question_generation": _generation_provider_descriptor(request_generation_provider),
         "openai_key_source": _openai_key_source(request_openai_api_key, request),
         "extracted_focus_terms": vision_terms,
         "subcategory_text_preview": subcategory_text[:800],
@@ -7143,10 +8501,14 @@ async def jd_strategy_upload(
 @app.post("/api/questions/generate-from-text")
 async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     _reject_sensitive_query_params(request, destination="JSON body")
+    request_generation_provider = _request_generation_provider(
+        payload.get("generation_provider", "")
+    )
     notice_text = str(payload.get("notice_text", "")).strip()
     duty_text = str(payload.get("duty_text", "")).strip()
     evaluation_text = str(payload.get("evaluation_text", "")).strip()
     request_openai_api_key = _sanitize_request_openai_key(payload.get("openai_api_key", ""))
+    _require_allowed_openai_key(request_openai_api_key, request)
     raw_generation_offset = payload.get("generation_offset")
     generation_offset = (
         _clamp_int(raw_generation_offset, default=0, lo=0, hi=1_000_000)
@@ -7284,68 +8646,40 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     avoid_context = _build_avoid_questions_context(request_avoid_questions, max_items=20)
     avoid_context = _join_generation_context(avoid_context, _quality_feedback_context(ncs_matches))
 
+    build_kwargs = {
+        "jd_text": notice_text,
+        "notice_text": prompt_notice_text,
+        "strengths": "",
+        "region": "",
+        "ncs_matches": ncs_matches,
+        "ncs_ksa": ncs_ksa,
+        "ncs_context": ncs_context,
+        "duty_text": duty_text,
+        "evaluation_text": evaluation_text,
+        "desired_job": "",
+        "api_key_override": request_openai_api_key,
+        "target_count_override": question_plan["total_main_count"] or None,
+        "follow_up_count": question_plan["follow_up_count"],
+        "question_plan": question_plan,
+        "interview_methods": interview_methods,
+        "extra_context": avoid_context,
+        "generation_provider": request_generation_provider,
+    }
     try:
-        loop = asyncio.get_event_loop()
-        strategy = await loop.run_in_executor(
-            None,
-            functools.partial(
-                build_jd_strategy_with_openai,
-                jd_text=notice_text,
-                notice_text=prompt_notice_text,
-                strengths="",
-                region="",
-                ncs_matches=ncs_matches,
-                ncs_ksa=ncs_ksa,
-                ncs_context=ncs_context,
-                duty_text=duty_text,
-                evaluation_text=evaluation_text,
-                desired_job="",
-                api_key_override=request_openai_api_key,
-                target_count_override=question_plan["total_main_count"] or None,
-                follow_up_count=question_plan["follow_up_count"],
-                question_plan=question_plan,
-                interview_methods=interview_methods,
-                extra_context=avoid_context,
-            ),
-        )
-        strategy = _adjust_generated_questions(
-            strategy,
-            question_plan,
-            interview_methods,
+        strategy = await _generate_quality_gated_institution_strategy(
+            build_kwargs=build_kwargs,
+            question_plan=question_plan,
+            interview_methods=interview_methods,
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
+            avoid_questions=request_avoid_questions,
+            generation_offset=generation_offset,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(
-            "manual_strategy_model_generation_failed",
-            exc_info=(type(e), e, e.__traceback__),
-        )
-        strategy = build_strategy_with_rule_fallback(
-            ncs_matches=ncs_matches,
-            ncs_ksa=ncs_ksa,
-            error_message="model_generation_failed",
-            target_count=question_plan["total_main_count"] or 24,
-        )
-        try:
-            strategy = _adjust_generated_questions(
-                strategy,
-                question_plan,
-                interview_methods,
-                ncs_matches=ncs_matches,
-                ncs_ksa=ncs_ksa,
-            )
-        except Exception:
-            logger.error("manual_strategy_fallback_adjustment_failed", exc_info=True)
-            strategy = dict(strategy) if isinstance(strategy, dict) else {"interview_questions": []}
-            strategy["fallback_adjustment_status"] = "degraded_to_runtime_recheck"
-    strategy = _attach_ksa_evidence_to_strategy(strategy, ncs_ksa)
-    strategy = _run_runtime_question_quality_orchestration(
-        strategy,
-        question_plan=question_plan,
-        ncs_ksa=ncs_ksa,
-        avoid_questions=request_avoid_questions,
-        generation_offset=generation_offset,
-    )
+        logger.error("manual_strategy_generation_or_quality_failed provider=openai_api")
+        raise _institution_api_provider_http_error(e) from e
     _register_question_quality_evidence(
         strategy,
         source_endpoint="/api/questions/generate-from-text",
@@ -7371,6 +8705,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "profile_used": False,
         "ncs_source": "manual-selected",
         "ncs_error": "",
+        "question_generation": _generation_provider_descriptor(request_generation_provider),
         "openai_key_source": _openai_key_source(request_openai_api_key, request),
         "extracted_focus_terms": [],
         "subcategory_text_preview": "",
@@ -7418,7 +8753,8 @@ def generate_questions_personalized(
     All questions are examples meant to guide actual interview preparation.
 
     JSON Body:
-        openai_api_key: Request-scoped OpenAI key
+        generation_provider: Optional; only ``openai_api`` is accepted.
+        openai_api_key: Required request-scoped OpenAI API key; never persisted.
         ncs_code: NCS competency code (required, e.g., '02020302')
         competency_name: Optional competency name for better context
         job_posting: Job posting/recruitment info text (company, position, requirements)
@@ -7435,6 +8771,7 @@ def generate_questions_personalized(
     try:
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
+        _request_generation_provider(body.get("generation_provider"))
         if str(job_posting_query or "").strip() or str(user_profile_query or "").strip():
             raise HTTPException(
                 status_code=400,
@@ -7469,6 +8806,7 @@ def generate_questions_personalized(
             target_count=target_count,
             api_key_override=request_openai_api_key,
         )
+        _require_institution_api_question_output(result)
         _require_official_ksa_result(result)
 
         return {
@@ -7480,7 +8818,8 @@ def generate_questions_personalized(
     except HTTPException:
         raise
     except Exception as e:
-        raise _internal_http_error("personalized_question_generation_failed", e) from e
+        logger.error("personalized_question_generation_failed provider=openai_api")
+        raise _institution_api_provider_http_error(e) from e
 
 
 @app.post("/api/questions/generate-by-ncs-code")
@@ -7498,7 +8837,8 @@ def generate_questions_by_ncs_code(
     Supports 4 question types: behavioral, situational, technical, development-oriented.
 
     JSON Body:
-        openai_api_key: Request-scoped OpenAI key
+        generation_provider: Optional; only ``openai_api`` is accepted.
+        openai_api_key: Required request-scoped OpenAI API key; never persisted.
         ncs_code: NCS competency code (required, e.g. '02020302')
         competency_name: Optional competency name for context
         target_count: Number of main questions (1-25, default 10)
@@ -7514,6 +8854,7 @@ def generate_questions_by_ncs_code(
     try:
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
+        _request_generation_provider(body.get("generation_provider"))
         request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
         _require_allowed_openai_key(request_openai_api_key, request)
         ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
@@ -7558,6 +8899,7 @@ def generate_questions_by_ncs_code(
             extra_context=avoid_context,
             api_key_override=request_openai_api_key,
         )
+        _require_institution_api_question_output(result)
         _require_official_ksa_result(result)
 
         if str(result.get("generation_mode", "")).strip() == "ai_generation_empty_no_fallback":
@@ -7580,7 +8922,8 @@ def generate_questions_by_ncs_code(
     except HTTPException:
         raise
     except Exception as e:
-        raise _internal_http_error("ncs_code_question_generation_failed", e) from e
+        logger.error("ncs_code_question_generation_failed provider=openai_api")
+        raise _institution_api_provider_http_error(e) from e
 
 
 @app.get("/api/questions/templates")
@@ -7657,7 +9000,8 @@ def generate_batch_diverse_questions(
     Format: #1, #2, #3... with question type, competency, NCS code, question, follow-up, eval points
 
     JSON Body:
-        openai_api_key: Request-scoped OpenAI key
+        generation_provider: Optional; only ``openai_api`` is accepted.
+        openai_api_key: Required request-scoped OpenAI API key; never persisted.
         ncs_code: NCS code (required)
         competency_name: Competency name (optional)
         batch_count: Total questions (10-50, default 20)
@@ -7670,6 +9014,7 @@ def generate_batch_diverse_questions(
     try:
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
+        _request_generation_provider(body.get("generation_provider"))
         request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
         _require_allowed_openai_key(request_openai_api_key, request)
         ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
@@ -7694,6 +9039,7 @@ def generate_batch_diverse_questions(
         final_questions = []
         seen_questions = set()
         seen_question_texts = []
+        final_official_ksa_evidence: dict[str, dict[str, Any]] = {}
         request_avoid_questions = _extract_question_texts(raw_avoid_questions)
         avoid_keys = {
             normalize_question_dedup_key(q)
@@ -7716,7 +9062,14 @@ def generate_batch_diverse_questions(
                 extra_context=avoid_context,
                 api_key_override=request_openai_api_key,
             )
+            _require_institution_api_question_output(result)
             _require_official_ksa_result(result)
+            for evidence_row in result.get("official_ksa_evidence", []):
+                if not isinstance(evidence_row, dict):
+                    continue
+                evidence_id = str(evidence_row.get("evidence_id") or "").strip()
+                if evidence_id:
+                    final_official_ksa_evidence[evidence_id] = dict(evidence_row)
 
             for q in result["questions"]:
                 if len(final_questions) >= batch_count:
@@ -7743,6 +9096,13 @@ def generate_batch_diverse_questions(
         _refresh_question_repeat_metadata(final_questions)
         for i, q in enumerate(final_questions, 1):
             q["number"] = i
+        _require_official_ksa_result(
+            {
+                "ncs_ksa_available": True,
+                "questions": final_questions,
+                "official_ksa_evidence": list(final_official_ksa_evidence.values()),
+            }
+        )
 
         response_data = {
             "status": "success",
@@ -7751,6 +9111,7 @@ def generate_batch_diverse_questions(
                 "competency_name": competency_name or f"NCS-{ncs_code}",
                 "batch_count": len(final_questions),
                 "questions": final_questions,
+                "official_ksa_evidence": list(final_official_ksa_evidence.values()),
                 "note": "각 질문은 AI가 생성한 고유한 질문입니다. 매 요청마다 다른 질문이 생성됩니다.",
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -7771,7 +9132,8 @@ def generate_batch_diverse_questions(
     except HTTPException:
         raise
     except Exception as e:
-        raise _internal_http_error("batch_question_generation_failed", e) from e
+        logger.error("batch_question_generation_failed provider=openai_api")
+        raise _institution_api_provider_http_error(e) from e
 
 
 @app.post("/api/questions/generate-diverse")
@@ -7800,7 +9162,8 @@ def generate_diverse_questions(
     - Evaluation points (역량 평가 포인트)
 
     JSON Body:
-        openai_api_key: Request-scoped OpenAI key
+        generation_provider: Optional; only ``openai_api`` is accepted.
+        openai_api_key: Required request-scoped OpenAI API key; never persisted.
         ncs_code: NCS competency code (required, e.g., '0202010102_19v2')
         competency_name: Competency unit name (optional)
         job_posting: Job posting context text (optional)
@@ -7812,6 +9175,7 @@ def generate_diverse_questions(
     try:
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
+        _request_generation_provider(body.get("generation_provider"))
         if str(job_posting_query or "").strip():
             raise HTTPException(
                 status_code=400,
@@ -7852,6 +9216,7 @@ def generate_diverse_questions(
         final_questions = []
         seen_keys = set()
         seen_texts = []
+        final_official_ksa_evidence: dict[str, dict[str, Any]] = {}
         max_attempts = 20
         attempt = 0
         raw_result = {
@@ -7875,7 +9240,14 @@ def generate_diverse_questions(
                 extra_context=avoid_context,
                 api_key_override=request_openai_api_key,
             )
+            _require_institution_api_question_output(raw_result)
             _require_official_ksa_result(raw_result)
+            for evidence_row in raw_result.get("official_ksa_evidence", []):
+                if not isinstance(evidence_row, dict):
+                    continue
+                evidence_id = str(evidence_row.get("evidence_id") or "").strip()
+                if evidence_id:
+                    final_official_ksa_evidence[evidence_id] = dict(evidence_row)
 
             for q in raw_result.get("questions", []):
                 if len(final_questions) >= target_count:
@@ -7904,8 +9276,16 @@ def generate_diverse_questions(
             "generation_mode": raw_result.get("generation_mode", "ai_powered_diverse"),
             "questions": final_questions,
             "question_count": len(final_questions),
+            "official_ksa_evidence": list(final_official_ksa_evidence.values()),
             "note": "동일/유사 질문을 제거한 결과입니다. 매 요청마다 새 질문을 우선 생성합니다.",
         }
+        _require_official_ksa_result(
+            {
+                "ncs_ksa_available": True,
+                "questions": final_questions,
+                "official_ksa_evidence": list(final_official_ksa_evidence.values()),
+            }
+        )
 
         return {
             "status": "success",
@@ -7916,4 +9296,5 @@ def generate_diverse_questions(
     except HTTPException:
         raise
     except Exception as e:
-        raise _internal_http_error("diverse_question_generation_failed", e) from e
+        logger.error("diverse_question_generation_failed provider=openai_api")
+        raise _institution_api_provider_http_error(e) from e

@@ -20,11 +20,15 @@ if str(ROOT) in sys.path:
     sys.path.remove(str(ROOT))
 sys.path.insert(0, str(ROOT))
 
-import app.main as app_main
-import app.repository as repository
-from app.db import Base
-from app.services.question_quality_orchestrator import is_history_duplicate
-from scripts.simulate_question_regeneration import FOCUSES, _candidate
+import app.main as app_main  # noqa: E402
+import app.repository as repository  # noqa: E402
+from app.db import Base  # noqa: E402
+from app.services.question_quality_orchestrator import is_history_duplicate  # noqa: E402
+from scripts.simulate_question_regeneration import (  # noqa: E402
+    FOCUSES,
+    _candidate,
+    _deterministic_review_policy_satisfied,
+)
 
 
 DEFAULT_REPORT_DIR = ROOT / "reports" / "question_quality_simulation"
@@ -50,6 +54,7 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
     cases: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     reconnect_count = 0
+    review_required_count = 0
 
     with tempfile.TemporaryDirectory(prefix="question-review-lifecycle-", dir=temp_root) as temp_dir:
         db_path = Path(temp_dir) / "quality-lifecycle.db"
@@ -91,10 +96,15 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
                         cycle_issues.append("empty_question")
                     if question_text and is_history_duplicate(question_text, history):
                         cycle_issues.append("history_duplicate")
-                    if orchestration.get("status") != "passed":
-                        cycle_issues.append("runtime_orchestration")
-                    if report.get("passed") is not True:
-                        cycle_issues.append("full_quality_gate")
+                    held_for_review = _deterministic_review_policy_satisfied(
+                        orchestration,
+                        report,
+                        question_count=len(questions),
+                    )
+                    if held_for_review:
+                        review_required_count += 1
+                    else:
+                        cycle_issues.append("deterministic_review_policy")
 
                     app_main._register_question_quality_evidence(
                         result,
@@ -112,6 +122,11 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
                     question_hash = str(question.get("question_hash") or "")
                     if not run_id or not review_token or not question_hash:
                         cycle_issues.append("quality_evidence_registration")
+                    if (
+                        control.get("review_required") is not True
+                        or control.get("escalation_required") is not True
+                    ):
+                        cycle_issues.append("review_escalation_registration")
 
                     first_verdict = "needs_edit" if cycle % 2 else "approve"
                     second_verdict = "approve" if first_verdict == "needs_edit" else "needs_edit"
@@ -267,7 +282,11 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
                         cycle_issues.append("review_history_count")
                     if len(active) != 1 or str(active[0].get("verdict") or "") != first_verdict:
                         cycle_issues.append("rollback_restore_state")
-                    expected_decision = "needs_edit" if first_verdict == "needs_edit" else "approved"
+                    expected_decision = (
+                        "needs_edit"
+                        if first_verdict == "needs_edit"
+                        else "reviewing" if control.get("escalation_required") else "approved"
+                    )
                     if str(run_data.get("final_decision") or "") != expected_decision:
                         cycle_issues.append("run_decision_consistency")
 
@@ -293,6 +312,10 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
                         "http_statuses": responses,
                         "rejected_statuses": rejected_responses,
                         "response_errors": response_errors,
+                        "quality_status": str(orchestration.get("status") or ""),
+                        "quality_report_passed": report.get("passed"),
+                        "review_required": bool(control.get("review_required")),
+                        "escalation_required": bool(control.get("escalation_required")),
                         "issues": list(dict.fromkeys(cycle_issues)),
                     }
                     cases.append(case)
@@ -318,18 +341,26 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
             repository.SessionLocal = original_session_local
 
     return {
-        "schema_version": "question_review_lifecycle_simulation_v1",
+        "schema_version": "question_review_lifecycle_simulation_v2",
         "generated_at": datetime.now().astimezone().isoformat(),
         "status": "passed" if not failures else "failed",
         "cycles": cycle_count,
         "reconnect_every": reconnect_interval,
         "reconnect_count": reconnect_count,
         "unique_question_count": len(set(history)),
+        "review_required_count": review_required_count,
         "failure_count": len(failures),
         "invariants": {
             "generation_remains_unique": len(set(history)) == cycle_count,
-            "all_quality_gates_pass": not any(
-                any(issue in {"runtime_orchestration", "full_quality_gate"} for issue in case.get("issues", []))
+            "deterministic_outputs_require_review": (
+                review_required_count == cycle_count
+                and not any(
+                    "deterministic_review_policy" in case.get("issues", [])
+                    for case in failures
+                )
+            ),
+            "review_escalation_is_registered": not any(
+                "review_escalation_registration" in case.get("issues", [])
                 for case in failures
             ),
             "review_change_and_rollback_succeed": not any(
@@ -388,6 +419,7 @@ def write_report(result: dict[str, Any], report_dir: Path) -> tuple[Path, Path]:
         "",
         f"- 상태: **{result['status']}**",
         f"- 생성·검토 회차: {result['cycles']}회",
+        f"- 현장성 검토 필요: {result['review_required_count']}회",
         f"- DB 재연결: {result['reconnect_count']}회 (매 {result['reconnect_every']}회)",
         f"- 고유 문항: {result['unique_question_count']}개",
         f"- 실패: {result['failure_count']}건",
