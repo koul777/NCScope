@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NCScope v1.3</title>
+  <title>NCScope v1.4</title>
   <style>
     :root {
       --bg:#f3f7fb;
@@ -67,6 +67,25 @@
     .flow-step span { display:block; font-size:11px; color:var(--muted); line-height:1.35; }
     .flow-step.active { border-color:#75b8e8; background:#edf8ff; box-shadow:0 0 0 3px rgba(0,139,210,.10); }
     .flow-step.done { border-color:#a7dfbf; background:#f0fcf5; }
+    .provider-card { margin:12px 0 10px; padding:12px 13px; border:1px solid #cbdcf0; border-radius:15px; background:linear-gradient(180deg,#fbfdff,#f3f8ff); }
+    .provider-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+    .provider-card-title { min-width:0; }
+    .provider-card-title span { display:block; margin-bottom:3px; color:var(--muted); font-size:11px; font-weight:800; }
+    .provider-card-title strong { display:block; color:#17345c; font-size:14px; line-height:1.35; }
+    .provider-status-pill { flex:none; border:1px solid #cbd5e1; border-radius:999px; padding:5px 9px; background:#f8fafc; color:#475569; font-size:11px; font-weight:900; white-space:nowrap; }
+    .provider-status-pill.good { border-color:#bce7cd; background:#f0fcf5; color:var(--good); }
+    .provider-status-pill.warn { border-color:#f6dea3; background:#fff9ea; color:var(--warn); }
+    .provider-message { margin:8px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
+    .provider-key-note { margin-top:8px; color:#17345c; font-size:12px; font-weight:900; }
+    .provider-key-field { margin-top:10px; }
+    .provider-key-field label { margin:0 0 6px; }
+    .provider-key-row { display:grid; grid-template-columns:1fr auto; gap:7px; align-items:center; }
+    .provider-key-row input { min-width:0; }
+    .provider-key-clear { width:auto; min-width:58px; margin:0; padding:10px 11px; border:1px solid #cbdcf0; background:#fff; color:#24446c; box-shadow:none; }
+    .provider-security-warning { margin-top:8px; padding:8px 10px; border:1px solid #f3cf8c; border-radius:10px; background:#fff8e8; color:#7a4b08; font-size:11.5px; line-height:1.45; }
+    .provider-security-warning strong { display:block; margin-bottom:2px; }
+    .provider-error { margin-top:8px; color:#b42318; font-size:12px; line-height:1.4; }
+    .provider-refresh { width:auto; margin:9px 0 0; padding:7px 10px; border:1px solid #cbdcf0; border-radius:9px; background:#fff; color:#24446c; box-shadow:none; font-size:12px; }
     .guardrail-box { margin:10px 0 12px; padding:12px 13px; border:1px solid #d9e7f5; border-radius:16px; background:linear-gradient(180deg,#fff,#f7fbff); }
     .guardrail-box strong { display:block; margin-bottom:5px; font-size:13px; color:#17345c; }
     .guardrail-box span { display:block; color:var(--muted); font-size:12px; line-height:1.45; }
@@ -181,7 +200,7 @@
           <div class="build-tag">Original interface · Kordoc parsing · Human Review · Local NCS DB evidence</div>
         </div>
         <div class="hero-badges">
-          <span class="badge">v1.3</span>
+          <span class="badge">v1.4</span>
           <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
           <span class="badge">KSA 근거 추적</span>
@@ -201,16 +220,46 @@
           </select>
         </div>
 
-        <label for="openaiApiKey">OpenAI API key (선택)</label>
-        <input id="openaiApiKey" type="password" placeholder="이번 생성 요청에만 입력" autocomplete="off" spellcheck="false" />
-        <div id="openaiKeyHint" class="sub" style="margin-top:-4px; margin-bottom:10px;">
-          직접 입력한 키는 저장하지 않고 이번 생성 요청에만 사용합니다. API 키는 .env나 서버 환경에서 자동으로 가져오지 않습니다.
-        </div>
+        <section id="generationProviderCard" class="provider-card" aria-labelledby="generationProviderName" aria-describedby="generationProviderMessage" aria-busy="true">
+          <div class="provider-card-head">
+            <div class="provider-card-title">
+              <span>요청 단위 API</span>
+              <strong id="generationProviderName">OpenAI API · 요청 단위 키</strong>
+            </div>
+            <span id="generationProviderBadge" class="provider-status-pill" role="status" aria-live="polite">확인 중</span>
+          </div>
+          <p id="generationProviderMessage" class="provider-message">OpenAI API 요청 방식과 키 입력 상태를 확인하고 있습니다.</p>
+          <div class="provider-key-field">
+            <label for="openaiApiKey">OpenAI API 키</label>
+            <div class="provider-key-row">
+              <input
+                id="openaiApiKey"
+                type="password"
+                autocomplete="off"
+                autocapitalize="none"
+                spellcheck="false"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                placeholder="요청에 사용할 API 키를 입력하세요"
+                aria-describedby="generationProviderKeyNote apiKeySecurityWarning"
+              />
+              <button id="btnClearOpenAiApiKey" class="provider-key-clear" type="button">지우기</button>
+            </div>
+          </div>
+          <div id="generationProviderKeyNote" class="provider-key-note">키는 현재 페이지 탭 메모리에만 유지되며 새로고침하거나 탭을 닫으면 사라집니다.</div>
+          <div id="apiKeySecurityWarning" class="provider-security-warning" role="note">
+            <strong>보안 경고</strong>
+            키는 생성 요청 본문으로 이 서버를 거칩니다. HTTPS 연결에서만 입력하세요. 브라우저 확장·개발자 도구에서 보일 수 있습니다. 공용 PC·공용 브라우저에서는 API 키를 입력하지 말고, 사용 후 반드시 탭을 닫으세요.
+          </div>
+          <div id="generationProviderError" class="provider-error" role="alert" hidden></div>
+
+          <button id="btnRefreshGenerationProvider" class="provider-refresh" type="button" aria-controls="generationProviderCard">API 방식 새로고침</button>
+        </section>
 
         <div class="workflow-menu" aria-label="검토 단계">
           <div id="flowApi" class="flow-step active">
-            <strong>1. API 설정</strong>
-            <span>요청 키 확인</span>
+            <strong>1. OpenAI API 키</strong>
+            <span>요청 단위 키 입력 상태 확인 중</span>
           </div>
           <div id="flowJd" class="flow-step">
             <strong>2. 직무기술서 세분류</strong>
@@ -443,8 +492,16 @@
     const manualBlock = document.getElementById('manualBlock');
     const questionOptionBlock = document.getElementById('questionOptionBlock');
     const runActionBlock = document.getElementById('runActionBlock');
+    const generationProviderCard = document.getElementById('generationProviderCard');
+    const generationProviderName = document.getElementById('generationProviderName');
+    const generationProviderBadge = document.getElementById('generationProviderBadge');
+    const generationProviderMessage = document.getElementById('generationProviderMessage');
+    const generationProviderKeyNote = document.getElementById('generationProviderKeyNote');
+    const generationProviderError = document.getElementById('generationProviderError');
+    const btnRefreshGenerationProvider = document.getElementById('btnRefreshGenerationProvider');
     const openaiApiKey = document.getElementById('openaiApiKey');
-    const openaiKeyHint = document.getElementById('openaiKeyHint');
+    const btnClearOpenAiApiKey = document.getElementById('btnClearOpenAiApiKey');
+    const apiKeySecurityWarning = document.getElementById('apiKeySecurityWarning');
     const jdFile = document.getElementById('jdFile');
     const noticeFile = document.getElementById('noticeFile');
     const dutyText = document.getElementById('dutyText');
@@ -491,6 +548,10 @@
     let questionGenerationInFlight = false;
     let currentQPage = 0;
     let currentQualityControl = null;
+    let generationProviderStatus = null;
+    let generationProviderLoading = false;
+    let generationProviderLoadError = '';
+    let generationProviderRequestId = 0;
     const QUESTION_PAGE_SIZE = 5;
 
     function normalizedQuestionHistoryKey(value) {
@@ -605,8 +666,204 @@
       return out;
     }
 
-    function requestOpenAIKey() {
-      return (openaiApiKey && openaiApiKey.value ? openaiApiKey.value : '').trim();
+    const INSTITUTION_GENERATION_PROVIDER = 'openai_api';
+    const GENERATION_PROVIDER_LABELS = {
+      openai_api: 'OpenAI API · 요청 단위 키',
+      model: 'OpenAI API 모델',
+      codex_cli: 'Codex',
+      claude_code: 'Claude Code',
+    };
+
+    function generationProviderLabel(provider=INSTITUTION_GENERATION_PROVIDER) {
+      return String(
+        generationProviderStatus?.provider === provider
+          ? (generationProviderStatus.provider_label || GENERATION_PROVIDER_LABELS[provider])
+          : (GENERATION_PROVIDER_LABELS[provider] || provider || 'OpenAI API')
+      );
+    }
+
+    function requestScopedApiStatusValid(status=generationProviderStatus) {
+      return Boolean(
+        status
+        && status.provider === INSTITUTION_GENERATION_PROVIDER
+        && status.status === 'key_required'
+        && status.available === true
+        && status.authenticated === false
+        && status.credential_configured === false
+        && status.auth_mode === 'request_scoped_api_key'
+        && status.credential_managed_by === 'request'
+        && status.requires_request_api_key === true
+        && status.local_only === false
+      );
+    }
+
+    function currentOpenAiApiKey() {
+      return String(openaiApiKey.value || '').trim();
+    }
+
+    function apiKeyTransportIsSecure() {
+      return window.isSecureContext === true;
+    }
+
+    function applyApiKeyTransportGuard() {
+      const secure = apiKeyTransportIsSecure();
+      openaiApiKey.disabled = !secure;
+      apiKeySecurityWarning.setAttribute('role', secure ? 'note' : 'alert');
+      if (!secure) {
+        openaiApiKey.placeholder = 'HTTPS 연결이 필요합니다';
+      }
+    }
+
+    function requestScopedApiReady(status=generationProviderStatus) {
+      return apiKeyTransportIsSecure()
+        && requestScopedApiStatusValid(status)
+        && Boolean(currentOpenAiApiKey());
+    }
+
+    function generationProviderBlockReason() {
+      if (!apiKeyTransportIsSecure()) {
+        return {
+          button: 'HTTPS 연결 후 생성',
+          message: 'API 키 보호를 위해 HTTPS 연결에서만 질문 생성을 사용할 수 있습니다.',
+        };
+      }
+      if (generationProviderLoading) {
+        return {
+          button: 'OpenAI API 확인 중...',
+          message: 'OpenAI API 요청 방식 확인이 끝날 때까지 기다려 주세요.',
+        };
+      }
+      if (generationProviderLoadError || !generationProviderStatus) {
+        return {
+          button: 'OpenAI API 상태 확인 필요',
+          message: 'OpenAI API 상태를 새로고침한 뒤 다시 시도해 주세요.',
+        };
+      }
+      if (generationProviderStatus.provider !== INSTITUTION_GENERATION_PROVIDER) {
+        return {
+          button: 'OpenAI API 설정 확인 필요',
+          message: '서버가 OpenAI API가 아닌 생성 엔진 상태를 반환했습니다. 관리자에게 설정 확인을 요청해 주세요.',
+        };
+      }
+      if (!requestScopedApiStatusValid()) {
+        return {
+          button: 'OpenAI API 상태 확인 후 생성',
+          message: String(
+            generationProviderStatus.message
+            || '서버의 요청 단위 OpenAI API 설정을 확인해 주세요.'
+          ),
+        };
+      }
+      if (!currentOpenAiApiKey()) {
+        return {
+          button: 'OpenAI API 키 입력 후 생성',
+          message: '현재 요청에 사용할 OpenAI API 키를 입력해 주세요. 키는 이 탭에만 유지됩니다.',
+        };
+      }
+      return null;
+    }
+
+    function setGenerationProviderBadge(text, tone='') {
+      generationProviderBadge.textContent = text;
+      generationProviderBadge.classList.remove('good', 'warn');
+      if (tone) generationProviderBadge.classList.add(tone);
+    }
+
+    function renderGenerationProviderStatus() {
+      const provider = String(generationProviderStatus?.provider || '');
+      const providerState = String(generationProviderStatus?.status || '');
+
+      generationProviderCard.setAttribute('aria-busy', generationProviderLoading ? 'true' : 'false');
+      btnRefreshGenerationProvider.disabled = generationProviderLoading;
+      btnRefreshGenerationProvider.textContent = generationProviderLoading
+        ? 'API 방식 확인 중...'
+        : 'API 방식 새로고침';
+      generationProviderError.hidden = true;
+      generationProviderError.textContent = '';
+      generationProviderKeyNote.textContent = '키는 현재 페이지 탭 메모리에만 유지되며 새로고침하거나 탭을 닫으면 사라집니다.';
+
+      if (generationProviderLoading) {
+        generationProviderName.textContent = GENERATION_PROVIDER_LABELS[INSTITUTION_GENERATION_PROVIDER];
+        generationProviderMessage.textContent = 'OpenAI API 요청 방식과 키 입력 상태를 확인하고 있습니다.';
+        setGenerationProviderBadge('확인 중');
+        updateWorkflowMenu();
+        syncGenerationButtonState();
+        return;
+      }
+
+      if (generationProviderLoadError) {
+        generationProviderName.textContent = GENERATION_PROVIDER_LABELS[INSTITUTION_GENERATION_PROVIDER];
+        generationProviderMessage.textContent = 'OpenAI API 상태를 확인할 수 없습니다. 서버 연결을 확인한 뒤 다시 시도해 주세요.';
+        generationProviderError.textContent = generationProviderLoadError;
+        generationProviderError.hidden = false;
+        setGenerationProviderBadge('확인 필요', 'warn');
+        updateWorkflowMenu();
+        syncGenerationButtonState();
+        return;
+      }
+
+      generationProviderName.textContent = generationProviderLabel(provider);
+      generationProviderMessage.textContent = String(
+        generationProviderStatus?.message || '생성 엔진 상태 정보가 없습니다.'
+      );
+
+      if (provider === INSTITUTION_GENERATION_PROVIDER) {
+        if (requestScopedApiReady()) {
+          generationProviderMessage.textContent = '요청 단위 키가 입력되었습니다. 생성 요청을 보낼 준비가 되었습니다.';
+          setGenerationProviderBadge('요청 준비됨', 'good');
+        } else if (requestScopedApiStatusValid()) {
+          generationProviderMessage.textContent = '생성할 때마다 사용할 OpenAI API 키를 입력해야 합니다.';
+          setGenerationProviderBadge('키 입력 필요', 'warn');
+        } else if (providerState === 'unavailable') {
+          setGenerationProviderBadge('API 사용 불가', 'warn');
+        } else {
+          setGenerationProviderBadge('상태 확인 필요', 'warn');
+        }
+      } else {
+        generationProviderError.textContent = '서버가 OpenAI API가 아닌 생성 엔진 상태를 반환했습니다.';
+        generationProviderError.hidden = false;
+        setGenerationProviderBadge('설정 오류', 'warn');
+      }
+      updateWorkflowMenu();
+      syncGenerationButtonState();
+    }
+
+    async function loadGenerationProviderStatus() {
+      const requestedProvider = INSTITUTION_GENERATION_PROVIDER;
+      const requestId = ++generationProviderRequestId;
+      generationProviderLoading = true;
+      generationProviderStatus = null;
+      generationProviderLoadError = '';
+      renderGenerationProviderStatus();
+      let nextStatus = null;
+      let nextError = '';
+      try {
+        const response = await fetch(
+          '/api/generation-provider/status?provider=openai_api',
+          {
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+          }
+        );
+        const payload = await readApiResponse(response);
+        if (!response.ok) {
+          throw new Error(apiErrorMessage(payload, '생성 엔진 상태 조회 실패'));
+        }
+        if (!payload || typeof payload.provider !== 'string' || !payload.provider.trim()) {
+          throw new Error('생성 엔진 상태 응답 형식이 올바르지 않습니다.');
+        }
+        if (payload.provider !== requestedProvider) {
+          throw new Error('서버가 OpenAI API가 아닌 생성 엔진 상태를 반환했습니다.');
+        }
+        nextStatus = payload;
+      } catch (error) {
+        nextError = String(error?.message || error || '생성 엔진 상태 조회 실패');
+      }
+      if (requestId !== generationProviderRequestId) return;
+      generationProviderStatus = nextStatus;
+      generationProviderLoadError = nextError;
+      generationProviderLoading = false;
+      renderGenerationProviderStatus();
     }
 
     function currentReviewedDetails() {
@@ -729,6 +986,13 @@
       const mode = inputMode.value || 'upload';
       const isUpload = mode !== 'manual';
       btn.style.display = 'block';
+      const providerBlock = generationProviderBlockReason();
+      if (providerBlock) {
+        btn.disabled = true;
+        btn.textContent = providerBlock.button;
+        runHint.textContent = providerBlock.message;
+        return;
+      }
       if (!isUpload) {
         btn.textContent = '면접 질문 생성';
         runHint.textContent = '직접 입력한 공고문 텍스트와 선택한 NCS 코드로 질문을 생성합니다.';
@@ -758,15 +1022,25 @@
     }
 
     function updateWorkflowMenu() {
-      const hasRequestKey = Boolean(requestOpenAIKey());
-      const keyFlowDetail = hasRequestKey
-        ? '요청 단위 키 입력됨'
-        : '요청 키 미입력 · 템플릿 기반 생성';
-      setFlowStep(
-        flowApi,
-        hasRequestKey ? 'done' : 'active',
-        keyFlowDetail
-      );
+      if (generationProviderLoading) {
+        setFlowStep(flowApi, 'active', 'OpenAI API 요청 방식 확인 중');
+      } else if (generationProviderLoadError) {
+        setFlowStep(flowApi, 'active', 'OpenAI API 상태 확인 실패');
+      } else if (generationProviderStatus?.provider === INSTITUTION_GENERATION_PROVIDER) {
+        const ready = requestScopedApiReady();
+        const contractValid = requestScopedApiStatusValid();
+        const label = generationProviderLabel(generationProviderStatus.provider);
+        const providerDetail = ready
+          ? `${label} 요청 준비됨`
+          : (contractValid ? `${label} 키 입력 필요` : `${label} 상태 확인 필요`);
+        setFlowStep(
+          flowApi,
+          ready ? 'done' : 'active',
+          providerDetail
+        );
+      } else {
+        setFlowStep(flowApi, 'active', 'OpenAI API 설정 확인 필요');
+      }
       const hasNoticeText = Boolean(
         (dutyText.value || '').trim()
         || (qualificationText.value || '').trim()
@@ -1146,7 +1420,18 @@
       }
     });
 
-    openaiApiKey.addEventListener('input', updateWorkflowMenu);
+    btnRefreshGenerationProvider.addEventListener('click', loadGenerationProviderStatus);
+    openaiApiKey.addEventListener('input', () => {
+      renderGenerationProviderStatus();
+    });
+    btnClearOpenAiApiKey.addEventListener('click', () => {
+      openaiApiKey.value = '';
+      openaiApiKey.focus();
+      renderGenerationProviderStatus();
+    });
+    window.addEventListener('pagehide', () => {
+      openaiApiKey.value = '';
+    });
     reviewNcsDetail.addEventListener('input', () => {
       reviewConfirmed = false;
       renderQuestionPlanRows();
@@ -1439,7 +1724,19 @@
       addMetaPill(meta, `지원자격 글자수: ${(data.qualification_text_preview || '').length}`);
       addMetaPill(meta, `우대사항 글자수: ${(data.preference_text_preview || '').length}`);
       addMetaPill(meta, `NCS 소스: ${data.ncs_source || '-'}`, 'pill good');
-      addMetaPill(meta, `OpenAI key: ${data.openai_key_source || '-'}`);
+      const resultGeneration = data.question_generation && typeof data.question_generation === 'object'
+        ? data.question_generation
+        : {};
+      const resultProvider = String(resultGeneration.provider || '');
+      if (Object.hasOwn(GENERATION_PROVIDER_LABELS, resultProvider)) {
+        addMetaPill(
+          meta,
+          `생성 엔진: ${resultGeneration.provider_label || GENERATION_PROVIDER_LABELS[resultProvider]}`,
+          'pill good'
+        );
+      } else {
+        addMetaPill(meta, '생성 엔진: 상태 확인 필요', 'pill warn');
+      }
 
 
       if (data.ncs_error) {
@@ -1502,10 +1799,16 @@
         return fus;
       };
       const sourceLabels = {
-        model: 'AI 초안 유지',
-        model_main_template_followups: 'AI 주질문 유지 · 꼬리질문 보강',
-        model_main_repaired_followups: 'AI 주질문 유지 · 꼬리질문 품질 보강',
-        model_main_quality_repaired_fields: 'AI 초안 유지 · 평가요소 보강',
+        openai_api: 'OpenAI API 초안 유지',
+        openai_api_quality_repaired_fields: 'OpenAI API 초안 유지 · 평가요소 보강',
+        codex_cli: 'Codex 초안 유지',
+        codex_cli_quality_repaired_fields: 'Codex 초안 유지 · 평가요소 보강',
+        claude_code: 'Claude Code 초안 유지',
+        claude_code_quality_repaired_fields: 'Claude Code 초안 유지 · 평가요소 보강',
+        model: 'OpenAI API 초안 유지',
+        model_main_template_followups: 'OpenAI API 주질문 유지 · 꼬리질문 보강',
+        model_main_repaired_followups: 'OpenAI API 주질문 유지 · 꼬리질문 품질 보강',
+        model_main_quality_repaired_fields: 'OpenAI API 초안 유지 · 평가요소 보강',
         template_fallback: 'NCS 기준 재구성',
         quality_orchestrator_repair: '품질검사 후 재구성',
         rule_fallback: 'NCS 규칙 기반 생성',
@@ -1928,6 +2231,24 @@
         span.textContent = text;
         qualitySummary.appendChild(span);
       };
+      const issueLabels = {
+        field_realism: '현장 면접 문장·답변연동성 미충족',
+        ksa_measurement_task: '선택한 KSA를 행동으로 측정하지 못함',
+        precision_grounding: '제시되지 않은 수치·조항 회상 요구',
+        evidence_linked: '공식 KSA 근거 연결 누락',
+        candidate_surface_safe: '후보자 화면에 NCS 내부 명칭 노출',
+        follow_up_quality: '꼬리질문 변별력 부족',
+        evaluation_points_quality: '평가기준 수·관찰가능성 미충족',
+        blind_hiring_safe: '블라인드 채용 위험 표현 포함',
+        duplicate_question_intent: '다른 문항과 평가의도 중복',
+        candidate_visible_instruction_injection: '외부 문서의 지시문이 질문에 노출됨',
+        question_evidence_assignment_failed: '모델 KSA 근거 ID가 서버 배정과 불일치',
+        evaluation_elicitation_alignment: '질문하지 않은 평가기준이 포함됨',
+      };
+      const issueLabel = (value) => {
+        const key = String(value || '').trim();
+        return issueLabels[key] || key || '품질 기준 미충족';
+      };
       if (summary) {
         add(report.passed ? '품질 게이트 통과' : '품질 검토 필요', report.passed ? 'good' : 'warn');
         add(`Ready ${summary.ready_count || 0}/${summary.question_count || 0}`);
@@ -1940,7 +2261,7 @@
         reviewItems.slice(0, 10).forEach((item, idx) => {
           const no = item.index || item.question_index || idx + 1;
           const issues = Array.isArray(item.issues)
-            ? item.issues.filter(Boolean).join(', ')
+            ? item.issues.filter(Boolean).map(issueLabel).join(', ')
             : '품질 기준 미충족';
           add(`#${no} 검토: ${issues || '품질 기준 미충족'}`, 'warn');
         });
@@ -2005,9 +2326,18 @@
         }
         orchestrationNotice = `${reasons.join(', ') || '운영 품질 경고'}으로 사람 검토가 필요합니다.`;
       }
+      const retryAudit = s.model_quality_retry && typeof s.model_quality_retry === 'object'
+        ? s.model_quality_retry
+        : null;
+      const generationRequestNotice = retryAudit
+        && Number.isFinite(Number(retryAudit.provider_generation_request_count))
+        && Number.isFinite(Number(retryAudit.provider_generation_request_limit))
+        ? `모델 생성 요청 ${Number(retryAudit.provider_generation_request_count)}/${Number(retryAudit.provider_generation_request_limit)}회 사용.`
+        : '';
       const notices = [
         data.operational_notice || s.operational_notice,
         orchestrationNotice,
+        generationRequestNotice,
         recoveredFallbackSucceeded
           ? 'AI 생성에 실패했지만 공식 NCS KSA 기반 대체 초안이 품질 검사를 통과했습니다. 최종 사용 전에 질문을 검토하세요.'
           : '',
@@ -2090,11 +2420,19 @@
 
     btn.onclick = async () => {
       if (questionGenerationInFlight) return;
+      const providerBlock = generationProviderBlockReason();
+      if (providerBlock) {
+        errorBox.style.display = 'block';
+        errorBox.textContent = providerBlock.message;
+        syncGenerationButtonState();
+        return;
+      }
       if (pendingQuestionReviewCount > 0) {
         errorBox.style.display = 'block';
         errorBox.textContent = '문항 검토 저장이 끝난 뒤 다시 생성해 주세요.';
         return;
       }
+      const requestOpenAiApiKey = currentOpenAiApiKey();
       questionGenerationInFlight = true;
       try {
         const mode = inputMode.value || 'upload';
@@ -2112,10 +2450,10 @@
           const questionPlanItems = collectQuestionPlan();
           const interviewMethods = collectInterviewMethods();
           fd.append('jd_file', file);
+          fd.append('generation_provider', INSTITUTION_GENERATION_PROVIDER);
+          fd.append('openai_api_key', requestOpenAiApiKey);
           const nFile = noticeFile.files && noticeFile.files[0];
           fd.append('strengths', '');
-          const requestKey = requestOpenAIKey();
-          if (requestKey) fd.append('openai_api_key', requestKey);
           if ((nFile || hasNoticeSupplementText()) && !noticeReviewConfirmed) {
             throw new Error('공고문/보완 텍스트를 질문에 포함하려면 먼저 「공고문·보완 텍스트 검토·적용」 버튼을 눌러 주세요.');
           }
@@ -2145,6 +2483,7 @@
           const removeSclass = extractedBase.filter(x => !finalSet.has(normSclassLabel(x)));
           const historyDetails = finalSclass.map(normSclassLabel).sort().join(',');
           const uploadGenerationContext = JSON.stringify({
+            generationProvider: INSTITUTION_GENERATION_PROVIDER,
             file: [file.name, file.size, file.lastModified],
             noticeFile: nFile ? [nFile.name, nFile.size, nFile.lastModified] : null,
             details: historyDetails,
@@ -2184,6 +2523,7 @@
           const questionPlanItems = collectQuestionPlan();
           const interviewMethods = collectInterviewMethods();
           const manualGenerationContext = JSON.stringify({
+            generationProvider: INSTITUTION_GENERATION_PROVIDER,
             codes: selected.map(row => row.ncsClCd).sort(),
             noticeText,
             evaluation: (evalTextManual.value || '').trim(),
@@ -2196,6 +2536,8 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              generation_provider: INSTITUTION_GENERATION_PROVIDER,
+              openai_api_key: requestOpenAiApiKey,
               notice_text: noticeText,
               duty_text: noticeText,
               evaluation_text: (evalTextManual.value || '').trim(),
@@ -2205,7 +2547,6 @@
               runtime_knobs: knobs,
               avoid_questions: currentQuestionTexts(),
               generation_offset: questionGenerationOffset,
-              openai_api_key: requestOpenAIKey(),
             }),
           });
         }
@@ -2298,8 +2639,9 @@
     };
 
     updateQNav();
+    applyApiKeyTransportGuard();
     setInputMode(inputMode.value || 'upload');
-    updateWorkflowMenu();
+    loadGenerationProviderStatus();
     loadNcsOptions('')
       .then(() => fetch('/health').then(r => r.json()))
       .then((h) => {

@@ -5,7 +5,7 @@ Queue Manager - 비동기 작업 큐 관리
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 

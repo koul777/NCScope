@@ -37,21 +37,10 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _openai_base_urls() -> list[str]:
-    base_raw = str(os.getenv("OPENAI_BASE_URLS", "")).strip()
-    candidates: list[str] = []
-    if base_raw:
-        candidates.extend([x.strip() for x in base_raw.split(",") if x.strip()])
-    candidates.append(str(settings.openai_base_url or "").strip())
+    """Return one administrator-controlled endpoint; never fail over providers."""
 
-    out: list[str] = []
-    seen: set[str] = set()
-    for base in candidates:
-        normalized = base.rstrip("/")
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        out.append(normalized)
-    return out or ["https://api.openai.com/v1"]
+    configured = str(os.getenv("OPENAI_BASE_URL") or settings.openai_base_url or "").strip()
+    return [(configured or "https://api.openai.com/v1").rstrip("/")]
 
 
 def _build_timeout(total_timeout_sec: float | None = None) -> httpx.Timeout:
@@ -193,7 +182,7 @@ def _request_models_with_curl(api_key: str, timeout_sec: float) -> tuple[bool, s
                 payload=None,
                 timeout_sec=timeout_sec,
             )
-            if 200 <= status < 500:
+            if 200 <= status < 300:
                 return True, ""
             last_msg = f"http_{status}"
         except Exception as e:
@@ -233,37 +222,53 @@ def post_chat_completions_with_retries(
     limits = httpx.Limits(max_keepalive_connections=10, max_connections=20)
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-    use_curl_fallback = _curl_fallback_enabled()
+    # A caller that supplies an explicit POST budget is asking for a hard
+    # upper bound.  The optional curl subprocess is both an extra request and
+    # can expose the bearer header in process arguments, so it is never part
+    # of that bounded path.
+    use_curl_fallback = _curl_fallback_enabled() and max_attempts is None
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
+        # One loop iteration means one upstream POST.  Alternating the proxy
+        # environment on later retries retains the old recovery behavior
+        # without silently doubling every configured attempt.
+        trust_env = attempt % 2 == 1
         for base in _openai_base_urls():
             url = f"{base}/chat/completions"
-            for trust_env in (True, False):
-                try:
-                    with httpx.Client(timeout=timeout, limits=limits, http2=False, trust_env=trust_env) as client:
-                        resp = client.post(url, headers=headers, json=payload)
-                    if resp.status_code == 200:
-                        return resp.json()
-                    err = RuntimeError(f"openai_http_{resp.status_code}")
-                    if _is_retryable_status(resp.status_code):
-                        last_error = err
-                        break
-                    raise err
-                except Exception as e:
-                    if not _is_retryable_exception(e):
-                        raise
-                    last_error = e
-                    # python socket permission 에러/지속 실패면 curl 경로도 시도.
-                    if use_curl_fallback and (_is_socket_permission_error(e) or attempt >= 2):
-                        try:
-                            return _chat_with_curl(url=url, payload=payload, api_key=key, timeout_sec=timeout_sec)
-                        except Exception as curl_exc:
-                            if not _is_retryable_exception(curl_exc):
-                                # HTTP 4xx/5xx 등 명시적 실패는 그대로 반환.
-                                raise
-                            last_error = curl_exc
-                    continue
-            # trust_env true/false 경로 모두 실패하면 다음 base로 이동.
+            try:
+                with httpx.Client(
+                    timeout=timeout,
+                    limits=limits,
+                    http2=False,
+                    trust_env=trust_env,
+                ) as client:
+                    resp = client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    return resp.json()
+                err = RuntimeError(f"openai_http_{resp.status_code}")
+                if _is_retryable_status(resp.status_code):
+                    last_error = err
+                    break
+                raise err
+            except Exception as e:
+                if not _is_retryable_exception(e):
+                    raise
+                last_error = e
+                if use_curl_fallback and (
+                    _is_socket_permission_error(e) or attempt >= 2
+                ):
+                    try:
+                        return _chat_with_curl(
+                            url=url,
+                            payload=payload,
+                            api_key=key,
+                            timeout_sec=timeout_sec,
+                        )
+                    except Exception as curl_exc:
+                        if not _is_retryable_exception(curl_exc):
+                            raise
+                        last_error = curl_exc
+                continue
             continue
         if attempt < attempts:
             _sleep_backoff(attempt)
@@ -291,32 +296,34 @@ def check_openai_connectivity_with_retries(
     headers = {"Authorization": f"Bearer {key}"}
 
     last_msg = ""
-    use_curl_fallback = _curl_fallback_enabled()
+    # An explicit budget is a hard upper bound on outbound requests.  It also
+    # disables the subprocess fallback because that would be an uncounted
+    # request and could expose a request-scoped bearer token in process args.
+    use_curl_fallback = _curl_fallback_enabled() and max_attempts is None
+    base_urls = _openai_base_urls()
     for attempt in range(1, attempts + 1):
-        for base in _openai_base_urls():
-            url = f"{base}/models"
-            for trust_env in (True, False):
-                try:
-                    with httpx.Client(timeout=timeout_obj, limits=limits, http2=False, trust_env=trust_env) as client:
-                        resp = client.get(url, headers=headers)
-                    # 2xx and 4xx are both connectivity success.
-                    if 200 <= resp.status_code < 500:
-                        return True, ""
-                    last_msg = f"http_{resp.status_code}"
-                    if not _is_retryable_status(resp.status_code):
-                        return False, last_msg
-                    break
-                except Exception as e:
-                    last_msg = str(e)
-                    if not _is_retryable_exception(e):
-                        return False, last_msg
-                    if use_curl_fallback and (_is_socket_permission_error(e) or attempt >= 2):
-                        curl_ok, curl_msg = _request_models_with_curl(api_key=key, timeout_sec=15.0)
-                        if curl_ok:
-                            return True, ""
-                        last_msg = curl_msg
-                    continue
-            continue
+        base = base_urls[(attempt - 1) % len(base_urls)]
+        url = f"{base}/models"
+        trust_env = attempt % 2 == 1
+        try:
+            with httpx.Client(timeout=timeout_obj, limits=limits, http2=False, trust_env=trust_env) as client:
+                resp = client.get(url, headers=headers)
+            # Readiness requires successful authentication, not merely
+            # network reachability.  401/403 must remain failures.
+            if 200 <= resp.status_code < 300:
+                return True, ""
+            last_msg = f"http_{resp.status_code}"
+            if not _is_retryable_status(resp.status_code):
+                return False, last_msg
+        except Exception as e:
+            last_msg = str(e)
+            if not _is_retryable_exception(e):
+                return False, last_msg
+            if use_curl_fallback and (_is_socket_permission_error(e) or attempt >= 2):
+                curl_ok, curl_msg = _request_models_with_curl(api_key=key, timeout_sec=15.0)
+                if curl_ok:
+                    return True, ""
+                last_msg = curl_msg
         if attempt < attempts:
             _sleep_backoff(attempt)
 

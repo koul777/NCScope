@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 from app.main import _find_sclass_code_tuple
 from app.services import jd_strategy

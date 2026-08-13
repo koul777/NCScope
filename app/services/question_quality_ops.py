@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 
-QUALITY_POLICY_VERSION = "ncs-official-task-evaluation-pair-v23-decision-grade-materials"
+QUALITY_POLICY_VERSION = "ncs-field-realism-v24"
 
 ALLOWED_FEEDBACK_CODES = frozenset(
     {
@@ -71,6 +71,7 @@ _ESCALATION_CHECK_ALIASES = {
     "ksa_measurement_task": "ksa_measurement_task",
     "method_task_mismatch": "main_question_method_shape",
     "main_question_method_shape": "main_question_method_shape",
+    "field_realism": "field_realism",
 }
 _SENSITIVE_EXACT_KEYS = frozenset(
     {

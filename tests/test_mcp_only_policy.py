@@ -14,6 +14,140 @@ from app.services.jd_strategy import fetch_ncs_ksa_by_units
 
 
 JD_TEXT = "\uc138\ubd84\ub958: \uacbd\uc601\uae30\ud68d\n\ub2f4\ub2f9\uc5c5\ubb34: \uacbd\uc601\uacc4\ud68d \uc218\ub9bd"
+REQUEST_OPENAI_KEY = "sk-test-request-scoped-key"
+SERVER_OPENAI_KEY = "sk-test-server-env-must-be-ignored"
+
+
+def _openai_model_strategy(
+    unit: dict,
+    ksa: dict,
+    methods: tuple[str, ...] = ("경험면접", "상황면접", "발표면접"),
+) -> dict:
+    competency = str(unit["compeUnitName"])
+    focus = str(ksa["factorName"])
+    evidence_id = main.stable_ksa_evidence_id(ksa)
+    market_focus = "시장" in focus or "환경" in focus
+    experience_question = (
+        "다음 연도 사업계획 확정 직전, 고객 수요조사와 전년도 실적이 서로 다른 "
+        "방향을 가리킨 실제 경험을 말씀해 주세요. 어떤 시장 환경 자료를 근거로 "
+        "전망을 선택했고, 본인이 수정한 수요 비교표가 최종 계획에 반영된 결과를 설명해 주세요."
+        if market_focus
+        else "두 부서가 같은 문서에 서로 다른 필수 조건을 요구해 초안 승인이 멈춘 "
+        "실제 경험을 말씀해 주세요. 원문과 요청 기록을 어떻게 대조해 필수 조건과 "
+        "조정 가능한 조건을 구분했고, 본인이 만든 요구사항 대조표가 반영된 결과를 설명해 주세요."
+    )
+    situation_question = (
+        "신규 사업의 수요조사는 성장 가능성을 보이지만 경쟁기관 자료와 지역 인구 "
+        "추세는 서로 충돌하고 계획 확정은 오늘입니다. 어느 시장 환경 자료를 먼저 검증해 "
+        "전망 기준을 정할지 판단하고, 조건별 수요 분석표를 제시해 주세요."
+        if market_focus
+        else "공문 원문에는 제출 대상이 전체 부서로 적혀 있지만 담당 부서의 요구서에는 "
+        "일부 부서만 기재되어 서로 충돌하고 오늘 결재해야 합니다. 어느 원문을 먼저 확인해 적용 "
+        "범위를 정할지 판단하고, 수정된 요구사항 대조표를 제시해 주세요."
+    )
+    presentation_question = (
+        "지역별 수요표에는 신청 증가가, 전년도 실적표에는 참여 감소가 나타나고 가용 "
+        "예산도 줄었습니다. 이 세 자료의 차이를 진단해 계획에 반영할 전망 하나를 선택하고, "
+        "근거와 조건을 담은 시장환경 자료 비교표를 발표해 주세요."
+        if market_focus
+        else "공문 원문, 부서별 요구서, 현재 사업계획서에서 제출 대상이 서로 충돌하고 필수 항목 하나도 누락됐습니다. "
+        "차이를 진단해 이번 결재본에 반영할 기준 하나를 선택하고, 근거와 예외를 담은 "
+        "요구사항 대조표를 발표해 주세요."
+    )
+    discussion_question = (
+        "[토론과제] 기획부서는 최근 수요조사의 성장 신호를 계획에 즉시 반영하자고 하지만, "
+        "현업부서는 전년도 실적 하락이 확인되기 전에는 즉시 반영할 수 없다고 합니다. 계획 "
+        "확정 마감이 임박했고 예산도 부족합니다. 기획부서 입장과 현업부서 입장의 "
+        "품질·일정·비용 영향을 비교해 "
+        "시장환경 자료와 전망 적용 범위를 합의하되, 합의가 어려우면 남은 쟁점과 결정권자에게 "
+        "상신할 공동 수요 기준안을 제시해 주세요."
+        if market_focus
+        else "[토론과제] 요청 부서는 긴급 일정 때문에 현재 초안을 먼저 결재하자고 하고, "
+        "검토 부서는 공고 원문과 다른 필수 항목을 바로잡기 전에는 결재할 수 없다고 합니다. "
+        "확인할 문서와 적용 범위를 합의해 공동 요구사항 대조안을 제시해 주세요."
+    )
+    drafts = {
+        "경험면접": {
+            "question": experience_question,
+            "follow_ups": [
+                "방금 선택한 근거와 반대되는 자료를 당시 빠뜨렸다면 무엇이며 어떻게 다시 확인하겠습니까?",
+                "앞서 정한 적용 범위에 예외를 요구하는 부서가 생겼다면 어느 기준으로 수용 여부를 정하겠습니까?",
+                "말씀한 산출물이 최종안에 반영된 결과를 어떤 승인 기록이나 전후 변화로 확인했습니까?",
+                "같은 상황이 반복된다면 방금 설명한 검토 순서에서 무엇을 먼저 바꾸겠습니까?",
+            ],
+            "evaluation_points": [
+                "상황과 담당 역할의 구체성",
+                "자료 확인과 판단 기준의 타당성",
+                "본인이 수행한 행동의 명확성",
+                "결과 지표와 후속 개선의 연계성",
+            ],
+        },
+        "상황면접": {
+            "question": situation_question,
+            "follow_ups": [
+                "방금 먼저 보겠다고 한 자료의 작성 시점이 다르다면 신뢰도를 어떻게 다시 판단하겠습니까?",
+                "앞서 선택한 기준 때문에 제외되는 대상이 생겼다면 어느 조건에서 예외를 인정하겠습니까?",
+                "제시한 산출물에서 판단 근거가 빠졌다는 검토 의견이 오면 무엇을 보완하겠습니까?",
+                "그 결정이 권한을 벗어난다는 사실을 알게 되면 누구에게 어떤 근거로 보고하겠습니까?",
+            ],
+            "evaluation_points": [
+                "핵심 사실과 자료 확인의 정확성",
+                "대안별 위험과 영향 비교의 타당성",
+                "행동 및 보고 순서의 실현 가능성",
+                "사후 점검과 재발 방지 계획의 구체성",
+            ],
+        },
+        "발표면접": {
+            "question": presentation_question,
+            "follow_ups": [
+                "앞서 선택한 근거 자료의 집계 범위가 다르다면 분석을 어떻게 수정하겠습니까?",
+                "앞서 선택한 대안의 전제가 틀렸다는 반증이 나오면 어느 조건에서 권고를 바꾸겠습니까?",
+                "제시한 실행 산출물에서 누락된 이해관계자가 있다면 누구이며 어떻게 반영하겠습니까?",
+                "그 권고의 성과를 확인할 지표와 보고 시점은 무엇입니까?",
+            ],
+            "evaluation_points": [
+                "자료 분석 근거의 정확성",
+                "대안 비교와 발표 구조의 논리성",
+                "실행 계획과 역할 배분의 구체성",
+                "성과 지표와 질의응답의 일관성",
+            ],
+        },
+        "토론면접": {
+            "question": discussion_question,
+            "follow_ups": [
+                "방금 수용하겠다고 하신 상대 입장의 근거가 실제 자료에 없다면 어느 사실을 추가로 확인하겠습니까?",
+                "그 확인 결과 앞서 정한 합의 범위에 한쪽의 핵심 위험이 남는 것으로 나왔다면 어떤 예외 조건을 두겠습니까?",
+                "제시한 공동안에서 책임 주체가 빠져 있다면 누구의 역할을 어떻게 보완하겠습니까?",
+                "합의안의 실행 결과를 어느 기록으로 점검하겠습니까?",
+            ],
+            "evaluation_points": [
+                "대안별 장단점 분석의 균형성",
+                "주장과 근거 연결의 논리성",
+                "상대 의견 수용과 조정 행동",
+                "합의안과 실행 조건의 구체성",
+            ],
+        },
+    }
+
+    return {
+        "interview_questions": [
+            {
+                "type": method,
+                "method": method,
+                "question_source": "openai_api",
+                "question_evidence_id": evidence_id,
+                "question_focus": focus,
+                "question_focus_source": "official_ksa",
+                "question_focus_type": str(ksa.get("ksaTypeName") or "지식"),
+                "ncsClCd": str(unit["ncsClCd"]),
+                "competency": competency,
+                "ncs_detail": str(unit["ncsSubdCdnm"]),
+                "ksa_refs": [focus],
+                **drafts[method],
+            }
+            for method in methods
+        ]
+    }
 
 
 def test_json_responses_declare_utf8_for_windows_clients() -> None:
@@ -155,7 +289,7 @@ def _confirmed_review_payload(fields: dict, confirmed: object = True, jd_text: s
     }
 
 
-def test_review_session_stores_only_hash_metadata_and_is_single_use():
+def test_review_session_stores_only_hash_metadata_and_supports_retry():
     review = _confirmed_review_payload(
         {"ncs_detail_candidates": ["경영기획"]},
         jd_text=JD_TEXT,
@@ -168,9 +302,8 @@ def test_review_session_stores_only_hash_metadata_and_is_single_use():
 
     validated = main._validate_review_session(review, JD_TEXT.encode("utf-8"))
     assert validated["markdown"] == JD_TEXT
-    with pytest.raises(main.HTTPException) as exc_info:
-        main._validate_review_session(review, JD_TEXT.encode("utf-8"))
-    assert exc_info.value.status_code == 409
+    retry = main._validate_review_session(review, JD_TEXT.encode("utf-8"))
+    assert retry["markdown"] == JD_TEXT
 
 
 def test_review_session_caps_untrusted_multipart_filename():
@@ -216,7 +349,10 @@ def test_mcp_only_requires_human_review_confirmation(monkeypatch, mocker):
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
-            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
         )
 
     assert resp.status_code == 400
@@ -232,7 +368,10 @@ def test_mcp_only_rejects_truthy_string_confirmation(monkeypatch, mocker):
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
-            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
         )
 
     assert resp.status_code == 400
@@ -248,7 +387,10 @@ def test_mcp_only_requires_server_review_session(monkeypatch, mocker):
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
-            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
         )
 
     assert resp.status_code == 400
@@ -264,7 +406,10 @@ def test_mcp_only_requires_reviewed_detail_candidates(monkeypatch, mocker):
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
-            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
         )
 
     assert resp.status_code == 422
@@ -282,7 +427,10 @@ def test_mcp_only_does_not_autofill_reviewed_detail_candidates(monkeypatch, mock
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
-            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
         )
 
     assert resp.status_code == 422
@@ -308,7 +456,10 @@ def test_mcp_only_returns_manual_suggestions_when_detail_has_no_exact_match(monk
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
-            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
         )
 
     body = resp.json()
@@ -350,7 +501,10 @@ def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
-            data={"jd_review_json": json.dumps(review, ensure_ascii=False)},
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
         )
 
     body = resp.json()
@@ -364,6 +518,7 @@ def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
 
 def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     _patch_mcp_upload_common(mocker)
     unit = {
         "ncsClCd": "0201010103_22v2",
@@ -376,6 +531,9 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
         "ncsClCd": unit["ncsClCd"],
         "compeUnitName": unit["compeUnitName"],
         "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
+        "elementName": "\uacbd\uc601\ud658\uacbd \ubd84\uc11d",
+        "ksaTypeName": "\uc9c0\uc2dd",
+        "ksaNo": "K-01",
         "factorSource": "ncs-mcp",
         "ksaStatus": "official",
     }
@@ -386,40 +544,27 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     build_strategy = mocker.patch(
         "app.main.build_jd_strategy_with_openai",
-        return_value={
-            "interview_questions": [
-                {
-                    "question": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd \uc2dc \uc2dc\uc7a5\ud658\uacbd\uc744 \uc5b4\ub5bb\uac8c \ubd84\uc11d\ud558\uaca0\uc2b5\ub2c8\uae4c?",
-                    "type": "\uc9c1\ubb34\uc9c0\uc2dd",
-                    "competency": unit["compeUnitName"],
-                    "ncsClCd": unit["ncsClCd"],
-                    "follow_ups": ["\ubd84\uc11d \uadfc\uac70\ub294?", "\uc704\ud5d8\uc694\uc778\uc740?", "\uac1c\uc120\uc810\uc740?"],
-                    "evaluation_points": ["\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d", "\uadfc\uac70 \uc81c\uc2dc", "\ub300\uc548 \ube44\uad50", "\uc2e4\ud589\uacc4\ud68d"],
-                }
-            ]
-        },
+        return_value=_openai_model_strategy(unit, ksa),
     )
     review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]})
-    request_key = "sk-test-ncscope-request-key"
-
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/jd/strategy/upload",
             files=_upload_files(),
             data={
                 "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "duty_text": "duty: stakeholder workshop planning",
                 "qualification_text": "\uc9c0\uc6d0\uc790\uaca9: \uad00\ub828 \ubd84\uc57c \uc2e4\ubb34\uacbd\ub825 3\ub144 \uc774\uc0c1",
                 "preference_text": "\uc6b0\ub300\uc0ac\ud56d: \uacf5\uacf5\uae30\uad00 \uc0ac\uc5c5\uad00\ub9ac \uacbd\ud5d8",
                 "evaluation_text": "evaluation: issue framing",
-                "openai_api_key": request_key,
             },
         )
 
     body = resp.json()
     assert resp.status_code == 200
     rerank.assert_called_once()
-    assert rerank.call_args.kwargs["openai_api_key"] == request_key
+    assert rerank.call_args.kwargs["openai_api_key"] == REQUEST_OPENAI_KEY
     rank_ksa.assert_called_once()
     ksa_query_text = rank_ksa.call_args.kwargs["query_text"]
     assert "duty: stakeholder workshop planning" in ksa_query_text
@@ -428,8 +573,11 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert "evaluation: issue framing" in ksa_query_text
     assert "\uacbd\uc601\uae30\ud68d" in ksa_query_text
     build_strategy.assert_called_once()
-    assert build_strategy.call_args.kwargs["api_key_override"] == request_key
-    assert request_key not in resp.text
+    api_key_override = build_strategy.call_args.kwargs["api_key_override"]
+    assert api_key_override == REQUEST_OPENAI_KEY
+    assert main.settings.resolve_openai_key(api_key_override) == REQUEST_OPENAI_KEY
+    assert body["openai_key_source"] == "request"
+    assert REQUEST_OPENAI_KEY not in resp.text
     assert body["jd_review_confirmed"] is True
     assert "\uc2e4\ubb34\uacbd\ub825" in body["qualification_text_preview"]
     assert "\uc0ac\uc5c5\uad00\ub9ac" in body["preference_text_preview"]
@@ -437,14 +585,18 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert body["ncs_ksa"][0]["factorSource"] == "ncs-mcp"
     assert body["ncs_ksa"][0]["ksaStatus"] == "official"
     question = body["strategy"]["interview_questions"][0]
+    assert question["question_source"].startswith("openai_api")
+    assert question["question_evidence_id"] == main.stable_ksa_evidence_id(ksa)
     assert question["ksa_refs"] == ["\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d"]
     assert question["ksa_evidence"][0]["factorSource"] == "ncs-mcp"
     assert question["ksa_evidence"][0]["ksaStatus"] == "official"
 
 
-def test_upload_rejects_invalid_request_openai_key(monkeypatch, mocker):
+def test_upload_requires_request_openai_key_even_with_server_env(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.setenv("OPENAI_API_KEY", SERVER_OPENAI_KEY)
     _patch_mcp_upload_common(mocker)
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai")
     review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]})
 
     with TestClient(main.app) as client:
@@ -453,16 +605,20 @@ def test_upload_rejects_invalid_request_openai_key(monkeypatch, mocker):
             files=_upload_files(),
             data={
                 "jd_review_json": json.dumps(review, ensure_ascii=False),
-                "openai_api_key": "sk-test invalid",
             },
         )
 
     assert resp.status_code == 400
-    assert "openai_api_key" in resp.text
+    assert resp.json()["detail"]["code"] == "openai_api_key_required"
+    assert resp.json()["detail"]["provider"] == "openai_api"
+    assert resp.json()["detail"]["retryable"] is False
+    assert SERVER_OPENAI_KEY not in resp.text
+    build_strategy.assert_not_called()
 
 
-def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
+def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     unit = {
         "ncsClCd": "0201010103_22v2",
         "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
@@ -474,19 +630,28 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
         "ncsClCd": unit["ncsClCd"],
         "compeUnitName": unit["compeUnitName"],
         "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
+        "elementName": "\uacbd\uc601\ud658\uacbd \ubd84\uc11d",
+        "ksaTypeName": "\uc9c0\uc2dd",
+        "ksaNo": "K-01",
         "factorSource": "ncs-mcp",
         "ksaStatus": "official",
     }
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
     rank_ksa = mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
-    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
-    request_key = "sk-test-manual-request-key"
-
+    build_strategy = mocker.patch(
+        "app.main.build_jd_strategy_with_openai",
+        return_value=_openai_model_strategy(
+            unit,
+            ksa,
+            methods=("\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"),
+        ),
+    )
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/questions/generate-from-text",
             json={
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
                 "duty_text": "duty: board reporting and KPI dashboard",
                 "evaluation_text": "\ubb38\uc81c\ud574\uacb0\ub2a5\ub825",
@@ -497,7 +662,6 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
                     ]
                 },
                 "interview_methods": ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"],
-                "openai_api_key": request_key,
             },
         )
 
@@ -515,18 +679,36 @@ def test_generate_from_text_passes_request_openai_key(monkeypatch, mocker):
     assert "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34" in ksa_query_text
     build_strategy.assert_called_once()
     kwargs = build_strategy.call_args.kwargs
-    assert kwargs["api_key_override"] == request_key
+    assert kwargs["api_key_override"] == REQUEST_OPENAI_KEY
+    assert main.settings.resolve_openai_key(kwargs["api_key_override"]) == REQUEST_OPENAI_KEY
     assert kwargs["target_count_override"] == 2
     assert kwargs["follow_up_count"] == 4
     assert kwargs["question_plan"]["selected_terms"] == ["\uacbd\uc601\uae30\ud68d"]
     assert kwargs["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"]
-    assert request_key not in resp.text
+    assert REQUEST_OPENAI_KEY not in resp.text
 
 
-def test_generate_from_text_does_not_use_server_openai_key_by_default(monkeypatch, mocker):
+def test_generate_from_text_requires_request_openai_key_even_with_server_env(monkeypatch, mocker):
+    monkeypatch.setenv("OPENAI_API_KEY", SERVER_OPENAI_KEY)
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai")
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/questions/generate-from-text",
+            json={},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "openai_api_key_required"
+    assert resp.json()["detail"]["provider"] == "openai_api"
+    assert resp.json()["detail"]["retryable"] is False
+    assert SERVER_OPENAI_KEY not in resp.text
+    build_strategy.assert_not_called()
+
+
+def test_generate_from_text_never_falls_back_to_server_openai_key(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
-    monkeypatch.delenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", SERVER_OPENAI_KEY)
     unit = {
         "ncsClCd": "0201010103_22v2",
         "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
@@ -538,18 +720,25 @@ def test_generate_from_text_does_not_use_server_openai_key_by_default(monkeypatc
         "ncsClCd": unit["ncsClCd"],
         "compeUnitName": unit["compeUnitName"],
         "factorName": "\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d",
+        "elementName": "\uacbd\uc601\ud658\uacbd \ubd84\uc11d",
+        "ksaTypeName": "\uc9c0\uc2dd",
+        "ksaNo": "K-01",
         "factorSource": "ncs-mcp",
         "ksaStatus": "official",
     }
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
     mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
-    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+    build_strategy = mocker.patch(
+        "app.main.build_jd_strategy_with_openai",
+        return_value=_openai_model_strategy(unit, ksa),
+    )
 
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/questions/generate-from-text",
             json={
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "notice_text": "\uacbd\uc601\uae30\ud68d \ub2f4\ub2f9\uc5c5\ubb34",
                 "selected_ncs": [unit],
             },
@@ -557,36 +746,43 @@ def test_generate_from_text_does_not_use_server_openai_key_by_default(monkeypatc
 
     body = resp.json()
     assert resp.status_code == 200
-    assert body["openai_key_source"] == "missing"
+    assert body["openai_key_source"] == "request"
     kwargs = build_strategy.call_args.kwargs
-    assert kwargs["api_key_override"] == ""
-    assert "sk-server-env-key" not in resp.text
+    assert kwargs["api_key_override"] == REQUEST_OPENAI_KEY
+    assert main.settings.resolve_openai_key(kwargs["api_key_override"]) == REQUEST_OPENAI_KEY
+    assert REQUEST_OPENAI_KEY not in resp.text
+    assert SERVER_OPENAI_KEY not in resp.text
 
 
-def test_server_openai_environment_key_is_never_used(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-server-env-key")
-    monkeypatch.setenv("OPENAI_ALLOW_SERVER_KEY_FALLBACK", "true")
-    monkeypatch.setenv("OPENAI_SERVER_FALLBACK_TOKEN", "fallback-auth-token")
+def test_generation_status_declares_request_scoped_key_contract(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", SERVER_OPENAI_KEY)
 
     with TestClient(main.app) as client:
-        generation_resp = client.post(
-            "/api/questions/generate-personalized",
-            headers={"X-NCScope-OpenAI-Token": "fallback-auth-token"},
-            json={"ncs_code": "0202030201_25v3"},
-        )
+        status_resp = client.get("/api/generation-provider/status")
         health_resp = client.get("/health")
 
-    assert generation_resp.status_code == 400
-    assert "request body" in generation_resp.text
-    assert "sk-server-env-key" not in generation_resp.text
+    assert status_resp.status_code == 200
+    status = status_resp.json()
+    assert status["provider"] == "openai_api"
+    assert status["auth_mode"] == "request_scoped_api_key"
+    assert status["status"] == "key_required"
+    assert status["available"] is True
+    assert status["authenticated"] is False
+    assert status["credential_configured"] is False
+    assert status["credential_managed_by"] == "request"
+    assert status["requires_request_api_key"] is True
+    assert status["local_only"] is False
+    assert SERVER_OPENAI_KEY not in status_resp.text
     assert health_resp.status_code == 200
     health = health_resp.json()
     assert health["keys"]["openai"] is False
+    assert health["keys"]["openai_institution_managed"] is False
     assert health["keys"]["openai_request_scoped"] is True
 
 
 def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     unit = {
         "ncsClCd": "0202030201_25v3",
         "compeUnitName": "\ubb38\uc11c\uc791\uc131",
@@ -598,17 +794,24 @@ def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkey
         "ncsClCd": unit["ncsClCd"],
         "compeUnitName": unit["compeUnitName"],
         "factorName": "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d \ud30c\uc545",
+        "elementName": "\ubb38\uc11c \uc791\uc131 \uc900\ube44",
+        "ksaTypeName": "\uc9c0\uc2dd",
+        "ksaNo": "K-01",
         "factorSource": "ncs-mcp",
         "ksaStatus": "official",
     }
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
-    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai", return_value={"interview_questions": []})
+    build_strategy = mocker.patch(
+        "app.main.build_jd_strategy_with_openai",
+        return_value=_openai_model_strategy(unit, ksa),
+    )
 
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/questions/generate-from-text",
             json={
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "notice_text": "\uc0ac\ubb34\ud589\uc815 \ub2f4\ub2f9\uc5c5\ubb34",
                 "selected_ncs": [unit],
                 "question_plan": {
@@ -625,8 +828,11 @@ def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkey
     assert body["question_plan"]["total_main_count"] == 3
     assert body["question_plan"]["follow_up_count"] == 5
     kwargs = build_strategy.call_args.kwargs
+    assert kwargs["api_key_override"] == REQUEST_OPENAI_KEY
+    assert main.settings.resolve_openai_key(kwargs["api_key_override"]) == REQUEST_OPENAI_KEY
     assert kwargs["question_plan"]["selected_terms"] == ["\uc0ac\ubb34\ud589\uc815"]
     assert kwargs["target_count_override"] == 3
+    assert REQUEST_OPENAI_KEY not in resp.text
 
 
 def test_mcp_search_matches_detail_not_small_category(mocker):
@@ -652,6 +858,32 @@ def test_mcp_search_matches_detail_not_small_category(mocker):
     rows = ncs_mcp_client.search_units_by_detail(["\uacbd\uc601\uae30\ud68d"])
 
     assert [row["ncsClCd"] for row in rows] == ["sub-match"]
+
+
+def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls: list[str] = []
+
+    def fake_call_tool(_name, arguments):
+        query = arguments["query"]
+        calls.append(query)
+        code = "0202020101_23v3" if query == "인사" else "0101010201_17v2"
+        return {
+            "results": [
+                {
+                    "id": code,
+                    "text": f"{query} 능력단위",
+                    "path": {"small": query, "sub": query},
+                }
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail(["인사, 프로젝트관리"], max_units=10)
+
+    assert calls == ["인사", "프로젝트관리"]
+    assert [row["matchedDetailName"] for row in rows] == ["인사", "프로젝트관리"]
 
 
 def test_mcp_ksa_alias_fields_preserve_and_balance_knowledge_skill_attitude(mocker):
@@ -913,6 +1145,23 @@ def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):
     assert body["source"] == "ncs-mcp-suggest"
     assert body["items"] == [suggestion]
     assert "Exact detail-class match" in body["message"]
+
+
+def test_ncs_unit_options_splits_multi_term_query(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    search = mocker.patch(
+        "app.main.search_units_by_detail",
+        return_value=[{"ncsClCd": "0202020101_23v3"}],
+    )
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/ncs/units/options",
+            params={"q": "인사, 프로젝트관리", "limit": 20},
+        )
+
+    assert response.status_code == 200
+    search.assert_called_once_with(["인사", "프로젝트관리"], max_units=20)
 
 
 def test_legacy_ncs_sclass_ksa_endpoint_disabled_by_default(monkeypatch):
@@ -1178,7 +1427,7 @@ def test_question_endpoints_reject_avoid_questions_query_param():
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/questions/generate-by-ncs-code?avoid_questions_json=%5B%22prior-question%22%5D",
-            json={"ncs_code": "02020302"},
+            json={"openai_api_key": REQUEST_OPENAI_KEY, "ncs_code": "02020302"},
         )
 
     assert resp.status_code == 400
@@ -1188,12 +1437,13 @@ def test_question_endpoints_reject_avoid_questions_query_param():
 
 def test_generate_by_ncs_code_requires_mcp_url(monkeypatch):
     monkeypatch.delenv("NCS_MCP_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/questions/generate-by-ncs-code",
             json={
-                "openai_api_key": "sk-body-key",
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "ncs_code": "0202030201_25v3",
             },
         )
@@ -1204,6 +1454,7 @@ def test_generate_by_ncs_code_requires_mcp_url(monkeypatch):
 
 def test_generate_by_ncs_code_stops_without_official_ksa(monkeypatch):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(
         main,
         "generate_interview_questions_by_ncs_code",
@@ -1219,17 +1470,23 @@ def test_generate_by_ncs_code_stops_without_official_ksa(monkeypatch):
         resp = client.post(
             "/api/questions/generate-by-ncs-code",
             json={
-                "openai_api_key": "sk-body-key",
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "ncs_code": "0202030201_25v3",
             },
         )
 
     assert resp.status_code == 502
-    assert "Official NCS KSA" in resp.text
+    assert resp.json()["detail"] == {
+        "code": "openai_api_generation_failed",
+        "provider": "openai_api",
+        "message": "OpenAI API에서 질문을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        "retryable": True,
+    }
 
 
 def test_generate_by_ncs_code_rejects_unverified_question_grounding(monkeypatch):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(
         main,
         "generate_interview_questions_by_ncs_code",
@@ -1254,7 +1511,7 @@ def test_generate_by_ncs_code_rejects_unverified_question_grounding(monkeypatch)
         resp = client.post(
             "/api/questions/generate-by-ncs-code",
             json={
-                "openai_api_key": "sk-body-key",
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "ncs_code": "0202030201_25v3",
             },
         )
@@ -1265,6 +1522,7 @@ def test_generate_by_ncs_code_rejects_unverified_question_grounding(monkeypatch)
 
 def test_generate_by_ncs_code_rejects_invalid_supported_method_shape(monkeypatch):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(
         main,
         "generate_interview_questions_by_ncs_code",
@@ -1289,7 +1547,7 @@ def test_generate_by_ncs_code_rejects_invalid_supported_method_shape(monkeypatch
         resp = client.post(
             "/api/questions/generate-by-ncs-code",
             json={
-                "openai_api_key": "sk-body-key",
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "ncs_code": "0202030201_25v3",
             },
         )
@@ -1300,12 +1558,13 @@ def test_generate_by_ncs_code_rejects_invalid_supported_method_shape(monkeypatch
 
 def test_generate_by_ncs_code_rejects_string_boolean(monkeypatch):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/questions/generate-by-ncs-code",
             json={
-                "openai_api_key": "sk-body-key",
+                "openai_api_key": REQUEST_OPENAI_KEY,
                 "ncs_code": "0202030201_25v3",
                 "include_followups": "false",
             },

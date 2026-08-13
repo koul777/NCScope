@@ -85,6 +85,73 @@ def test_structure_job_description_splits_numbered_detail_cells_from_kordoc_bloc
     assert result["fields"]["ncs_detail_candidates"] == ["유원시설운영관리", "객실관리"]
 
 
+def test_structure_job_description_preserves_real_aksr_pdf_detail_cells_without_fragments() -> None:
+    """Regression for ``03. ncs 기반 채용 직무 설명자료.pdf`` page 1."""
+    markdown = """
+<table>
+<tr><td>세분류</td><td>02.<br>프로젝트관리</td><td>03.<br>산학협력관리</td><td>01.<br>경영기획</td><td>02.<br>경영평가</td><td>01.<br>총무</td><td>01.<br>인사</td><td>01. 비서<br>(글로벌경영사무<br>지원)</td><td>01. 예산</td></tr>
+</table>
+"""
+    parsed = {
+        "markdown": markdown,
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {"text": "세분류"},
+                        {"text": "02.\n프로젝트관리"},
+                        {"text": "03.\n산학협력관리"},
+                        {"text": "01.\n경영기획"},
+                        {"text": "02.\n경영평가"},
+                        {"text": "01.\n총무"},
+                        {"text": "01.\n인사"},
+                        {"text": "01. 비서\n(글로벌경영사무\n지원)"},
+                        {"text": "01. 예산"},
+                    ]
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="03. ncs 기반 채용 직무 설명자료.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "프로젝트관리",
+        "산학협력관리",
+        "경영기획",
+        "경영평가",
+        "총무",
+        "인사",
+        "비서 (글로벌경영사무 지원)",
+        "예산",
+    ]
+
+
+def test_structure_job_description_rejects_number_parenthesis_and_page_fragments() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {"text": "세분류"},
+                        {"text": "프로젝트관리 03."},
+                        {"text": "페이지 1 / 4"},
+                        {"text": "(글로벌경영사무"},
+                        {"text": "지원)"},
+                    ]
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="fragmented.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["프로젝트관리"]
+
+
 def test_structure_job_description_does_not_recover_no_mapping_from_kordoc_blocks() -> None:
     parsed = {
         "markdown": "",

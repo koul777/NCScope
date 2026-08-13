@@ -76,7 +76,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                     "params": {
                         "protocolVersion": MCP_PROTOCOL_VERSION,
                         "capabilities": {},
-                        "clientInfo": {"name": "ncscope", "version": "1.2"},
+                        "clientInfo": {"name": "ncscope", "version": "1.4"},
                     },
                 },
             )
@@ -153,6 +153,22 @@ def _norm(value: Any) -> str:
     return re.sub(r"[\s·‧･ㆍ•∙⋅・\-\_/|(),.]+", "", str(value or "")).lower()
 
 
+def _split_detail_terms(values: list[str]) -> list[str]:
+    """Flatten UI/parser multi-label values into distinct NCS detail terms."""
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        for part in re.split(r"[\n,;/|]+", str(value or "")):
+            term = part.strip()
+            key = _norm(term)
+            if not term or not key or key in seen:
+                continue
+            seen.add(key)
+            terms.append(term)
+    return terms
+
+
 _DETAIL_QUERY_ALIASES_BY_KEY = {
     # Public NCS classifies this under 건축설계·감리 > 건축공사감리.
     # Some ALIO JDs shorten the 세분류 label to 건축감리.
@@ -180,7 +196,7 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
         raise NcsMcpError("configured NCS MCP does not expose ncs_search")
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for detail in detail_names:
+    for detail in _split_detail_terms(detail_names):
         name = str(detail or "").strip()
         if not name:
             continue
@@ -244,7 +260,7 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
     limit = max(1, int(max_units or 20))
-    for term in terms:
+    for term in _split_detail_terms(terms):
         query = str(term or "").strip()
         if not query:
             continue

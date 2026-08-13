@@ -1,7 +1,6 @@
 """Tests for app.services.queue_manager module."""
 
-import pytest
-from app.services.queue_manager import QueueManager, QueueTask
+from app.services.queue_manager import QueueManager
 
 
 class TestQueueManager:

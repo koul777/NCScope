@@ -30,7 +30,7 @@ def _strategy(*, passed: bool = True, checks: dict[str, bool] | None = None) -> 
 
 
 def test_policy_and_feedback_code_contract() -> None:
-    assert QUALITY_POLICY_VERSION == "ncs-official-task-evaluation-pair-v23-decision-grade-materials"
+    assert QUALITY_POLICY_VERSION == "ncs-field-realism-v24"
     assert ALLOWED_FEEDBACK_CODES == {
         "wrong_ncs_alignment",
         "behavioral_not_star_like",

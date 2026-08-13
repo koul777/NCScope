@@ -30,6 +30,7 @@ _*
 !package.json
 !package-lock.json
 !app/data/*.json
+!app/services/codex_question_schema.json
 bench_*.json
 bench_pdfs/
 interview_questions.json

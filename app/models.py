@@ -267,6 +267,21 @@ class AuditLog(Base):
     )
 
 
+class ReviewSession(Base):
+    """Short-lived metadata for a parsed JD review confirmation."""
+
+    __tablename__ = "review_sessions"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    filename: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at_epoch: Mapped[float] = mapped_column(Float, nullable=False)
+    document_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    markdown_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    markdown_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (Index("ix_review_sessions_created", "created_at_epoch"),)
+
+
 class QuestionQualityRun(Base):
     __tablename__ = "question_quality_runs"
 

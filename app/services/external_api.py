@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -56,10 +56,31 @@ def fetch_public_inst(
 
 
 def fetch_ncs(path: str, query: dict[str, Any], timeout_sec: float = 20.0) -> dict[str, Any]:
-    normalized = path.strip().lstrip("/")
-    if not normalized:
-        raise ValueError("path is required")
-    url = urljoin(settings.ncs_base_url, normalized)
+    raw_path = str(path or "").strip().replace("\\", "/")
+    parsed_path = urlsplit(raw_path)
+    if (
+        not raw_path
+        or parsed_path.scheme
+        or parsed_path.netloc
+        or parsed_path.query
+        or parsed_path.fragment
+        or any(ord(char) < 0x20 for char in raw_path)
+    ):
+        raise ValueError("path must be a relative NCS API path")
+
+    normalized = raw_path.lstrip("/")
+    base = urlsplit(str(settings.ncs_base_url or "").strip())
+    if base.scheme not in {"http", "https"} or not base.netloc:
+        raise RuntimeError("NCS_BASE_URL is invalid")
+    url = urljoin(str(settings.ncs_base_url).rstrip("/") + "/", normalized)
+    resolved = urlsplit(url)
+    base_path = base.path.rstrip("/") + "/"
+    if (
+        resolved.scheme != base.scheme
+        or resolved.netloc != base.netloc
+        or not resolved.path.startswith(base_path)
+    ):
+        raise ValueError("path must stay within the configured NCS API base URL")
     params = dict(query)
     params.setdefault("serviceKey", _ncs_key())
     with httpx.Client(timeout=timeout_sec) as client:

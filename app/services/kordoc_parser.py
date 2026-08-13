@@ -171,6 +171,14 @@ def _looks_like_detail_candidate(value: str) -> bool:
     text = _clean_text(value)
     if not text:
         return False
+    if re.fullmatch(r"(?:p(?:age)?\.?|페이지)\s*\d+(?:\s*/\s*\d+)?", text, flags=re.IGNORECASE):
+        return False
+    # Broken PDF table cells sometimes expose only one side of a parenthesized
+    # label (for example ``(글로벌경영사무`` / ``지원)``).  Such fragments are
+    # never complete NCS detail names and must not be promoted independently.
+    for opener, closer in (("(", ")"), ("[", "]")):
+        if text.count(opener) != text.count(closer):
+            return False
     key = _norm(text)
     non_values = {
         "대분류",
@@ -498,7 +506,11 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
 
 def _clean_detail_candidate_text(value: str) -> str:
     text = _clean_text(value)
+    text = re.sub(r"\s+", " ", text)
     text = re.sub(r"^\d{1,2}\s*[,.)：:\-]\s*", "", text)
+    # A number at the end belongs to the next PDF table cell when Kordoc has
+    # flattened adjacent numbered cells into one string (``총무 01.``).
+    text = re.sub(r"\s+\d{1,2}\s*[.]\s*$", "", text)
     text = re.sub(r"\s*[\(（\[]\s*특화\s*분류\s*[\)）\]]\s*", "", text)
     text = re.sub(r"^[,;/|]+", "", text)
     text = re.sub(r"[,;/|:：\-]+$", "", text)
@@ -1030,7 +1042,15 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                     if label_index >= 0:
                         section = _section_for_label(values[label_index])
                         if section:
-                            add(section, " ".join(values[label_index + 1 :]), block=block)
+                            if section == "ncs_detail":
+                                # Preserve Kordoc's table-cell boundary. Joining
+                                # numbered detail cells shifts the next ordinal
+                                # onto the previous label and splits multiline
+                                # parenthesized labels into false candidates.
+                                for value in values[label_index + 1 :]:
+                                    add(section, re.sub(r"\s+", " ", value), block=block)
+                            else:
+                                add(section, " ".join(values[label_index + 1 :]), block=block)
         for child_key in ("children", "blocks", "rows", "cells"):
             children = block.get(child_key)
             if isinstance(children, list):
