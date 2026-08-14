@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NCScope v1.4.1</title>
+  <title>NCScope v1.4.2</title>
   <style>
     :root {
       --bg:#f3f7fb;
@@ -200,7 +200,7 @@
           <div class="build-tag">Original interface · Kordoc parsing · Human Review · Local NCS DB evidence</div>
         </div>
         <div class="hero-badges">
-          <span class="badge">v1.4.1</span>
+          <span class="badge">v1.4.2</span>
           <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
           <span class="badge">KSA 근거 추적</span>
@@ -2419,7 +2419,17 @@
       const payload = data && typeof data === 'object' ? data : {};
       const fallback = `요청 처리 실패 (HTTP ${Number(httpStatus) || '-'})`;
       const errorCode = String((payload.detail || {}).code || '').trim();
-      const stageHint = errorCode === 'openai_api_generation_failed'
+      const modelFailureCodes = new Set([
+        'openai_api_generation_failed',
+        'openai_api_timeout',
+        'openai_api_unreachable',
+        'openai_api_invalid_output',
+        'openai_api_quality_rejected',
+        'openai_api_content_restricted',
+        'openai_api_request_rejected',
+        'openai_api_upstream_unavailable',
+      ]);
+      const stageHint = modelFailureCodes.has(errorCode)
         ? ' NCS 세분류 매칭과 KSA 조회는 완료되었으며, OpenAI 질문 생성 단계에서 실패했습니다.'
         : '';
       errorBox.textContent = `오류: ${apiErrorMessage(payload, fallback)}${stageHint}`;

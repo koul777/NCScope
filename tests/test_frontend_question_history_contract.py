@@ -94,6 +94,10 @@ def test_frontend_routes_only_ncs_match_errors_to_manual_ncs_review() -> None:
     assert "handleNcsMatchError(data.detail)" in script
     assert "handleApiFailure(data, res.status)" in script
     assert "NCS 세분류 매칭과 KSA 조회는 완료되었으며" in script
+    assert "const modelFailureCodes = new Set" in script
+    assert "'openai_api_timeout'" in script
+    assert "'openai_api_invalid_output'" in script
+    assert "'openai_api_quality_rejected'" in script
     assert "stopProgress('실패')" in script
 
 

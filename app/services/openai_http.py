@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -84,6 +85,29 @@ def _is_retryable_exception(exc: Exception) -> bool:
 
 def _is_retryable_status(status_code: int) -> bool:
     return int(status_code) in _RETRYABLE_STATUS
+
+
+def _safe_transport_failure_code(exc: BaseException) -> str:
+    """Return a stable provider code without reflecting transport details."""
+
+    if isinstance(exc, httpx.TimeoutException):
+        return "openai_request_timeout"
+    normalized = str(exc or "").strip().casefold()
+    if any(marker in normalized for marker in ("timed out", "timeout", "readtimeout")):
+        return "openai_request_timeout"
+    if isinstance(
+        exc,
+        (
+            httpx.NetworkError,
+            httpx.RemoteProtocolError,
+            httpx.TransportError,
+        ),
+    ):
+        return "openai_network_unreachable"
+    status_match = re.search(r"openai_http_(\d{3})", normalized)
+    if status_match:
+        return f"openai_http_{status_match.group(1)}"
+    return "openai_request_failed"
 
 
 def _sleep_backoff(attempt: int) -> None:
@@ -274,7 +298,7 @@ def post_chat_completions_with_retries(
             _sleep_backoff(attempt)
 
     if last_error:
-        raise RuntimeError(str(last_error))
+        raise RuntimeError(_safe_transport_failure_code(last_error))
     raise RuntimeError("openai_request_failed")
 
 
