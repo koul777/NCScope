@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NCScope v1.4</title>
+  <title>NCScope v1.4.1</title>
   <style>
     :root {
       --bg:#f3f7fb;
@@ -200,7 +200,7 @@
           <div class="build-tag">Original interface · Kordoc parsing · Human Review · Local NCS DB evidence</div>
         </div>
         <div class="hero-badges">
-          <span class="badge">v1.4</span>
+          <span class="badge">v1.4.1</span>
           <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
           <span class="badge">KSA 근거 추적</span>
@@ -2373,7 +2373,17 @@
       updateSelectedCount();
     }
 
-    function handleStructuredError(detail) {
+    function isNcsMatchError(detail) {
+      const payload = detail && typeof detail === 'object' ? detail : {};
+      return Array.isArray(payload.lookup_terms)
+        && Array.isArray(payload.suggested_ncs_units)
+        && (
+          payload.lookup_terms.length > 0
+          || Array.isArray(payload.unmatched_detail_terms)
+        );
+    }
+
+    function handleNcsMatchError(detail) {
       const payload = detail && typeof detail === 'object' ? detail : {};
       const lookupTerms = Array.isArray(payload.lookup_terms) ? payload.lookup_terms.filter(Boolean) : [];
       const matchedTerms = Array.isArray(payload.matched_detail_terms) ? payload.matched_detail_terms.filter(Boolean) : [];
@@ -2402,6 +2412,19 @@
       }
       errorBox.style.display = 'block';
       raw.textContent = JSON.stringify(payload, null, 2);
+      updateWorkflowMenu();
+    }
+
+    function handleApiFailure(data, httpStatus) {
+      const payload = data && typeof data === 'object' ? data : {};
+      const fallback = `요청 처리 실패 (HTTP ${Number(httpStatus) || '-'})`;
+      const errorCode = String((payload.detail || {}).code || '').trim();
+      const stageHint = errorCode === 'openai_api_generation_failed'
+        ? ' NCS 세분류 매칭과 KSA 조회는 완료되었으며, OpenAI 질문 생성 단계에서 실패했습니다.'
+        : '';
+      errorBox.textContent = `오류: ${apiErrorMessage(payload, fallback)}${stageHint}`;
+      errorBox.style.display = 'block';
+      raw.textContent = JSON.stringify(payload.detail || payload, null, 2);
       updateWorkflowMenu();
     }
 
@@ -2560,8 +2583,13 @@
         }
         if (!res.ok) {
           if (data.detail && typeof data.detail === 'object') {
-            handleStructuredError(data.detail);
-            stopProgress('검토 필요');
+            if (isNcsMatchError(data.detail)) {
+              handleNcsMatchError(data.detail);
+              stopProgress('검토 필요');
+            } else {
+              handleApiFailure(data, res.status);
+              stopProgress('실패');
+            }
             return;
           }
           throw new Error(data.detail || JSON.stringify(data));

@@ -84,6 +84,19 @@ def test_frontend_formats_structured_review_errors_without_object_object_text() 
     assert "new Error(apiErrorMessage(payload, '되돌리기 실패'))" in script
 
 
+def test_frontend_routes_only_ncs_match_errors_to_manual_ncs_review() -> None:
+    script = _inline_script()
+
+    assert "function isNcsMatchError(detail)" in script
+    assert "Array.isArray(payload.lookup_terms)" in script
+    assert "Array.isArray(payload.suggested_ncs_units)" in script
+    assert "if (isNcsMatchError(data.detail))" in script
+    assert "handleNcsMatchError(data.detail)" in script
+    assert "handleApiFailure(data, res.status)" in script
+    assert "NCS 세분류 매칭과 KSA 조회는 완료되었으며" in script
+    assert "stopProgress('실패')" in script
+
+
 def test_frontend_locks_only_the_stale_question_after_review_conflict() -> None:
     script = _inline_script()
 
