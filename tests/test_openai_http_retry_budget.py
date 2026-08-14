@@ -118,6 +118,28 @@ def test_nonretryable_response_does_not_consume_remaining_budget(
     assert calls == [True]
 
 
+@pytest.mark.parametrize(
+    ("transport_error", "expected_code"),
+    [
+        (httpx.ReadTimeout(""), "openai_request_timeout"),
+        (httpx.ConnectError("secret endpoint detail"), "openai_network_unreachable"),
+    ],
+)
+def test_exhausted_transport_failure_returns_safe_actionable_code(
+    monkeypatch: pytest.MonkeyPatch,
+    transport_error: Exception,
+    expected_code: str,
+) -> None:
+    _patch_client(monkeypatch, [transport_error])
+
+    with pytest.raises(RuntimeError, match=f"^{expected_code}$"):
+        openai_http.post_chat_completions_with_retries(
+            payload={"model": "test"},
+            api_key="request-key",
+            max_attempts=1,
+        )
+
+
 def test_explicit_connectivity_budget_is_one_get_and_never_curl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

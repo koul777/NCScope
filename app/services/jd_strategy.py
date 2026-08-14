@@ -4245,6 +4245,135 @@ def _load_structured_interview_guide_summary(max_chars: int = 1400) -> str:
     return _fallback_structured_interview_guide_summary()
 
 
+_OPENAI_MODEL_OUTPUT_FAILURE_CODES = frozenset(
+    {
+        "model_response_not_object",
+        "model_response_invalid_shape",
+        "model_response_invalid_json",
+        "model_response_truncated",
+        "model_response_content_filtered",
+        "model_response_refused",
+        "model_question_count_mismatch",
+        "model_question_content_missing",
+        "model_question_diversity_mismatch",
+        "question_set_count_or_diversity_failed",
+    }
+)
+
+
+def _safe_openai_generation_failure_reason(
+    exc: BaseException,
+    *,
+    default: str,
+) -> str:
+    """Classify a provider failure without reflecting exception text to users."""
+
+    normalized = str(exc or "").strip().casefold()
+    if isinstance(exc, json.JSONDecodeError):
+        return "model_response_invalid_json"
+    if isinstance(exc, httpx.TimeoutException) or any(
+        marker in normalized
+        for marker in ("timed out", "timeout", "readtimeout", "connecttimeout")
+    ):
+        return "openai_request_timeout"
+    for code in _OPENAI_MODEL_OUTPUT_FAILURE_CODES:
+        if code in normalized:
+            return code
+    http_status = re.search(r"openai_http_(\d{3})", normalized)
+    if http_status:
+        return f"openai_http_{http_status.group(1)}"
+    return default
+
+
+def _openai_interview_response_format(
+    *,
+    expected_count: int,
+    follow_up_count: int,
+) -> dict[str, Any]:
+    """Return the strict Chat Completions schema for interview generation."""
+
+    question_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string"},
+            "competency": {"type": "string"},
+            "ncsClCd": {"type": "string"},
+            "question": {"type": "string"},
+            "follow_ups": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": follow_up_count,
+                "maxItems": follow_up_count,
+            },
+            "evaluation_points": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 4,
+                "maxItems": 4,
+            },
+            "question_evidence_id": {"type": "string"},
+            "question_focus_surface": {"type": "string"},
+            "question_focus": {"type": "string"},
+            "ksa_refs": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": [
+            "type",
+            "competency",
+            "ncsClCd",
+            "question",
+            "follow_ups",
+            "evaluation_points",
+            "question_evidence_id",
+            "question_focus_surface",
+            "question_focus",
+            "ksa_refs",
+        ],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "ncs_interview_questions",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "interview_questions": {
+                        "type": "array",
+                        "items": question_schema,
+                        "minItems": expected_count,
+                        "maxItems": expected_count,
+                    },
+                    "ncs_link": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "ncsClCd": {"type": "string"},
+                                "compeUnitName": {"type": "string"},
+                                "why": {"type": "string"},
+                            },
+                            "required": ["ncsClCd", "compeUnitName", "why"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["interview_questions", "ncs_link"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _openai_interview_completion_budget(target_count: int) -> int:
+    """Allow enough output for rich questions while retaining a hard ceiling."""
+
+    return max(4200, min(16000, int(target_count) * 850))
+
+
 def build_strategy_with_openai(
     jd_text: str,
     notice_text: str,
@@ -4469,10 +4598,13 @@ def build_strategy_with_openai(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.7,
-        "max_tokens": max(3000, min(16000, target_count * 650)),
-        "response_format": {"type": "json_object"},
+        "max_completion_tokens": _openai_interview_completion_budget(target_count),
+        "response_format": _openai_interview_response_format(
+            expected_count=target_count,
+            follow_up_count=follow_up_count,
+        ),
     }
-    timeout_sec = float(os.getenv("OPENAI_STRATEGY_TIMEOUT_SEC", "60") or "60")
+    timeout_sec = float(os.getenv("OPENAI_STRATEGY_TIMEOUT_SEC", "120") or "120")
     model_error = ""
     recovered_with_slim_retry = False
     model_request_count = 0
@@ -4492,7 +4624,27 @@ def build_strategy_with_openai(
             timeout_sec=local_timeout,
             max_attempts=transport_max_attempts,
         )
-        parsed = json.loads(data["choices"][0]["message"]["content"])
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ValueError("model_response_invalid_shape")
+        choice = choices[0]
+        finish_reason = str(choice.get("finish_reason") or "").strip().casefold()
+        if finish_reason == "length":
+            raise ValueError("model_response_truncated")
+        if finish_reason == "content_filter":
+            raise ValueError("model_response_content_filtered")
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise ValueError("model_response_invalid_shape")
+        if str(message.get("refusal") or "").strip():
+            raise ValueError("model_response_refused")
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("model_response_invalid_shape")
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError("model_response_invalid_json") from exc
         if not isinstance(parsed, dict):
             raise ValueError("model_response_not_object")
         generated_questions = parsed.get("interview_questions")
@@ -4520,17 +4672,21 @@ def build_strategy_with_openai(
 
     try:
         obj = _request_json(payload, timeout_sec, expected_count=target_count)
-    except Exception:
+    except Exception as primary_exc:
         # First failure: retry with slimmer, compeUnitDef-focused prompt.
-        logger.error("openai_strategy_primary_failed")
-        model_error = "primary_request_failed"
+        primary_reason = _safe_openai_generation_failure_reason(
+            primary_exc,
+            default="primary_request_failed",
+        )
+        logger.error("openai_strategy_primary_failed reason=%s", primary_reason)
+        model_error = primary_reason
         slim_priority = ""
         if max_model_requests < 2:
             obj = {}
             # The outer institution quality retry has already consumed the
             # second semantic generation budget.  Do not hide more upstream
             # calls behind this builder's slim retry.
-            model_error = "primary_request_failed"
+            model_error = primary_reason
         if max_model_requests >= 2 and has_priority_context:
             slim_priority = (
                 f"[priority_duty]{duty_text[:1500]}\n"
@@ -4577,14 +4733,17 @@ def build_strategy_with_openai(
                 {"role": "user", "content": slim_prompt},
             ],
             "temperature": 0.6,
-            "max_tokens": max(1800, min(16000, retry_target_count * 650)),
-            "response_format": {"type": "json_object"},
+            "max_completion_tokens": _openai_interview_completion_budget(retry_target_count),
+            "response_format": _openai_interview_response_format(
+                expected_count=retry_target_count,
+                follow_up_count=follow_up_count,
+            ),
         }
         if max_model_requests >= 2:
             try:
                 obj = _request_json(
                     slim_payload,
-                    min(timeout_sec, 50.0),
+                    min(timeout_sec, 90.0),
                     expected_count=retry_target_count,
                 )
                 recovered_with_slim_retry = True
@@ -4594,18 +4753,16 @@ def build_strategy_with_openai(
                 # any non-empty ``error`` field as a provider failure.
                 model_error = ""
             except Exception as retry_exc:
-                logger.error("openai_strategy_retry_failed")
-                retry_reason = str(retry_exc or "").strip()
+                retry_reason = _safe_openai_generation_failure_reason(
+                    retry_exc,
+                    default="retry_request_failed",
+                )
+                logger.error("openai_strategy_retry_failed reason=%s", retry_reason)
                 model_error = (
-                    retry_reason
-                    if retry_reason
-                    in {
-                        "model_response_not_object",
-                        "model_question_count_mismatch",
-                        "model_question_content_missing",
-                        "model_question_diversity_mismatch",
-                    }
-                    else "retry_request_failed"
+                    primary_reason
+                    if retry_reason == "retry_request_failed"
+                    and primary_reason != "primary_request_failed"
+                    else retry_reason
                 )
                 obj = {}
 

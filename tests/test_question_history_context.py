@@ -479,9 +479,9 @@ def test_generate_from_text_rejects_deterministic_repairs_across_history_cycles(
             assert response.status_code == 502
             assert response.json() == {
                 "detail": {
-                    "code": "openai_api_generation_failed",
+                    "code": "openai_api_quality_rejected",
                     "provider": "openai_api",
-                    "message": "OpenAI API에서 질문을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+                    "message": "생성된 질문이 NCS/KSA 품질 검사를 통과하지 못했습니다. 문항 수나 면접기법 범위를 줄여 다시 시도해 주세요.",
                     "retryable": True,
                 }
             }
@@ -680,9 +680,9 @@ def test_generate_from_text_repair_exception_returns_sanitized_502_without_fallb
     assert response.status_code == 502
     assert response.json() == {
         "detail": {
-            "code": "openai_api_generation_failed",
+            "code": "openai_api_quality_rejected",
             "provider": "openai_api",
-            "message": "OpenAI API에서 질문을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            "message": "생성된 질문이 NCS/KSA 품질 검사를 통과하지 못했습니다. 문항 수나 면접기법 범위를 줄여 다시 시도해 주세요.",
             "retryable": True,
         }
     }

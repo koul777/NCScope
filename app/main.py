@@ -318,7 +318,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="1.4.1", lifespan=_lifespan)
+app = FastAPI(title="NCScope", version="1.4.2", lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
 app.add_middleware(ExpensiveRequestLimitMiddleware)
@@ -6696,6 +6696,39 @@ def _subscription_cli_provider_http_error(
     )
 
 
+_INSTITUTION_API_SAFE_MODEL_FAILURE_REASONS = frozenset(
+    {
+        "openai_request_timeout",
+        "openai_network_unreachable",
+        "model_response_not_object",
+        "model_response_invalid_shape",
+        "model_response_invalid_json",
+        "model_response_truncated",
+        "model_response_content_filtered",
+        "model_response_refused",
+        "model_question_count_mismatch",
+        "model_question_content_missing",
+        "model_question_diversity_mismatch",
+        "question_set_count_or_diversity_failed",
+        "institution_api_question_generation_failed",
+        "institution_api_question_quality_rejected",
+        "openai_http_400",
+        "openai_http_401",
+        "openai_http_403",
+        "openai_http_404",
+        "openai_http_408",
+        "openai_http_409",
+        "openai_http_422",
+        "openai_http_425",
+        "openai_http_429",
+        "openai_http_500",
+        "openai_http_502",
+        "openai_http_503",
+        "openai_http_504",
+    }
+)
+
+
 def _institution_api_provider_http_error(exc: BaseException) -> HTTPException:
     """Return a stable, non-sensitive failure for request-scoped API use."""
 
@@ -6717,6 +6750,102 @@ def _institution_api_provider_http_error(exc: BaseException) -> HTTPException:
                 "code": "openai_api_usage_limit_reached",
                 "provider": "openai_api",
                 "message": "OpenAI API 사용량 또는 요청 한도를 확인해 주세요.",
+                "retryable": True,
+            },
+        )
+    if "openai_request_timeout" in normalized or "openai_http_408" in normalized:
+        return HTTPException(
+            status_code=504,
+            detail={
+                "code": "openai_api_timeout",
+                "provider": "openai_api",
+                "message": "OpenAI API 응답 시간이 초과되었습니다. 문항 수를 줄이거나 잠시 후 다시 시도해 주세요.",
+                "retryable": True,
+            },
+        )
+    if "openai_network_unreachable" in normalized:
+        return HTTPException(
+            status_code=503,
+            detail={
+                "code": "openai_api_unreachable",
+                "provider": "openai_api",
+                "message": "서버에서 OpenAI API에 연결하지 못했습니다. 네트워크 연결을 확인해 주세요.",
+                "retryable": True,
+            },
+        )
+    if any(
+        reason in normalized
+        for reason in (
+            "model_response_not_object",
+            "model_response_invalid_shape",
+            "model_response_invalid_json",
+            "model_response_truncated",
+            "model_question_count_mismatch",
+            "model_question_content_missing",
+        )
+    ):
+        return HTTPException(
+            status_code=502,
+            detail={
+                "code": "openai_api_invalid_output",
+                "provider": "openai_api",
+                "message": "OpenAI API 응답이 잘렸거나 요청한 문항 수·형식을 충족하지 못했습니다.",
+                "retryable": True,
+            },
+        )
+    if any(
+        reason in normalized
+        for reason in (
+            "model_question_diversity_mismatch",
+            "question_set_count_or_diversity_failed",
+            "institution_api_question_quality_rejected",
+        )
+    ):
+        return HTTPException(
+            status_code=502,
+            detail={
+                "code": "openai_api_quality_rejected",
+                "provider": "openai_api",
+                "message": "생성된 질문이 NCS/KSA 품질 검사를 통과하지 못했습니다. 문항 수나 면접기법 범위를 줄여 다시 시도해 주세요.",
+                "retryable": True,
+            },
+        )
+    if any(
+        reason in normalized
+        for reason in ("model_response_content_filtered", "model_response_refused")
+    ):
+        return HTTPException(
+            status_code=422,
+            detail={
+                "code": "openai_api_content_restricted",
+                "provider": "openai_api",
+                "message": "OpenAI API가 입력 내용에 대한 질문 생성을 완료하지 않았습니다. 입력 문서를 확인해 주세요.",
+                "retryable": False,
+            },
+        )
+    if any(
+        f"openai_http_{status}" in normalized
+        for status in (400, 404, 409, 422, 425)
+    ):
+        return HTTPException(
+            status_code=502,
+            detail={
+                "code": "openai_api_request_rejected",
+                "provider": "openai_api",
+                "message": "OpenAI API가 모델 또는 요청 형식을 거절했습니다. 서버의 OpenAI 모델 설정을 확인해 주세요.",
+                "retryable": False,
+            },
+        )
+    if any(
+        f"openai_http_{status}" in normalized
+        for status in (500, 502, 503, 504)
+    ):
+        return HTTPException(
+            status_code=502,
+            detail={
+                "code": "openai_api_upstream_unavailable",
+                "provider": "openai_api",
+                "message": "OpenAI API 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.",
                 "retryable": True,
             },
         )
@@ -6746,7 +6875,17 @@ def _require_institution_api_model_output(strategy: Any) -> None:
         == "model_only_no_template_fallback"
     )
     if explicit_failure or not has_question:
-        raise RuntimeError("institution_api_empty_generation")
+        raw_error = str(strategy.get("error") or "").strip()
+        safe_reason = ""
+        if raw_error.startswith("model_generation_failed:"):
+            candidate = raw_error.split(":", 1)[1].strip()
+            if candidate in _INSTITUTION_API_SAFE_MODEL_FAILURE_REASONS:
+                safe_reason = candidate
+        elif raw_error.startswith("model_generation_skipped:"):
+            candidate = raw_error.split(":", 1)[1].strip()
+            if candidate in _INSTITUTION_API_SAFE_MODEL_FAILURE_REASONS:
+                safe_reason = candidate
+        raise RuntimeError(safe_reason or "institution_api_empty_generation")
 
 
 _INSTITUTION_QUALITY_RETRY_POLICY = "institution-openai-quality-retry-v1"
@@ -7029,7 +7168,7 @@ async def _generate_quality_gated_institution_strategy(
         return strategy
 
     if any(code not in _INSTITUTION_RETRYABLE_QUALITY_CODES for code in trigger_codes):
-        raise RuntimeError("institution_api_question_generation_failed")
+        raise RuntimeError("institution_api_question_quality_rejected")
 
     evidence_locks = list(planned_evidence_locks)
     logger.warning(
@@ -7067,8 +7206,7 @@ async def _generate_quality_gated_institution_strategy(
             "institution_question_quality_retry_failed provider=openai_api codes=%s",
             ",".join(sorted(set(retry_codes))),
         )
-        _require_institution_api_question_output(retried)
-        raise RuntimeError("institution_api_question_generation_failed")
+        raise RuntimeError("institution_api_question_quality_rejected")
 
     logger.info(
         "institution_question_quality_retry_passed provider=openai_api evidence_locks=%s",

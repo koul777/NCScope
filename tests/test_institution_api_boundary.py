@@ -561,7 +561,7 @@ def test_post_quality_deterministic_repair_is_rejected(
             )
 
     assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "openai_api_generation_failed"
+    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
     assert "quality_orchestrator_repair" not in response.text
     assert REQUEST_KEY not in response.text
 
@@ -647,7 +647,7 @@ def test_public_strategy_rejects_model_text_when_a_post_quality_gate_failed(
             )
 
     assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "openai_api_generation_failed"
+    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
     assert "needs_review" not in response.text
     assert REQUEST_KEY not in response.text
 
@@ -681,3 +681,45 @@ def test_empty_model_output_is_not_returned_as_a_successful_strategy(
     assert "upstream detail" not in response.text
     assert "template_fallback" not in response.text
     assert REQUEST_KEY not in response.text
+
+
+@pytest.mark.parametrize(
+    ("reason", "status_code", "public_code"),
+    [
+        ("openai_request_timeout", 504, "openai_api_timeout"),
+        ("model_response_truncated", 502, "openai_api_invalid_output"),
+        ("model_question_count_mismatch", 502, "openai_api_invalid_output"),
+        ("model_question_diversity_mismatch", 502, "openai_api_quality_rejected"),
+        ("openai_http_503", 502, "openai_api_upstream_unavailable"),
+        ("openai_http_400", 502, "openai_api_request_rejected"),
+    ],
+)
+def test_provider_failure_mapper_exposes_safe_actionable_reason(
+    reason: str,
+    status_code: int,
+    public_code: str,
+) -> None:
+    error = main._institution_api_provider_http_error(RuntimeError(reason))
+
+    assert error.status_code == status_code
+    assert error.detail["code"] == public_code
+    assert error.detail["provider"] == "openai_api"
+    assert isinstance(error.detail["message"], str) and error.detail["message"]
+
+
+def test_model_output_boundary_preserves_only_allowlisted_failure_reason() -> None:
+    with pytest.raises(RuntimeError, match="^model_response_truncated$"):
+        main._require_institution_api_model_output(
+            {
+                "interview_questions": [],
+                "error": "model_generation_failed: model_response_truncated",
+            }
+        )
+
+    with pytest.raises(RuntimeError, match="^institution_api_empty_generation$"):
+        main._require_institution_api_model_output(
+            {
+                "interview_questions": [],
+                "error": f"model_generation_failed: private={REQUEST_KEY}",
+            }
+        )

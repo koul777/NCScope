@@ -315,7 +315,7 @@ def test_primary_endpoint_stops_after_one_quality_retry_and_returns_sanitized_50
 
     assert response.status_code == 502
     assert len(build_calls) == 2
-    assert response.json()["detail"]["code"] == "openai_api_generation_failed"
+    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
     assert "question_quality_report_failed" not in response.text
     assert "needs_review" not in response.text
     assert REQUEST_KEY not in response.text
@@ -400,7 +400,7 @@ def test_retry_locks_each_server_validated_evidence_assignment(
     assert REQUEST_KEY not in build_calls[1]["extra_context"]
     if change_assignment:
         assert response.status_code == 502
-        assert response.json()["detail"]["code"] == "openai_api_generation_failed"
+        assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
         assert "evidence_assignment_changed" not in response.text
     else:
         assert response.status_code == 200

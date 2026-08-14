@@ -683,7 +683,7 @@ def test_openai_slim_retry_keeps_exact_four_evaluation_point_contract(
     assert "error" not in result
 
 
-@pytest.mark.parametrize("target_count", [1, 10, 11, 40])
+@pytest.mark.parametrize("target_count", [1, 6, 10, 11, 40])
 def test_openai_slim_retry_preserves_exact_requested_question_count(
     monkeypatch,
     target_count: int,
@@ -750,8 +750,20 @@ def test_openai_slim_retry_preserves_exact_requested_question_count(
     )
 
     assert len(captured_payloads) == 2
+    retry_payload = captured_payloads[1]
+    assert "max_tokens" not in retry_payload
+    assert retry_payload["max_completion_tokens"] >= 4200
+    response_format = retry_payload["response_format"]
+    assert response_format["type"] == "json_schema"
+    schema = response_format["json_schema"]["schema"]
+    question_array = schema["properties"]["interview_questions"]
+    assert question_array["minItems"] == target_count
+    assert question_array["maxItems"] == target_count
+    follow_ups = question_array["items"]["properties"]["follow_ups"]
+    assert follow_ups["minItems"] == 3
+    assert follow_ups["maxItems"] == 3
     assert f"interview_questions {target_count}개 생성" in (
-        captured_payloads[1]["messages"][1]["content"]
+        retry_payload["messages"][1]["content"]
     )
     assert len(result["interview_questions"]) == target_count, result
     assert result["question_generation_policy"].endswith("slim_retry")
@@ -854,6 +866,94 @@ def test_quality_retry_builder_disables_nested_slim_and_transport_retries(
     assert result["provider_generation_request_count"] == 1
     assert result["provider_generation_request_limit"] == 1
     assert result["transport_attempt_limit_per_generation_request"] == 1
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (TimeoutError("timed out"), "openai_request_timeout"),
+        (ValueError("model_response_truncated"), "model_response_truncated"),
+        (RuntimeError("openai_http_503"), "openai_http_503"),
+        (RuntimeError("private upstream detail"), "request_failed"),
+    ],
+)
+def test_openai_failure_reason_is_specific_but_does_not_reflect_exception(
+    exc: BaseException,
+    expected: str,
+) -> None:
+    assert jd_strategy._safe_openai_generation_failure_reason(
+        exc,
+        default="request_failed",
+    ) == expected
+
+
+def test_openai_truncated_primary_response_recovers_with_slim_retry(
+    monkeypatch,
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.delenv("OPENAI_FORCE_FALLBACK", raising=False)
+    monkeypatch.delenv("OPENAI_STRATEGY_TIMEOUT_SEC", raising=False)
+    monkeypatch.setattr(
+        type(jd_strategy.settings),
+        "resolve_openai_key",
+        lambda _self, _override: "request-key",
+    )
+    monkeypatch.setattr(jd_strategy, "_check_openai_connectivity", lambda **_: (True, ""))
+
+    def fake_request(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": '{"interview_questions": ['},
+                    }
+                ]
+            }
+        content = {
+            "interview_questions": [
+                {
+                    "question": f"서로 다른 업무 사건 {index}에서 판단과 산출물을 설명해 주세요.",
+                    "follow_ups": [],
+                    "evaluation_points": [],
+                }
+                for index in range(6)
+            ],
+            "ncs_link": [],
+        }
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": json.dumps(content, ensure_ascii=False)},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(jd_strategy, "post_chat_completions_with_retries", fake_request)
+    monkeypatch.setattr(
+        jd_strategy,
+        "_ensure_diverse_question_set",
+        lambda generated, fallback_pool, target_count: list(generated or [])[:target_count],
+    )
+
+    result = jd_strategy.build_strategy_with_openai(
+        jd_text="프로젝트관리와 인사 직무",
+        notice_text="행정직 채용",
+        strengths="",
+        region="",
+        ncs_matches=[],
+        ncs_ksa=[],
+        target_count_override=6,
+        api_key_override="request-key",
+    )
+
+    assert [call["timeout_sec"] for call in calls] == [120.0, 90.0]
+    assert len(result["interview_questions"]) == 6
+    assert result["provider_generation_request_count"] == 2
+    assert result["question_generation_policy"].endswith("slim_retry")
+    assert "error" not in result
 
 
 class TestCountHangul:

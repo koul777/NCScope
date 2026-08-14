@@ -7,8 +7,8 @@ from app.main import app
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "1.4.1"
-DISPLAY_VERSION = "v1.4.1"
+RELEASE_VERSION = "1.4.2"
+DISPLAY_VERSION = "v1.4.2"
 
 
 def test_release_version_is_consistent_across_product_surfaces() -> None:
