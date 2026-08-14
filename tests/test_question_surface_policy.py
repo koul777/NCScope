@@ -106,6 +106,55 @@ def test_dangling_knowledge_label_becomes_grammatical_public_focus() -> None:
     assert official_ksa_surface_aliases(FACTOR) == [FACTOR, TRUNCATED_FACTOR]
 
 
+@pytest.mark.parametrize(
+    ("factor_name", "competency_name", "competency_definition", "task_marker", "behavior_marker"),
+    [
+        (
+            "승인된 변경에 대한 지식",
+            "프로젝트 인적자원관리",
+            "승인된 변경에 따라 인력과 역할을 조정한다.",
+            "반영할 범위와 제외할 업무",
+            "직접 바꾼 행동과 관찰 결과",
+        ),
+        (
+            "과거 단계 문서에 대한 지식",
+            "프로젝트 전략기획",
+            "과거 단계 문서를 검토하여 현재 계획 수립에 반영한다.",
+            "이어 써야 할 근거와 더 이상 따르지 않을 내용",
+            "적용하거나 배제했는지의 근거",
+        ),
+        (
+            "과거 프로젝트 교훈에 대한 지식",
+            "프로젝트 이해관계자관리",
+            "과거 프로젝트 교훈을 검토하여 이해관계자 대응에 반영한다.",
+            "다시 써야 할 원칙과 그대로 따르지 않을 조건",
+            "그 판단 때문에 직접 택한 행동과 관찰 결과",
+        ),
+    ],
+)
+def test_knowledge_task_frame_keeps_change_history_semantics_for_experience_prompts(
+    factor_name: str,
+    competency_name: str,
+    competency_definition: str,
+    task_marker: str,
+    behavior_marker: str,
+) -> None:
+    frame = build_question_task_frame(
+        evidence_row=None,
+        factor_name=factor_name,
+        ksa_type="지식",
+        competency_name=competency_name,
+        competency_definition=competency_definition,
+    )
+
+    assert frame["task_object"].endswith("확인·판단 기준")
+    assert task_marker in frame["task_statement"]
+    assert "맡은 역할·목표" in frame["observable_behavior"]
+    assert "적용" in frame["observable_behavior"]
+    assert behavior_marker in frame["observable_behavior"]
+    assert frame["observable_behavior"] != "확인 자료, 판단 기준, 적용 범위, 예외와 오류 위험을 설명한다"
+
+
 def test_distinct_planning_skills_keep_distinct_observable_surfaces() -> None:
     schedule, schedule_source = public_task_object(
         factor_name="일정 계획 수립",

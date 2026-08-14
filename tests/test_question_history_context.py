@@ -2,9 +2,40 @@ from fastapi.testclient import TestClient
 import pytest
 
 import app.main as main
+from app.services.question_quality_orchestrator import orchestrate_question_set
 
 
 REQUEST_OPENAI_KEY = "sk-request-scoped-question-history-test"
+
+
+def test_model_star_completion_does_not_create_false_history_duplicate() -> None:
+    shared_completion = (
+        " 이어서 당시 맡은 역할과 목표, 본인이 직접 수행한 행동과 판단 근거, "
+        "문서·수치·기록으로 확인한 결과도 함께 설명해 주세요."
+    )
+    questions = [
+        {
+            "question_source": "openai_api_quality_repaired_fields",
+            "model_question_raw": "예산 규정의 적용 범위와 예외를 판단한 경험을 말씀해 주세요.",
+            "question": "예산 규정의 적용 범위와 예외를 판단한 경험을 말씀해 주세요." + shared_completion,
+        },
+        {
+            "question_source": "openai_api_quality_repaired_fields",
+            "model_question_raw": "회계프로그램으로 과거 실적의 오류를 검증한 경험을 말씀해 주세요.",
+            "question": "회계프로그램으로 과거 실적의 오류를 검증한 경험을 말씀해 주세요." + shared_completion,
+        },
+    ]
+
+    _output, metadata = orchestrate_question_set(
+        questions,
+        audit_question=lambda _item: {"passed": True, "issues": [], "checks": {}},
+    )
+
+    assert metadata["unresolved_count"] == 0
+    assert all(
+        "history_duplicate" not in item["final_issues"]
+        for item in metadata["items"]
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -477,14 +508,16 @@ def test_generate_from_text_rejects_deterministic_repairs_across_history_cycles(
             }
             response = client.post("/api/questions/generate-from-text", json=payload)
             assert response.status_code == 502
-            assert response.json() == {
-                "detail": {
-                    "code": "openai_api_quality_rejected",
-                    "provider": "openai_api",
-                    "message": "생성된 질문이 NCS/KSA 품질 검사를 통과하지 못했습니다. 문항 수나 면접기법 범위를 줄여 다시 시도해 주세요.",
-                    "retryable": True,
-                }
-            }
+            detail = response.json()["detail"]
+            assert detail["code"] == "openai_api_quality_rejected"
+            assert detail["provider"] == "openai_api"
+            assert detail["retryable"] is True
+            assert "문서 크기나 GPT 과부하가 아니라" in detail["message"]
+            diagnostics = detail["quality_diagnostics"]
+            assert diagnostics["requested_question_count"] == 1
+            assert diagnostics["failed_question_count"] == 1
+            assert diagnostics["failed_indexes"] == [1]
+            assert diagnostics["attempt_count"] == 2
             assert "경험이 있으십니까" not in response.text
             assert "template_fallback" not in response.text
             assert "strategy" not in response.json()
@@ -678,14 +711,16 @@ def test_generate_from_text_repair_exception_returns_sanitized_502_without_fallb
 
     assert repair_failures > 0
     assert response.status_code == 502
-    assert response.json() == {
-        "detail": {
-            "code": "openai_api_quality_rejected",
-            "provider": "openai_api",
-            "message": "생성된 질문이 NCS/KSA 품질 검사를 통과하지 못했습니다. 문항 수나 면접기법 범위를 줄여 다시 시도해 주세요.",
-            "retryable": True,
-        }
-    }
+    detail = response.json()["detail"]
+    assert detail["code"] == "openai_api_quality_rejected"
+    assert detail["provider"] == "openai_api"
+    assert detail["retryable"] is True
+    assert "문서 크기나 GPT 과부하가 아니라" in detail["message"]
+    diagnostics = detail["quality_diagnostics"]
+    assert diagnostics["requested_question_count"] == 1
+    assert diagnostics["failed_question_count"] == 1
+    assert diagnostics["failed_indexes"] == [1]
+    assert diagnostics["attempt_count"] == 2
     assert repeated_question not in response.text
     assert "simulated item repair failure" not in response.text
     assert "template_fallback" not in response.text

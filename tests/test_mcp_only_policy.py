@@ -516,6 +516,77 @@ def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
     assert "partial exact coverage" in body["detail"]["message"]
 
 
+def test_mcp_only_upload_accepts_parenthetical_secretary_detail_without_manual_block(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _patch_mcp_upload_common(mocker)
+    unit = {
+        "ncsClCd": "0202030101_22v2",
+        "compeUnitName": "임원 일정 관리",
+        "ncsSubdCdnm": "비서",
+        "compeUnitDef": "경영진 지원과 일정 관리를 수행한다",
+        "score": 1.0,
+    }
+    ksa = {
+        "ncsClCd": unit["ncsClCd"],
+        "compeUnitName": unit["compeUnitName"],
+        "factorName": "일정 조정 기준 검토",
+        "elementName": "일정 관리",
+        "ksaTypeName": "지식",
+        "ksaNo": "K-01",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls = []
+
+    def fake_call_tool(name, arguments):
+        assert name == "ncs_search"
+        calls.append(arguments["query"])
+        if arguments["query"] != unit["ncsSubdCdnm"]:
+            return {"results": []}
+        return {
+            "results": [
+                {
+                    "id": unit["ncsClCd"],
+                    "text": unit["compeUnitName"],
+                    "path": {"small": "총무·인사", "sub": unit["ncsSubdCdnm"]},
+                }
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+    rerank = mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
+    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
+    mocker.patch("app.main.build_ncs_context_pack", return_value={})
+    build_strategy = mocker.patch(
+        "app.main.build_jd_strategy_with_openai",
+        return_value=_openai_model_strategy(unit, ksa),
+    )
+    review = _confirmed_review_payload(
+        {"ncs_detail_candidates": ["비서 (글로벌경영사무 지원)"]}
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
+        )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert calls == ["비서 (글로벌경영사무 지원)", unit["ncsSubdCdnm"]]
+    rerank.assert_called_once()
+    assert build_strategy.call_count >= 1
+    assert body["ncs_matches"][0]["ncsClCd"] == unit["ncsClCd"]
+    assert body["ncs_matches"][0]["ncsSubdCdnm"] == "비서"
+
+
 def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -564,7 +635,9 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     body = resp.json()
     assert resp.status_code == 200
     rerank.assert_called_once()
-    assert rerank.call_args.kwargs["openai_api_key"] == REQUEST_OPENAI_KEY
+    # Human-confirmed exact NCS detail matches use deterministic ranking; the
+    # request key is reserved for the actual interview-question generation.
+    assert rerank.call_args.kwargs["openai_api_key"] == ""
     rank_ksa.assert_called_once()
     ksa_query_text = rank_ksa.call_args.kwargs["query_text"]
     assert "duty: stakeholder workshop planning" in ksa_query_text
@@ -1040,6 +1113,39 @@ def test_mcp_search_does_not_apply_alias_after_exact_detail_match(mocker):
     assert rows[0]["resolvedDetailName"] == ""
     assert rows[0]["detailQueryName"] == ""
     assert rows[0]["source"] == "ncs-mcp"
+
+
+def test_mcp_search_matches_parenthetical_secretary_detail_to_official_subdetail(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    query = "비서 (글로벌경영사무 지원)"
+    calls = []
+
+    def fake_call_tool(name, arguments):
+        assert name == "ncs_search"
+        calls.append(arguments["query"])
+        if arguments["query"] != "비서":
+            return {"results": []}
+        return {
+            "results": [
+                {
+                    "id": "0202030101_22v2",
+                    "text": "임원 일정 관리",
+                    "path": {"small": "총무·인사", "sub": "비서"},
+                }
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail([query], max_units=5)
+
+    assert calls == [query, "비서"]
+    assert [row["ncsClCd"] for row in rows] == ["0202030101_22v2"]
+    assert rows[0]["ncsSubdCdnm"] == "비서"
+    assert rows[0]["matchedDetailName"] == query
+    assert rows[0]["resolvedDetailName"] == "비서"
+    assert rows[0]["detailQueryName"] == "비서"
+    assert rows[0]["source"] == "ncs-mcp-detail-alias"
 
 
 def test_mcp_search_uses_wider_window_for_truncated_exact_detail(mocker):

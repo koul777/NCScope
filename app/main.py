@@ -318,7 +318,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="1.4.2", lifespan=_lifespan)
+app = FastAPI(title="NCScope", version="1.4.3", lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
 app.add_middleware(ExpensiveRequestLimitMiddleware)
@@ -620,7 +620,7 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
         selected = default_items
         normalized = default_items
     total_main = sum(int(item.get("main_count", 0) or 0) for item in selected)
-    total_main = max(1, min(40, total_main)) if selected else 0
+    total_main = max(1, min(50, total_main)) if selected else 0
     selected_terms = [str(item.get("detail", "")).strip() for item in selected if str(item.get("detail", "")).strip()]
     follow_up_count = max([int(item.get("follow_up_count", 3) or 0) for item in selected] or [3])
     question_sequence: list[dict[str, Any]] = []
@@ -636,7 +636,7 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
         "items": normalized,
         "selected_items": selected,
         "selected_terms": selected_terms,
-        "question_sequence": question_sequence[:40],
+        "question_sequence": question_sequence[:50],
         "total_main_count": total_main,
         "follow_up_count": max(0, min(5, follow_up_count)),
     }
@@ -1130,8 +1130,29 @@ def _method_evaluation_points(
     focus_type: str = "",
     surface_focus: str = "",
 ) -> list[str]:
+    if method == "경험면접":
+        kind = _normalize_ksa_type(
+            focus_type,
+            next((str(term or "").strip() for term in ksa_terms if str(term or "").strip()), ""),
+        )
+        if kind == "지식":
+            ksa_evidence = "규정 적용 근거"
+        elif kind == "태도":
+            return [
+                "당시 상황과 본인 역할",
+                "선택 근거와 직접 행동",
+                "선택으로 감수한 점",
+                "결과를 입증하는 기록",
+            ]
+        else:
+            ksa_evidence = "자료·도구를 사용한 수행 순서"
+        return [
+            "당시 상황과 본인 역할",
+            ksa_evidence,
+            "선택 근거와 직접 행동",
+            "결과를 입증하는 기록",
+        ]
     guide = {
-        "경험면접": ["구체적 상황과 본인 역할", "판단 근거와 실제 행동", "결과 확인 근거", "학습과 전이"],
         "상황면접": ["핵심 사실과 규정 확인", "대안별 위험을 반영한 판단", "행동·보고 순서", "후속조치와 예방"],
         "발표면접": ["자료 근거와 현황·원인 분석", "대안 비교와 우선순위", "실행계획의 구체성", "성과지표와 질의응답 대응"],
         "토론면접": ["사실·규정에 근거한 초기 입장", "대안별 일정·책임 영향 비교", "반대 근거 검토와 쟁점 조정", "공통안 또는 미합의 이송안의 실행 가능성"],
@@ -1139,7 +1160,7 @@ def _method_evaluation_points(
         "직무지식면접": ["절차·기준의 근거", "실제 업무 적용", "예외상황 판단", "산출물 품질과 오류 예방"],
         "창의적 문제해결력면접": ["근거 기반 문제 정의", "복수 대안과 창의성", "검증 방법과 실현가능성", "의사결정·실행·위험 보완"],
     }
-    points = list(guide.get(method, guide["경험면접"]))
+    points = list(guide.get(method, ["구체적 근거", "실제 행동", "산출물", "확인 결과"]))
     ksa_points: list[str] = []
     for term in ksa_terms:
         if _contains_blind_hiring_cue(term):
@@ -1183,6 +1204,66 @@ def _behavior_anchored_evaluation(
     focus_label = str(surface_focus or official_focus).strip() or "핵심 수행기준"
     normalized_focus_type = _normalize_ksa_type(focus_type, official_focus)
     dimensions = [str(x).strip() for x in (evaluation_points or []) if str(x).strip()][:4]
+    if method == "경험면접":
+        if normalized_focus_type == "지식":
+            ksa_evidence = "확인한 규정·문서·자료와 적용 범위를 판단 근거로 삼은 행동"
+        elif normalized_focus_type == "태도":
+            ksa_evidence = "압박·이해충돌 속에서 지킨 행동 기준과 선택 이유"
+        else:
+            ksa_evidence = "사용한 자료·도구, 실제 수행 순서와 직접 취한 조치"
+        return {
+            "scale": "5단계 행동기반 평정",
+            "focus": focus_label,
+            "focus_type": normalized_focus_type or "미분류",
+            "dimensions": dimensions,
+            "rating_levels": [
+                {
+                    "score": 5,
+                    "label": "탁월",
+                    "anchor": (
+                        "탁월(5): 당시 사건의 조건과 수행 과제를 분명히 구분하고, "
+                        f"{ksa_evidence}, 본인의 핵심 행동, 문서·수치·기록·피드백으로 확인한 결과를 "
+                        "빠짐없이 구체적으로 설명한다."
+                    ),
+                },
+                {
+                    "score": 4,
+                    "label": "우수",
+                    "anchor": (
+                        "우수(4): 사건의 조건, 판단 근거에 따른 직접 행동, 확인 가능한 결과를 "
+                        "연결해 설명하지만 자료·순서·수치 중 한 부분의 세부 근거가 제한적이다."
+                    ),
+                },
+                {
+                    "score": 3,
+                    "label": "보통",
+                    "anchor": (
+                        "보통(3): 실제 사례와 본인이 한 행동 및 결과는 제시하나, 당시 목표·판단 근거·"
+                        "확인 자료 중 두 요소가 모호하거나 서로 충분히 연결되지 않는다."
+                    ),
+                },
+                {
+                    "score": 2,
+                    "label": "미흡",
+                    "anchor": (
+                        "미흡(2): 사례의 맥락을 구체화하지 못하거나 직접 행동을 구분하지 못하며, "
+                        "결과를 확인한 문서·수치·기록·피드백도 제시하지 못한다."
+                    ),
+                },
+                {
+                    "score": 1,
+                    "label": "부족",
+                    "anchor": (
+                        "부족(1): 구체적인 과거 사건 없이 일반적인 생각이나 자기평가만 말해 직접 행동, "
+                        "판단 근거와 확인 가능한 결과를 식별할 수 없다."
+                    ),
+                },
+            ],
+            "interviewer_instruction": (
+                "질문과 동일한 사건·역할·판단 근거·직접 행동·결과 증거만 기록하고, 인상이나 "
+                "KSA 자기평가가 아니라 답변에서 확인된 행동 근거로 평정하십시오."
+            ),
+        }
     behavior = {
         "경험면접": (
             "상황·과제·본인 역할·행동·결과·학습을 구분하고 선택 기준과 결과 지표를 근거로 설명한다",
@@ -2932,9 +3013,253 @@ def _repair_candidate_surface_text(value: Any, official_factor: str, surface_foc
     text = str(value or "").strip()
     factor = str(official_factor or "").strip()
     surface = str(surface_focus or "").strip()
-    if not text or not factor or not surface or _ksa_key(factor) == _ksa_key(surface):
-        return text, False
-    return replace_official_ksa_surface(text, factor, surface)
+    if not text:
+        return "", False
+    if not factor or not surface or _ksa_key(factor) == _ksa_key(surface):
+        return _collapse_repeated_question_phrases(text)
+    repaired_text, surface_repaired = replace_official_ksa_surface(
+        text,
+        factor,
+        surface,
+    )
+    repaired_text, phrase_repaired = _collapse_repeated_question_phrases(
+        repaired_text
+    )
+    return repaired_text, bool(surface_repaired or phrase_repaired)
+
+
+_REPEATED_MIDDLE_DOT_PHRASE_RE = re.compile(
+    r"(?P<phrase>[0-9A-Za-z가-힣]+(?:\s+[0-9A-Za-z가-힣]+){0,3})"
+    r"\s*·\s*(?P=phrase)"
+    r"(?=(?:\s*·|[이가은는을를에에서로와과의,.;:!?\s]|$))"
+)
+_REPEATED_TWO_TOKEN_PHRASE_RE = re.compile(
+    r"(?P<first>[0-9A-Za-z가-힣]+(?:[·ㆍ/][0-9A-Za-z가-힣]+)*)\s+"
+    r"(?P<second>[0-9A-Za-z가-힣]+(?:[·ㆍ/][0-9A-Za-z가-힣]+)*)\s+"
+    r"(?P=first)\s+(?P=second)"
+    r"(?P<particle>은|는|이|가|을|를|에|에서|로|으로|와|과|의)?"
+    r"(?=[\s,.;:!?]|$)"
+)
+
+
+def _collapse_repeated_question_phrases(value: Any) -> tuple[str, bool]:
+    """Remove accidental consecutive phrase copies without rewriting meaning."""
+
+    text = str(value or "").strip()
+    if not text:
+        return "", False
+    original = text
+    for _ in range(4):
+        collapsed = _REPEATED_MIDDLE_DOT_PHRASE_RE.sub(r"\g<phrase>", text)
+        collapsed = _REPEATED_TWO_TOKEN_PHRASE_RE.sub(
+            r"\g<first> \g<second>\g<particle>",
+            collapsed,
+        )
+        if collapsed == text:
+            break
+        text = collapsed
+    return text, text != original
+
+
+def _experience_surface_core(value: Any) -> str:
+    """Keep the approved public KSA surface intact for candidate-facing text."""
+
+    return _clean_question_text(value, max_chars=100)
+
+
+def _experience_star_followups(
+    *,
+    focus_type: str,
+    surface_focus: str,
+    count: int,
+) -> list[str]:
+    """Create concise, answer-linked STAR probes for a provider-authored incident."""
+
+    surface = _experience_surface_core(surface_focus) or "해당 업무"
+    kind = str(focus_type or "").strip()
+    if kind == "지식":
+        action_probe = (
+            f"앞서 언급한 판단에서 {surface}에 따라 어떤 규정·문서·자료를 확인했고, "
+            "적용 범위를 그렇게 정한 이유는 무엇인가요?"
+        )
+    elif kind == "태도":
+        action_probe = (
+            f"앞서 언급한 압박이나 이해충돌 속에서 {_with_josa(surface, '을', '를')} 위해 "
+            "어떤 행동을 직접 선택했고, 그 선택 근거와 감수한 점은 무엇인가요?"
+        )
+    else:
+        action_probe = (
+            f"앞서 언급한 {surface} 수행에서 사용한 자료·도구와 실제 순서, "
+            "그 순서를 선택한 이유와 본인이 직접 취한 조치는 무엇인가요?"
+        )
+    probes = [
+        "방금 말씀하신 사례에서 당시 본인이 맡은 역할과 구체적인 목표는 무엇이었나요?",
+        action_probe,
+        "답변에 결과 근거가 없다면, 결과를 확인한 문서·수치·기록·피드백과 이후 보완한 점을 설명해 주세요.",
+        "방금 설명한 행동 외에 당시 고려한 다른 방법이 있었다면, 선택하지 않은 이유는 무엇인가요?",
+        "앞서 언급한 경험을 같은 업무에 다시 적용한다면 무엇을 유지하거나 바꾸시겠습니까?",
+    ]
+    return probes[: max(0, min(5, int(count or 0)))]
+
+
+def _experience_has_task_role(compact_text: str) -> bool:
+    """Require an explicit candidate role/goal, not a generic '담당 업무' noun."""
+
+    return bool(
+        re.search(
+            r"(?:본인|당시|맡은|담당한).{0,14}(?:역할|목표|책임)|"
+            r"(?:역할|목표|책임).{0,10}(?:맡|담당)",
+            str(compact_text or ""),
+        )
+    )
+
+
+def _complete_experience_question_star(
+    question: Any,
+    *,
+    focus_type: str,
+    focus_surface: str = "",
+) -> tuple[str, bool]:
+    """Preserve a model-authored incident while filling missing STAR evidence slots."""
+
+    text = _clean_question_text(question, max_chars=260)
+    if not text:
+        return "", False
+    text, phrase_repaired = _collapse_repeated_question_phrases(text)
+    compact = re.sub(r"\s+", "", text)
+    has_task = _experience_has_task_role(compact)
+    has_action = any(token in compact for token in ("본인이직접", "직접수행", "직접선택", "핵심행동"))
+    has_result_evidence = (
+        any(token in compact for token in ("결과", "성과", "영향"))
+        and any(token in compact for token in ("문서", "수치", "기록", "피드백", "증빙"))
+    )
+    if has_task and has_action and has_result_evidence:
+        return text, phrase_repaired
+
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?？])\s+", text)
+        if part.strip()
+    ]
+    stem_sentence = next(
+        (
+            sentence
+            for sentence in sentences
+            if re.search(r"(경험|사례|말씀|설명|어떤|무엇|어떻게)", sentence)
+        ),
+        sentences[0] if sentences else text,
+    )
+    stem = stem_sentence.rstrip(" .?!。")
+    stem_compact = re.sub(r"\s+", "", stem)
+    has_task = _experience_has_task_role(stem_compact)
+    has_action = any(
+        token in stem_compact
+        for token in ("본인이직접", "직접수행", "직접선택", "핵심행동")
+    )
+    has_result_evidence = (
+        any(token in stem_compact for token in ("결과", "성과", "영향"))
+        and any(
+            token in stem_compact
+            for token in ("문서", "수치", "기록", "피드백", "증빙")
+        )
+    )
+
+    kind = str(focus_type or "").strip()
+    surface = _experience_surface_core(focus_surface)
+    needs_surface = bool(
+        surface
+        and _ksa_key(surface)
+        and _ksa_key(surface) not in _ksa_key(text)
+    )
+    if kind == "지식":
+        evidence_clause = (
+            (f"{surface}에 따라 " if needs_surface else "")
+            + "확인한 규정·문서·자료와 적용 범위의 판단 근거, 그에 따라 직접 취한 행동"
+        )
+    elif kind == "태도":
+        evidence_clause = (
+            (f"{_with_josa(surface, '이', '가')} 드러난 " if needs_surface else "")
+            + "압박이나 이해충돌 상황에서 직접 선택한 행동과 선택 근거, 감수한 점"
+        )
+    else:
+        evidence_clause = (
+            (f"{surface}에 " if needs_surface else "")
+            + "사용한 자료·도구, 수행 순서와 그 순서를 선택한 이유, 직접 취한 행동"
+        )
+
+    missing_slots: list[str] = []
+    if not has_task:
+        missing_slots.append("당시 맡은 역할과 목표")
+    if not has_action:
+        missing_slots.append(evidence_clause)
+    if not has_result_evidence:
+        missing_slots.append(
+            "문서·수치·기록·피드백으로 확인한 결과"
+        )
+    if not missing_slots:
+        return text, phrase_repaired
+    requested_slots = _with_josa(", ".join(missing_slots), "을", "를")
+    completion = f"{stem}. {requested_slots} 구체적으로 설명해 주세요."
+    completion, _ = _collapse_repeated_question_phrases(completion)
+    return _clean_question_text(completion, max_chars=280), True
+
+
+def _rewrite_preserved_experience_duplicate(
+    item: dict[str, Any],
+    *,
+    focus_type: str,
+    surface_focus: str,
+    variation_index: int,
+) -> str:
+    """Turn a duplicate provider draft into a distinct, evidence-locked STAR prompt."""
+
+    surface = _experience_surface_core(surface_focus) or "해당 업무"
+    variants = (
+        (
+            "기존 자료와 최신 기록이 서로 달라 그대로 처리하기 어려웠던",
+            "차이를 대조하고 적용 범위를 결정해 직접 수정한 행동",
+            "수정 전후 기록이나 오류 감소",
+        ),
+        (
+            "마감 직전에 예외 항목이 발견되어 처리 기준을 다시 정해야 했던",
+            "예외 근거와 영향 범위를 확인해 직접 내린 결정",
+            "승인 문서나 최종 반영 내역",
+        ),
+        (
+            "관련 부서의 요구가 충돌해 한 가지 처리 방향을 선택해야 했던",
+            "상충하는 요구를 비교해 직접 제시하고 실행한 조정안",
+            "협의 기록이나 후속 업무 결과",
+        ),
+        (
+            "필수 근거나 증빙 일부가 누락되어 진행 여부를 판단해야 했던",
+            "추가 확인 범위와 보류 기준을 정해 직접 취한 조치",
+            "보완 문서나 재작업 방지 결과",
+        ),
+        (
+            "기존 절차만으로 해결되지 않는 문제가 생겨 처리 방식을 바꿔야 했던",
+            "대체 절차의 근거를 확인해 직접 실행한 핵심 행동",
+            "검토 기록이나 처리 품질 변화",
+        ),
+        (
+            "담당자 변경으로 인수인계 정보가 불완전해 사실관계를 복원해야 했던",
+            "누락 정보를 확인하고 우선순위를 정해 직접 마무리한 행동",
+            "인수인계 기록이나 일정 준수 결과",
+        ),
+    )
+    situation, action, result = variants[max(0, int(variation_index)) % len(variants)]
+    kind = str(focus_type or "").strip()
+    if kind == "지식":
+        action = f"확인한 규정·문서와 적용 범위의 판단 근거, {action}"
+    elif kind == "기술":
+        action = f"사용한 자료·도구와 수행 순서, {action}"
+    elif kind == "태도":
+        action = f"압박 속에서도 지킨 행동 기준과 선택 이유, {action}"
+    return _clean_question_text(
+        f"{_with_josa(surface, '이', '가')} 필요한 업무에서 {situation} 경험을 말씀해 주세요. "
+        f"당시 본인의 역할과 목표, {action}, "
+        f"{_with_josa(result, '으로', '로')} 성과를 확인한 방법을 구체적으로 설명해 주세요.",
+        max_chars=280,
+    )
 
 
 def _adjust_generated_questions(
@@ -3039,7 +3364,12 @@ def _adjust_generated_questions(
                 item["competency"] = target_detail
 
         row_follow_count = max(0, min(5, int(planned.get("follow_up_count", default_follow_count) or 0)))
-        method = methods[idx % len(methods)]
+        planned_method = str(planned.get("type") or "").strip()
+        method = (
+            planned_method
+            if planned_method in methods and planned_method in SUPPORTED_INTERVIEW_METHODS
+            else methods[idx % len(methods)]
+        )
         item["method"] = method
         item["type"] = method
 
@@ -3128,10 +3458,22 @@ def _adjust_generated_questions(
             )
         if repaired:
             candidate_surface_repaired_fields.add("question")
+        if is_subscription_cli_candidate and method == "경험면접":
+            normalized_model_question, star_completed = (
+                _complete_experience_question_star(
+                    normalized_model_question,
+                    focus_type=focus_type,
+                    focus_surface=task_frame["task_object"],
+                )
+            )
+            if star_completed:
+                candidate_surface_repaired_fields.add("question")
         repaired_followups_for_surface: list[str] = []
         for value in raw_followups:
             if is_subscription_cli_candidate:
-                repaired_value, repaired = value, False
+                repaired_value, repaired = _collapse_repeated_question_phrases(
+                    value
+                )
             else:
                 repaired_value, repaired = _repair_candidate_surface_text(
                     value, focus, task_frame["task_object"]
@@ -3140,10 +3482,28 @@ def _adjust_generated_questions(
             if repaired:
                 candidate_surface_repaired_fields.add("follow_ups")
         raw_followups = repaired_followups_for_surface
+        if (
+            is_subscription_cli_candidate
+            and method == "경험면접"
+            and row_follow_count >= 3
+        ):
+            star_followups = _experience_star_followups(
+                focus_type=focus_type,
+                surface_focus=task_frame["task_object"],
+                count=row_follow_count,
+            )
+            if star_followups and star_followups != raw_followups[: len(star_followups)]:
+                raw_followups = [
+                    *star_followups,
+                    *raw_followups[len(star_followups) : row_follow_count],
+                ][:row_follow_count]
+                candidate_surface_repaired_fields.add("follow_ups")
         repaired_evaluation_points: list[str] = []
         for value in raw_evaluation_points:
             if is_subscription_cli_candidate:
-                repaired_value, repaired = value, False
+                repaired_value, repaired = _collapse_repeated_question_phrases(
+                    value
+                )
             else:
                 repaired_value, repaired = _repair_candidate_surface_text(
                     value, focus, task_frame["task_object"]
@@ -3289,7 +3649,14 @@ def _adjust_generated_questions(
         else:
             item["follow_ups"] = template_followups
         item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
-        if use_model_question and is_subscription_cli_candidate:
+        if (
+            use_model_question
+            and is_subscription_cli_candidate
+            and method == "경험면접"
+        ):
+            item["evaluation_points"] = method_eval_points
+            candidate_surface_repaired_fields.add("evaluation_points")
+        elif use_model_question and is_subscription_cli_candidate:
             # OpenAI/Codex/Claude drafts are reviewed under one exact-four
             # contract.  Preserve an invalid 3/5/6-item response so the final
             # quality report can block readiness without replacing the model's
@@ -4736,10 +5103,11 @@ _OFFICIAL_SAMPLE_FORMAT_RULES: dict[str, dict[str, tuple[str, ...]]] = {
     "경험면접": {
         "task_any": ("경험", "사례"),
         "task_all": ("상황", "본인", "행동", "결과"),
-        "eval_any": (
-            "본인역할과행동", "성과와학습", "구체적상황설명",
-            "구체적상황과본인역할", "판단근거와실제행동", "결과확인근거", "학습과전이",
-        ),
+            "eval_any": (
+                "본인역할과행동", "성과와학습", "구체적상황설명",
+                "구체적상황과본인역할", "판단근거와실제행동", "결과확인근거", "학습과전이",
+                "당시상황과본인역할", "선택근거와직접행동", "결과를입증하는기록",
+            ),
     },
     "상황면접": {
         "task_any": ("상황",),
@@ -5176,13 +5544,23 @@ def _ksa_evidence_relevance_ok(
     evidence_id = str(q.get("question_evidence_id") or "").strip()
     surface_focus = str(q.get("question_focus_surface") or "").strip()
     if evidence_id:
-        linked = any(
-            str(row.get("evidence_id") or stable_ksa_evidence_id(row)).strip() == evidence_id
+        linked_rows = [
+            row
             for row in matching_ksa_evidence
             if isinstance(row, dict)
+            and str(row.get("evidence_id") or stable_ksa_evidence_id(row)).strip()
+            == evidence_id
+        ]
+        if not linked_rows:
+            return False
+        semantic_targets = [
+            surface_focus,
+            *[str(row.get("factorName") or "").strip() for row in linked_rows],
+        ]
+        return any(
+            target and _ksa_factor_relevant_to_text(target, visible_prompt_text)
+            for target in semantic_targets
         )
-        if linked and surface_focus and _ksa_factor_relevant_to_text(surface_focus, visible_prompt_text):
-            return True
     return any(
         _ksa_factor_relevant_to_text(str(row.get("factorName") or ""), visible_prompt_text)
         for row in matching_ksa_evidence
@@ -5237,6 +5615,8 @@ def _natural_question_wording_ok(q: dict[str, Any], question: str, follow_ups: l
     if not main or len(main) > max_main_chars:
         return False
     if re.search(r" {2,}", main):
+        return False
+    if _collapse_repeated_question_phrases(main)[1]:
         return False
     if re.search(r"(?:설명하고|제시하고|말씀하고)\s+또한\b", main):
         return False
@@ -5436,11 +5816,19 @@ def _official_sample_format_ok(
     rule = _OFFICIAL_SAMPLE_FORMAT_RULES.get(method)
     if not rule:
         return False
-    return (
+    base_format_ok = (
         any(term in task_text for term in rule["task_any"])
         and all(term in task_text for term in rule["task_all"])
         and any(term in eval_text for term in rule["eval_any"])
     )
+    if method != "경험면접":
+        return base_format_ok
+    # STAR의 T는 단순히 "본인"이라는 말만 있는 것으로 충분하지 않다.
+    # 당시 맡은 과제·역할·목표·책임 중 하나를 실제 답변에서 끌어내야 한다.
+    task_role_visible = any(
+        term in task_text for term in ("역할", "과제", "목표", "책임", "담당")
+    )
+    return bool(base_format_ok and task_role_visible)
 
 
 def _quality_check_statuses(
@@ -6047,15 +6435,35 @@ def _run_runtime_question_quality_orchestration(
         reasons: list[str],
         attempt: int,
     ) -> dict[str, Any] | None:
-        if _is_subscription_cli_source(original.get("question_source")):
-            # A deterministic rewrite is usually less interview-realistic than
-            # the original provider draft. Keep it visible for human review
-            # and let the final quality report expose the unresolved issues.
-            return None
         item = dict(original)
         method = str(item.get("type") or item.get("method") or "경험면접").strip()
         if method not in QUALITY_INTERVIEW_METHODS:
             method = "경험면접"
+        source_is_preserved_provider = _is_subscription_cli_source(
+            original.get("question_source")
+        )
+        duplicate_only_codes = {
+            "history_duplicate",
+            "unique_question",
+            "full_quality_unique_question",
+            "repair_exhausted",
+        }
+        reason_codes = {
+            str(reason or "").strip()
+            for reason in reasons
+            if str(reason or "").strip()
+        }
+        preserved_duplicate_repair = bool(
+            source_is_preserved_provider
+            and method == "경험면접"
+            and reason_codes
+            and reason_codes <= duplicate_only_codes
+        )
+        if source_is_preserved_provider and not preserved_duplicate_repair:
+            # Provider drafts are rewritten deterministically only for semantic
+            # duplication. Evidence, safety, precision and realism failures stay
+            # fail-closed and remain visible to the human reviewer.
+            return None
         ncs_code = str(item.get("ncsClCd") or "").strip()
         current_focus = _clean_question_text(item.get("question_focus"), max_chars=60)
         official_terms = _ksa_terms_for_question(
@@ -6063,7 +6471,11 @@ def _run_runtime_question_quality_orchestration(
             ncs_code=ncs_code,
             fallback_terms=[current_focus] if current_focus else [],
         )
-        focus_candidates = [current_focus, *official_terms]
+        focus_candidates = (
+            [current_focus]
+            if preserved_duplicate_repair
+            else [current_focus, *official_terms]
+        )
         focus_candidates = [
             value
             for pos, value in enumerate(focus_candidates)
@@ -6104,6 +6516,58 @@ def _run_runtime_question_quality_orchestration(
             focus_type,
             surface_focus=task_frame["task_object"],
         )
+        repaired_question = _question_for_method(
+            method=method,
+            subject=subject,
+            focus=focus,
+            detail=detail,
+            comp_def=str(item.get("compeUnitDef") or "").strip(),
+            focus_type=focus_type,
+            variation_index=variation_index,
+            task_frame=task_frame,
+        )
+        repaired_source = "quality_orchestrator_repair"
+        repaired_model_preserved = False
+        if preserved_duplicate_repair:
+            repaired_question = _rewrite_preserved_experience_duplicate(
+                item,
+                focus_type=focus_type,
+                surface_focus=task_frame["task_object"],
+                variation_index=variation_index,
+            )
+            original_model_question = str(item.get("model_question_raw") or "").strip()
+            if original_model_question and not str(
+                item.get("model_question_original") or ""
+            ).strip():
+                item["model_question_original"] = original_model_question
+            # The deduplication layer intentionally compares model_question_raw
+            # for provider drafts. Point it at the repaired provider scenario,
+            # while retaining the untouched provider text above for audit.
+            item["model_question_raw"] = repaired_question
+            repaired_source = (
+                str(item.get("question_source") or "openai_api").strip()
+                + "_uniqueness_repaired"
+            )
+            repaired_model_preserved = True
+
+        repaired_followups = (
+            _experience_star_followups(
+                focus_type=focus_type,
+                surface_focus=task_frame["task_object"],
+                count=follow_count,
+            )
+            if preserved_duplicate_repair
+            else _followups_for_method(
+                method=method,
+                subject=subject,
+                focus=focus,
+                count=follow_count,
+                variant_index=variation_index,
+                focus_type=focus_type,
+                task_frame=task_frame,
+            )
+        )
+
         item.update(
             {
                 "type": method,
@@ -6116,28 +6580,11 @@ def _run_runtime_question_quality_orchestration(
                 "question_evidence_id": task_frame.get("evidence_id", ""),
                 "question_evidence_required": bool(focus_evidence),
                 "ksa_refs": [focus, *[term for term in official_terms if _ksa_key(term) != _ksa_key(focus)]][:4],
-                "question": _question_for_method(
-                    method=method,
-                    subject=subject,
-                    focus=focus,
-                    detail=detail,
-                    comp_def=str(item.get("compeUnitDef") or "").strip(),
-                    focus_type=focus_type,
-                    variation_index=variation_index,
-                    task_frame=task_frame,
-                ),
-                "follow_ups": _followups_for_method(
-                    method=method,
-                    subject=subject,
-                    focus=focus,
-                    count=follow_count,
-                    variant_index=variation_index,
-                    focus_type=focus_type,
-                    task_frame=task_frame,
-                ),
+                "question": repaired_question,
+                "follow_ups": repaired_followups,
                 "evaluation_points": evaluation_points,
-                "question_source": "quality_orchestrator_repair",
-                "model_question_preserved": False,
+                "question_source": repaired_source,
+                "model_question_preserved": repaired_model_preserved,
             }
         )
         item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
@@ -6801,13 +7248,33 @@ def _institution_api_provider_http_error(exc: BaseException) -> HTTPException:
             "institution_api_question_quality_rejected",
         )
     ):
+        quality_diagnostics = getattr(exc, "quality_diagnostics", {})
+        quality_diagnostics = (
+            dict(quality_diagnostics) if isinstance(quality_diagnostics, dict) else {}
+        )
+        requested_count = int(
+            quality_diagnostics.get("requested_question_count") or 0
+        )
+        failed_count = int(quality_diagnostics.get("failed_question_count") or 0)
+        if requested_count > 0 and failed_count > 0:
+            message = (
+                f"문서 크기나 GPT 과부하가 아니라, 생성된 {requested_count}개 문항 중 "
+                f"{failed_count}개가 KSA·구조·안전 필수 검사를 통과하지 못했습니다. "
+                "통과 문항을 함께 반환할 수 없는 무결성 실패가 남았습니다."
+            )
+        else:
+            message = (
+                "문서 크기나 GPT 과부하가 아니라, 생성 결과의 KSA·구조·안전 "
+                "필수 검사가 해결되지 않았습니다."
+            )
         return HTTPException(
             status_code=502,
             detail={
                 "code": "openai_api_quality_rejected",
                 "provider": "openai_api",
-                "message": "생성된 질문이 NCS/KSA 품질 검사를 통과하지 못했습니다. 문항 수나 면접기법 범위를 줄여 다시 시도해 주세요.",
+                "message": message,
                 "retryable": True,
+                "quality_diagnostics": quality_diagnostics,
             },
         )
     if any(
@@ -6898,6 +7365,54 @@ _INSTITUTION_RETRYABLE_QUALITY_CODES = frozenset(
         "precision_grounding_failed",
     }
 )
+_INSTITUTION_HARD_QUALITY_CHECKS = frozenset(
+    {
+        "supported_method",
+        "method_shape",
+        "main_question_method_shape",
+        "main_question_job_context",
+        "follow_up_depth",
+        "follow_up_quality",
+        "evaluation_points",
+        "evaluation_points_quality",
+        "ncs_grounded",
+        "ksa_grounded",
+        "ksa_measurement_task",
+        "detail_grounded",
+        "evidence_linked",
+        "candidate_surface_safe",
+        "official_sample_format",
+        "blind_hiring_safe",
+        "unique_question",
+        "specific_context",
+        "job_specific_context",
+        "focus_scenario_coherence",
+        "decision_dilemma_quality",
+        "debate_option_defensibility",
+        "debate_outcome_flexibility",
+        "debate_case_neutrality",
+        "operating_conditions_separated",
+        "standardized_task_conditions",
+        "case_materials_sufficient",
+        "decision_authority_context",
+        "inbasket_authority_context",
+        "behavior_anchored_evaluation",
+        "precision_grounding",
+    }
+)
+_INSTITUTION_SOFT_QUALITY_CHECKS = frozenset(
+    {
+        "natural_wording",
+        "field_realism",
+    }
+)
+_INSTITUTION_HARD_REALISM_ISSUES = frozenset(
+    {
+        "instruction_injection_artifact",
+        "label_like_metadata_exposure",
+    }
+)
+_SAFE_QUALITY_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
 def _institution_question_rejection_codes(
@@ -6960,6 +7475,514 @@ def _institution_question_rejection_codes(
     ).strip() != "passed":
         codes.append("question_quality_orchestration_failed")
 
+    if not _public_questions_precision_grounded(result):
+        codes.append("precision_grounding_failed")
+    return list(dict.fromkeys(codes))
+
+
+def _institution_question_quality_issue_codes(result: Any) -> list[str]:
+    """Return bounded server-owned issue codes for a targeted model retry."""
+
+    if not isinstance(result, dict):
+        return []
+    codes: list[str] = []
+    report = result.get("question_quality_report")
+    if isinstance(report, dict):
+        for item in report.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for value in item.get("issues") or []:
+                code = str(value or "").strip()
+                if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                    codes.append(code)
+            for value in item.get("realism_issue_codes") or []:
+                code = str(value or "").strip()
+                if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                    codes.append(f"field_realism_{code}")
+            for value in item.get("precision_grounding_issue_codes") or []:
+                code = str(value or "").strip()
+                if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                    codes.append(f"precision_grounding_{code}")
+    orchestration = result.get("question_quality_orchestration")
+    if isinstance(orchestration, dict):
+        for item in orchestration.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for value in item.get("final_issues") or []:
+                code = str(value or "").strip()
+                if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                    codes.append(code)
+    return list(dict.fromkeys(codes))[:30]
+
+
+class InstitutionQuestionQualityRejected(RuntimeError):
+    """Quality rejection with bounded, server-owned diagnostics only."""
+
+    def __init__(self, diagnostics: dict[str, Any] | None = None) -> None:
+        super().__init__("institution_api_question_quality_rejected")
+        self.quality_diagnostics = dict(diagnostics or {})
+
+
+def _institution_hard_question_indexes(result: Any) -> list[int]:
+    """Return one-based slots that cannot be exposed as interview drafts."""
+
+    if not isinstance(result, dict):
+        return []
+    questions = [
+        item
+        for item in (result.get("interview_questions") or [])
+        if isinstance(item, dict)
+    ]
+    if not questions:
+        return []
+    hard_indexes: set[int] = set()
+    report = result.get("question_quality_report")
+    report_items = [
+        item for item in ((report or {}).get("items") or []) if isinstance(item, dict)
+    ] if isinstance(report, dict) else []
+    if not report_items or len(report_items) != len(questions):
+        return list(range(1, len(questions) + 1))
+
+    known_quality_codes = _INSTITUTION_HARD_QUALITY_CHECKS | _INSTITUTION_SOFT_QUALITY_CHECKS
+    for fallback_index, item in enumerate(report_items, start=1):
+        try:
+            index = int(item.get("index") or fallback_index)
+        except (TypeError, ValueError):
+            index = fallback_index
+        issues = {
+            str(value or "").strip()
+            for value in (item.get("issues") or [])
+            if str(value or "").strip()
+        }
+        realism_issues = {
+            str(value or "").strip()
+            for value in (item.get("realism_issue_codes") or [])
+            if str(value or "").strip()
+        }
+        unknown_issues = issues - known_quality_codes
+        if (
+            issues & _INSTITUTION_HARD_QUALITY_CHECKS
+            or unknown_issues
+            or realism_issues & _INSTITUTION_HARD_REALISM_ISSUES
+        ):
+            hard_indexes.add(index)
+
+    evidence_assignment = result.get("question_evidence_assignment")
+    if isinstance(evidence_assignment, dict):
+        for value in evidence_assignment.get("mismatched_indexes") or []:
+            try:
+                index = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= index <= len(questions):
+                hard_indexes.add(index)
+
+    deterministic_sources = {
+        "template_fallback",
+        "rule_fallback",
+        "quality_orchestrator_repair",
+    }
+    for index, question in enumerate(questions, start=1):
+        source = str(question.get("question_source") or "").strip()
+        if source in deterministic_sources:
+            hard_indexes.add(index)
+        if evaluate_question_precision_grounding(question).get("passed") is not True:
+            hard_indexes.add(index)
+    return sorted(index for index in hard_indexes if 1 <= index <= len(questions))
+
+
+def _institution_quality_failure_diagnostics(
+    result: Any,
+    *,
+    attempt_count: int,
+) -> dict[str, Any]:
+    """Build a non-sensitive explanation for the UI and operational logs."""
+
+    questions = [
+        item
+        for item in ((result or {}).get("interview_questions") or [])
+        if isinstance(item, dict)
+    ] if isinstance(result, dict) else []
+    failed_indexes = _institution_hard_question_indexes(result)
+    issue_counts: dict[str, int] = {}
+    report = result.get("question_quality_report") if isinstance(result, dict) else None
+    if isinstance(report, dict):
+        for item in report.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for raw_code in item.get("issues") or []:
+                code = str(raw_code or "").strip()
+                if not _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                    continue
+                public_code = (
+                    code
+                    if code in _INSTITUTION_HARD_QUALITY_CHECKS | _INSTITUTION_SOFT_QUALITY_CHECKS
+                    else "unknown_quality_issue"
+                )
+                issue_counts[public_code] = issue_counts.get(public_code, 0) + 1
+            for raw_code in item.get("realism_issue_codes") or []:
+                code = str(raw_code or "").strip()
+                if code in _INSTITUTION_HARD_REALISM_ISSUES:
+                    public_code = f"field_realism_{code}"
+                    issue_counts[public_code] = issue_counts.get(public_code, 0) + 1
+    orchestration_issue_counts: dict[str, int] = {}
+    orchestration = result.get("question_quality_orchestration") if isinstance(result, dict) else None
+    if isinstance(orchestration, dict):
+        for item in orchestration.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for raw_code in item.get("final_issues") or []:
+                code = str(raw_code or "").strip()
+                if not _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                    continue
+                orchestration_issue_counts[code] = (
+                    orchestration_issue_counts.get(code, 0) + 1
+                )
+    return {
+        "requested_question_count": len(questions),
+        "failed_question_count": len(failed_indexes),
+        "failed_indexes": failed_indexes[:50],
+        "issue_counts": dict(sorted(issue_counts.items())[:30]),
+        "orchestration_issue_counts": dict(
+            sorted(orchestration_issue_counts.items())[:30]
+        ),
+        "attempt_count": max(1, min(3, int(attempt_count or 1))),
+        "failure_scope": "question_quality",
+    }
+
+
+def _targeted_quality_retry_plan(
+    runtime_question_plan: dict[str, Any],
+    failed_indexes: list[int],
+) -> tuple[dict[str, Any], list[int], list[str]]:
+    """Create a server-locked retry plan containing only failed slots."""
+
+    sequence = [
+        dict(item)
+        for item in (runtime_question_plan.get("question_sequence") or [])
+        if isinstance(item, dict)
+    ]
+    retry_sequence: list[dict[str, Any]] = []
+    original_indexes: list[int] = []
+    retry_methods: list[str] = []
+    for original_index in sorted(set(failed_indexes)):
+        if not 1 <= original_index <= len(sequence):
+            continue
+        item = dict(sequence[original_index - 1])
+        method = str(item.get("type") or "").strip()
+        item["retry_original_index"] = original_index
+        item["index"] = len(retry_sequence) + 1
+        retry_sequence.append(item)
+        original_indexes.append(original_index)
+        if method and method not in retry_methods:
+            retry_methods.append(method)
+    retry_plan = dict(runtime_question_plan)
+    retry_plan["question_sequence"] = retry_sequence
+    retry_plan["total_main_count"] = len(retry_sequence)
+    retry_plan["targeted_retry"] = True
+    retry_plan["targeted_retry_original_indexes"] = original_indexes
+    return retry_plan, original_indexes, retry_methods
+
+
+_INSTITUTION_GENERATION_BATCH_SIZE = 5
+_INSTITUTION_GENERATION_BATCH_CONCURRENCY = 4
+
+
+def _generation_batch_plans(
+    runtime_question_plan: dict[str, Any],
+    *,
+    max_batch_size: int = _INSTITUTION_GENERATION_BATCH_SIZE,
+) -> list[tuple[dict[str, Any], list[int], list[str]]]:
+    """Split a locked server plan without changing slot, method, or KSA evidence."""
+
+    sequence = [
+        dict(item)
+        for item in (runtime_question_plan.get("question_sequence") or [])
+        if isinstance(item, dict)
+    ]
+    if not sequence:
+        return [(dict(runtime_question_plan), [], [])]
+    batch_size = max(1, min(20, int(max_batch_size or 1)))
+    batches: list[tuple[dict[str, Any], list[int], list[str]]] = []
+    for start in range(0, len(sequence), batch_size):
+        source_rows = sequence[start : start + batch_size]
+        local_rows: list[dict[str, Any]] = []
+        original_indexes: list[int] = []
+        methods: list[str] = []
+        detail_counts: dict[str, dict[str, Any]] = {}
+        detail_order: list[str] = []
+        for local_index, source in enumerate(source_rows, start=1):
+            row = dict(source)
+            try:
+                original_index = int(row.get("index") or (start + local_index))
+            except (TypeError, ValueError):
+                original_index = start + local_index
+            row["generation_original_index"] = original_index
+            row["index"] = local_index
+            local_rows.append(row)
+            original_indexes.append(original_index)
+            method = str(row.get("type") or "").strip()
+            if method and method not in methods:
+                methods.append(method)
+            detail = str(row.get("detail") or "").strip()
+            if detail not in detail_counts:
+                detail_order.append(detail)
+                detail_counts[detail] = {
+                    "detail": detail,
+                    "enabled": True,
+                    "main_count": 0,
+                    "follow_up_count": max(
+                        0,
+                        min(5, int(row.get("follow_up_count") or 0)),
+                    ),
+                }
+            detail_counts[detail]["main_count"] += 1
+
+        selected_items = [detail_counts[detail] for detail in detail_order]
+        batch_plan = dict(runtime_question_plan)
+        batch_plan["question_sequence"] = local_rows
+        batch_plan["total_main_count"] = len(local_rows)
+        batch_plan["selected_items"] = selected_items
+        batch_plan["items"] = [dict(item) for item in selected_items]
+        batch_plan["selected_terms"] = [
+            detail for detail in detail_order if detail
+        ]
+        batch_plan["generation_batch"] = True
+        batch_plan["generation_batch_original_indexes"] = list(original_indexes)
+        batches.append((batch_plan, original_indexes, methods))
+    return batches
+
+
+def _partial_safe_question_strategy(
+    result: dict[str, Any],
+    *,
+    requested_count: int,
+) -> dict[str, Any] | None:
+    """Return only independently hard-clean model questions after retry exhaustion."""
+
+    request_codes = set(
+        _institution_hard_question_rejection_codes(
+            result,
+            require_quality_metadata=True,
+        )
+    )
+    partial_forbidden_codes = {
+        "invalid_question_result",
+        "result_error",
+        "empty_question_set",
+        "question_evidence_assignment_failed",
+        "question_quality_report_missing",
+        "question_quality_report_unclassified",
+        "question_quality_unclassified_issue",
+        "question_quality_orchestration_missing",
+        "question_quality_orchestration_unclassified",
+        "question_count_mismatch",
+        "deterministic_fallback",
+    }
+    if request_codes & partial_forbidden_codes:
+        return None
+    questions = [
+        dict(item)
+        for item in (result.get("interview_questions") or [])
+        if isinstance(item, dict)
+    ]
+    failed_indexes = _institution_hard_question_indexes(result)
+    failed_set = set(failed_indexes)
+    if not questions or not failed_set or len(failed_set) >= len(questions):
+        return None
+
+    kept_pairs = [
+        (index, question)
+        for index, question in enumerate(questions, start=1)
+        if index not in failed_set
+    ]
+    partial = dict(result)
+    partial_questions: list[dict[str, Any]] = []
+    for original_index, question in kept_pairs:
+        kept_question = dict(question)
+        kept_question["original_question_index"] = original_index
+        partial_questions.append(kept_question)
+    partial["interview_questions"] = partial_questions
+    partial["interview_by_competency"] = _group_interview_questions_for_response(
+        partial_questions
+    )
+
+    report = result.get("question_quality_report")
+    if isinstance(report, dict):
+        report_items_by_index = {
+            int(item.get("index") or fallback_index): dict(item)
+            for fallback_index, item in enumerate(report.get("items") or [], start=1)
+            if isinstance(item, dict)
+        }
+        kept_report_items: list[dict[str, Any]] = []
+        for new_index, (original_index, _question) in enumerate(kept_pairs, start=1):
+            item = dict(report_items_by_index.get(original_index) or {})
+            item["original_index"] = original_index
+            item["index"] = new_index
+            kept_report_items.append(item)
+        partial_report = dict(report)
+        partial_report["passed"] = False
+        partial_report["items"] = kept_report_items
+        partial_report["summary"] = {
+            **dict(report.get("summary") or {}),
+            "question_count": len(partial_questions),
+            "expected_question_count": requested_count,
+            "count_matches_plan": False,
+            "omitted_hard_failure_count": len(failed_indexes),
+        }
+        partial["question_quality_report"] = partial_report
+
+    original_assignment = result.get("question_evidence_assignment")
+    if isinstance(original_assignment, dict):
+        partial["question_evidence_assignment"] = {
+            **dict(original_assignment),
+            "applicable": bool(partial_questions),
+            "passed": True,
+            "expected_count": len(partial_questions),
+            "matched_count": len(partial_questions),
+            "mismatch_count": 0,
+            "mismatched_indexes": [],
+            "original_indexes": [index for index, _question in kept_pairs],
+            "partial_survivor_attestation": True,
+        }
+
+    safe_reasons_by_index: dict[str, list[str]] = {}
+    report_items = [
+        item
+        for item in ((result.get("question_quality_report") or {}).get("items") or [])
+        if isinstance(item, dict)
+    ]
+    orchestration_items = [
+        item
+        for item in ((result.get("question_quality_orchestration") or {}).get("items") or [])
+        if isinstance(item, dict)
+    ]
+    for failed_index in failed_indexes:
+        codes: list[str] = []
+        report_item = next(
+            (
+                item
+                for fallback_index, item in enumerate(report_items, start=1)
+                if int(item.get("index") or fallback_index) == failed_index
+            ),
+            {},
+        )
+        for value in report_item.get("issues") or []:
+            code = str(value or "").strip()
+            if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                codes.append(code)
+        for value in report_item.get("realism_issue_codes") or []:
+            code = str(value or "").strip()
+            if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                codes.append(f"field_realism_{code}")
+        orchestration_item = next(
+            (
+                item
+                for fallback_index, item in enumerate(orchestration_items, start=1)
+                if int(item.get("index") or fallback_index) == failed_index
+            ),
+            {},
+        )
+        for value in orchestration_item.get("final_issues") or []:
+            code = str(value or "").strip()
+            if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                codes.append(code)
+        safe_reasons_by_index[str(failed_index)] = list(dict.fromkeys(codes))[:20]
+
+    partial["partial_generation"] = {
+        "policy": "hard-failure-isolation-v1",
+        "requested_question_count": requested_count,
+        "returned_question_count": len(partial_questions),
+        "omitted_question_count": len(failed_indexes),
+        "omitted_indexes": failed_indexes,
+        "omission_reasons_by_index": safe_reasons_by_index,
+    }
+    partial["question_release_status"] = "partial_human_review_required"
+    return partial
+
+
+def _institution_hard_question_rejection_codes(
+    result: Any,
+    *,
+    require_quality_metadata: bool = False,
+) -> list[str]:
+    """Keep security, provenance, count, and evidence failures fail-closed.
+
+    Editorial/realism findings remain visible in the response for human review;
+    they no longer discard an otherwise model-authored, evidence-grounded set.
+    """
+
+    if not isinstance(result, dict):
+        return ["invalid_question_result"]
+    questions = [
+        row
+        for row in (result.get("interview_questions") or [])
+        if isinstance(row, dict)
+    ]
+    codes: list[str] = []
+    if result.get("error"):
+        codes.append("result_error")
+    if not questions or not all(str(row.get("question") or "").strip() for row in questions):
+        codes.append("empty_question_set")
+    if bool(result.get("template_fallback_used")) or any(
+        str(row.get("question_source") or "").strip()
+        in {"template_fallback", "rule_fallback", "quality_orchestrator_repair"}
+        for row in questions
+    ):
+        codes.append("deterministic_fallback")
+
+    evidence_assignment = result.get("question_evidence_assignment")
+    if (
+        isinstance(evidence_assignment, dict)
+        and evidence_assignment.get("applicable") is True
+        and evidence_assignment.get("passed") is not True
+    ):
+        codes.append("question_evidence_assignment_failed")
+
+    report = result.get("question_quality_report")
+    if not isinstance(report, dict):
+        if require_quality_metadata:
+            codes.append("question_quality_report_missing")
+    elif report.get("passed") is not True:
+        report_items = [
+            item for item in (report.get("items") or []) if isinstance(item, dict)
+        ]
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        if not report_items:
+            codes.append("question_quality_report_unclassified")
+        if summary.get("count_matches_plan") is False or len(report_items) != len(questions):
+            codes.append("question_count_mismatch")
+        for item in report_items:
+            issues = {
+                str(value or "").strip()
+                for value in (item.get("issues") or [])
+                if str(value or "").strip()
+            }
+            unknown_issues = issues - (
+                _INSTITUTION_HARD_QUALITY_CHECKS | _INSTITUTION_SOFT_QUALITY_CHECKS
+            )
+            if issues & _INSTITUTION_HARD_QUALITY_CHECKS:
+                codes.append("question_quality_hard_failure")
+            if unknown_issues:
+                codes.append("question_quality_unclassified_issue")
+            realism_issues = {
+                str(value or "").strip()
+                for value in (item.get("realism_issue_codes") or [])
+                if str(value or "").strip()
+            }
+            if realism_issues & _INSTITUTION_HARD_REALISM_ISSUES:
+                codes.append("question_safety_surface_failed")
+
+    orchestration = result.get("question_quality_orchestration")
+    if require_quality_metadata and not isinstance(orchestration, dict):
+        codes.append("question_quality_orchestration_missing")
+    elif (
+        isinstance(orchestration, dict)
+        and str(orchestration.get("status") or "").strip() != "passed"
+        and isinstance(report, dict)
+        and report.get("passed") is True
+    ):
+        codes.append("question_quality_orchestration_unclassified")
     if not _public_questions_precision_grounded(result):
         codes.append("precision_grounding_failed")
     return list(dict.fromkeys(codes))
@@ -7068,23 +8091,55 @@ def _quality_retry_context(
     trigger_codes: list[str],
     previous_questions: list[str],
     evidence_locks: list[tuple[int, str]],
+    quality_issue_codes: list[str],
     original_context: str,
+    target_original_indexes: list[int] | None = None,
 ) -> str:
     safe_codes = sorted(
         code for code in dict.fromkeys(trigger_codes)
         if code in _INSTITUTION_RETRYABLE_QUALITY_CODES
     )
     lock_payload = [[index, evidence_id] for index, evidence_id in evidence_locks]
+    safe_issue_codes = [
+        code
+        for code in dict.fromkeys(quality_issue_codes)
+        if _SAFE_QUALITY_CODE_RE.fullmatch(str(code or "").strip())
+    ][:30]
     instruction = (
         "[서버 품질 재생성 지침]\n"
         "- 이전 후보 세트를 복사하거나 일부 수정하지 말고 전 문항을 새로 작성하세요.\n"
         "- NCS 내부 명칭을 질문 문장에 노출하지 말고 사건·판단·행동·산출물로 번역하세요.\n"
-        "- 주질문은 핵심 판단 1개와 필수 산출물 1개에 집중하세요.\n"
+        "- 경험면접 주질문은 구체 사건, 당시 맡은 역할·목표, 배정 KSA로 직접 한 행동 한 가지와 근거, "
+        "수치·문서·피드백으로 확인한 결과가 모두 나오게 하세요. 그 밖의 과제형 주질문은 핵심 판단 "
+        "1개와 필수 산출물 1개에 집중하세요.\n"
         "- 꼬리질문 3개 중 최소 2개는 지원자의 직전 답변 슬롯을 받아 묻고, 평가기준은 정확히 4개 모두 질문에서 관찰 가능해야 합니다.\n"
         f"- 서버 품질 코드: {','.join(safe_codes)}\n"
+        f"- 실제 탈락 검사 코드: {','.join(safe_issue_codes) or 'none'}\n"
         f"- index별 evidence_id 잠금(JSON): {json.dumps(lock_payload, ensure_ascii=True, separators=(',', ':'))}"
     )
-    previous_context = _build_avoid_questions_context(previous_questions, max_items=8)
+    targets = {
+        int(value)
+        for value in (target_original_indexes or [])
+        if str(value).isdigit() and int(value) > 0
+    }
+    retry_avoid_questions = list(previous_questions)
+    if targets and previous_questions:
+        indexed_questions = list(enumerate(previous_questions, start=1))
+        retry_avoid_questions = [
+            question
+            for _index, question in sorted(
+                indexed_questions,
+                key=lambda pair: (
+                    0 if pair[0] in targets else 1,
+                    min(abs(pair[0] - target) for target in targets),
+                    pair[0],
+                ),
+            )[:8]
+        ]
+    previous_context = _build_avoid_questions_context(
+        retry_avoid_questions,
+        max_items=8,
+    )
     # build_strategy_with_openai consumes the first 2,000 characters. Keep the
     # repair contract and evidence locks first; ordinary history is lower priority.
     return _join_generation_context(instruction, previous_context, original_context)[:2000]
@@ -7102,47 +8157,207 @@ async def _generate_quality_gated_institution_strategy(
 ) -> dict[str, Any]:
     """Generate once and perform one bounded retry only for quality rejection."""
 
+    generation_started_at = time.perf_counter()
+    generation_attempt_elapsed_ms: list[int] = []
+
+    def with_generation_timing(result: dict[str, Any]) -> dict[str, Any]:
+        result["generation_timing"] = {
+            "total_elapsed_ms": max(
+                0,
+                int(round((time.perf_counter() - generation_started_at) * 1000)),
+            ),
+            "generation_attempt_count": len(generation_attempt_elapsed_ms),
+            "generation_attempt_elapsed_ms": list(generation_attempt_elapsed_ms),
+        }
+        return result
+
+    def rejection_diagnostics(
+        result: Any,
+        *,
+        attempt_count: int,
+    ) -> dict[str, Any]:
+        diagnostics = _institution_quality_failure_diagnostics(
+            result,
+            attempt_count=attempt_count,
+        )
+        diagnostics["total_elapsed_ms"] = max(
+            0,
+            int(round((time.perf_counter() - generation_started_at) * 1000)),
+        )
+        diagnostics["generation_attempt_elapsed_ms"] = list(
+            generation_attempt_elapsed_ms
+        )
+        return diagnostics
+
     runtime_question_plan, planned_evidence_locks = _planned_question_evidence_assignments(
         question_plan=question_plan,
         interview_methods=interview_methods,
         ncs_matches=ncs_matches,
         ncs_ksa=ncs_ksa,
     )
+    initial_generation_batch_count = len(
+        _generation_batch_plans(runtime_question_plan)
+    )
+    provider_generation_request_limit = max(
+        3,
+        initial_generation_batch_count * 3,
+    )
 
-    async def run_once(local_build_kwargs: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    async def run_once(
+        local_build_kwargs: dict[str, Any],
+        *,
+        local_question_plan: dict[str, Any],
+        local_interview_methods: list[str],
+        local_evidence_locks: list[tuple[int, str]],
+    ) -> tuple[dict[str, Any], list[str]]:
         loop = asyncio.get_running_loop()
-        generated = await loop.run_in_executor(
-            None,
-            functools.partial(build_jd_strategy_with_openai, **local_build_kwargs),
+        attempt_started_at = time.perf_counter()
+        # A retry batch already contains only failed original slots.  Generate
+        # each one independently so one weak/duplicate draft cannot steer the
+        # other repairs toward the same wording.  The calls remain bounded by
+        # the same semaphore and are merged/revalidated globally afterward.
+        local_count = int(local_question_plan.get("total_main_count") or 0)
+        retry_batch_size = (
+            1
+            if local_question_plan.get("targeted_retry") and local_count <= 4
+            else _INSTITUTION_GENERATION_BATCH_SIZE
         )
-        _require_institution_api_model_output(generated)
-        evidence_assignment = _raw_model_evidence_assignment_report(
-            generated,
-            planned_evidence_locks,
+        batch_specs = _generation_batch_plans(
+            local_question_plan,
+            max_batch_size=retry_batch_size,
         )
-        raw_questions = _raw_model_question_texts(generated)
-        processed = _adjust_generated_questions(
-            generated,
-            runtime_question_plan,
-            interview_methods,
-            ncs_matches=ncs_matches,
-            ncs_ksa=ncs_ksa,
+        semaphore = asyncio.Semaphore(_INSTITUTION_GENERATION_BATCH_CONCURRENCY)
+
+        async def build_batch(
+            batch_plan: dict[str, Any],
+            original_indexes: list[int],
+            batch_methods: list[str],
+        ) -> dict[str, Any]:
+            effective_methods = batch_methods or list(local_interview_methods)
+            batch_runtime_plan, batch_evidence_locks = (
+                _planned_question_evidence_assignments(
+                    question_plan=batch_plan,
+                    interview_methods=effective_methods,
+                    ncs_matches=ncs_matches,
+                    ncs_ksa=ncs_ksa,
+                )
+            )
+            batch_kwargs = dict(local_build_kwargs)
+            batch_kwargs["question_plan"] = batch_runtime_plan
+            batch_kwargs["interview_methods"] = effective_methods
+            batch_kwargs["target_count_override"] = int(
+                batch_runtime_plan.get("total_main_count") or 0
+            )
+            async with semaphore:
+                generated = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        build_jd_strategy_with_openai,
+                        **batch_kwargs,
+                    ),
+                )
+            _require_institution_api_model_output(generated)
+            evidence_assignment = _raw_model_evidence_assignment_report(
+                generated,
+                batch_evidence_locks,
+            )
+            raw_questions = _raw_model_question_texts(generated)
+            processed = _adjust_generated_questions(
+                generated,
+                batch_runtime_plan,
+                effective_methods,
+                ncs_matches=ncs_matches,
+                ncs_ksa=ncs_ksa,
+            )
+            processed = _attach_ksa_evidence_to_strategy(processed, ncs_ksa)
+            return {
+                "strategy": processed,
+                "raw_questions": raw_questions,
+                "raw_question_rows": [
+                    dict(item)
+                    for item in (generated.get("interview_questions") or [])
+                    if isinstance(item, dict)
+                ],
+                "evidence_assignment": evidence_assignment,
+                "original_indexes": list(original_indexes),
+                "question_count": int(
+                    batch_runtime_plan.get("total_main_count") or 0
+                ),
+            }
+
+        try:
+            batch_results = await asyncio.gather(
+                *(
+                    build_batch(batch_plan, original_indexes, batch_methods)
+                    for batch_plan, original_indexes, batch_methods in batch_specs
+                )
+            )
+        finally:
+            generation_attempt_elapsed_ms.append(
+                max(0, int(round((time.perf_counter() - attempt_started_at) * 1000)))
+            )
+
+        processed = dict(batch_results[0]["strategy"])
+        merged_questions: list[dict[str, Any]] = []
+        merged_raw_question_rows: list[dict[str, Any]] = []
+        raw_questions: list[str] = []
+        provider_generation_request_count = 0
+        batch_question_counts: list[int] = []
+        for batch_result in batch_results:
+            batch_strategy = batch_result["strategy"]
+            merged_questions.extend(
+                dict(item)
+                for item in (batch_strategy.get("interview_questions") or [])
+                if isinstance(item, dict)
+            )
+            merged_raw_question_rows.extend(batch_result["raw_question_rows"])
+            raw_questions.extend(batch_result["raw_questions"])
+            provider_generation_request_count += int(
+                batch_strategy.get("provider_generation_request_count") or 0
+            )
+            batch_question_counts.append(int(batch_result["question_count"] or 0))
+
+        processed["interview_questions"] = merged_questions
+        processed["interview_by_competency"] = _group_interview_questions_for_response(
+            merged_questions
         )
-        processed = _attach_ksa_evidence_to_strategy(processed, ncs_ksa)
+        processed["question_plan_used"] = local_question_plan
+        processed["interview_methods_used"] = list(local_interview_methods)
+        processed["provider_generation_request_count"] = (
+            provider_generation_request_count
+        )
+        processed["generation_batching"] = {
+            "applied": len(batch_results) > 1,
+            "policy": "locked-plan-parallel-batches-v1",
+            "batch_count": len(batch_results),
+            "batch_size_limit": _INSTITUTION_GENERATION_BATCH_SIZE,
+            "max_concurrency": _INSTITUTION_GENERATION_BATCH_CONCURRENCY,
+            "batch_question_counts": batch_question_counts,
+        }
         processed = _run_runtime_question_quality_orchestration(
             processed,
-            question_plan=runtime_question_plan,
+            question_plan=local_question_plan,
             ncs_ksa=ncs_ksa,
             avoid_questions=avoid_questions,
             generation_offset=generation_offset,
         )
-        processed["question_evidence_assignment"] = evidence_assignment
+        processed["question_evidence_assignment"] = (
+            _raw_model_evidence_assignment_report(
+                {"interview_questions": merged_raw_question_rows},
+                local_evidence_locks,
+            )
+        )
         return processed, raw_questions
 
     first_build_kwargs = dict(build_kwargs)
     first_build_kwargs.setdefault("max_model_requests", 2)
     first_build_kwargs.setdefault("transport_max_attempts", 1)
-    strategy, previous_questions = await run_once(first_build_kwargs)
+    strategy, previous_questions = await run_once(
+        first_build_kwargs,
+        local_question_plan=runtime_question_plan,
+        local_interview_methods=interview_methods,
+        local_evidence_locks=planned_evidence_locks,
+    )
     first_generation_request_count = int(
         strategy.get("provider_generation_request_count") or 0
     )
@@ -7150,6 +8365,7 @@ async def _generate_quality_gated_institution_strategy(
         strategy,
         require_quality_metadata=True,
     )
+    first_quality_issue_codes = _institution_question_quality_issue_codes(strategy)
     if not trigger_codes:
         strategy["model_quality_retry"] = {
             "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
@@ -7162,55 +8378,273 @@ async def _generate_quality_gated_institution_strategy(
             "previous_candidate_count": 0,
             "evidence_lock_count": len(planned_evidence_locks),
             "provider_generation_request_count": first_generation_request_count,
-            "provider_generation_request_limit": 3,
+            "provider_generation_request_limit": provider_generation_request_limit,
             "transport_attempt_limit_per_generation_request": 1,
         }
-        return strategy
+        return with_generation_timing(strategy)
+
+    first_hard_codes = _institution_hard_question_rejection_codes(
+        strategy,
+        require_quality_metadata=True,
+    )
+    if not first_hard_codes:
+        logger.warning(
+            "institution_question_quality_reviewable_without_retry provider=openai_api codes=%s issues=%s",
+            ",".join(sorted(set(trigger_codes))),
+            ",".join(first_quality_issue_codes),
+        )
+        strategy["model_quality_retry"] = {
+            "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
+            "provider": "openai_api",
+            "attempted": False,
+            "retry_count": 0,
+            "attempt_count": 1,
+            "outcome": "accepted_for_human_review",
+            "trigger_codes": sorted(trigger_codes),
+            "remaining_codes": sorted(trigger_codes),
+            "remaining_issue_codes": first_quality_issue_codes,
+            "previous_candidate_count": 0,
+            "evidence_lock_count": len(planned_evidence_locks),
+            "provider_generation_request_count": first_generation_request_count,
+            "provider_generation_request_limit": provider_generation_request_limit,
+            "transport_attempt_limit_per_generation_request": 1,
+        }
+        strategy["question_release_status"] = "human_review_required"
+        return with_generation_timing(strategy)
 
     if any(code not in _INSTITUTION_RETRYABLE_QUALITY_CODES for code in trigger_codes):
-        raise RuntimeError("institution_api_question_quality_rejected")
+        raise InstitutionQuestionQualityRejected(
+            rejection_diagnostics(strategy, attempt_count=1)
+        )
 
-    evidence_locks = list(planned_evidence_locks)
+    first_question_count = len(
+        [
+            item
+            for item in (strategy.get("interview_questions") or [])
+            if isinstance(item, dict)
+        ]
+    )
+    failed_indexes = _institution_hard_question_indexes(strategy)
+    targeted_retry_forbidden = {
+        "invalid_question_result",
+        "result_error",
+        "empty_question_set",
+        "deterministic_fallback",
+        "question_evidence_assignment_failed",
+        "question_quality_report_missing",
+        "question_quality_report_unclassified",
+        "question_quality_unclassified_issue",
+        "question_quality_orchestration_missing",
+        "question_quality_orchestration_unclassified",
+        "question_count_mismatch",
+    }
+    use_targeted_retry = bool(
+        first_question_count > 1
+        and failed_indexes
+        and len(failed_indexes) < first_question_count
+        and not (set(first_hard_codes) & targeted_retry_forbidden)
+    )
+    retry_runtime_plan = runtime_question_plan
+    retry_interview_methods = interview_methods
+    retry_original_indexes: list[int] = []
+    retry_evidence_locks = list(planned_evidence_locks)
+    if use_targeted_retry:
+        retry_plan, retry_original_indexes, retry_interview_methods = (
+            _targeted_quality_retry_plan(runtime_question_plan, failed_indexes)
+        )
+        retry_interview_methods = retry_interview_methods or list(interview_methods)
+        retry_runtime_plan, retry_evidence_locks = _planned_question_evidence_assignments(
+            question_plan=retry_plan,
+            interview_methods=retry_interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
+        )
+
     logger.warning(
-        "institution_question_quality_retry_started provider=openai_api codes=%s candidates=%s evidence_locks=%s",
+        "institution_question_quality_retry_started provider=openai_api codes=%s candidates=%s evidence_locks=%s targeted=%s retry_count=%s",
         ",".join(sorted(trigger_codes)),
         len(previous_questions),
-        len(evidence_locks),
+        len(retry_evidence_locks),
+        use_targeted_retry,
+        len(retry_original_indexes) if use_targeted_retry else first_question_count,
     )
     retry_kwargs = dict(build_kwargs)
     retry_context = _quality_retry_context(
         trigger_codes=trigger_codes,
         previous_questions=previous_questions,
-        evidence_locks=evidence_locks,
+        evidence_locks=retry_evidence_locks,
+        quality_issue_codes=first_quality_issue_codes,
         original_context=str(first_build_kwargs.get("extra_context") or ""),
+        target_original_indexes=retry_original_indexes,
     )
     request_secret = str(first_build_kwargs.get("api_key_override") or "").strip()
     if request_secret:
         retry_context = retry_context.replace(request_secret, "[redacted]")
     retry_kwargs["extra_context"] = retry_context
+    retry_kwargs["question_plan"] = retry_runtime_plan
+    retry_kwargs["interview_methods"] = retry_interview_methods
+    retry_kwargs["target_count_override"] = int(
+        retry_runtime_plan.get("total_main_count") or 0
+    )
     # The first builder invocation already owns its one provider-recovery
     # (slim prompt) budget.  The outer retry is specifically the single
     # quality regeneration, so it must not silently open another slim retry.
     retry_kwargs["max_model_requests"] = 1
     retry_kwargs["transport_max_attempts"] = 1
-    retried, _unused_questions = await run_once(retry_kwargs)
-    total_generation_request_count = first_generation_request_count + int(
+    retried, _unused_questions = await run_once(
+        retry_kwargs,
+        local_question_plan=retry_runtime_plan,
+        local_interview_methods=retry_interview_methods,
+        local_evidence_locks=retry_evidence_locks,
+    )
+    retry_generation_request_count = int(
         retried.get("provider_generation_request_count") or 0
+    )
+    total_generation_request_count = first_generation_request_count + int(
+        retry_generation_request_count
+    )
+    if use_targeted_retry:
+        original_questions = [
+            dict(item)
+            for item in (strategy.get("interview_questions") or [])
+            if isinstance(item, dict)
+        ]
+        retried_questions = [
+            dict(item)
+            for item in (retried.get("interview_questions") or [])
+            if isinstance(item, dict)
+        ]
+        if len(retried_questions) != len(retry_original_indexes):
+            raise InstitutionQuestionQualityRejected(
+                rejection_diagnostics(retried, attempt_count=2)
+            )
+        for original_index, question in zip(
+            retry_original_indexes,
+            retried_questions,
+            strict=True,
+        ):
+            original_questions[original_index - 1] = question
+        merged = dict(strategy)
+        merged["interview_questions"] = original_questions
+        merged["question_plan_used"] = runtime_question_plan
+        merged["interview_methods_used"] = list(interview_methods)
+        merged["provider_generation_request_count"] = total_generation_request_count
+        retry_assignment = retried.get("question_evidence_assignment")
+        retry_mismatches = (
+            list(retry_assignment.get("mismatched_indexes") or [])
+            if isinstance(retry_assignment, dict)
+            else []
+        )
+        mapped_mismatches = [
+            retry_original_indexes[int(index) - 1]
+            for index in retry_mismatches
+            if str(index).isdigit()
+            and 1 <= int(index) <= len(retry_original_indexes)
+        ]
+        merged["question_evidence_assignment"] = {
+            "policy": _QUESTION_EVIDENCE_ASSIGNMENT_POLICY,
+            "applicable": bool(planned_evidence_locks),
+            "passed": not mapped_mismatches if planned_evidence_locks else True,
+            "expected_count": len(planned_evidence_locks),
+            "matched_count": len(planned_evidence_locks) - len(mapped_mismatches),
+            "mismatch_count": len(mapped_mismatches),
+            "mismatched_indexes": mapped_mismatches,
+        }
+        retried = _run_runtime_question_quality_orchestration(
+            merged,
+            question_plan=runtime_question_plan,
+            ncs_ksa=ncs_ksa,
+            avoid_questions=avoid_questions,
+            generation_offset=generation_offset,
+        )
+        retried["provider_generation_request_count"] = total_generation_request_count
+        # The orchestration pass preserves evidence IDs, while the raw assignment
+        # attestation above proves that the targeted model response did not drift.
+        retried["question_evidence_assignment"] = merged[
+            "question_evidence_assignment"
+        ]
+    targeted_retry_metadata = (
+        {
+            "retry_scope": "failed_questions",
+            "retried_question_count": len(retry_original_indexes),
+            "retried_indexes": list(retry_original_indexes),
+            "retry_evidence_lock_count": len(retry_evidence_locks),
+        }
+        if use_targeted_retry
+        else {}
     )
     retry_codes = _institution_question_rejection_codes(
         retried,
         require_quality_metadata=True,
     )
     if retry_codes:
-        logger.warning(
-            "institution_question_quality_retry_failed provider=openai_api codes=%s",
-            ",".join(sorted(set(retry_codes))),
+        hard_retry_codes = _institution_hard_question_rejection_codes(
+            retried,
+            require_quality_metadata=True,
         )
-        raise RuntimeError("institution_api_question_quality_rejected")
+        if not hard_retry_codes:
+            remaining_issue_codes = _institution_question_quality_issue_codes(retried)
+            logger.warning(
+                "institution_question_quality_retry_reviewable provider=openai_api codes=%s issues=%s",
+                ",".join(sorted(set(retry_codes))),
+                ",".join(remaining_issue_codes),
+            )
+            retried["model_quality_retry"] = {
+                "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
+                "provider": "openai_api",
+                "attempted": True,
+                "retry_count": 1,
+                "attempt_count": 2,
+                "outcome": "accepted_for_human_review",
+                "trigger_codes": sorted(trigger_codes),
+                "remaining_codes": sorted(retry_codes),
+                "remaining_issue_codes": remaining_issue_codes,
+                "previous_candidate_count": len(previous_questions),
+                "evidence_lock_count": len(planned_evidence_locks),
+                "provider_generation_request_count": total_generation_request_count,
+                "provider_generation_request_limit": provider_generation_request_limit,
+                "transport_attempt_limit_per_generation_request": 1,
+                **targeted_retry_metadata,
+            }
+            retried["question_release_status"] = "human_review_required"
+            return with_generation_timing(retried)
+        logger.warning(
+            "institution_question_quality_retry_failed provider=openai_api codes=%s hard_codes=%s",
+            ",".join(sorted(set(retry_codes))),
+            ",".join(sorted(set(hard_retry_codes))),
+        )
+        partial = _partial_safe_question_strategy(
+            retried,
+            requested_count=first_question_count,
+        )
+        if partial is not None:
+            partial["model_quality_retry"] = {
+                "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
+                "provider": "openai_api",
+                "attempted": True,
+                "retry_count": 1,
+                "attempt_count": 2,
+                "outcome": "partial_after_retry",
+                "trigger_codes": sorted(trigger_codes),
+                "remaining_codes": sorted(retry_codes),
+                "remaining_issue_codes": _institution_question_quality_issue_codes(
+                    retried
+                ),
+                "previous_candidate_count": len(previous_questions),
+                "evidence_lock_count": len(planned_evidence_locks),
+                "provider_generation_request_count": total_generation_request_count,
+                "provider_generation_request_limit": provider_generation_request_limit,
+                "transport_attempt_limit_per_generation_request": 1,
+                **targeted_retry_metadata,
+            }
+            return with_generation_timing(partial)
+        raise InstitutionQuestionQualityRejected(
+            rejection_diagnostics(retried, attempt_count=2)
+        )
 
     logger.info(
         "institution_question_quality_retry_passed provider=openai_api evidence_locks=%s",
-        len(evidence_locks),
+        len(planned_evidence_locks),
     )
     retried["model_quality_retry"] = {
         "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
@@ -7221,12 +8655,13 @@ async def _generate_quality_gated_institution_strategy(
         "outcome": "passed_after_retry",
         "trigger_codes": sorted(trigger_codes),
         "previous_candidate_count": len(previous_questions),
-        "evidence_lock_count": len(evidence_locks),
+        "evidence_lock_count": len(planned_evidence_locks),
         "provider_generation_request_count": total_generation_request_count,
-        "provider_generation_request_limit": 3,
+        "provider_generation_request_limit": provider_generation_request_limit,
         "transport_attempt_limit_per_generation_request": 1,
+        **targeted_retry_metadata,
     }
-    return retried
+    return with_generation_timing(retried)
 
 
 def _verify_institution_openai_api(api_key: str) -> tuple[bool, str]:
@@ -8343,12 +9778,24 @@ async def jd_strategy_upload(
         evaluation_text=evaluation_text_clean,
     )
     if ncs_items and ncs_source in {"ncs-mcp", "api-hrdk-code-first", "api-hrdk-clcode", "api-hrdk-keyword", "api-hrdk-sclass-verified", "api-hrdk-sclass-name"}:
+        # The upload flow has already required a human-confirmed exact detail
+        # classification before this point. Calling a second model merely to
+        # reorder those authoritative local-DB candidates adds latency and can
+        # dilute detail coverage, so keep this ranking deterministic. The
+        # request-scoped key remains reserved for the actual question draft.
+        unit_rerank_api_key = (
+            ""
+            if mcp_only
+            and review_payload.get("review_confirmed") is True
+            and reviewed_detail_terms
+            else request_openai_api_key
+        )
         ncs_matches, rerank_mode = rerank_ncs_matches(
             jd_text=unit_rank_query_text or jd_for_match,
             ncs_items=ncs_items,
             top_k=run_top_k,
             preferred_sclass=ncs_query_terms,
-            openai_api_key=request_openai_api_key,
+            openai_api_key=unit_rerank_api_key,
         )
         if ncs_matches:
             ncs_source = f"{ncs_source}+ai-rerank" if rerank_mode == "ai" else f"{ncs_source}+rerank"

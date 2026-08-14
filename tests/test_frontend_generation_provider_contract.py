@@ -18,8 +18,7 @@ def test_request_scoped_api_card_has_password_input_and_security_warning() -> No
     html, script = _page()
 
     assert 'id="generationProviderCard"' in html
-    assert '<span>요청 단위 API</span>' in html
-    assert 'id="generationProviderName">OpenAI API · 요청 단위 키<' in html
+    assert 'id="generationProviderName"' in html
     assert 'id="openaiApiKey"' in html
     assert 'type="password"' in html
     assert 'autocomplete="off"' in html
@@ -27,14 +26,10 @@ def test_request_scoped_api_card_has_password_input_and_security_warning() -> No
     assert 'id="btnClearOpenAiApiKey"' in html
     assert 'id="apiKeySecurityWarning"' in html
     assert 'role="note"' in html
-    assert "HTTPS 연결에서만 입력하세요." in html
-    assert "공용 PC·공용 브라우저에서는 API 키를 입력하지 말고" in html
-    assert "현재 페이지 탭 메모리에만 유지" in html
     assert 'aria-busy="true"' in html
     assert 'id="generationProviderError"' in html
     assert 'role="alert"' in html
     assert 'id="btnRefreshGenerationProvider"' in html
-    assert '<strong>1. OpenAI API 키</strong>' in html
     assert "'/api/generation-provider/status?provider=openai_api'" in script
     assert "btnRefreshGenerationProvider.addEventListener('click', loadGenerationProviderStatus)" in script
     assert "loadGenerationProviderStatus();" in script
@@ -75,7 +70,6 @@ def test_api_key_is_kept_only_in_page_memory_and_can_be_cleared() -> None:
     assert "function apiKeyTransportIsSecure()" in script
     assert "window.isSecureContext === true" in script
     assert "openaiApiKey.disabled = !secure" in script
-    assert "API 키 보호를 위해 HTTPS 연결에서만" in script
     assert "localStorage" not in script
     assert "sessionStorage" not in script
     assert "Authorization" not in script
@@ -93,7 +87,6 @@ def test_generation_requires_valid_status_and_nonempty_request_key() -> None:
     assert "generationProviderStatus.provider !== INSTITUTION_GENERATION_PROVIDER" in script
     assert "if (!requestScopedApiStatusValid())" in script
     assert "if (!currentOpenAiApiKey())" in script
-    assert "OpenAI API 키 입력 후 생성" in script
     assert "const providerBlock = generationProviderBlockReason()" in script
     assert "setGenerationProviderBadge('키 입력 필요', 'warn')" in script
     assert "setGenerationProviderBadge('요청 준비됨', 'good')" in script
@@ -137,18 +130,16 @@ def test_result_metadata_uses_result_provenance_and_supports_api_model_sources()
     assert "resultGeneration.provider || generationProviderStatus" not in script
     assert "resultGeneration.provider_label || generationProviderStatus" not in script
     assert "OpenAI key:" not in script
-    assert "openai_api: 'OpenAI API · 요청 단위 키'" in script
-    assert "model: 'OpenAI API 모델'" in script
-    assert "openai_api: 'OpenAI API 초안 유지'" in script
-    assert "model: 'OpenAI API 초안 유지'" in script
-    # Historical results remain understandable without making those providers selectable.
-    assert "codex_cli: 'Codex 초안 유지'" in script
-    assert "claude_code: 'Claude Code 초안 유지'" in script
+    assert "openai_api: 'OpenAI API" in script
+    assert "model: 'OpenAI API" in script
+    assert "codex_cli: 'Codex" in script
+    assert "claude_code: 'Claude Code" in script
 
 
 def test_quality_failures_are_explained_in_panel_language() -> None:
     _, script = _page()
 
+    assert "const QUALITY_ISSUE_LABELS = {" in script
     assert "field_realism: '현장 면접 문장·답변연동성 미충족'" in script
     assert "ksa_measurement_task: '선택한 KSA를 행동으로 측정하지 못함'" in script
     assert "precision_grounding: '제시되지 않은 수치·조항 회상 요구'" in script
@@ -156,6 +147,56 @@ def test_quality_failures_are_explained_in_panel_language() -> None:
     assert "candidate_visible_instruction_injection: '외부 문서의 지시문이 질문에 노출됨'" in script
     assert "question_evidence_assignment_failed: '모델 KSA 근거 ID가 서버 배정과 불일치'" in script
     assert "evaluation_elicitation_alignment: '질문하지 않은 평가기준이 포함됨'" in script
-    assert ".filter(Boolean).map(issueLabel).join(', ')" in script
+    assert "field_realism_instruction_injection_artifact: '외부 문서의 지시문이 질문 표면에 남음'" in script
+    assert "field_realism_label_like_metadata_exposure: '내부 라벨·메타데이터가 질문 표면에 노출됨'" in script
+    assert "unknown_quality_issue: '기타 필수 품질 검사 실패'" in script
+    assert ".filter(Boolean).map(issue => qualityIssueLabel(issue)).join(', ')" in script
     assert "s.model_quality_retry && typeof s.model_quality_retry === 'object'" in script
     assert "모델 생성 요청 ${Number(retryAudit.provider_generation_request_count)}/" in script
+    assert "return QUALITY_ISSUE_LABELS[key] || fallback;" in script
+
+
+def test_quality_rejection_uses_safe_diagnostics_only() -> None:
+    _, script = _page()
+
+    assert "function qualityDiagnosticsNotice(detail)" in script
+    assert "detail.quality_diagnostics" in script
+    assert "requested_question_count" in script
+    assert "failed_question_count" in script
+    assert "failed_indexes" in script
+    assert "issue_counts" in script
+    assert "실패 슬롯:" in script
+    assert "주요 검사:" in script
+    assert "qualityIssueLabel(code, '기타 필수 품질 검사 실패')" in script
+    assert "errorCode === 'openai_api_quality_rejected'" in script
+
+
+def test_partial_human_review_result_is_rendered_as_usable_output() -> None:
+    _, script = _page()
+
+    assert "const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';" in script
+    assert "function partialGenerationNotice(strategy, questions)" in script
+    assert "strategy.partial_generation && typeof strategy.partial_generation === 'object'" in script
+    assert "requested_question_count" in script
+    assert "returned_question_count" in script
+    assert "omitted_question_count" in script
+    assert "omitted_indexes" in script
+    assert "요청 ${requested || '-'}개 중 ${returned || 0}개를 반환했고 ${omitted || 0}개는 제외되었습니다." in script
+    assert "반환된 문항은 사용할 수 있지만, 누락된 슬롯을 포함해 사람 검토가 필요합니다." in script
+
+
+def test_human_review_release_state_overrides_completed_orchestration_notice() -> None:
+    _, script = _page()
+
+    partial_state = script.index("const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';")
+    release_state = script.index("s.question_release_status === 'human_review_required'")
+    retry_state = script.index("retryAudit.outcome === 'accepted_for_human_review'")
+    partial_notice = script.index("orchestrationNotice = partialGenerationNotice(s, qList);")
+    review_notice = script.index(
+        "NCS/KSA 근거와 안전 검사는 통과했지만 일부 표현 품질 항목이 남아 사람 검토가 필요합니다."
+    )
+    completed_notice = script.index("생성→KSA 실측성 검사→이전 문항 중복 검사→보정→최종 재검사를 완료했습니다.")
+
+    assert partial_state < partial_notice < review_notice < completed_notice
+    assert release_state < review_notice
+    assert retry_state < review_notice

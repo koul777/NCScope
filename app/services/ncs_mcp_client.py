@@ -76,7 +76,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                     "params": {
                         "protocolVersion": MCP_PROTOCOL_VERSION,
                         "capabilities": {},
-                        "clientInfo": {"name": "ncscope", "version": "1.4.2"},
+                        "clientInfo": {"name": "ncscope", "version": "1.4.3"},
                     },
                 },
             )
@@ -173,6 +173,12 @@ _DETAIL_QUERY_ALIASES_BY_KEY = {
     # Public NCS classifies this under 건축설계·감리 > 건축공사감리.
     # Some ALIO JDs shorten the 세분류 label to 건축감리.
     _norm("건축감리"): ("건축공사감리",),
+    # 일부 직무기술서는 공식 세분류명 뒤에 기관의 직무 설명을 괄호로
+    # 덧붙인다. 괄호 전체를 NCS 이름으로 조회하면 공식 ``비서``
+    # 세분류가 있어도 정확 매칭이 0건이 되므로, 이 문서 표기만
+    # 명시적으로 공식 이름에 연결한다. 일반적인 괄호 제거는
+    # 특화분류/동명이인 오매칭을 만들 수 있어 허용하지 않는다.
+    _norm("비서 (글로벌경영사무 지원)"): ("비서",),
 }
 
 

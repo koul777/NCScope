@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NCScope v1.4.2</title>
+  <title>NCScope v1.4.3</title>
   <style>
     :root {
       --bg:#f3f7fb;
@@ -200,7 +200,7 @@
           <div class="build-tag">Original interface · Kordoc parsing · Human Review · Local NCS DB evidence</div>
         </div>
         <div class="hero-badges">
-          <span class="badge">v1.4.2</span>
+          <span class="badge">v1.4.3</span>
           <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
           <span class="badge">KSA 근거 추적</span>
@@ -2214,6 +2214,119 @@
       }
     }
 
+    const QUALITY_ISSUE_LABELS = {
+      field_realism: '현장 면접 문장·답변연동성 미충족',
+      ksa_measurement_task: '선택한 KSA를 행동으로 측정하지 못함',
+      precision_grounding: '제시되지 않은 수치·조항 회상 요구',
+      evidence_linked: '공식 KSA 근거 연결 누락',
+      candidate_surface_safe: '후보자 화면에 NCS 내부 명칭 노출',
+      follow_up_quality: '꼬리질문 변별력 부족',
+      evaluation_points_quality: '평가기준 수·관찰가능성 미충족',
+      blind_hiring_safe: '블라인드 채용 위험 표현 포함',
+      duplicate_question_intent: '다른 문항과 평가의도 중복',
+      candidate_visible_instruction_injection: '외부 문서의 지시문이 질문에 노출됨',
+      question_evidence_assignment_failed: '모델 KSA 근거 ID가 서버 배정과 불일치',
+      evaluation_elicitation_alignment: '질문하지 않은 평가기준이 포함됨',
+      supported_method: '요청한 면접기법 형식 미충족',
+      follow_up_depth: '필수 꼬리질문 수 미충족',
+      evaluation_points: '필수 평가기준 수 미충족',
+      ncs_grounded: 'NCS 직무 근거 연결 부족',
+      ksa_grounded: '배정된 KSA 근거와 질문 의미가 불일치',
+      detail_grounded: '세분류 근거 연결 부족',
+      field_realism_instruction_injection_artifact: '외부 문서의 지시문이 질문 표면에 남음',
+      field_realism_label_like_metadata_exposure: '내부 라벨·메타데이터가 질문 표면에 노출됨',
+      unknown_quality_issue: '기타 필수 품질 검사 실패',
+    };
+
+    function qualityIssueLabel(value, fallback = '품질 기준 미충족') {
+      const key = String(value || '').trim();
+      return QUALITY_ISSUE_LABELS[key] || fallback;
+    }
+
+    function normalizePositiveIndexes(values, maxItems = 50) {
+      if (!Array.isArray(values)) return [];
+      const normalized = [];
+      const seen = new Set();
+      values.forEach((value) => {
+        const index = Number(value);
+        if (!Number.isInteger(index) || index <= 0 || seen.has(index)) return;
+        seen.add(index);
+        normalized.push(index);
+      });
+      return normalized.sort((a, b) => a - b).slice(0, Math.max(1, Number(maxItems) || 50));
+    }
+
+    function formatQuestionIndexes(values, maxItems = 10) {
+      const indexes = normalizePositiveIndexes(values, maxItems);
+      if (!indexes.length) return '';
+      const shown = indexes.slice(0, maxItems).map(index => `#${index}`).join(', ');
+      return indexes.length > maxItems ? `${shown} 외 ${indexes.length - maxItems}건` : shown;
+    }
+
+    function formatIssueCountSummary(issueCounts, maxItems = 4) {
+      if (!issueCounts || typeof issueCounts !== 'object') return '';
+      const items = Object.entries(issueCounts)
+        .map(([code, rawCount]) => {
+          const count = Number(rawCount);
+          return Number.isFinite(count) && count > 0
+            ? { code: String(code || '').trim(), count }
+            : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code))
+        .slice(0, Math.max(1, Number(maxItems) || 4))
+        .map(({ code, count }) => `${qualityIssueLabel(code, '기타 필수 품질 검사 실패')} ${count}건`);
+      return items.join(', ');
+    }
+
+    function qualityDiagnosticsNotice(detail) {
+      const diagnostics = detail && typeof detail === 'object' && detail.quality_diagnostics && typeof detail.quality_diagnostics === 'object'
+        ? detail.quality_diagnostics
+        : null;
+      if (!diagnostics) return '';
+      const requested = Number(diagnostics.requested_question_count || 0);
+      const failed = Number(diagnostics.failed_question_count || 0);
+      const attemptCount = Number(diagnostics.attempt_count || 0);
+      const failedIndexes = formatQuestionIndexes(diagnostics.failed_indexes || []);
+      const issueSummary = formatIssueCountSummary(diagnostics.issue_counts, 5);
+      const parts = [];
+      if (requested > 0 && failed > 0) {
+        parts.push(`요청 ${requested}개 중 ${failed}개가 필수 품질 검사를 통과하지 못했습니다.`);
+      } else if (failed > 0) {
+        parts.push(`필수 품질 검사를 통과하지 못한 문항이 ${failed}개 있습니다.`);
+      }
+      if (failedIndexes) {
+        parts.push(`실패 슬롯: ${failedIndexes}.`);
+      }
+      if (issueSummary) {
+        parts.push(`주요 검사: ${issueSummary}.`);
+      }
+      if (attemptCount > 0) {
+        parts.push(`모델 생성 요청 ${attemptCount}회 기준 진단입니다.`);
+      }
+      return parts.join(' ').trim();
+    }
+
+    function partialGenerationNotice(strategy, questions) {
+      const partial = strategy && typeof strategy === 'object' && strategy.partial_generation && typeof strategy.partial_generation === 'object'
+        ? strategy.partial_generation
+        : null;
+      if (!partial) return '';
+      const requested = Number(partial.requested_question_count || 0);
+      const returned = Number(partial.returned_question_count || (Array.isArray(questions) ? questions.length : 0));
+      const omitted = Number(partial.omitted_question_count || 0);
+      const omittedIndexes = formatQuestionIndexes(partial.omitted_indexes || []);
+      const parts = [];
+      if (requested > 0 || returned > 0 || omitted > 0) {
+        parts.push(`요청 ${requested || '-'}개 중 ${returned || 0}개를 반환했고 ${omitted || 0}개는 제외되었습니다.`);
+      }
+      if (omittedIndexes) {
+        parts.push(`제외 슬롯: ${omittedIndexes}.`);
+      }
+      parts.push('반환된 문항은 사용할 수 있지만, 누락된 슬롯을 포함해 사람 검토가 필요합니다.');
+      return parts.join(' ').trim();
+    }
+
     function renderQualityReport(report, operationalNotice = '', qualityControl = null) {
       if (!qualitySummary) return;
       qualitySummary.innerHTML = '';
@@ -2231,24 +2344,6 @@
         span.textContent = text;
         qualitySummary.appendChild(span);
       };
-      const issueLabels = {
-        field_realism: '현장 면접 문장·답변연동성 미충족',
-        ksa_measurement_task: '선택한 KSA를 행동으로 측정하지 못함',
-        precision_grounding: '제시되지 않은 수치·조항 회상 요구',
-        evidence_linked: '공식 KSA 근거 연결 누락',
-        candidate_surface_safe: '후보자 화면에 NCS 내부 명칭 노출',
-        follow_up_quality: '꼬리질문 변별력 부족',
-        evaluation_points_quality: '평가기준 수·관찰가능성 미충족',
-        blind_hiring_safe: '블라인드 채용 위험 표현 포함',
-        duplicate_question_intent: '다른 문항과 평가의도 중복',
-        candidate_visible_instruction_injection: '외부 문서의 지시문이 질문에 노출됨',
-        question_evidence_assignment_failed: '모델 KSA 근거 ID가 서버 배정과 불일치',
-        evaluation_elicitation_alignment: '질문하지 않은 평가기준이 포함됨',
-      };
-      const issueLabel = (value) => {
-        const key = String(value || '').trim();
-        return issueLabels[key] || key || '품질 기준 미충족';
-      };
       if (summary) {
         add(report.passed ? '품질 게이트 통과' : '품질 검토 필요', report.passed ? 'good' : 'warn');
         add(`Ready ${summary.ready_count || 0}/${summary.question_count || 0}`);
@@ -2261,7 +2356,7 @@
         reviewItems.slice(0, 10).forEach((item, idx) => {
           const no = item.index || item.question_index || idx + 1;
           const issues = Array.isArray(item.issues)
-            ? item.issues.filter(Boolean).map(issueLabel).join(', ')
+            ? item.issues.filter(Boolean).map(issue => qualityIssueLabel(issue)).join(', ')
             : '품질 기준 미충족';
           add(`#${no} 검토: ${issues || '품질 기준 미충족'}`, 'warn');
         });
@@ -2314,8 +2409,19 @@
       const operationalWarnings = orchestration && Array.isArray(orchestration.operational_warnings)
         ? orchestration.operational_warnings.filter(Boolean)
         : [];
+      const retryAudit = s.model_quality_retry && typeof s.model_quality_retry === 'object'
+        ? s.model_quality_retry
+        : null;
+      const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';
+      const humanReviewRequired = partialHumanReviewRequired
+        || s.question_release_status === 'human_review_required'
+        || (retryAudit && retryAudit.outcome === 'accepted_for_human_review');
       let orchestrationNotice = '';
-      if (orchestration && orchestration.status === 'passed') {
+      if (partialHumanReviewRequired) {
+        orchestrationNotice = partialGenerationNotice(s, qList);
+      } else if (humanReviewRequired) {
+        orchestrationNotice = 'NCS/KSA 근거와 안전 검사는 통과했지만 일부 표현 품질 항목이 남아 사람 검토가 필요합니다.';
+      } else if (orchestration && orchestration.status === 'passed') {
         orchestrationNotice = `생성→KSA 실측성 검사→이전 문항 중복 검사→보정→최종 재검사를 완료했습니다. 보정 ${Number(orchestration.repaired_count || 0)}건.`;
       } else if (orchestration) {
         const unresolved = Number(orchestration.unresolved_count || 0);
@@ -2326,9 +2432,6 @@
         }
         orchestrationNotice = `${reasons.join(', ') || '운영 품질 경고'}으로 사람 검토가 필요합니다.`;
       }
-      const retryAudit = s.model_quality_retry && typeof s.model_quality_retry === 'object'
-        ? s.model_quality_retry
-        : null;
       const generationRequestNotice = retryAudit
         && Number.isFinite(Number(retryAudit.provider_generation_request_count))
         && Number.isFinite(Number(retryAudit.provider_generation_request_limit))
@@ -2432,7 +2535,10 @@
       const stageHint = modelFailureCodes.has(errorCode)
         ? ' NCS 세분류 매칭과 KSA 조회는 완료되었으며, OpenAI 질문 생성 단계에서 실패했습니다.'
         : '';
-      errorBox.textContent = `오류: ${apiErrorMessage(payload, fallback)}${stageHint}`;
+      const diagnosticsHint = errorCode === 'openai_api_quality_rejected'
+        ? qualityDiagnosticsNotice(payload.detail || {})
+        : '';
+      errorBox.textContent = `오류: ${apiErrorMessage(payload, fallback)}${stageHint}${diagnosticsHint ? ` ${diagnosticsHint}` : ''}`;
       errorBox.style.display = 'block';
       raw.textContent = JSON.stringify(payload.detail || payload, null, 2);
       updateWorkflowMenu();

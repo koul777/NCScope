@@ -4043,6 +4043,16 @@ def _question_text(item: dict[str, Any]) -> str:
     return str((item or {}).get("question") or "").strip()
 
 
+def _question_dedup_text(item: dict[str, Any]) -> str:
+    """Compare the authored incident, excluding shared STAR completion text."""
+
+    source = str((item or {}).get("question_source") or "").strip()
+    raw = str((item or {}).get("model_question_raw") or "").strip()
+    if raw and source.startswith(("openai_api", "codex_cli", "claude_code")):
+        return raw
+    return _question_text(item)
+
+
 def _question_focus(item: dict[str, Any]) -> str:
     focus = str((item or {}).get("question_focus") or "").strip()
     if focus:
@@ -4935,15 +4945,18 @@ def evaluate_ksa_measurement(item: dict[str, Any]) -> dict[str, Any]:
         or _BARE_EXPERIENCE_RE.search(question)
         or _generic_focus_self_report(item, question)
     )
+    type_operationalized = _ksa_type_operationalized(item, question)
+    observable_task = bool(group_hits and all(group_hits)) or _freeform_observable_task(
+        item, question
+    )
     evidence_required = bool((item or {}).get("question_evidence_required"))
     evidence_linked = bool(str((item or {}).get("question_evidence_id") or "").strip())
     checks = {
         "has_question": bool(question),
         "has_supported_method": method in _METHOD_OBSERVATION_GROUPS,
         "focus_visible": _focus_visible(item, question),
-        "ksa_type_operationalized": _ksa_type_operationalized(item, question),
-        "observable_task": bool(group_hits and all(group_hits))
-        or _freeform_observable_task(item, question),
+        "ksa_type_operationalized": type_operationalized,
+        "observable_task": observable_task,
         "elicits_response": _elicits_candidate_response(question),
         "sufficient_task_detail": _has_sufficient_task_detail(question),
         "not_ksa_restatement": not shallow_restatement,
@@ -5056,7 +5069,10 @@ def orchestrate_question_set(
             for reason in (required_repair_reasons or {}).get(index, [])
             if str(reason or "").strip()
         )
-        if is_history_duplicate(_question_text(original), [*history, *accepted_texts]):
+        if is_history_duplicate(
+            _question_dedup_text(original),
+            [*history, *accepted_texts],
+        ):
             reasons.append("history_duplicate")
         reasons = list(dict.fromkeys(reasons))
         if reasons:
@@ -5083,7 +5099,8 @@ def orchestrate_question_set(
                 candidate_measurement = audit_question(candidate)
                 candidate_reasons = list(candidate_measurement["issues"])
                 if is_history_duplicate(
-                    _question_text(candidate), [*history, *accepted_texts]
+                    _question_dedup_text(candidate),
+                    [*history, *accepted_texts],
                 ):
                     candidate_reasons.append("history_duplicate")
                 candidate_reasons = list(dict.fromkeys(candidate_reasons))
@@ -5102,7 +5119,7 @@ def orchestrate_question_set(
                 final_reasons = list(dict.fromkeys([*reasons, "repair_exhausted"]))
 
         output.append(selected)
-        selected_text = _question_text(selected)
+        selected_text = _question_dedup_text(selected)
         if selected_text:
             accepted_texts.append(selected_text)
         item_events.append(

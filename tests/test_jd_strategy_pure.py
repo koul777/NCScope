@@ -71,11 +71,12 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
     for term in required_terms:
         assert term in contract
 
-    assert "원문을 복사하거나 조사만 붙여 쓰지 마세요" in contract
+    assert "공식 KSA·NCS 라벨을" in contract
+    assert "원문으로 복사하거나 조사만 붙여 쓰지 마세요" in contract
     assert "시간과 제출요건은 별도 task_conditions" in contract
     assert "현장 사건과 서로 양립하기 어려운 두 정책 대안" in contract
     assert "출력 전 자체검사" in contract
-    assert "모두 내부 의미 힌트" in contract
+    assert "required_surface_focus는 공식 KSA 라벨이 아니라" in contract
     assert "question_evidence_id에는 배정된 evidence_id를 정확히 저장" in contract
     assert "실제 사건·문서·데이터·이해관계자·제약·판단" in contract
     assert "경험면접을 제외한 과제형 주질문에는 핵심 판단 1개" in contract
@@ -105,13 +106,27 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
     assert "나머지 1개만 모든 지원자에게 동일한 표준화 질문" in contract
     assert "시장환경 분석·판단 기준에 따라" in contract
     assert "문서 요구사항 확인 절차에 따라" in contract
-    assert "부서별 집행표와 회계 원장의 금액" in contract
+    assert "required_scenario_frame을 실제 사건으로 사용" in contract
+    assert "일반 협업 경험으로 바꾸지 마세요" in contract
     assert "연구협약서 초안의 정산 조항과 내부 지침" in contract
     assert "지원자 본인이 감수할 비용" not in contract
     assert "본인이 질 결과 책임을 모두 요구" not in contract
     assert "게시 지연을 감수하더라도 어떤 수치를 보류·수정" not in contract
     assert "원문 그대로 반복" not in contract
     assert "임시 변수 F" not in contract
+
+
+def test_experience_prompt_contract_elicits_star_without_polluting_other_methods() -> None:
+    experience_contract = _model_question_gate_contract(["경험면접"])
+    situation_contract = _model_question_gate_contract(["상황면접"])
+
+    assert "경험면접(STAR)" in experience_contract
+    assert "S(Situation)는 사건의 시점·맥락·제약" in experience_contract
+    assert "T(Task)는 당시 맡은 역할·목표·책임" in experience_contract
+    assert "A(Action)는 본인이 실제로 선택하고 수행한 행동" in experience_contract
+    assert "R(Result)는 관찰 가능한 결과·증거" in experience_contract
+    assert "evaluation_points 4개도 S·T·A·R" in experience_contract
+    assert "경험면접(STAR)" not in situation_contract
 
 
 def test_planned_question_sequence_for_prompt_expands_detail_order_and_methods():
@@ -185,8 +200,10 @@ def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor(
     assert result[0]["required_followup_focus_slot"] == 1
     assert result[0]["required_surface_focus"] not in result[0]["required_followup_focus_example"]
     assert "Requirement Analysis" not in result[0]["required_followup_focus_example"]
-    assert "지원자가 방금 언급한" in result[0]["required_followup_focus_example"]
-    assert "원자료" in result[0]["required_followup_focus_example"]
+    assert "꼬리1은 답변에서 빠진 상황·역할" in result[0]["required_followup_focus_example"]
+    assert "꼬리2는 배정 과업" in result[0]["required_followup_focus_example"]
+    assert result[0]["required_task_statement"] in result[0]["required_scenario_frame"]
+    assert "실제 경험 사건으로 설계" in result[0]["required_scenario_frame"]
     assert result[1]["ncsClCd"] == "U2"
     assert result[1]["compeUnitName"] == "Document Control"
     assert result[1]["required_job_context"] == "Document Control"
@@ -195,6 +212,59 @@ def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor(
     assert result[1]["required_followup_focus_slot"] == 1
     assert result[1]["required_surface_focus"] not in result[1]["required_followup_focus_example"]
     assert "Record Classification" not in result[1]["required_followup_focus_example"]
+
+
+def test_experience_scenarios_follow_each_assigned_project_ksa_instead_of_stock_events():
+    detail = "프로젝트관리"
+    codes_and_factors = [
+        ("0101010205_17v2", "프로젝트 인적자원관리", "승인된 변경에 대한 지식"),
+        ("0101010201_17v2", "프로젝트 전략기획", "과거 단계 문서에 대한 지식"),
+        ("0101010203_17v2", "프로젝트 이해관계자관리", "과거 프로젝트 교훈에 대한 지식"),
+    ]
+    plan = {
+        "question_sequence": [
+            {"detail": detail, "follow_up_count": 3} for _ in codes_and_factors
+        ]
+    }
+    ncs_matches = [
+        {
+            "ncsClCd": code,
+            "compeUnitName": unit,
+            "compeUnitDef": f"{unit} 수행에 필요한 프로젝트 관리 활동",
+            "ncsSubdCdnm": detail,
+        }
+        for code, unit, _factor in codes_and_factors
+    ]
+    ncs_ksa = [
+        {
+            "ncsClCd": code,
+            "compeUnitName": unit,
+            "factorName": factor,
+            "ksaTypeName": "지식",
+        }
+        for code, unit, factor in codes_and_factors
+    ]
+
+    result = _planned_question_sequence_for_prompt(
+        plan,
+        ["경험면접"],
+        3,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+
+    assert [item["required_factorName"] for item in result] == [
+        factor for _code, _unit, factor in codes_and_factors
+    ]
+    assert all(
+        item["required_task_statement"] in item["required_scenario_frame"]
+        for item in result
+    )
+    assert all("본인의 역할·목표" in item["required_scenario_frame"] for item in result)
+    assert all("관찰 가능한 결과 증거" in item["required_scenario_frame"] for item in result)
+    assert "현재 상황에 다시 써야 할 원칙" in result[2]["required_scenario_frame"]
+    assert "그대로 따르지 않을 조건" in result[2]["required_scenario_frame"]
+    assert "이해관계자 요청이 충돌한 상황에서 조정한 경험" not in result[2]["required_scenario_frame"]
 
 
 def test_planned_question_sequence_adds_scenario_frame_without_matched_unit():
@@ -371,7 +441,10 @@ def test_method_design_briefs_are_distinct_and_never_interpolate_ncs_labels():
     assert len(set(followup_briefs)) == len(methods)
     assert all(brief.startswith("설계 자산:") for brief in question_briefs)
     assert all(brief.startswith("답변 연동 설계:") for brief in followup_briefs)
-    assert any("원자료" in brief and "승인 기록" in brief for brief in question_briefs)
+    assert any(
+        "required_scenario_frame" in brief and "required_task_statement" in brief
+        for brief in question_briefs
+    )
     assert any("두 문서" in brief and "당일 마감" in brief for brief in question_briefs)
     assert any("월별 지표표" in brief and "급변한 수치" in brief for brief in question_briefs)
     assert any("1순위" in brief and "처리 주체" in brief for brief in followup_briefs)
@@ -507,21 +580,22 @@ def test_openai_prompt_preserves_evidence_metadata_but_forbids_surface_copy(monk
     assert result["transport_attempt_limit_per_generation_request"] == 1
     prompt = captured_payloads[0]["messages"][1]["content"]
     assert jd_strategy._editorial_realism_prompt_contract() in prompt
-    assert "경험형은 실제 사건·역할·행동 하나·관찰 결과" in prompt
+    assert "경험형은 실제 사건·역할·KSA 고유 행동 하나·관찰 결과" in prompt
     assert "수정했다면/하지 않았다면" in prompt
-    assert "자원 총량의 검증 숫자가 없으면" in prompt
+    assert "자원 총량의 검증 숫자가 없으면" not in prompt
     assert '"question_evidence_id":"배정된 evidence_id"' in prompt
-    assert '"question_focus_surface":"내부 의미 힌트 원문(질문에 복사 금지)"' in prompt
-    assert '"question":"경험형은 실제 사건·역할·행동 하나·관찰 결과' in prompt
+    assert '"question_focus_surface":"required_surface_focus 원문"' in prompt
+    assert '"question":"경험형은 실제 사건·역할·KSA 고유 행동 하나·관찰 결과' in prompt
     assert (
         '"evaluation_points":["관찰 가능한 핵심1","관찰 가능한 핵심2",'
         '"관찰 가능한 핵심3","관찰 가능한 핵심4"]'
     ) in prompt
     assert "question_evidence_id에는 같은 index에 배정된 evidence_id를 그대로" in prompt
-    assert "question_focus_surface, question_focus, ksa_refs는 내부 추적 필드" in prompt
+    assert "question_focus_surface, question_focus, ksa_refs는 추적 필드" in prompt
     assert "required_ksa_type에 따라 지식은 고유 적용 논리" in prompt
     assert "협의·기록·사후점검은 꼬리질문으로 이동" in prompt
-    assert "실제 사건, 당시 본인 역할, 본인이 택한 선택 또는 직접 행동 1개, 관찰된 결과만" in prompt
+    assert "상황면접: 오류·불일치·충돌이 있는 구체 자료" in prompt
+    assert "실제 사건, 당시 본인 역할, 본인이 택한 선택 또는 직접 행동 1개" not in prompt
     assert "유능한 일반 행정 담당자도 같은 답을 할 수 있다면" in prompt
     assert "지식 KSA는 그 지식만의 정의·적용 근거·범위·예외" in prompt
     assert jd_strategy._neutral_attitude_prompt_contract() in prompt
@@ -548,12 +622,19 @@ def test_openai_prompt_preserves_evidence_metadata_but_forbids_surface_copy(monk
     assert "문서 요구사항 확인 절차에 따라" in prompt
     assert "follow_ups가 3개이면 최소 2개" in prompt
     assert "나머지 1개만 표준화 가능" in prompt
-    assert "합의가 어려우면 남은 쟁점·결정권자 이송 기준" in prompt
-    assert "발표면접은 답변 형식이지 과제 범위를 넓히는 면접이 아닙니다" in prompt
     assert "서로 다른 판단 family" in prompt
-    assert "원칙적으로 3개 이하" in prompt
-    assert "좋은 분석 발표형" in prompt
-    assert "좋은 배분 발표형" in prompt
+    assert "토론면접 꼬리질문" not in prompt
+    assert "발표면접은 답변 형식이지 과제 범위를 넓히는 면접이 아닙니다" not in prompt
+    assert "1. 경험면접:" not in prompt
+    assert "3. 발표면접:" not in prompt
+    assert "4. 토론면접:" not in prompt
+    assert "5. 인바스켓면접:" not in prompt
+    assert "6. 직무지식면접:" not in prompt
+    assert "7. 창의적 문제해결력면접:" not in prompt
+    type_schema = captured_payloads[0]["response_format"]["json_schema"]["schema"]["properties"][
+        "interview_questions"
+    ]["items"]["properties"]["type"]
+    assert type_schema["enum"] == ["상황면접"]
     assert "서버가 위치·필드·값을 검증한 material_registry" in prompt
     assert "업로드 원문에 표나 조항이 보인다는 이유로 예외를 두지 않음" in prompt
     assert "완결형 가상 숫자" in prompt
@@ -643,7 +724,7 @@ def test_openai_slim_retry_keeps_exact_four_evaluation_point_contract(
     assert len(captured_payloads) == 2
     slim_prompt = captured_payloads[1]["messages"][1]["content"]
     assert jd_strategy._editorial_realism_prompt_contract() in slim_prompt
-    assert "경험형은 실제 사건·역할·행동 하나·관찰 결과" in slim_prompt
+    assert "경험형은 실제 사건·역할·KSA 고유 행동 하나·관찰 결과" in slim_prompt
     assert "수정했다면/하지 않았다면" in slim_prompt
     assert "자원 총량의 검증 숫자가 없으면" in slim_prompt
     assert (
@@ -660,10 +741,10 @@ def test_openai_slim_retry_keeps_exact_four_evaluation_point_contract(
     assert "확정/잠정 구분·본문/주석 배치·증빙 연결" in slim_prompt
     assert "좋음(중립적 정확성 딜레마)" in slim_prompt
     assert "좋음(중립적 자원배분 딜레마)" in slim_prompt
-    assert "발표면접은 형식일 뿐 범위 확대가 아닙니다" in slim_prompt
-    assert "KSA에 가장 가까운 판단 하나만" in slim_prompt
-    assert "핵심 필드 3개 이하" in slim_prompt
-    assert "나머지는 follow_ups로 이동" in slim_prompt
+    assert "발표면접은 답변 형식이지 과제 범위를 넓히는 면접이 아닙니다" in slim_prompt
+    assert "가장 중요한 차이·원인 판정 하나" in slim_prompt
+    assert "원칙적으로 3개 이하" in slim_prompt
+    assert "한꺼번에 요구하지 않습니다" in slim_prompt
     assert "서버가 위치·필드·값을 검증한 material_registry" in slim_prompt
     assert "업로드 원문에 표나 조항이 보인다는 이유로 예외를 두지 않음" in slim_prompt
     assert "완결형 가상 숫자" in slim_prompt
@@ -683,7 +764,7 @@ def test_openai_slim_retry_keeps_exact_four_evaluation_point_contract(
     assert "error" not in result
 
 
-@pytest.mark.parametrize("target_count", [1, 6, 10, 11, 40])
+@pytest.mark.parametrize("target_count", [1, 6, 10, 11, 40, 50])
 def test_openai_slim_retry_preserves_exact_requested_question_count(
     monkeypatch,
     target_count: int,
@@ -820,6 +901,72 @@ def test_openai_short_primary_and_short_slim_are_explicit_model_failure(
     assert result["interview_questions"] == []
 
 
+def test_openai_provider_keeps_complete_similar_rows_for_slot_level_quality_retry(
+    monkeypatch,
+) -> None:
+    calls = 0
+    monkeypatch.delenv("OPENAI_FORCE_FALLBACK", raising=False)
+    monkeypatch.setattr(
+        type(jd_strategy.settings),
+        "resolve_openai_key",
+        lambda _self, _override: "request-key",
+    )
+    monkeypatch.setattr(
+        jd_strategy,
+        "_check_openai_connectivity",
+        lambda **_: (True, ""),
+    )
+
+    similar_questions = [
+        "프로젝트 일정 지연 경험에서 당시 맡은 역할과 직접 취한 조치, 확인한 결과를 설명해 주세요.",
+        "프로젝트 일정 지연 경험에서 당시 맡은 역할과 직접 취한 행동, 확인한 결과를 설명해 주세요.",
+    ]
+    assert jd_strategy.is_similar_question_text(*similar_questions)
+
+    def fake_post_chat_completions_with_retries(**_kwargs):
+        nonlocal calls
+        calls += 1
+        content = {
+            "interview_questions": [
+                {
+                    "type": "경험면접",
+                    "question": question,
+                    "follow_ups": [],
+                    "evaluation_points": [],
+                }
+                for question in similar_questions
+            ]
+        }
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ]
+        }
+
+    monkeypatch.setattr(
+        jd_strategy,
+        "post_chat_completions_with_retries",
+        fake_post_chat_completions_with_retries,
+    )
+
+    result = jd_strategy.build_strategy_with_openai(
+        jd_text="프로젝트 일정 관리",
+        notice_text="행정직 채용",
+        strengths="",
+        region="",
+        ncs_matches=[],
+        ncs_ksa=[],
+        target_count_override=2,
+        api_key_override="request-key",
+    )
+
+    assert calls == 1
+    assert [
+        row["question"] for row in result["interview_questions"]
+    ] == similar_questions
+    assert "error" not in result
+
+
 def test_quality_retry_builder_disables_nested_slim_and_transport_retries(
     monkeypatch,
 ) -> None:
@@ -947,12 +1094,28 @@ def test_openai_truncated_primary_response_recovers_with_slim_retry(
         ncs_ksa=[],
         target_count_override=6,
         api_key_override="request-key",
+        interview_methods=["경험면접"],
+        question_plan={
+            "total_main_count": 6,
+            "question_sequence": [
+                {
+                    "index": index,
+                    "detail": f"직무-{index}",
+                    "type": "경험면접",
+                    "follow_up_count": 3,
+                }
+                for index in range(1, 7)
+            ],
+        },
     )
 
     assert [call["timeout_sec"] for call in calls] == [120.0, 90.0]
     assert len(result["interview_questions"]) == 6
     assert result["provider_generation_request_count"] == 2
     assert result["question_generation_policy"].endswith("slim_retry")
+    assert "이전 응답은 JSON 형식·문항 수 또는 필수 필드 검사에 실패했습니다" in (
+        calls[1]["payload"]["messages"][1]["content"]
+    )
     assert "error" not in result
 
 
