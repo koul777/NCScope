@@ -3,6 +3,9 @@ import json
 import pytest
 
 from app.services.jd_strategy import _build_ncs_code_template_fallback_question
+from app.services.question_evaluation_alignment import (
+    evaluate_evaluation_elicitation_alignment,
+)
 from app.services.question_surface import (
     normalize_ksa_type,
     public_task_object,
@@ -16,11 +19,13 @@ from app.main import (
     _behavior_anchored_evaluation,
     _behavior_anchors_ok,
     _clamp_runtime_knobs,
+    _complete_experience_question_star,
     _debate_option_defensibility_ok,
     _debate_outcome_flexibility_ok,
     _decision_dilemma_quality_ok,
     _domain_context_pack,
     _ensure_question_plan_unit_coverage,
+    _experience_star_followups,
     _group_interview_questions_for_response,
     _question_intent_key,
     _method_evaluation_points,
@@ -38,6 +43,108 @@ from app.main import (
     _select_ksa_focus_for_method,
     _task_conditions_for_method,
 )
+
+
+def test_server_completed_experience_question_keeps_star_rubric_aligned() -> None:
+    surface = "예산관리규정 적용·판단 기준"
+    points = _method_evaluation_points(
+        "경험면접",
+        ["예산관리규정에 대한 지식"],
+        "지식",
+        surface_focus=surface,
+    )
+    item = {
+        "type": "경험면접",
+        "question": (
+            "예산 편성 중 과거 실적의 오류를 바로잡은 경험을 말씀해 주세요. "
+            "당시 맡은 역할과 목표, 예산관리규정 적용·판단 기준에 따라 확인한 규정·문서·자료와 "
+            "적용 범위의 판단 근거, 그에 따라 직접 취한 행동, 문서·수치·기록·피드백으로 "
+            "확인한 결과를 구체적으로 설명해 주세요."
+        ),
+        "follow_ups": _experience_star_followups(
+            focus_type="지식",
+            surface_focus=surface,
+            count=3,
+        ),
+        "evaluation_points": points,
+        "assessment_guide": _behavior_anchored_evaluation(
+            "경험면접",
+            "예산관리규정에 대한 지식",
+            points,
+            "지식",
+            surface_focus=surface,
+        ),
+    }
+
+    result = evaluate_evaluation_elicitation_alignment(item)
+
+    assert result["decision"] == "pass", json.dumps(result, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("focus_type", "surface", "raw_question"),
+    [
+        (
+            "기술",
+            "이해관계자 요구 사항 확인 절차",
+            "이해관계자 요구 사항을 확인해 누락을 바로잡은 경험을 말씀해 주세요.",
+        ),
+        (
+            "태도",
+            "계량화된 자료에 대한 정확성 준수 행동 기준",
+            "마감 압박 속에서도 자료 오류를 바로잡은 경험을 말씀해 주세요.",
+        ),
+    ],
+)
+def test_server_completed_experience_skill_and_attitude_rubrics_align(
+    focus_type: str,
+    surface: str,
+    raw_question: str,
+) -> None:
+    question, changed = _complete_experience_question_star(
+        raw_question,
+        focus_type=focus_type,
+        focus_surface=surface,
+    )
+    points = _method_evaluation_points(
+        "경험면접",
+        [surface],
+        focus_type,
+        surface_focus=surface,
+    )
+    item = {
+        "type": "경험면접",
+        "question": question,
+        "follow_ups": _experience_star_followups(
+            focus_type=focus_type,
+            surface_focus=surface,
+            count=3,
+        ),
+        "evaluation_points": points,
+        "assessment_guide": _behavior_anchored_evaluation(
+            "경험면접",
+            surface,
+            points,
+            focus_type,
+            surface_focus=surface,
+        ),
+    }
+
+    result = evaluate_evaluation_elicitation_alignment(item)
+
+    assert changed is True
+    assert result["decision"] == "pass", json.dumps(result, ensure_ascii=False)
+
+
+def test_generic_department_assignment_does_not_satisfy_candidate_task_role() -> None:
+    completed, changed = _complete_experience_question_star(
+        "담당 부서의 요청이 충돌했던 경험을 말씀해 주세요.",
+        focus_type="태도",
+        focus_surface="이해관계자 의견 조정 행동 기준",
+    )
+
+    assert changed is True
+    assert "당시 맡은 역할과 목표" in completed
 
 
 def test_question_plan_unit_coverage_keeps_one_unit_per_detail() -> None:
@@ -84,6 +191,30 @@ def test_question_plan_splits_multiple_detail_labels_from_one_value() -> None:
     assert plan["selected_terms"] == ["인사", "프로젝트관리"]
     assert plan["total_main_count"] == 2
     assert [item["detail"] for item in plan["question_sequence"]] == ["인사", "프로젝트관리"]
+
+
+def test_question_plan_preserves_up_to_fifty_main_questions() -> None:
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "detail": f"세분류-{index}",
+                        "enabled": True,
+                        "main_count": 10,
+                        "follow_up_count": 3,
+                    }
+                    for index in range(1, 7)
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        [],
+    )
+
+    assert plan["total_main_count"] == 50
+    assert len(plan["question_sequence"]) == 50
+    assert plan["question_sequence"][-1]["detail"] == "세분류-5"
 
 
 @pytest.mark.parametrize("provider_source", ["openai_api", "codex_cli"])
@@ -1997,7 +2128,7 @@ def test_adjust_questions_uses_inbasket_template_when_selected() -> None:
 @pytest.mark.parametrize(
     ("method", "question_marker", "followup_marker", "evaluation_marker"),
     [
-        ("경험면접", "실제 경험 한 가지를 선택해 주세요", "맡은 역할", "판단 근거와 실제 행동"),
+        ("경험면접", "실제 경험 한 가지를 선택해 주세요", "맡은 역할", "선택 근거와 직접 행동"),
         ("상황면접", "어떤 기준으로 판단", "먼저 확인해야 할 사실", "대안별 위험을 반영한 판단"),
         ("발표면접", "[발표과제]", "핵심 근거 자료", "대안 비교와 우선순위"),
         ("토론면접", "[토론과제]", "초기 입장", "공통안 또는 미합의 이송안의 실행 가능성"),
@@ -2426,6 +2557,167 @@ def test_official_sample_format_check_requires_method_specific_evaluation_points
     assert "evaluation_points_quality" in item["issues"]
 
 
+def test_experience_official_format_requires_the_task_dimension_of_star() -> None:
+    evaluation_points = [
+        "구체적 상황 설명",
+        "당시 역할과 목표",
+        "판단 근거와 실제 행동",
+        "결과 확인 근거와 학습",
+    ]
+    assert _official_sample_format_ok(
+        "경험면접",
+        "자료 불일치를 해결한 경험을 말씀해 주세요. 당시 상황에서 본인이 선택한 행동과 결과를 설명해 주세요.",
+        ["행동의 근거는 무엇입니까?", "결과는 무엇입니까?", "무엇을 학습했습니까?"],
+        evaluation_points,
+    ) is False
+    assert _official_sample_format_ok(
+        "경험면접",
+        "자료 불일치를 해결한 경험을 말씀해 주세요. 당시 상황과 맡은 역할, 본인이 선택한 행동과 결과를 설명해 주세요.",
+        ["맡은 목표는 무엇이었습니까?", "행동의 근거는 무엇입니까?", "결과와 학습은 무엇입니까?"],
+        evaluation_points,
+    ) is True
+
+
+def test_complete_experience_question_star_keeps_already_complete_star_question() -> None:
+    question = (
+        "간행물 점검 기준이 바뀐 뒤 누락이 생겼을 때 당시 담당 역할과 목표를 먼저 정리하고 "
+        "본인이 직접 점검표와 배포 순서를 바꾼 경험을 말씀해 주세요. "
+        "그 결과를 점검 기록과 오류 감소 수치로 어떻게 확인했는지도 설명해 주세요."
+    )
+
+    completed, changed = _complete_experience_question_star(
+        question,
+        focus_type="지식",
+    )
+
+    assert changed is False
+    assert completed == question
+    assert "이어서" not in completed
+
+
+def test_complete_experience_question_star_adds_only_missing_slots_without_repeating_task_clause() -> None:
+    question = (
+        "간행물 관리 점검 절차·점검 절차·점검 절차가 바뀐 뒤 누락이 생겼을 때 "
+        "당시 담당 역할과 목표를 말씀해 주세요."
+    )
+
+    completed, changed = _complete_experience_question_star(
+        question,
+        focus_type="지식",
+    )
+
+    assert changed is True
+    assert "이어서 당시 맡은 역할과 목표" not in completed
+    assert "확인한 규정·문서·자료와 적용 범위의 판단 근거" in completed
+    assert "그에 따라 직접 취한 행동" in completed
+    assert "문서·수치·기록·피드백으로 확인한 결과" in completed
+    assert "점검 절차·점검 절차·점검 절차" not in completed
+
+
+def test_adjust_questions_cli_experience_star_completion_does_not_repeat_existing_task_clause() -> None:
+    detail = "사무행정"
+    focus = "간행물 관리 점검 절차"
+    evidence = {
+        "ncsClCd": "0202030201_25v3",
+        "compeUnitName": "문서작성",
+        "factorName": focus,
+        "ksaTypeName": "지식",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "detail": detail,
+                        "enabled": True,
+                        "main_count": 1,
+                        "follow_up_count": 3,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+
+    out = _adjust_generated_questions(
+        {
+            "interview_questions": [
+                {
+                    "type": "경험면접",
+                    "question_source": "openai_api",
+                    "question_evidence_id": stable_ksa_evidence_id(evidence),
+                    "question": (
+                        "간행물 관리 점검 절차·점검 절차·점검 절차가 바뀐 뒤 누락이 생겼을 때 "
+                        "당시 담당 역할과 목표를 말씀해 주세요."
+                    ),
+                    "follow_ups": [
+                        "방금 말씀하신 역할에서 무엇을 먼저 확인했습니까?",
+                        "앞서 언급한 누락을 줄이기 위해 어떤 자료를 봤습니까?",
+                        "그 경험 이후 어떤 점을 보완했습니까?",
+                    ],
+                    "evaluation_points": [
+                        "관련 확인·판단 기준",
+                        "관련 확인·판단 기준",
+                        "관련 확인·판단 기준",
+                        "관련 확인·판단 기준",
+                    ],
+                }
+            ]
+        },
+        plan,
+        ["경험면접"],
+        ncs_matches=[
+            {
+                "ncsClCd": evidence["ncsClCd"],
+                "compeUnitName": evidence["compeUnitName"],
+                "ncsSclasCdnm": detail,
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[evidence],
+    )
+
+    question = out["interview_questions"][0]
+
+    assert question["model_question_preserved"] is True
+    assert question["question_source"] == "openai_api_quality_repaired_fields"
+    assert "이어서 당시 맡은 역할과 목표" not in question["question"]
+    assert "확인한 규정·문서·자료와 적용 범위의 판단 근거" in question["question"]
+    assert "그에 따라 직접 취한 행동" in question["question"]
+    assert "문서·수치·기록·피드백으로 확인한 결과" in question["question"]
+    assert "점검 절차·점검 절차·점검 절차" not in question["question"]
+
+
+def test_experience_method_evaluation_points_do_not_flatten_distinct_ksa_types_to_one_generic_phrase() -> None:
+    knowledge_points = _method_evaluation_points(
+        "경험면접",
+        ["승인된 변경에 대한 지식"],
+        "지식",
+    )
+    skill_points = _method_evaluation_points(
+        "경험면접",
+        ["과거 단계 문서 검토 능력"],
+        "기술",
+    )
+    attitude_points = _method_evaluation_points(
+        "경험면접",
+        ["과거 프로젝트 교훈 반영 태도"],
+        "태도",
+    )
+
+    assert knowledge_points != skill_points
+    assert skill_points != attitude_points
+    assert knowledge_points[1] == "규정 적용 근거"
+    assert skill_points[1] == "자료·도구를 사용한 수행 순서"
+    assert attitude_points[2] == "선택으로 감수한 점"
+    for points in (knowledge_points, skill_points, attitude_points):
+        assert "관련 확인·판단 기준" not in points
+
+
 def test_main_question_shape_requires_official_sample_procedure_terms() -> None:
     assert _method_shape_ok(
         "발표면접",
@@ -2848,6 +3140,51 @@ def test_question_quality_report_rejects_unrelated_ksa_for_same_ncs_code() -> No
     assert item["checks"]["job_specific_context"] is True
     assert item["checks"]["ksa_grounded"] is False
     assert item["ready"] is False
+    assert "ksa_grounded" in item["issues"]
+
+
+def test_assigned_evidence_cannot_be_rescued_by_another_factor_from_same_unit() -> None:
+    assigned = {
+        "ncsClCd": "0101010205_17v2",
+        "compeUnitName": "프로젝트 인적자원관리",
+        "factorName": "승인된 변경에 대한 지식",
+        "ksaTypeName": "지식",
+        "factorSource": "ncs-mcp",
+    }
+    alternate = {
+        "ncsClCd": "0101010205_17v2",
+        "compeUnitName": "프로젝트 인적자원관리",
+        "factorName": "팀원 역할 분담 조정 능력",
+        "ksaTypeName": "기술",
+        "factorSource": "ncs-mcp",
+    }
+    strategy = {
+        "interview_questions": [
+            {
+                "type": "경험면접",
+                "competency": "프로젝트 인적자원관리",
+                "ncsClCd": assigned["ncsClCd"],
+                "ncs_detail": "프로젝트관리",
+                "question": "팀원 역할 분담을 조정한 경험을 말씀해 주세요. 당시 본인의 행동과 결과는 무엇이었습니까?",
+                "follow_ups": [
+                    "방금 언급한 역할 분담 자료는 무엇입니까?",
+                    "앞서 말한 조정 행동을 선택한 이유는 무엇입니까?",
+                    "조정 결과는 어떤 피드백으로 확인했습니까?",
+                ],
+                "evaluation_points": ["구체적 상황", "본인 역할", "조정 행동", "결과 증거"],
+                "question_evidence_required": True,
+                "question_evidence_id": stable_ksa_evidence_id(assigned),
+                "question_focus": assigned["factorName"],
+                "question_focus_surface": "승인된 변경 관련 확인·판단 기준",
+                "ksa_refs": [assigned["factorName"]],
+                "ksa_evidence": [assigned, alternate],
+            }
+        ]
+    }
+
+    item = _attach_question_quality_report(strategy)["question_quality_report"]["items"][0]
+
+    assert item["checks"]["ksa_grounded"] is False
     assert "ksa_grounded" in item["issues"]
 
 

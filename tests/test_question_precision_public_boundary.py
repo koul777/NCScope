@@ -165,12 +165,16 @@ def test_primary_public_routes_reject_unsupported_precision_at_final_boundary(
             )
 
     assert response.status_code == 502
-    assert response.json()["detail"] == {
-        "code": "openai_api_quality_rejected",
-        "provider": "openai_api",
-        "message": "생성된 질문이 NCS/KSA 품질 검사를 통과하지 못했습니다. 문항 수나 면접기법 범위를 줄여 다시 시도해 주세요.",
-        "retryable": True,
-    }
+    detail = response.json()["detail"]
+    assert detail["code"] == "openai_api_quality_rejected"
+    assert detail["provider"] == "openai_api"
+    assert detail["retryable"] is True
+    assert "문서 크기나 GPT 과부하가 아니라" in detail["message"]
+    diagnostics = detail["quality_diagnostics"]
+    assert diagnostics["requested_question_count"] == 1
+    assert diagnostics["failed_question_count"] == 1
+    assert diagnostics["failed_indexes"] == [1]
+    assert diagnostics["attempt_count"] == 2
     assert "기준연도" not in response.text
     assert "분자" not in response.text
     assert REQUEST_KEY not in response.text

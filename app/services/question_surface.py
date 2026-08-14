@@ -289,6 +289,10 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             candidate,
         ).strip()
         candidate = _compact_task_base(candidate)
+        if candidate.endswith(("의사소통", "소통", "협업", "조율", "준수")):
+            return f"{candidate}하는 행동 기준"
+        if candidate.endswith("이해"):
+            return f"{candidate}하고 공유하는 행동 기준"
         return f"{candidate} 행동 기준" if candidate else ""
 
     if kind == "지식":
@@ -325,6 +329,11 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
 
     if kind == "기술":
         candidate = _nominalize_capability_clause(candidate)
+        candidate = re.sub(
+            r"(?P<object>.+?)(?:을|를)\s*위한\s+(?:관련\s+)?(?P<action>.+)$",
+            r"\g<object> \g<action>",
+            candidate,
+        ).strip()
         candidate = re.sub(r"수행하는\s*$", "실행하는", candidate)
         candidate = _DANGLING_END_RE.sub("", candidate).strip()
         candidate = re.sub(r"할\s*수\s*있도록", "하기 위한", candidate)
@@ -352,6 +361,7 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             (r"\s*시스템$", " 도구 활용 절차"),
             (r"\s*수립$", " 작성·검토 절차"),
             (r"\s*수집$", " 수집·확인 절차"),
+            (r"\s*정보검색$", " 정보 검색·확인 절차"),
             (r"\s*분류$", " 분류·확인 절차"),
             (r"\s*처리$", " 처리·확인 절차"),
             (r"\s*운영$", " 운영·점검 절차"),
@@ -459,6 +469,44 @@ def public_task_object(
     return fallback, "safe_fallback"
 
 
+def _knowledge_subject_label(factor_name: Any) -> str:
+    label = _clean(factor_name, max_chars=120)
+    if not label:
+        return ""
+    subject = _KSA_TYPE_SUFFIX_RE.sub("", label).strip()
+    subject = re.sub(r"\s*에\s+대한\s*$", "", subject).strip()
+    subject = re.sub(r"\s*관련\s*$", "", subject).strip()
+    return subject
+
+
+def _knowledge_task_semantics(
+    factor_name: Any,
+    task_object: str,
+) -> tuple[str, str]:
+    default_statement = f"{task_object}을 근거로 적용 범위와 예외를 판단한다"
+    default_behavior = "확인 자료, 판단 기준, 적용 범위, 예외와 오류 위험을 설명한다"
+    subject = _knowledge_subject_label(factor_name)
+    if not subject:
+        return default_statement, default_behavior
+
+    if subject == "승인된 변경":
+        return (
+            "승인된 변경 내용을 확인해 지금 맡은 역할과 목표에 바로 반영할 범위와 제외할 업무를 가른다",
+            "당시 상황과 맡은 역할·목표, 확인한 승인 변경 내용과 기존 계획, 무엇을 적용하고 무엇을 제외했는지의 근거, 그 판단 때문에 직접 바꾼 행동과 관찰 결과를 설명한다",
+        )
+    if subject == "과거 단계 문서":
+        return (
+            "과거 단계 문서에서 지금 단계에 이어 써야 할 근거와 더 이상 따르지 않을 내용을 가른다",
+            "당시 상황과 맡은 역할·목표, 대조한 과거 단계 문서와 현재 조건, 어떤 내용을 적용하거나 배제했는지의 근거, 그 판단 때문에 직접 달라진 행동과 결과를 설명한다",
+        )
+    if subject == "과거 프로젝트 교훈":
+        return (
+            "과거 프로젝트 교훈 중 현재 상황에 다시 써야 할 원칙과 그대로 따르지 않을 조건을 가른다",
+            "당시 상황과 맡은 역할·목표, 참조한 과거 프로젝트 교훈과 현재 조건의 차이, 적용·배제 근거, 그 판단 때문에 직접 택한 행동과 관찰 결과를 설명한다",
+        )
+    return default_statement, default_behavior
+
+
 def build_question_task_frame(
     *,
     evidence_row: dict[str, Any] | None,
@@ -479,13 +527,17 @@ def build_question_task_frame(
         competency_name=competency_name,
         competency_definition=competency_definition,
     )
+    knowledge_statement, knowledge_behavior = _knowledge_task_semantics(
+        factor_name,
+        task_object,
+    )
     task_statement = {
-        "지식": f"{task_object}을 근거로 적용 범위와 예외를 판단한다",
+        "지식": knowledge_statement,
         "기술": f"{task_object}에 따라 조치하고 산출물의 품질을 확인한다",
         "태도": f"{task_object}을 압박과 이해 충돌 속에서도 행동으로 보여준다",
     }.get(kind, f"{task_object}에 따라 판단하고 결과를 확인한다")
     observable_behavior = {
-        "지식": "확인 자료, 판단 기준, 적용 범위, 예외와 오류 위험을 설명한다",
+        "지식": knowledge_behavior,
         "기술": "수행 순서, 사용 자료·도구, 조치, 산출물과 품질 확인 결과를 제시한다",
         "태도": "상충하는 요구 속 선택 행동, 감수한 비용과 후속 책임을 제시한다",
     }.get(kind, "판단 근거, 구체적 행동, 산출물과 결과 확인 방법을 제시한다")
