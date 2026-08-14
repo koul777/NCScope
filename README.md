@@ -1,4 +1,4 @@
-# NCScope v1.4
+# NCScope v1.4.1
 
 [![CI](https://github.com/koul777/NCScope/actions/workflows/ci.yml/badge.svg)](https://github.com/koul777/NCScope/actions/workflows/ci.yml)
 
@@ -26,6 +26,13 @@ NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 
 4. 로컬 NCS DB KSA 기반 질문 생성
 
 ## 업데이트 내역
+
+### v1.4.1 · 2026-08-14 · NCS 매칭 오류와 모델 생성 오류 표시 분리
+
+- 구조화된 API 오류를 모두 NCS 세분류 미매칭으로 표시하던 프런트엔드 분기를 수정했습니다.
+- `lookup_terms`와 `suggested_ncs_units`가 있는 실제 NCS 매칭 오류만 직접입력 검토 화면으로 전환합니다.
+- `openai_api_generation_failed` 등 외부 모델 생성 오류는 서버가 반환한 원인 메시지와 실패 상태를 그대로 표시합니다.
+- 로컬 NCS_MCP 실검색에서 프로젝트관리 11건, 산학협력관리 13건, 경영기획 8건, 경영평가 8건, 총무 10건, 인사 14건, 비서 11건, 예산 7건의 정확 세분류 조회를 확인했습니다.
 
 ### v1.4 · 2026-08-14 · 질문 근거 무결성·현장성·운영 보안 강화
 
