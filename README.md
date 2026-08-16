@@ -780,3 +780,11 @@ Updated for `scripts/evaluate_alio_question_quality.py`:
 ## ALIO Generator Quality Repair Behavior
 
 `_adjust_generated_questions()` now keeps non-blocking model questions (except `no_model_question` and `blind_hiring_cue`) and attempts field-level quality repair before template fallback. This reduces hard fallbacks by repairing model content where possible.
+
+## generated_questions Direct Output Update (Append-Only)
+- Added `generated_questions`, `generated_questions_mode`, `generated_questions_count`, `generated_questions_total_count` to:
+  - `POST /api/questions/generate-personalized`
+  - `POST /api/questions/generate-by-ncs-code`
+  - `POST /api/questions/generate-batch`
+  - `POST /api/questions/generate-diverse`
+- This makes extracted question lists directly visible from response payloads without additional parsing.

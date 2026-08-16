@@ -8236,6 +8236,17 @@ def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]
             ]
             if follow_ups:
                 row["follow_ups"] = follow_ups
+            evaluation_points = [
+                _clean_question_text(point, max_chars=180)
+                for point in (item.get("evaluation_points") or item.get("eval_points") or [])
+                if isinstance(point, str) and _clean_question_text(point, max_chars=180)
+            ]
+            if evaluation_points:
+                row["evaluation_points"] = evaluation_points
+            if item.get("question_hash"):
+                row["question_hash"] = str(item.get("question_hash"))
+            if item.get("question_evidence_id"):
+                row["question_evidence_id"] = str(item.get("question_evidence_id"))
             row["ready"] = bool(question)
             if "index" in item:
                 try:
@@ -8250,6 +8261,68 @@ def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]
                 except Exception:
                     pass
         output.append(row)
+    return output
+
+
+def _normalize_generated_questions(
+    raw_questions: Any,
+    *,
+    expected_count: int | None = None,
+    max_item_chars: int = 500,
+) -> list[dict[str, Any]]:
+    """Normalize heterogeneous question rows into a unified export shape."""
+
+    if not isinstance(raw_questions, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_questions, start=1):
+        if not isinstance(item, dict):
+            continue
+        row = {
+            "index": idx,
+            "question": _clean_question_text(item.get("question"), max_chars=max_item_chars),
+            "type": str(item.get("type") or item.get("question_type") or item.get("method") or "").strip(),
+            "ncsClCd": str(
+                item.get("ncsClCd") or item.get("ncs_code") or item.get("unit_code") or ""
+            ).strip(),
+            "competency": str(item.get("competency") or item.get("compeUnitName") or "").strip(),
+            "question_source": str(item.get("question_source") or "").strip(),
+        }
+        follow_ups = [
+            _clean_question_text(fu, max_chars=260)
+            for fu in (item.get("follow_ups") or [])
+            if isinstance(fu, str) and _clean_question_text(fu, max_chars=260)
+        ]
+        if follow_ups:
+            row["follow_ups"] = follow_ups
+        evaluation_points = [
+            _clean_question_text(point, max_chars=260)
+            for point in (item.get("evaluation_points") or item.get("eval_points") or [])
+            if isinstance(point, str) and _clean_question_text(point, max_chars=260)
+        ]
+        if evaluation_points:
+            row["evaluation_points"] = evaluation_points
+        if item.get("question_hash"):
+            row["question_hash"] = str(item.get("question_hash"))
+        if item.get("question_evidence_id"):
+            row["question_evidence_id"] = str(item.get("question_evidence_id"))
+        row["ready"] = bool(row["question"])
+        output.append(row)
+
+    target_count = int(expected_count) if expected_count and int(expected_count) > 0 else len(output)
+    if target_count > len(output):
+        for idx in range(len(output) + 1, target_count + 1):
+            output.append(
+                {
+                    "index": idx,
+                    "question": "",
+                    "type": "",
+                    "ncsClCd": "",
+                    "competency": "",
+                    "question_source": "",
+                    "ready": False,
+                }
+            )
     return output
 
 
@@ -10758,9 +10831,22 @@ def generate_questions_personalized(
         _require_institution_api_question_output(result)
         _require_official_ksa_result(result)
 
+        result_questions = result.get("questions") if isinstance(result, dict) else []
+        generated_questions = _normalize_generated_questions(
+            result_questions,
+            expected_count=target_count,
+        )
+        generated_questions_count = len(generated_questions)
+        generated_questions_total_count = len(result_questions)
+
         return {
             "status": "success",
             "data": result,
+            "generated_questions": generated_questions,
+            "generated_questions_mode": "all",
+            "generated_questions_limit": target_count,
+            "generated_questions_count": generated_questions_count,
+            "generated_questions_total_count": generated_questions_total_count,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -10861,10 +10947,22 @@ def generate_questions_by_ncs_code(
             )
 
         _filter_ncs_code_result_against_avoid_list(result, avoid_questions)
+        result_main_questions = result.get("main_questions") if isinstance(result, dict) else []
+        generated_questions = _normalize_generated_questions(
+            result_main_questions,
+            expected_count=target_count,
+        )
+        generated_questions_count = len(generated_questions)
+        generated_questions_total_count = len(result_main_questions)
 
         return {
             "status": "success",
             "data": result,
+            "generated_questions": generated_questions,
+            "generated_questions_mode": "all",
+            "generated_questions_limit": target_count,
+            "generated_questions_count": generated_questions_count,
+            "generated_questions_total_count": generated_questions_total_count,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -11066,6 +11164,16 @@ def generate_batch_diverse_questions(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "request_id": str(uuid.uuid4()),  # Unique ID to prevent caching
         }
+        batch_questions = response_data.get("data", {}).get("questions", [])
+        normalized_batch_questions = _normalize_generated_questions(
+            batch_questions,
+            expected_count=batch_count,
+        )
+        response_data["generated_questions"] = normalized_batch_questions
+        response_data["generated_questions_mode"] = "all"
+        response_data["generated_questions_limit"] = batch_count
+        response_data["generated_questions_count"] = len(normalized_batch_questions)
+        response_data["generated_questions_total_count"] = len(batch_questions)
 
         # Return with NO-CACHE headers
         return JSONResponse(
@@ -11235,10 +11343,22 @@ def generate_diverse_questions(
                 "official_ksa_evidence": list(final_official_ksa_evidence.values()),
             }
         )
+        diverse_questions = result.get("questions") if isinstance(result, dict) else []
+        generated_questions = _normalize_generated_questions(
+            diverse_questions,
+            expected_count=target_count,
+        )
+        generated_questions_count = len(generated_questions)
+        generated_questions_total_count = len(diverse_questions)
 
         return {
             "status": "success",
             "data": result,
+            "generated_questions": generated_questions,
+            "generated_questions_mode": "all",
+            "generated_questions_limit": target_count,
+            "generated_questions_count": generated_questions_count,
+            "generated_questions_total_count": generated_questions_total_count,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
