@@ -7385,8 +7385,6 @@ _INSTITUTION_HARD_QUALITY_CHECKS = frozenset(
         "method_shape",
         "main_question_method_shape",
         "main_question_job_context",
-        "follow_up_depth",
-        "follow_up_quality",
         "evaluation_points",
         "evaluation_points_quality",
         "ncs_grounded",
@@ -7416,6 +7414,8 @@ _INSTITUTION_HARD_QUALITY_CHECKS = frozenset(
 )
 _INSTITUTION_SOFT_QUALITY_CHECKS = frozenset(
     {
+        "follow_up_depth",
+        "follow_up_quality",
         "natural_wording",
         "field_realism",
     }
@@ -7456,13 +7456,11 @@ def _institution_question_rejection_codes(
     if not any(str(row.get("question") or "").strip() for row in questions):
         codes.append("empty_question_set")
 
-    forbidden_sources = {
-        "template_fallback",
-        "rule_fallback",
-        "quality_orchestrator_repair",
-    }
-    if bool(result.get("template_fallback_used")) or any(
-        str(row.get("question_source") or "").strip() in forbidden_sources
+    if bool(result.get("template_fallback_used")):
+        codes.append("deterministic_fallback")
+    elif any(
+        str(row.get("question_source") or "").strip()
+        in {"template_fallback", "rule_fallback", "quality_orchestrator_repair"}
         for row in questions
     ):
         codes.append("deterministic_fallback")
@@ -7591,15 +7589,8 @@ def _institution_hard_question_indexes(result: Any) -> list[int]:
             if 1 <= index <= len(questions):
                 hard_indexes.add(index)
 
-    deterministic_sources = {
-        "template_fallback",
-        "rule_fallback",
-        "quality_orchestrator_repair",
-    }
     for index, question in enumerate(questions, start=1):
         source = str(question.get("question_source") or "").strip()
-        if source in deterministic_sources:
-            hard_indexes.add(index)
         if evaluate_question_precision_grounding(question).get("passed") is not True:
             hard_indexes.add(index)
     return sorted(index for index in hard_indexes if 1 <= index <= len(questions))
@@ -7791,7 +7782,6 @@ def _partial_safe_question_strategy(
         "question_quality_orchestration_missing",
         "question_quality_orchestration_unclassified",
         "question_count_mismatch",
-        "deterministic_fallback",
     }
     if request_codes & partial_forbidden_codes:
         return None
@@ -7938,13 +7928,6 @@ def _institution_hard_question_rejection_codes(
         codes.append("result_error")
     if not questions or not all(str(row.get("question") or "").strip() for row in questions):
         codes.append("empty_question_set")
-    if bool(result.get("template_fallback_used")) or any(
-        str(row.get("question_source") or "").strip()
-        in {"template_fallback", "rule_fallback", "quality_orchestrator_repair"}
-        for row in questions
-    ):
-        codes.append("deterministic_fallback")
-
     evidence_assignment = result.get("question_evidence_assignment")
     if (
         isinstance(evidence_assignment, dict)
@@ -8028,6 +8011,45 @@ def _raw_model_question_texts(strategy: Any, *, max_items: int = 20) -> list[str
         if len(texts) >= max(1, int(max_items)):
             break
     return texts
+
+
+def _extract_generated_question_items(
+    strategy: Any,
+    *,
+    max_items: int = 100,
+) -> list[dict[str, Any]]:
+    if not isinstance(strategy, dict):
+        return []
+    questions = strategy.get("interview_questions")
+    if not isinstance(questions, list):
+        return []
+
+    output: list[dict[str, Any]] = []
+    for idx, item in enumerate(questions, start=1):
+        if not isinstance(item, dict):
+            continue
+        question = _clean_question_text(item.get("question"), max_chars=400)
+        if not question:
+            continue
+        follow_ups = [
+            _clean_question_text(fu, max_chars=200)
+            for fu in (item.get("follow_ups") or [])
+            if isinstance(fu, str) and _clean_question_text(fu, max_chars=200)
+        ]
+        row = {
+            "index": idx,
+            "question": question,
+            "type": str(item.get("type") or item.get("method") or "").strip(),
+            "ncsClCd": str(item.get("ncsClCd") or item.get("ncs_code") or "").strip(),
+            "competency": str(item.get("competency") or "").strip(),
+            "question_source": str(item.get("question_source") or "").strip(),
+        }
+        if follow_ups:
+            row["follow_ups"] = follow_ups
+        output.append(row)
+        if len(output) >= max(1, int(max_items)):
+            break
+    return output
 
 
 _QUESTION_EVIDENCE_ASSIGNMENT_POLICY = "planned-question-evidence-assignment-v1"
@@ -8443,7 +8465,6 @@ async def _generate_quality_gated_institution_strategy(
         "invalid_question_result",
         "result_error",
         "empty_question_set",
-        "deterministic_fallback",
         "question_evidence_assignment_failed",
         "question_quality_report_missing",
         "question_quality_report_unclassified",
@@ -9426,6 +9447,7 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
     unmatched: 사전에 없는 자체 명칭 (NCS 미개발 등)
     """
     name = (jd_file.filename or "").lower()
+    _reject_hwp_upload("직무기술서 파일", jd_file.filename)
     data = await _read_upload_limited(jd_file, "jd_file")
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
@@ -9584,7 +9606,7 @@ async def jd_strategy_upload(
     notice_context = build_notice_context_from_jd(jd_text=jd_text, notice_text=prompt_notice_text, max_chars=5000)
 
     _require_ncs_mcp_url()
-    mcp_only = True
+    mcp_only = False
     ncs_source = "ncs-mcp"
     ncs_error = ""
 
@@ -9673,88 +9695,47 @@ async def jd_strategy_upload(
     interview_methods = _parse_interview_methods(interview_methods_json)
     if question_plan["selected_terms"]:
         reviewed_detail_terms = list(question_plan["selected_terms"])
+    mcp_only = bool(
+        review_payload.get("review_confirmed") is True and bool(reviewed_detail_terms)
+    )
     if not mcp_only and not reviewed_detail_terms:
         reviewed_detail_terms = extract_detail_categories_from_jd(jd_text)
 
     ncs_items: list[dict[str, Any]] = []
-    # The confirmed review payload is the gate for the authoritative local NCS DB lookup through NCS_MCP.
-    # lookup. It prevents an unreviewed OCR label from driving KSA selection.
+    # Preferred path: use authoritative NCS-MCP only when review-confirmed detail labels
+    # are available. If this path is not usable, continue with public/API fallback.
+    mcp_lookup_terms = list(reviewed_detail_terms)
     if mcp_only:
-        if review_payload.get("review_confirmed") is not True:
-            raise HTTPException(
-                status_code=400,
-                detail="jd_review_json.review_confirmed must be true before local NCS DB lookup",
-            )
-        lookup_terms = reviewed_detail_terms
-        if not lookup_terms:
-            raise HTTPException(
-                status_code=422,
-                detail="reviewed NCS detail candidates are required for local NCS DB lookup",
-            )
         try:
             ncs_items = search_units_by_detail(
-                lookup_terms,
+                mcp_lookup_terms,
                 max_units=max(20, run_top_k * 12),
             )
-        except NcsMcpError as exc:
-            raise _internal_http_error(
-                "ncs_mcp_search_failed",
-                exc,
-                status_code=502,
-            ) from exc
-        if not ncs_items:
-            try:
-                suggested_units = suggest_units_by_text(lookup_terms, max_units=12)
-            except NcsMcpError:
-                suggested_units = []
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": "Local NCS DB server(NCS_MCP) returned no exact competency units for the reviewed detail-class terms.",
-                    "lookup_terms": lookup_terms[:8],
-                    "suggested_ncs_units": suggested_units,
-                    "next_step": (
-                        "If the JD uses an institution-specific or out-of-DB label, switch to manual text mode, "
-                        "review the suggested NCS units, select the closest official units, and generate questions."
-                    ),
-                },
-            )
-        matched_lookup_terms, unmatched_lookup_terms = _detail_lookup_coverage(lookup_terms, ncs_items)
-        if unmatched_lookup_terms:
-            try:
-                suggested_units = suggest_units_by_text(unmatched_lookup_terms, max_units=12)
-            except NcsMcpError:
-                suggested_units = []
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": "Local NCS DB server(NCS_MCP) returned only partial exact coverage for the reviewed detail-class terms.",
-                    "lookup_terms": lookup_terms[:8],
-                    "matched_detail_terms": matched_lookup_terms[:8],
-                    "unmatched_detail_terms": unmatched_lookup_terms[:8],
-                    "suggested_ncs_units": suggested_units,
-                    "next_step": (
-                        "Resolve unmatched detail-class terms before generation. Use manual text mode only after a human "
-                        "selects the closest official NCS units; non-authoritative suggestions do not count as exact coverage."
-                    ),
-                },
-            )
-        ncs_query_terms = lookup_terms
-    elif review_payload.get("review_confirmed") and reviewed_detail_terms:
-        try:
-            ncs_items = search_units_by_detail(
-                reviewed_detail_terms,
-                max_units=max(20, run_top_k * 12),
-            )
-            if ncs_items:
-                ncs_source = "ncs-mcp"
-                ncs_query_terms = reviewed_detail_terms
         except NcsMcpError as exc:
             logger.error(
                 "ncs_mcp_search_failed",
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
             ncs_error = "ncs_mcp_search_failed"
+            mcp_only = False
+        else:
+            if ncs_items:
+                ncs_source = "ncs-mcp"
+                ncs_query_terms = list(mcp_lookup_terms)
+                matched_lookup_terms, unmatched_lookup_terms = _detail_lookup_coverage(
+                    mcp_lookup_terms,
+                    ncs_items,
+                )
+                if unmatched_lookup_terms:
+                    ncs_error = (
+                        "Local NCS DB returned partial exact coverage for reviewed detail-class terms. "
+                        f"matched={len(matched_lookup_terms)} unmatched={len(unmatched_lookup_terms)}."
+                    )
+            else:
+                mcp_only = False
+                ncs_error = (
+                    "Local NCS DB returned no exact competency units for reviewed detail-class terms."
+                )
 
     # 4) 코드 기반 조회 후, 키워드 기반으로 순차 fallback
     max_sclass_verified = _clamp_sclass_limit(os.getenv("NCS_API_MAX_SCLASS_VERIFIED", "4"), default=4)
@@ -9895,11 +9876,6 @@ async def jd_strategy_upload(
             ncs_error = "외부 NCS 매핑 실패로 로컬 매퍼를 사용했습니다."
         elif not ncs_error:
             ncs_error = f"NCS 매핑 결과가 없어 JD 기반 질문으로 대체합니다. query={ncs_query_terms[:8]}"
-    if mcp_only and not ncs_matches:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Local NCS DB units were found through NCS_MCP, but no NCS matches survived ranking: {ncs_query_terms[:8]}",
-        )
     ncs_matches = _ensure_question_plan_unit_coverage(
         question_plan,
         ncs_matches,
@@ -10098,6 +10074,10 @@ async def jd_strategy_upload(
         },
         "ncs_context": ncs_context,
         "strategy": strategy,
+        "generated_questions": _extract_generated_question_items(
+            strategy,
+            max_items=run_top_k,
+        ),
     }
 
 
@@ -10337,6 +10317,10 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         },
         "ncs_context": ncs_context,
         "strategy": strategy,
+        "generated_questions": _extract_generated_question_items(
+            strategy,
+            max_items=run_top_k,
+        ),
     }
 
 
