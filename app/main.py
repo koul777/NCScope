@@ -8264,6 +8264,33 @@ def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]
     return output
 
 
+def _build_generated_question_text_rows(strategy: Any) -> list[dict[str, Any]]:
+    """Build a flat, consumer-friendly question-list payload."""
+
+    rows = _extract_all_generated_question_items(strategy)
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        question = str(row.get("question") or "").strip()
+        raw_index = row.get("index")
+        try:
+            index = int(raw_index)
+        except Exception:
+            index = len(output) + 1
+        output.append(
+            {
+                "index": index,
+                "question": question,
+                "type": str(row.get("type") or "").strip(),
+                "ncsClCd": str(row.get("ncsClCd") or "").strip(),
+                "competency": str(row.get("competency") or "").strip(),
+                "ready": bool(row.get("ready")),
+            }
+        )
+    return output
+
+
 def _normalize_generated_questions(
     raw_questions: Any,
     *,
@@ -10395,6 +10422,12 @@ async def jd_strategy_upload(
         explicit_max_items=explicit_generated_questions_max,
         fallback=run_top_k,
     )
+    generated_question_text_rows = _build_generated_question_text_rows(strategy)
+    generated_question_texts = [
+        str(item.get("question") or "").strip()
+        for item in generated_question_text_rows
+        if str(item.get("question") or "").strip()
+    ]
     generated_questions_mode = (
         "all" if include_all_generated_questions else (
             "custom_limit" if explicit_generated_questions_max is not None else "preview"
@@ -10476,6 +10509,8 @@ async def jd_strategy_upload(
         },
         "ncs_context": ncs_context,
         "strategy": strategy,
+        "generated_question_text_rows": generated_question_text_rows,
+        "generated_question_texts": generated_question_texts,
         "generated_questions_all": generated_questions_all,
         "generated_questions": generated_questions,
         "generated_questions_mode": generated_questions_mode,
@@ -10687,6 +10722,12 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         explicit_max_items=explicit_generated_questions_max,
         fallback=run_top_k,
     )
+    generated_question_text_rows = _build_generated_question_text_rows(strategy)
+    generated_question_texts = [
+        str(item.get("question") or "").strip()
+        for item in generated_question_text_rows
+        if str(item.get("question") or "").strip()
+    ]
     generated_questions_mode = (
         "all" if include_all_generated_questions else (
             "custom_limit" if explicit_generated_questions_max is not None else "preview"
@@ -10749,6 +10790,8 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
             "ksa_factors_per_unit": run_ksa_factors,
         },
         "ncs_context": ncs_context,
+        "generated_question_text_rows": generated_question_text_rows,
+        "generated_question_texts": generated_question_texts,
         "strategy": strategy,
         "generated_questions_all": generated_questions_all,
         "generated_questions": generated_questions,
