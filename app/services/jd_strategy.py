@@ -4655,6 +4655,7 @@ def build_strategy_with_openai(
     generation_provider: str = "",
     max_model_requests: int = 2,
     transport_max_attempts: int = 1,
+    allow_partial_model_output: bool | None = None,
 ) -> dict[str, Any]:
     generation_provider = (
         generation_provider
@@ -4676,6 +4677,12 @@ def build_strategy_with_openai(
     target_count = max(1, min(50, target_count))
     max_model_requests = max(1, min(2, int(max_model_requests or 1)))
     transport_max_attempts = max(1, min(3, int(transport_max_attempts or 1)))
+    if allow_partial_model_output is None:
+        allow_partial_model_output = (
+            os.getenv("OPENAI_ALLOW_PARTIAL_MODEL_OUTPUT", "false").strip().lower()
+            in {"1", "true", "yes", "y"}
+        )
+    strict_count = not bool(allow_partial_model_output)
     retry_target_count = target_count
     follow_up_count = max(0, min(5, int(follow_up_count if follow_up_count is not None else 3)))
     primary_model = (os.getenv("OPENAI_STRATEGY_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
@@ -4913,12 +4920,32 @@ def build_strategy_with_openai(
         if not isinstance(parsed, dict):
             raise ValueError("model_response_not_object")
         generated_questions = parsed.get("interview_questions")
-        if not isinstance(generated_questions, list) or len(generated_questions) != expected_count:
+        if not isinstance(generated_questions, list):
             raise ValueError("model_question_count_mismatch")
+
+        cleaned_questions: list[dict[str, Any]] = []
+        for question in generated_questions:
+            if not isinstance(question, dict):
+                continue
+            if not str(question.get("question") or "").strip():
+                continue
+            cleaned_questions.append(dict(question))
+        if not cleaned_questions:
+            raise ValueError("model_question_content_missing")
+
+        raw_question_count = len(cleaned_questions)
+        parsed["_model_question_raw_count"] = raw_question_count
+        parsed["_model_question_count_mismatch"] = raw_question_count != expected_count
+        if raw_question_count != expected_count and strict_count:
+            raise ValueError("model_question_count_mismatch")
+        if raw_question_count > expected_count:
+            cleaned_questions = cleaned_questions[:expected_count]
+
+        parsed["interview_questions"] = cleaned_questions
         if any(
             not isinstance(question, dict)
             or not str(question.get("question") or "").strip()
-            for question in generated_questions
+            for question in cleaned_questions
         ):
             raise ValueError("model_question_content_missing")
         # Do not collapse a complete provider response here. Near-duplicate
@@ -5056,11 +5083,22 @@ def build_strategy_with_openai(
         question["question_source"] = "openai_api"
 
     generated_has_content = any(str((q or {}).get("question", "")).strip() for q in q_list)
+    q_raw_count = int(obj.pop("_model_question_raw_count", 0) or 0)
+    q_count_mismatch = bool(obj.pop("_model_question_count_mismatch", False))
     obj["interview_questions"] = list(q_list[:target_count])
-    if generated_has_content and len(obj["interview_questions"]) != target_count:
+    if generated_has_content and q_count_mismatch and strict_count:
         generated_has_content = False
         model_error = "question_set_count_or_diversity_failed"
         obj["interview_questions"] = []
+    elif generated_has_content and q_count_mismatch:
+        obj.setdefault("provider_generation_notes", []).append(
+            f"model_question_count_adjusted:{q_raw_count}->{target_count}"
+        )
+    if q_raw_count:
+        obj["model_question_generation_counts"] = {
+            "expected": target_count,
+            "actual": q_raw_count,
+        }
     obj["interview_questions"] = _apply_entry_level_policy_to_questions(obj["interview_questions"])
     obj["interview_by_competency"] = _build_interview_by_competency_from_questions(obj["interview_questions"])
     if "ncs_link" not in obj or not isinstance(obj.get("ncs_link"), list):

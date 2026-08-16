@@ -182,6 +182,7 @@ def _build_benchmark_strategy(
             follow_up_count=follow_up_count,
             question_plan=plan,
             interview_methods=methods,
+            allow_partial_model_output=True,
         )
         if not isinstance(strategy, dict):
             strategy = {
@@ -1537,19 +1538,28 @@ def _build_question_list_payload(
                     {
                         "question_index": item.get("question_index"),
                         "type": item.get("type") or "",
+                        "question": item.get("question") or "",
                         "question_focus_type": item.get("question_focus_type") or "",
                         "question_focus": item.get("question_focus") or "",
                         "question_source": item.get("question_source") or "",
+                        "question_intent": item.get("question_intent") or "",
                         "ready": bool(item.get("ready")),
-                        "question": item.get("question") or "",
+                        "issues": _split_issue_series(item.get("issues")),
+                        "issue_text": str(item.get("issues") or "").strip(),
+                        "question_repeat_signature": item.get("question_repeat_signature") or "",
                         "follow_ups": _stringify_text_array(item.get("follow_ups")),
                         "evaluation_points": _stringify_text_array(item.get("evaluation_points")),
                         "ksa_refs": _stringify_text_array(item.get("ksa_refs")),
-                        "question_intent": item.get("question_intent") or "",
                         "ncs_refs": (
                             item.get("ncs_refs")
                             if isinstance(item.get("ncs_refs"), list)
                             else _stringify_text_array(item.get("ncs_refs"))
+                        ),
+                        "model_question_preserved": bool(item.get("model_question_preserved")),
+                        "model_question_raw": str(item.get("model_question_raw") or ""),
+                        "model_followups_raw": _split_pipe_or_text_array(item.get("model_followups_raw")),
+                        "model_replacement_reasons": _split_issue_series(
+                            item.get("model_replacement_reasons")
                         ),
                     }
                     for item in items
@@ -1572,6 +1582,104 @@ def _print_list_lines(value: Any) -> list[str]:
     if "|" in text:
         return [segment.strip() for segment in text.split("|") if segment.strip()]
     return [text]
+
+
+def _split_pipe_or_text_array(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    if "|" in text:
+        return [segment.strip() for segment in text.split("|") if segment.strip()]
+    return [text]
+
+
+def _compact_for_log(value: Any, limit: int = 140) -> str:
+    text = str(value or "").strip().replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(1, limit - 1)]}..."
+
+
+def _print_question_text_matrix(
+    rows: list[dict[str, Any]],
+    question_rows: list[dict[str, Any]],
+) -> None:
+    if not question_rows:
+        print("question_texts: none")
+        return
+
+    questions_by_attachment: dict[str, list[dict[str, Any]]] = {}
+    for item in question_rows:
+        key = str(item.get("idx") or "").strip()
+        if not key:
+            key = str(item.get("attachment") or "").strip()
+        if not key:
+            key = "unknown"
+        questions_by_attachment.setdefault(key, []).append(item)
+
+    print("question_texts:")
+    for row in rows:
+        key = str(row.get("idx") or "").strip()
+        if not key:
+            key = str(row.get("attachment") or "").strip()
+        if not key:
+            key = "unknown"
+
+        items = questions_by_attachment.get(key, [])
+        items = sorted(
+            items,
+            key=lambda item: (
+                int(str(item.get("question_index") or "").strip() or 0),
+                str(item.get("type") or "").lower(),
+                str(item.get("question") or ""),
+            ),
+        )
+        if not items:
+            continue
+
+        print(f"  [{key}] {str(row.get('attachment') or '-')}")
+        for item in items:
+            qidx = str(item.get("question_index") or "?")
+            question = str(item.get("question") or "").replace("\n", " ").strip() or "-"
+            print(f"    Q{qidx}: {question}")
+
+
+def _question_print_sort_key(item: dict[str, Any]) -> tuple[str, int, str, str]:
+    try:
+        question_index = int(str(item.get("question_index") or "").strip())
+    except Exception:
+        question_index = 0
+    return (
+        str(item.get("idx") or item.get("attachment") or ""),
+        question_index,
+        str(item.get("type") or "").lower(),
+        str(item.get("question") or ""),
+    )
+
+
+def _print_flat_question_rows(question_rows: list[dict[str, Any]]) -> None:
+    if not question_rows:
+        return
+    print("all questions:")
+    for order, item in enumerate(sorted(question_rows, key=_question_print_sort_key), start=1):
+        idx = str(item.get("idx") or "unknown")
+        attachment = str(item.get("attachment") or "-")
+        qidx = str(item.get("question_index") or "?")
+        question_type = str(item.get("type") or "unknown")
+        source = str(item.get("question_source") or "-")
+        ready = str(item.get("ready")).strip().lower() in {"1", "true", "yes", "y"}
+        question = _compact_for_log(item.get("question"), limit=180)
+        issues = ", ".join(_split_issue_series(item.get("issues")))
+        if not issues:
+            issues = "none"
+        print(
+            f"  {order:>3}. doc={idx} attach={attachment} "
+            f"Q{qidx} [{source}] type={question_type} ready={ready} "
+            f"issues={issues} text=\"{question}\""
+        )
 
 
 def _metric_int(row: dict[str, Any], key: str) -> int:
@@ -1646,10 +1754,16 @@ def _print_generated_questions(
             question_source = str(item.get("question_source") or "-").strip()
             follow_up_lines = _print_list_lines(item.get("follow_ups"))
             eval_point_lines = _print_list_lines(item.get("evaluation_points"))
+            question_type = str(item.get("type") or "").strip() or "unknown"
+            question_focus_type = str(item.get("question_focus_type") or "").strip()
+            if question_focus_type:
+                question_type = f"{question_type}:{question_focus_type}"
             if not idx:
                 idx = "?"
-            print(f"    Q{idx} [{question_source}] ready={ready}")
+            print(f"    Q{idx} [{question_source}] type={question_type} ready={ready}")
             print(f"      question: {question}")
+            issues = _split_issue_series(item.get("issues"))
+            model_replacement_reasons = _split_issue_series(item.get("model_replacement_reasons"))
             if follow_up_lines:
                 print("      follow_ups:")
                 for follow_up in follow_up_lines:
@@ -1658,6 +1772,14 @@ def _print_generated_questions(
                 print("      evaluation_points:")
                 for eval_point in eval_point_lines:
                     print(f"        - {eval_point}")
+            if model_replacement_reasons:
+                print("      model_replacement_reasons:")
+                for reason in model_replacement_reasons:
+                    print(f"        - {reason}")
+            if issues:
+                print(f"      issues: {', '.join(issues)}")
+            elif not ready:
+                print("      issues: not ready")
             print("")
 
 
@@ -1669,6 +1791,8 @@ def _split_issue_series(value: Any) -> list[str]:
         if not text:
             return []
         candidates = [segment.strip() for segment in text.split(";") if segment.strip()]
+        if len(candidates) <= 1:
+            candidates = [segment.strip() for segment in text.split("|") if segment.strip()]
         if len(candidates) <= 1:
             candidates = [segment.strip() for segment in text.split(",") if segment.strip()]
     return [candidate for candidate in candidates if candidate]
@@ -1906,6 +2030,7 @@ def main() -> int:
     print(f"csv={csv_path}")
     print(f"item_csv={item_csv_path}")
     print(f"question_list={question_list_json_path}")
+    payload = _build_question_list_payload(rows, question_rows)
     if args.print_question_list:
         want_plain = args.question_list_format in {"plain", "both"}
         want_json = args.question_list_format in {"json", "both"}
@@ -1915,8 +2040,9 @@ def main() -> int:
                 question_rows,
                 question_list_limit=max(0, int(args.question_list_limit)) or None,
             )
+            _print_question_text_matrix(rows, question_rows)
+            _print_flat_question_rows(question_rows)
         if want_json:
-            payload = _build_question_list_payload(rows, question_rows)
             print("question_list_payload_json:")
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         _print_question_issue_summary(question_rows, top_n=30)
