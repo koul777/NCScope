@@ -664,7 +664,7 @@ def _build_question_generation_prompt(
             f"unit={unit} | source={src}"
         )
 
-    return _render_question_generation_prompt(
+    prompt = _render_question_generation_prompt(
         ncs_lines=ncs_lines,
         ksa_lines=ksa_lines,
         jd_text=jd_text,
@@ -673,6 +673,16 @@ def _build_question_generation_prompt(
         target_count=target_count,
         extra_context=extra_context,
     )
+
+    prompt += (
+        "\n[요청 우선순위: KSA 기반 변형 생성]\n"
+        "- 입력으로 주어지는 것은 공식 KSA 근거와 면접기법, 생성 개수입니다. 주어진 KSA의 핵심 판단 요소를 바탕으로 매 요청마다 사건 맥락·조건·산출물 형식을 다르게 구성하세요.\n"
+        "- STAR는 '상황-과제-행동-결과'를 묻는 답변 구조로만 참고하고, 질문 본문에 고정 키워드로 반복 넣지 마세요.\n"
+        "- 같은 KSA라도 이전 결과를 복사하지 말고, 질문의 사건 소재(이해관계자/시간 제약/리스크)와 판단 포인트를 바꿔서 출력을 다양화하세요.\n"
+        "- 공고문·직무기술서 본문은 사실 힌트 정도로만 보고, 키워드·문장 조합을 복사하지 말고 본질 판단을 묻는 질문으로 재작성하세요.\n"
+    )
+
+    return prompt
 
 
 def _extract_json_text(response_text: str) -> str:
@@ -1030,16 +1040,6 @@ def _generate_questions_with_openai_from_ncs(
     if not api_key:
         return []
 
-    prompt = _build_question_generation_prompt(
-        ncs_matches=ncs_matches,
-        ncs_ksa=ncs_ksa,
-        jd_text=jd_text,
-        strengths=strengths,
-        mode=mode,
-        target_count=target_count,
-        extra_context=extra_context,
-    )
-
     try:
         target_n = max(1, int(target_count or 1))
     except Exception:
@@ -1057,13 +1057,23 @@ def _generate_questions_with_openai_from_ncs(
         max_variants = 3
     max_variants = max(1, min(3, max_variants))
 
+    prompt = _build_question_generation_prompt(
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+        jd_text=jd_text,
+        strengths=strengths,
+        mode=mode,
+        target_count=target_count,
+        extra_context=extra_context,
+    )
+
     payload_base = {
         "model": settings.openai_model,
         "messages": [
             {"role": "system", "content": "공공기관 구조화 면접 설계 전문가입니다. JSON만 출력하세요."},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.5,
+        "temperature": 0.82,
         "max_tokens": 4000,
     }
 
@@ -1073,10 +1083,17 @@ def _generate_questions_with_openai_from_ncs(
     attempts.append((p1, timeout_sec))
 
     p2 = copy.deepcopy(payload_base)
+    p2["temperature"] = 0.92
+    p2["messages"][1]["content"] = (
+        str(p2["messages"][1]["content"])
+        + "\n\n변형 지시: 동일 KSA라도 문항의 사건 맥락, 제약 조건, 판단 트리거를 완전히 다르게 설계해 주세요."
+    )
     attempts.append((p2, min(240.0, timeout_sec + 20.0)))
 
     p3 = copy.deepcopy(payload_base)
-    p3["temperature"] = 0.3
+    p3["temperature"] = 0.72
+    p3["top_p"] = 0.95
+    p3["presence_penalty"] = 0.1
     p3["messages"][1]["content"] = (
         str(p3["messages"][1]["content"])
         + "\n\n중요: 설명문 없이 JSON만 출력하세요. 유효한 JSON 객체 1개만 반환하세요."
