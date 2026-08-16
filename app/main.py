@@ -3867,13 +3867,25 @@ def _adjust_generated_questions(
         "follow_up_quality": {"follow_ups"},
         "evaluation_points": {"evaluation_points"},
         "evaluation_points_quality": {"evaluation_points"},
+        "main_question_method_shape": {"question"},
+        "main_question_job_context": {"question"},
+        "method_shape": {"question", "follow_ups", "evaluation_points"},
+        "specific_context": {"question"},
+        "job_specific_context": {"question", "task_conditions"},
+        "natural_wording": {"question"},
+        "focus_scenario_coherence": {"question", "task_conditions"},
+        "decision_dilemma_quality": {"question", "follow_ups", "evaluation_points"},
+        "debate_option_defensibility": {"question", "follow_ups", "evaluation_points"},
+        "debate_outcome_flexibility": {"question", "follow_ups", "evaluation_points"},
+        "debate_case_neutrality": {"question", "follow_ups", "evaluation_points", "task_conditions"},
+        "operating_conditions_separated": {"question", "task_conditions"},
+        "field_realism": {"question", "follow_ups", "evaluation_points", "task_conditions", "assessment_guide"},
+        "precision_grounding": {"question", "follow_ups", "evaluation_points", "task_conditions", "assessment_guide"},
         "standardized_task_conditions": {"task_conditions"},
         "case_materials_sufficient": {"task_conditions"},
         "decision_authority_context": {"task_conditions"},
         "inbasket_authority_context": {"task_conditions"},
-        "debate_case_neutrality": {"task_conditions"},
         "behavior_anchored_evaluation": {"assessment_guide"},
-        "method_shape": {"follow_ups", "evaluation_points"},
         "official_sample_format": {"follow_ups", "evaluation_points"},
     }
     for pos, item in enumerate(adjusted):
@@ -3916,6 +3928,10 @@ def _adjust_generated_questions(
                 candidate["follow_up"] = candidate["follow_ups"][0] if candidate["follow_ups"] else ""
             if "evaluation_points" in repairable_fields:
                 candidate["evaluation_points"] = list(fallback.get("evaluation_points") or [])
+            if "question" in repairable_fields:
+                candidate["question"] = str(
+                    fallback.get("question") or candidate.get("question") or ""
+                ).strip()
             if "task_conditions" in repairable_fields:
                 candidate["task_conditions"] = dict(fallback.get("task_conditions") or {})
             if "assessment_guide" in repairable_fields or "evaluation_points" in repairable_fields:
