@@ -9878,7 +9878,7 @@ async def jd_strategy_upload(
     evaluation_text_clean = str(evaluation_text or "").strip()
     include_all_generated_questions = _coerce_bool_flag(
         include_all_questions,
-        default=False,
+        default=True,
     )
     explicit_generated_questions_max = _coerce_positive_int(
         generated_questions_max_items
@@ -10442,7 +10442,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     )
     include_all_generated_questions = _coerce_bool_flag(
         payload.get("include_all_questions"),
-        default=False,
+        default=True,
     )
     explicit_generated_questions_max = _coerce_positive_int(
         payload.get("generated_questions_max_items")

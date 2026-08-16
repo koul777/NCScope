@@ -1831,8 +1831,9 @@ def main() -> int:
     parser.add_argument(
         "--question-list-format",
         choices=["plain", "json", "both"],
-        default="plain",
-        help="Question list output format: plain text, json payload, or both.",
+        default="both",
+        help="Question list output format: plain text, json payload, or both. "
+             "Default is both.",
     )
     parser.add_argument(
         "--interview-methods",
