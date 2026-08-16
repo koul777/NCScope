@@ -461,12 +461,12 @@ def evaluate_cached_document(
                 fields.get("position")
                 or fields.get("title")
                 or fields.get("job_title")
-                or fields.get("吏곷Т紐?)
-                or fields.get("吏곷Т")
+                or fields.get("직무")
+                or fields.get("업무")
                 or path.stem
             ).strip()
             if not fallback_detail:
-                fallback_detail = "吏곷Т湲곗닠??
+                fallback_detail = "no_detail"
             details = [fallback_detail]
             row["detail_source"] = "fallback_from_filename_or_title"
             row["coverage_blocker_type"] = "parsed_no_detail"
@@ -934,12 +934,17 @@ def evaluate_cached_document(
         return row, question_rows
 
 
-def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, Path, Path]:
+def write_quality_reports(
+    rows: list[dict[str, Any]],
+    question_rows: list[dict[str, Any]],
+    report_dir: Path,
+) -> tuple[Path, Path, Path, Path]:
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}-{uuid4().hex[:8]}"
     md_path = report_dir / f"alio_question_quality_{stamp}.md"
     csv_path = report_dir / f"alio_question_quality_{stamp}.csv"
     item_csv_path = report_dir / f"alio_question_quality_items_{stamp}.csv"
+    list_json_path = report_dir / f"alio_question_quality_list_{stamp}.json"
     safe_text = lambda value: str(value or "").replace("|", "/").replace("\n", " ").strip()
 
     questions_by_attachment: dict[str, list[dict[str, Any]]] = {}
@@ -1454,9 +1459,118 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
         for row in suggestion_rows:
             suggestions = str(row.get("manual_review_suggestions") or "").replace("|", "/")
             lines.append(f"- `{row.get('idx')}`: {suggestions}")
-    lines.extend(["", f"CSV: `{csv_path}`", f"Question CSV: `{item_csv_path}`", ""])
+    lines.extend(
+        [
+            "",
+            f"CSV: `{csv_path}`",
+            f"Question CSV: `{item_csv_path}`",
+            f"Question List JSON: `{list_json_path}`",
+            "",
+        ]
+    )
     md_path.write_text("\n".join(lines), encoding="utf-8")
-    return md_path, csv_path, item_csv_path
+    question_by_doc = _build_question_list_payload(rows, question_rows)
+    list_json_path.write_text(
+        json.dumps(question_by_doc, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return md_path, csv_path, item_csv_path, list_json_path
+
+
+def _stringify_text_array(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if not value:
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    return [text]
+
+
+def _build_question_list_payload(
+    rows: list[dict[str, Any]],
+    question_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    questions_by_attachment: dict[str, list[dict[str, Any]]] = {}
+    for item in question_rows:
+        key = str(item.get("idx") or "").strip()
+        if not key:
+            key = str(item.get("attachment") or "").strip()
+        if not key:
+            key = "unknown"
+        questions_by_attachment.setdefault(key, []).append(item)
+
+    def _safe_index(item: dict[str, Any]) -> int:
+        try:
+            return int(str(item.get("question_index") or "").strip())
+        except Exception:
+            return 0
+
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        key = str(row.get("idx") or "").strip()
+        if not key:
+            key = str(row.get("attachment") or "").strip()
+        if not key:
+            key = "unknown"
+        items = sorted(
+            questions_by_attachment.get(key, []),
+            key=lambda item: (
+                _safe_index(item),
+                str(item.get("type") or "").lower(),
+                str(item.get("question") or ""),
+            ),
+        )
+        payload.append(
+            {
+                "idx": row.get("idx") or "",
+                "attachment": row.get("attachment") or "",
+                "status": row.get("status") or "",
+                "benchmark_mode": row.get("resolved_benchmark_mode")
+                or row.get("benchmark_mode")
+                or "",
+                "questions": [
+                    {
+                        "question_index": item.get("question_index"),
+                        "type": item.get("type") or "",
+                        "question_focus_type": item.get("question_focus_type") or "",
+                        "question_focus": item.get("question_focus") or "",
+                        "question_source": item.get("question_source") or "",
+                        "ready": bool(item.get("ready")),
+                        "question": item.get("question") or "",
+                        "follow_ups": _stringify_text_array(item.get("follow_ups")),
+                        "evaluation_points": _stringify_text_array(item.get("evaluation_points")),
+                        "ksa_refs": _stringify_text_array(item.get("ksa_refs")),
+                        "question_intent": item.get("question_intent") or "",
+                        "ncs_refs": (
+                            item.get("ncs_refs")
+                            if isinstance(item.get("ncs_refs"), list)
+                            else _stringify_text_array(item.get("ncs_refs"))
+                        ),
+                    }
+                    for item in items
+                ],
+                "generated_questions": int(row.get("generated_questions") or 0),
+                "ready_questions": int(row.get("ready_questions") or 0),
+            }
+        )
+    return payload
+
+
+def _print_list_lines(value: Any) -> list[str]:
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return items
+    text = str(value or "").strip()
+    if not text:
+        return []
+    # Keep compatibility with existing pipe-joined storage.
+    if "|" in text:
+        return [segment.strip() for segment in text.split("|") if segment.strip()]
+    return [text]
 
 
 def _metric_int(row: dict[str, Any], key: str) -> int:
@@ -1529,16 +1643,20 @@ def _print_generated_questions(
             question = str(item.get("question") or "").replace("\n", " ").strip() or "-"
             ready = _is_ready(item.get("ready"))
             question_source = str(item.get("question_source") or "-").strip()
-            follow_ups = str(item.get("follow_ups") or "").replace("\n", " ").strip()
-            eval_points = str(item.get("evaluation_points") or "").replace("\n", " ").strip()
+            follow_up_lines = _print_list_lines(item.get("follow_ups"))
+            eval_point_lines = _print_list_lines(item.get("evaluation_points"))
             if not idx:
                 idx = "?"
             print(f"    Q{idx} [{question_source}] ready={ready}")
             print(f"      question: {question}")
-            if follow_ups:
-                print(f"      follow_ups: {follow_ups}")
-            if eval_points:
-                print(f"      evaluation_points: {eval_points}")
+            if follow_up_lines:
+                print("      follow_ups:")
+                for follow_up in follow_up_lines:
+                    print(f"        - {follow_up}")
+            if eval_point_lines:
+                print("      evaluation_points:")
+                for eval_point in eval_point_lines:
+                    print(f"        - {eval_point}")
             print("")
 
 
@@ -1671,6 +1789,12 @@ def main() -> int:
         help="Limit printed questions per JD (0 = no limit).",
     )
     parser.add_argument(
+        "--question-list-format",
+        choices=["plain", "json", "both"],
+        default="plain",
+        help="Question list output format: plain text, json payload, or both.",
+    )
+    parser.add_argument(
         "--interview-methods",
         default="",
         help="Comma/JSON-separated interview methods or aliases. Defaults to the standard supported methods.",
@@ -1732,16 +1856,28 @@ def main() -> int:
         rows.append(row)
         question_rows.extend(items)
         time.sleep(0.1)
-    md_path, csv_path, item_csv_path = write_quality_reports(rows, question_rows, Path(args.report_dir))
+    md_path, csv_path, item_csv_path, question_list_json_path = write_quality_reports(
+        rows,
+        question_rows,
+        Path(args.report_dir),
+    )
     print(f"report={md_path}")
     print(f"csv={csv_path}")
     print(f"item_csv={item_csv_path}")
+    print(f"question_list={question_list_json_path}")
     if args.print_question_list:
-        _print_generated_questions(
-            rows,
-            question_rows,
-            question_list_limit=max(0, int(args.question_list_limit)) or None,
-        )
+        want_plain = args.question_list_format in {"plain", "both"}
+        want_json = args.question_list_format in {"json", "both"}
+        if want_plain:
+            _print_generated_questions(
+                rows,
+                question_rows,
+                question_list_limit=max(0, int(args.question_list_limit)) or None,
+            )
+        if want_json:
+            payload = _build_question_list_payload(rows, question_rows)
+            print("question_list_payload_json:")
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
     print(f"rows={len(rows)}")
     failures = quality_gate_failures(
         rows,
