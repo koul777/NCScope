@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from datetime import datetime
 from uuid import uuid4
 from pathlib import Path
@@ -1660,6 +1661,45 @@ def _print_generated_questions(
             print("")
 
 
+def _split_issue_series(value: Any) -> list[str]:
+    if isinstance(value, list):
+        candidates = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        candidates = [segment.strip() for segment in text.split(";") if segment.strip()]
+        if len(candidates) <= 1:
+            candidates = [segment.strip() for segment in text.split(",") if segment.strip()]
+    return [candidate for candidate in candidates if candidate]
+
+
+def _print_question_issue_summary(
+    question_rows: list[dict[str, Any]],
+    *,
+    top_n: int = 30,
+) -> None:
+    if not question_rows:
+        return
+
+    issue_counts: Counter[str] = Counter()
+    total_question_count = len(question_rows)
+    rejected_count = 0
+    for item in question_rows:
+        if str(item.get("ready")).strip().lower() not in {"true", "1", "yes", "y"}:
+            rejected_count += 1
+        for issue in _split_issue_series(item.get("issues")):
+            issue_counts[issue] += 1
+    if not issue_counts and not rejected_count:
+        print("quality issues: none")
+        return
+
+    print("quality_issue_summary:")
+    print(f"  total_questions={total_question_count} rejected={rejected_count}")
+    for issue, count in issue_counts.most_common(top_n):
+        print(f"  {issue}: {count}")
+
+
 def quality_gate_failures(
     rows: list[dict[str, Any]],
     *,
@@ -1878,6 +1918,7 @@ def main() -> int:
             payload = _build_question_list_payload(rows, question_rows)
             print("question_list_payload_json:")
             print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _print_question_issue_summary(question_rows, top_n=30)
     print(f"rows={len(rows)}")
     failures = quality_gate_failures(
         rows,
