@@ -7762,8 +7762,37 @@ def _partial_safe_question_strategy(
     result: dict[str, Any],
     *,
     requested_count: int,
+    question_plan: dict[str, Any] | None = None,
+    interview_methods: list[str] | None = None,
+    ncs_matches: list[dict[str, Any]] | None = None,
+    ncs_ksa: list[dict[str, Any]] | None = None,
+    avoid_questions: list[str] | None = None,
+    generation_offset: int | None = None,
+    evidence_locks: list[tuple[int, str]] | None = None,
 ) -> dict[str, Any] | None:
     """Return only independently hard-clean model questions after retry exhaustion."""
+
+    if not isinstance(result, dict):
+        return None
+
+    resolved_plan = (
+        dict(question_plan)
+        if isinstance(question_plan, dict)
+        else dict(result.get("question_plan_used") or {})
+    )
+    methods = list(interview_methods or (result.get("interview_methods_used") or []))
+    if not methods:
+        methods = list(SUPPORTED_INTERVIEW_METHODS)
+
+    questions = [
+        dict(item)
+        for item in (result.get("interview_questions") or [])
+        if isinstance(item, dict)
+    ]
+    if requested_count <= 0:
+        requested_count = int(resolved_plan.get("total_main_count") or 0) or len(questions)
+    if requested_count <= 0:
+        return None
 
     request_codes = set(
         _institution_hard_question_rejection_codes(
@@ -7772,46 +7801,77 @@ def _partial_safe_question_strategy(
         )
     )
     partial_forbidden_codes = {
-        "invalid_question_result",
-        "result_error",
-        "empty_question_set",
-        "question_evidence_assignment_failed",
         "question_quality_report_missing",
         "question_quality_report_unclassified",
         "question_quality_unclassified_issue",
         "question_quality_orchestration_missing",
         "question_quality_orchestration_unclassified",
-        "question_count_mismatch",
     }
-    if request_codes & partial_forbidden_codes:
-        return None
-    questions = [
-        dict(item)
-        for item in (result.get("interview_questions") or [])
-        if isinstance(item, dict)
-    ]
-    failed_indexes = _institution_hard_question_indexes(result)
-    failed_set = set(failed_indexes)
-    if not questions or not failed_set or len(failed_set) >= len(questions):
+    if request_codes & partial_forbidden_codes and not questions:
         return None
 
-    kept_pairs = [
-        (index, question)
-        for index, question in enumerate(questions, start=1)
-        if index not in failed_set
-    ]
+    failed_indexes = _institution_hard_question_indexes(result)
+    failed_set = {idx for idx in failed_indexes if isinstance(idx, int) and idx > 0}
+
+    if not failed_set and len(questions) >= requested_count:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    for index in range(1, requested_count + 1):
+        if index in failed_set or index > len(questions):
+            rows.append({})
+        else:
+            rows.append(dict(questions[index - 1]))
+
     partial = dict(result)
-    partial_questions: list[dict[str, Any]] = []
-    for original_index, question in kept_pairs:
-        kept_question = dict(question)
-        kept_question["original_question_index"] = original_index
-        partial_questions.append(kept_question)
+    if not rows:
+        return None
+
+    partial["interview_questions"] = rows
+    partial["question_plan_used"] = resolved_plan
+    partial["interview_methods_used"] = methods
+    partial["interview_questions"] = [
+        dict(row) for row in partial.get("interview_questions") or []
+    ]
+
+    adjusted = _adjust_generated_questions(
+        partial,
+        question_plan=resolved_plan,
+        interview_methods=methods,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+    adjusted = _run_runtime_question_quality_orchestration(
+        adjusted,
+        question_plan=resolved_plan,
+        ncs_ksa=ncs_ksa,
+        avoid_questions=avoid_questions or [],
+        generation_offset=generation_offset,
+    )
+    partial = adjusted
+
+    partial_questions: list[dict[str, Any]] = [
+        dict(item)
+        for item in (adjusted.get("interview_questions") or [])
+        if isinstance(item, dict)
+    ]
+    if len(partial_questions) != requested_count:
+        if len(partial_questions) > requested_count:
+            partial_questions = partial_questions[:requested_count]
+        else:
+            while len(partial_questions) < requested_count:
+                partial_questions.append({})
     partial["interview_questions"] = partial_questions
     partial["interview_by_competency"] = _group_interview_questions_for_response(
         partial_questions
     )
 
-    report = result.get("question_quality_report")
+    report = partial.get("question_quality_report")
+    kept_indexes = [
+        index
+        for index in range(1, requested_count + 1)
+        if index not in failed_set and index <= len(questions)
+    ]
     if isinstance(report, dict):
         report_items_by_index = {
             int(item.get("index") or fallback_index): dict(item)
@@ -7819,7 +7879,7 @@ def _partial_safe_question_strategy(
             if isinstance(item, dict)
         }
         kept_report_items: list[dict[str, Any]] = []
-        for new_index, (original_index, _question) in enumerate(kept_pairs, start=1):
+        for new_index, original_index in enumerate(kept_indexes, start=1):
             item = dict(report_items_by_index.get(original_index) or {})
             item["original_index"] = original_index
             item["index"] = new_index
@@ -7832,7 +7892,7 @@ def _partial_safe_question_strategy(
             "question_count": len(partial_questions),
             "expected_question_count": requested_count,
             "count_matches_plan": False,
-            "omitted_hard_failure_count": len(failed_indexes),
+            "omitted_hard_failure_count": len(failed_set),
         }
         partial["question_quality_report"] = partial_report
 
@@ -7846,7 +7906,7 @@ def _partial_safe_question_strategy(
             "matched_count": len(partial_questions),
             "mismatch_count": 0,
             "mismatched_indexes": [],
-            "original_indexes": [index for index, _question in kept_pairs],
+            "original_indexes": kept_indexes,
             "partial_survivor_attestation": True,
         }
 
@@ -7861,7 +7921,7 @@ def _partial_safe_question_strategy(
         for item in ((result.get("question_quality_orchestration") or {}).get("items") or [])
         if isinstance(item, dict)
     ]
-    for failed_index in failed_indexes:
+    for failed_index in sorted(failed_set):
         codes: list[str] = []
         report_item = next(
             (
@@ -7897,10 +7957,26 @@ def _partial_safe_question_strategy(
         "policy": "hard-failure-isolation-v1",
         "requested_question_count": requested_count,
         "returned_question_count": len(partial_questions),
-        "omitted_question_count": len(failed_indexes),
-        "omitted_indexes": failed_indexes,
+        "omitted_question_count": len(failed_set),
+        "omitted_indexes": sorted(failed_set),
         "omission_reasons_by_index": safe_reasons_by_index,
     }
+    if evidence_locks is not None:
+        partial["question_evidence_assignment"] = _raw_model_evidence_assignment_report(
+            {
+                "interview_questions": [
+                    dict(item)
+                    for item in (result.get("interview_questions") or [])
+                    if isinstance(item, dict)
+                ]
+            },
+            evidence_locks,
+        )
+    partial["partial_generation"]["fill_method"] = (
+        "template_fill_with_question_plan"
+        if failed_set
+        else "question_plan_fill"
+    )
     partial["question_release_status"] = "partial_human_review_required"
     return partial
 
@@ -8050,6 +8126,102 @@ def _extract_generated_question_items(
         if len(output) >= max(1, int(max_items)):
             break
     return output
+
+
+def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]:
+    """Expose all generated question slots for full visibility, including empty slots."""
+
+    if not isinstance(strategy, dict):
+        return []
+    questions = strategy.get("interview_questions")
+    if not isinstance(questions, list):
+        return []
+    expected_count = 0
+    for plan_key in ("question_plan_used", "question_plan"):
+        plan_value = strategy.get(plan_key)
+        if isinstance(plan_value, dict):
+            try:
+                expected_count = int(plan_value.get("total_main_count") or 0)
+            except Exception:
+                expected_count = 0
+            if expected_count > 0:
+                break
+    if expected_count <= 0:
+        expected_count = len(questions)
+
+    output: list[dict[str, Any]] = []
+    for idx in range(1, expected_count + 1):
+        item = questions[idx - 1] if idx <= len(questions) else None
+        row = {
+            "index": idx,
+            "question": "",
+            "type": "",
+            "ncsClCd": "",
+            "competency": "",
+            "question_source": "",
+            "ready": False,
+        }
+        if isinstance(item, dict):
+            question = _clean_question_text(item.get("question"), max_chars=400)
+            row["question"] = question
+            row["type"] = str(item.get("type") or item.get("method") or "").strip()
+            row["ncsClCd"] = str(
+                item.get("ncsClCd") or item.get("ncs_code") or ""
+            ).strip()
+            row["competency"] = str(item.get("competency") or "").strip()
+            row["question_source"] = str(item.get("question_source") or "").strip()
+            follow_ups = [
+                _clean_question_text(fu, max_chars=200)
+                for fu in (item.get("follow_ups") or [])
+                if isinstance(fu, str) and _clean_question_text(fu, max_chars=200)
+            ]
+            if follow_ups:
+                row["follow_ups"] = follow_ups
+            row["ready"] = bool(question)
+            if "index" in item:
+                try:
+                    row["source_index"] = int(item.get("index"))
+                except Exception:
+                    pass
+            if "generation_original_index" in item:
+                try:
+                    row["generation_original_index"] = int(
+                        item.get("generation_original_index")
+                    )
+                except Exception:
+                    pass
+        output.append(row)
+    return output
+
+
+def _generated_question_preview_limit(
+    question_plan: dict[str, Any] | None,
+    strategy: dict[str, Any] | None,
+    *,
+    fallback: int = 4,
+) -> int:
+    """Calculate how many generated questions to expose in response previews."""
+
+    candidate = 0
+    try:
+        candidate = int((question_plan or {}).get("total_main_count") or 0)
+    except Exception:
+        candidate = 0
+
+    generated = []
+    if isinstance(strategy, dict):
+        maybe_generated = strategy.get("interview_questions")
+        if isinstance(maybe_generated, list):
+            generated = maybe_generated
+    if candidate <= 0 and generated:
+        candidate = len(generated)
+
+    if generated and candidate > len(generated):
+        candidate = len(generated)
+
+    if candidate <= 0:
+        candidate = max(1, int(fallback or 1))
+    return min(max(1, candidate), 100)
 
 
 _QUESTION_EVIDENCE_ASSIGNMENT_POLICY = "planned-question-evidence-assignment-v1"
@@ -8449,6 +8621,37 @@ async def _generate_quality_gated_institution_strategy(
         return with_generation_timing(strategy)
 
     if any(code not in _INSTITUTION_RETRYABLE_QUALITY_CODES for code in trigger_codes):
+        partial = _partial_safe_question_strategy(
+            strategy,
+            requested_count=int(runtime_question_plan.get("total_main_count") or 0),
+            question_plan=runtime_question_plan,
+            interview_methods=interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
+            avoid_questions=avoid_questions,
+            generation_offset=generation_offset,
+            evidence_locks=planned_evidence_locks,
+        )
+        if partial is not None:
+            partial["model_quality_retry"] = {
+                "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
+                "provider": "openai_api",
+                "attempted": False,
+                "retry_count": 0,
+                "attempt_count": 1,
+                "outcome": "partial_after_retry_policy",
+                "trigger_codes": sorted(trigger_codes),
+                "remaining_codes": sorted(trigger_codes),
+                "remaining_issue_codes": first_quality_issue_codes,
+                "previous_candidate_count": 0,
+                "evidence_lock_count": len(planned_evidence_locks),
+                "provider_generation_request_count": first_generation_request_count,
+                "provider_generation_request_limit": provider_generation_request_limit,
+                "transport_attempt_limit_per_generation_request": 1,
+            }
+            partial["question_release_status"] = "partial_human_review_required"
+            partial["partial_generation"] = partial.get("partial_generation", {})
+            return with_generation_timing(partial)
         raise InstitutionQuestionQualityRejected(
             rejection_diagnostics(strategy, attempt_count=1)
         )
@@ -8651,6 +8854,13 @@ async def _generate_quality_gated_institution_strategy(
         partial = _partial_safe_question_strategy(
             retried,
             requested_count=first_question_count,
+            question_plan=runtime_question_plan,
+            interview_methods=interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
+            avoid_questions=avoid_questions,
+            generation_offset=generation_offset,
+            evidence_locks=retry_evidence_locks,
         )
         if partial is not None:
             partial["model_quality_retry"] = {
@@ -10074,9 +10284,14 @@ async def jd_strategy_upload(
         },
         "ncs_context": ncs_context,
         "strategy": strategy,
+        "generated_questions_all": _extract_all_generated_question_items(strategy),
         "generated_questions": _extract_generated_question_items(
             strategy,
-            max_items=run_top_k,
+            max_items=_generated_question_preview_limit(
+                question_plan,
+                strategy,
+                fallback=run_top_k,
+            ),
         ),
     }
 
@@ -10317,9 +10532,14 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         },
         "ncs_context": ncs_context,
         "strategy": strategy,
+        "generated_questions_all": _extract_all_generated_question_items(strategy),
         "generated_questions": _extract_generated_question_items(
             strategy,
-            max_items=run_top_k,
+            max_items=_generated_question_preview_limit(
+                question_plan,
+                strategy,
+                fallback=run_top_k,
+            ),
         ),
     }
 
