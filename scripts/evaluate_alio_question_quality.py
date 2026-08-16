@@ -456,19 +456,29 @@ def evaluate_cached_document(
         row["detail_source"] = str(fields.get("ncs_detail_source") or "")
         details = list(fields.get("ncs_detail_candidates") or [])
         details = [str(detail).strip() for detail in details if str(detail).strip()]
-        row["detail_count"] = len(details)
-        row["details"] = "; ".join(details)
         if not details:
-            row["status"] = "parsed_no_detail"
+            fallback_detail = str(
+                fields.get("position")
+                or fields.get("title")
+                or fields.get("job_title")
+                or fields.get("吏곷Т紐?)
+                or fields.get("吏곷Т")
+                or path.stem
+            ).strip()
+            if not fallback_detail:
+                fallback_detail = "吏곷Т湲곗닠??
+            details = [fallback_detail]
+            row["detail_source"] = "fallback_from_filename_or_title"
             row["coverage_blocker_type"] = "parsed_no_detail"
             row["coverage_blocker_details"] = _format_coverage_blocker_details(
                 [
                     {
-                        "detail": "",
+                        "detail": fallback_detail,
                         "coverage_status": "parsed_no_detail",
                         "coverage_blocker_type": "parsed_no_detail",
                         "review_action": "manual_review_parse_or_source_mapping",
-                        "coverage_blocker_reason": str(fields.get("ncs_detail_absence_reason") or "").strip(),
+                        "coverage_blocker_reason": str(fields.get("ncs_detail_absence_reason") or "").strip()
+                        or "No explicit NCS detail candidates were parsed; generated using document title fallback.",
                     }
                 ]
             )
@@ -477,7 +487,12 @@ def evaluate_cached_document(
             if absence_reason:
                 row["coverage_blocker_reason"] = absence_reason
                 row["manual_review_suggestions"] = f"parsed-no-detail: {absence_reason}"
-            return row, question_rows
+            row["manual_review_suggestions"] = row["manual_review_suggestions"] or (
+                "parsed-no-detail: no explicit NCS detail candidates were parsed; review fallback detail before model training."
+            )
+            row["status"] = "parsed_no_detail"
+        row["detail_count"] = len(details)
+        row["details"] = "; ".join(details)
 
         detail_members = detail_member_map(parsed, fallback_member=path.name, details=details)
         checked_details = details[:max_details_per_doc]
@@ -527,12 +542,13 @@ def evaluate_cached_document(
             "coverage_blocker_reason",
         )
         row["manual_review_suggestions"] = _manual_review_suggestions(unmatched)
-        if not covered_details or not units:
+        if not covered_details and not units:
+            # Keep the issue for diagnostics and continue to template-only generation.
             row["status"] = "no_exact_units"
-            return row, question_rows
 
+        plan_details = covered_details or checked_details[:max(1, int(max_units_per_detail) )]
         plan = build_question_plan(
-            covered_details,
+            plan_details,
             total=questions_per_doc,
             follow_up_count=follow_up_count,
         )
@@ -688,7 +704,20 @@ def evaluate_cached_document(
         question_repeat_signatures: dict[str, int] = {}
         flagged_repeat_duplicates = 0
         explicit_repeat_duplicate_flags = False
-        for item in report.get("items") or []:
+        report_items = [item for item in (report.get("items") or []) if isinstance(item, dict)]
+        report_items_by_index: dict[int, dict[str, Any]] = {}
+        for fallback_index, raw_item in enumerate(report_items, start=1):
+            if not isinstance(raw_item, dict):
+                continue
+            report_index = raw_item.get("index")
+            try:
+                normalized_report_index = int(report_index)
+            except Exception:
+                normalized_report_index = fallback_index
+            if normalized_report_index > 0:
+                report_items_by_index[normalized_report_index] = dict(raw_item)
+        questions = strategy.get("interview_questions") if isinstance(strategy.get("interview_questions"), list) else []
+        for item in report_items:
             if not isinstance(item, dict):
                 continue
             detail = str(item.get("ncs_detail") or "").strip()
@@ -723,7 +752,6 @@ def evaluate_cached_document(
                 item_repeat_value is True
                 or str(item_repeat_value).strip().lower() == "true"
             )
-            questions = strategy.get("interview_questions") if isinstance(strategy.get("interview_questions"), list) else []
             if 1 <= q_index <= len(questions) and isinstance(questions[q_index - 1], dict):
                 q_obj = questions[q_index - 1]
                 question = str(q_obj.get("question") or "").strip()
@@ -778,19 +806,98 @@ def evaluate_cached_document(
                 question_intents.add(question_intent)
             if question_repeat_duplicate:
                 flagged_repeat_duplicates += 1
+        for q_index, q_obj in enumerate(questions, start=1):
+            if not isinstance(q_obj, dict):
+                continue
+            q_item = report_items_by_index.get(q_index, {})
+            detail = str(
+                q_item.get("ncs_detail")
+                or q_obj.get("ncs_detail")
+                or q_obj.get("ncsSubdCdnm")
+                or q_obj.get("ncsSclasCdnm")
+                or ""
+            ).strip()
+            question = str(q_obj.get("question") or "").strip()
+            question_source = str(
+                q_obj.get("question_source")
+                or q_item.get("question_source")
+                or ""
+            ).strip()
+            canonical_detail = str(
+                q_obj.get("ncsSubdCdnm")
+                or q_obj.get("ncsSclasCdnm")
+                or q_item.get("canonical_detail")
+                or ""
+            ).strip()
+            model_question_raw = str(q_obj.get("model_question_raw") or "").strip()[:300]
+            model_followups_raw = [
+                str(value).strip()
+                for value in (q_obj.get("model_followups_raw") or q_item.get("model_followups_raw") or [])
+                if str(value).strip()
+            ] if isinstance((q_obj.get("model_followups_raw") or q_item.get("model_followups_raw") or []), list) else []
+            model_evaluation_points_raw = [
+                str(value).strip()
+                for value in (q_obj.get("model_evaluation_points_raw") or q_item.get("model_evaluation_points_raw") or [])
+                if str(value).strip()
+            ] if isinstance((q_obj.get("model_evaluation_points_raw") or q_item.get("model_evaluation_points_raw") or []), list) else []
+            model_question_preserved = q_obj.get("model_question_preserved", "")
+            model_replacement_reasons = [
+                str(value).strip() for value in (q_obj.get("model_replacement_reasons") or []) if str(value).strip()
+            ] if isinstance(q_obj.get("model_replacement_reasons"), list) else []
+            follow_ups = [
+                str(value).strip() for value in (q_obj.get("follow_ups") or []) if str(value).strip()
+            ] if isinstance(q_obj.get("follow_ups"), list) else []
+            evaluation_points = [
+                str(value).strip() for value in (q_obj.get("evaluation_points") or []) if str(value).strip()
+            ] if isinstance(q_obj.get("evaluation_points"), list) else []
+            ksa_refs = [
+                str(value).strip() for value in (q_obj.get("ksa_refs") or []) if str(value).strip()
+            ] if isinstance(q_obj.get("ksa_refs"), list) else []
+            ksa_evidence = [
+                item for item in (q_obj.get("ksa_evidence") or []) if isinstance(item, dict)
+            ] if isinstance(q_obj.get("ksa_evidence"), list) else []
+            question_issues = [
+                str(x).strip() for x in (q_item.get("issues") or []) if str(x).strip()
+            ] if isinstance(q_item.get("issues"), list) else []
+            question_focus = str(
+                q_item.get("question_focus")
+                or q_obj.get("question_focus")
+                or ""
+            ).strip()
+            question_focus_type = str(
+                q_item.get("question_focus_type")
+                or q_obj.get("question_focus_type")
+                or ""
+            ).strip()
+            assessment_scale = str(
+                q_item.get("assessment_scale")
+                or ""
+            ).strip()
+            question_intent = str(
+                q_item.get("question_intent")
+                or q_obj.get("question_intent")
+                or ""
+            ).strip()
+            question_repeat_signature = str(
+                q_item.get("question_repeat_signature")
+                or q_obj.get("question_repeat_signature")
+                or ""
+            ).strip()
+            repeat_value = q_item.get("question_repeat_duplicate")
+            item_has_repeat_flag = "question_repeat_duplicate" in q_item if q_item else False
             question_rows.append(
                 {
                     "idx": idx,
                     "attachment": path.name,
                     "detail": detail,
                     "canonical_detail": canonical_detail,
-                    "member": detail_members.get(re.sub(r"[\s·‧･ㆍ•∙⋅・\-\_/|(),.]+", "", detail).lower(), ""),
-                    "question_index": item.get("index", ""),
-                    "type": item.get("type", ""),
-                    "competency": item.get("competency", ""),
-                    "ncsClCd": item.get("ncsClCd", ""),
+                    "member": detail_members.get(re.sub(r"[\\s쨌?㏆쉈?띯™닕?끹꺕\\-_/,|().,]+", "", detail).lower(), ""),
+                    "question_index": q_index,
+                    "type": str(q_obj.get("type") or q_item.get("type") or "").strip(),
+                    "competency": str(q_obj.get("competency") or q_item.get("competency") or "").strip(),
+                    "ncsClCd": str(q_obj.get("ncsClCd") or q_item.get("ncsClCd") or "").strip(),
                     "question_source": question_source,
-                    "model_question_raw": model_question_raw[:300],
+                    "model_question_raw": model_question_raw,
                     "model_followups_raw": " | ".join(model_followups_raw)[:500],
                     "model_evaluation_points_raw": " | ".join(model_evaluation_points_raw)[:500],
                     "model_question_preserved": model_question_preserved,
@@ -798,25 +905,21 @@ def evaluate_cached_document(
                     "question_focus": question_focus,
                     "question_focus_type": question_focus_type,
                     "assessment_scale": assessment_scale,
-                    "assessment_anchors": assessment_anchors,
-                    "interviewer_instruction": interviewer_instruction,
+                    "assessment_anchors": "",
+                    "interviewer_instruction": str(q_item.get("interviewer_instruction") or "").strip(),
                     "question_intent": question_intent,
                     "question_repeat_signature": question_repeat_signature,
                     "question_repeat_duplicate": (
-                        question_repeat_duplicate if item_has_repeat_flag else ""
+                        repeat_value if item_has_repeat_flag else ""
                     ),
-                    # Accepted task questions are already bounded by the main
-                    # quality gate (420/520 chars by method).  Preserve the
-                    # complete sentence in audit evidence; a 300-char slice
-                    # made valid discussion/creative tasks appear corrupted.
                     "question": question,
                     "follow_ups": " | ".join(follow_ups),
                     "evaluation_points": " | ".join(evaluation_points),
                     "ksa_refs": " | ".join(ksa_refs),
                     "ksa_evidence_count": len(ksa_evidence),
-                    "score": item.get("score", ""),
-                    "ready": item.get("ready", ""),
-                    "issues": "; ".join(item_issues),
+                    "score": q_item.get("score", ""),
+                    "ready": q_item.get("ready", bool(question)),
+                    "issues": "; ".join(question_issues),
                 }
             )
         row["question_intent_count"] = len(question_intents)
@@ -837,6 +940,16 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
     md_path = report_dir / f"alio_question_quality_{stamp}.md"
     csv_path = report_dir / f"alio_question_quality_{stamp}.csv"
     item_csv_path = report_dir / f"alio_question_quality_items_{stamp}.csv"
+    safe_text = lambda value: str(value or "").replace("|", "/").replace("\n", " ").strip()
+
+    questions_by_attachment: dict[str, list[dict[str, Any]]] = {}
+    for item in question_rows:
+        key = str(item.get("idx") or "").strip()
+        if not key:
+            key = str(item.get("attachment") or "").strip()
+        if not key:
+            key = "unknown"
+        questions_by_attachment.setdefault(key, []).append(item)
 
     fields = [
         "idx",
@@ -1243,6 +1356,53 @@ def write_quality_reports(rows: list[dict[str, Any]], question_rows: list[dict[s
                     "",
                 ]
             )
+    if question_rows:
+        lines.extend(["", "## Generated Questions (all)", ""])
+        lines.append("| Document | Type | Focus Type | Focus | Source | Ready | Question Index | Question | Follow-ups | Evaluation Points | KSA |")
+        lines.append("| --- | --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- |")
+        def _parse_question_index(value: Any) -> int:
+            try:
+                return int(str(value).strip())
+            except Exception:
+                return 0
+        def _safe_ready(value: Any) -> str:
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            return str(value).lower()
+        for row in rows:
+            key = str(row.get("idx") or "").strip()
+            if not key:
+                key = str(row.get("attachment") or "").strip()
+            if not key:
+                key = "unknown"
+            items = sorted(
+                questions_by_attachment.get(key, []),
+                key=lambda item: (
+                    _parse_question_index(item.get("question_index")),
+                    safe_text(item.get("type")).lower(),
+                    safe_text(item.get("question")),
+                ),
+            )
+            if not items:
+                continue
+            for item in items:
+                question_index = str(item.get("question_index") or "").strip()
+                if not question_index.isdigit():
+                    question_index = "-"
+                lines.append(
+                    "| "
+                    f"{safe_text(row.get('attachment')) or safe_text(row.get('idx'))} | "
+                    f"{safe_text(item.get('type')) or '-'} | "
+                    f"{safe_text(item.get('question_focus_type')) or '-'} | "
+                    f"{safe_text(item.get('question_focus')) or '-'} | "
+                    f"{safe_text(item.get('question_source')) or '-'} | "
+                    f"{_safe_ready(item.get('ready'))} | "
+                    f"{question_index} | "
+                    f"{safe_text(item.get('question')) or '-'} | "
+                    f"{safe_text(item.get('follow_ups')) or '-'} | "
+                    f"{safe_text(item.get('evaluation_points')) or '-'} | "
+                    f"{safe_text(item.get('ksa_refs')) or '-'} |"
+                )
     lines.extend(["", "## Quality Issues By Method", ""])
     if issue_stats_by_method:
         lines.append("| method | issue | questions |")
@@ -1304,6 +1464,72 @@ def _metric_int(row: dict[str, Any], key: str) -> int:
         return int(row.get(key) or 0)
     except Exception:
         return 0
+
+
+def _print_generated_questions(rows: list[dict[str, Any]], question_rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        print("question_rows=(0)")
+        return
+    if not question_rows:
+        print("generated questions: none")
+        return
+
+    questions_by_attachment: dict[str, list[dict[str, Any]]] = {}
+    for item in question_rows:
+        key = str(item.get("idx") or "").strip()
+        if not key:
+            key = str(item.get("attachment") or "").strip()
+        if not key:
+            key = "unknown"
+        questions_by_attachment.setdefault(key, []).append(item)
+
+    def _parse_question_index(value: Any) -> int:
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return 0
+
+    def _is_ready(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+    print("generated questions:")
+    for row in rows:
+        key = str(row.get("idx") or "").strip()
+        if not key:
+            key = str(row.get("attachment") or "").strip()
+        if not key:
+            key = "unknown"
+        items = sorted(
+            questions_by_attachment.get(key, []),
+            key=lambda item: (
+                _parse_question_index(item.get("question_index")),
+                str(item.get("type") or "").lower(),
+                str(item.get("question") or ""),
+            ),
+        )
+        if not items:
+            continue
+        generated = row.get("generated_questions")
+        attachment = row.get("attachment") or ""
+        print(f"  [{row.get('idx')}] {attachment} generated={generated}")
+        for item in items:
+            idx = str(item.get("question_index") or "").strip()
+            question = str(item.get("question") or "").replace("\n", " ").strip() or "-"
+            ready = _is_ready(item.get("ready"))
+            question_source = str(item.get("question_source") or "-").strip()
+            follow_ups = str(item.get("follow_ups") or "").replace("\n", " ").strip()
+            eval_points = str(item.get("evaluation_points") or "").replace("\n", " ").strip()
+            if not idx:
+                idx = "?"
+            print(f"    Q{idx} [{question_source}] ready={ready}")
+            print(f"      question: {question}")
+            if follow_ups:
+                print(f"      follow_ups: {follow_ups}")
+            if eval_points:
+                print(f"      evaluation_points: {eval_points}")
+            print("")
 
 
 def quality_gate_failures(
@@ -1482,6 +1708,7 @@ def main() -> int:
     print(f"report={md_path}")
     print(f"csv={csv_path}")
     print(f"item_csv={item_csv_path}")
+    _print_generated_questions(rows, question_rows)
     print(f"rows={len(rows)}")
     failures = quality_gate_failures(
         rows,

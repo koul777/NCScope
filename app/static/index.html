@@ -130,6 +130,8 @@
     .qnav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .qnav-btn { width:auto; margin:0; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; }
     .qnav-ind { font-size:13px; color:var(--muted); }
+    .question-text-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+    .question-text-export { width:100%; min-height:190px; white-space:pre-wrap; resize:vertical; font-size:12px; font-family:Consolas, "Courier New", monospace; background:#0f1722; color:#d6e4f6; border-color:#1f2a3a; }
     .result-scroll { max-height:calc(100vh - 210px); overflow:auto; padding-right:4px; }
     .hidden { display:none !important; }
     @media (max-width:980px){ body { overflow:auto; height:auto; } .wrap { height:auto; } .grid { grid-template-columns:1fr; } .hero-main { align-items:flex-start; flex-direction:column; } .hero-badges { justify-content:flex-start; min-width:0; } .result-scroll { max-height:none; } }
@@ -315,6 +317,21 @@
                 <input id="defaultFollowCount" type="number" min="3" max="5" value="3" />
               </div>
             </div>
+            <div style="margin-top:10px; padding:10px; border:1px dashed #c7d8ee; border-radius:10px; background:#fbfdff;">
+              <label style="margin-top:0;">
+                <input id="showAllGeneratedQuestions" type="checkbox" checked />
+                질문 뽑기 결과 전체 목록 표시
+              </label>
+              <div class="sub" style="margin:4px 0 8px;">체크 해제 시 아래 최대 개수만 미리봅니다.</div>
+              <label for="generatedQuestionsMaxItems">미리보기 최대 개수(1~100)</label>
+              <input
+                id="generatedQuestionsMaxItems"
+                type="number"
+                min="1"
+                max="100"
+                placeholder="공백이면 기본값 사용"
+              />
+            </div>
             <div id="questionPlanEmpty" class="sub" style="margin:8px 0;">직무기술서에서 세분류가 추출되거나 직접 입력되면, 여기에서 어떤 세분류의 면접질문을 생성할지 선택할 수 있습니다.</div>
             <label id="questionPlanLabel" style="display:none; margin-top:10px;">질문 대상 세분류 선택</label>
             <div id="questionPlanHead" class="plan-head" style="display:none;">
@@ -441,7 +458,17 @@
               <span id="qIndicator" class="qnav-ind">0 / 0</span>
               <button id="btnNextQ" class="qnav-btn" type="button">다음</button>
             </div>
+            <div class="question-text-toolbar">
+              <span id="generatedQuestionsTextMeta" class="sub" style="margin:0;">질문 뽑기 결과 리스트</span>
+              <button id="btnCopyGeneratedQuestionsText" class="qnav-btn" type="button">목록 복사</button>
+            </div>
             <div id="questionList"></div>
+            <textarea
+              id="generatedQuestionsText"
+              class="question-text-export"
+              rows="12"
+              readonly
+            ></textarea>
             <div id="questionEmpty" class="empty">아직 생성된 질문이 없습니다.</div>
           </div>
 
@@ -487,6 +514,8 @@
     const btnPrevQ = document.getElementById('btnPrevQ');
     const btnNextQ = document.getElementById('btnNextQ');
     const qIndicator = document.getElementById('qIndicator');
+    const btnCopyGeneratedQuestionsText = document.getElementById('btnCopyGeneratedQuestionsText');
+    const generatedQuestionsText = document.getElementById('generatedQuestionsText');
     const inputMode = document.getElementById('inputMode');
     const uploadBlock = document.getElementById('uploadBlock');
     const manualBlock = document.getElementById('manualBlock');
@@ -528,10 +557,13 @@
     const questionPlanRows = document.getElementById('questionPlanRows');
     const defaultMainCount = document.getElementById('defaultMainCount');
     const defaultFollowCount = document.getElementById('defaultFollowCount');
+    const showAllGeneratedQuestions = document.getElementById('showAllGeneratedQuestions');
+    const generatedQuestionsMaxItems = document.getElementById('generatedQuestionsMaxItems');
     const flowApi = document.getElementById('flowApi');
     const flowJd = document.getElementById('flowJd');
     const flowNotice = document.getElementById('flowNotice');
     const flowGenerate = document.getElementById('flowGenerate');
+    const generatedQuestionsTextMeta = document.getElementById('generatedQuestionsTextMeta');
 
     let ncsUnitOptions = [];
     let progressTimer = null;
@@ -553,6 +585,8 @@
     let generationProviderLoadError = '';
     let generationProviderRequestId = 0;
     const QUESTION_PAGE_SIZE = 5;
+    let questionListMode = 'preview';
+    let questionTextCopyTimer = 0;
 
     function normalizedQuestionHistoryKey(value) {
       return String(value || '').toLowerCase().replace(/[^0-9a-z가-힣]+/g, '');
@@ -1474,6 +1508,25 @@
         if (!input.dataset.touched) input.value = String(next);
       });
     });
+    showAllGeneratedQuestions?.addEventListener('change', () => {
+      if (generatedQuestionsMaxItems) {
+        generatedQuestionsMaxItems.disabled = Boolean(showAllGeneratedQuestions?.checked);
+      }
+      if (showAllGeneratedQuestions?.checked && generatedQuestionsMaxItems) {
+        generatedQuestionsMaxItems.value = '';
+      }
+    });
+    generatedQuestionsMaxItems?.addEventListener('input', () => {
+      if (generatedQuestionsMaxItems?.value) {
+        if (showAllGeneratedQuestions) {
+          showAllGeneratedQuestions.checked = false;
+          generatedQuestionsMaxItems.disabled = false;
+        }
+      }
+    });
+    if (generatedQuestionsMaxItems) {
+      generatedQuestionsMaxItems.disabled = Boolean(showAllGeneratedQuestions?.checked);
+    }
     questionPlanRows.addEventListener('input', (event) => {
       if (event.target && event.target.matches && event.target.matches('.plan-main, .plan-follow')) {
         event.target.dataset.touched = '1';
@@ -1723,12 +1776,38 @@
       return { ncs_top_k: 4, ksa_units: 3, ksa_factors_per_unit: 2 };
     }
 
+    function _parsePositiveInt(value, min, max) {
+      const raw = Number.parseInt(String(value || '').trim(), 10);
+      if (!Number.isFinite(raw) || raw <= 0) {
+        return null;
+      }
+      const lower = Number.isFinite(min) ? Math.trunc(Number(min)) : null;
+      const upper = Number.isFinite(max) ? Math.trunc(Number(max)) : null;
+      let normalized = raw;
+      if (lower !== null) normalized = Math.max(lower, normalized);
+      if (upper !== null) normalized = Math.min(upper, normalized);
+      return normalized;
+    }
+
+    function collectQuestionDisplayOptions() {
+      const includeAll = !!showAllGeneratedQuestions?.checked;
+      return {
+        includeAll: includeAll,
+        generatedQuestionsMaxItems: includeAll
+          ? null
+          : _parsePositiveInt(generatedQuestionsMaxItems?.value, 1, 100),
+      };
+    }
+
     function updateQNav() {
+      const pageSize = Math.max(1, questionListMode === 'all'
+        ? currentQuestions.length
+        : QUESTION_PAGE_SIZE);
       const total = currentQuestions.length;
-      const totalPages = Math.max(1, Math.ceil(total / QUESTION_PAGE_SIZE));
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
       qIndicator.textContent = `${total ? (currentQPage + 1) : 0} / ${totalPages} 페이지`;
-      btnPrevQ.disabled = total <= QUESTION_PAGE_SIZE || currentQPage <= 0;
-      btnNextQ.disabled = total <= QUESTION_PAGE_SIZE || currentQPage >= totalPages - 1;
+      btnPrevQ.disabled = total <= pageSize || currentQPage <= 0;
+      btnNextQ.disabled = total <= pageSize || currentQPage >= totalPages - 1;
     }
 
     function addMetaPill(meta, text, cls='pill') {
@@ -1798,11 +1877,12 @@
       const heading = document.getElementById('questionHeading');
       currentQuestions = Array.isArray(items) ? items : [];
       rememberQuestions(currentQuestions);
-      const totalPages = Math.max(1, Math.ceil(currentQuestions.length / QUESTION_PAGE_SIZE));
+      const pageSize = Math.max(1, questionListMode === 'all' ? currentQuestions.length : QUESTION_PAGE_SIZE);
+      const totalPages = Math.max(1, Math.ceil(currentQuestions.length / pageSize));
       if (currentQPage >= totalPages) currentQPage = 0;
       root.innerHTML = '';
       if (heading) {
-        heading.textContent = `면접 질문 (총 ${currentQuestions.length}개 / 페이지당 ${QUESTION_PAGE_SIZE}개)`;
+        heading.textContent = `면접 질문 (총 ${currentQuestions.length}개 / 페이지당 ${pageSize}개)`;
       }
       if (!currentQuestions.length) {
         empty.style.display = 'block';
@@ -1811,8 +1891,8 @@
       }
       empty.style.display = 'none';
 
-      const start = currentQPage * QUESTION_PAGE_SIZE;
-      const pageItems = currentQuestions.slice(start, start + QUESTION_PAGE_SIZE);
+      const start = currentQPage * pageSize;
+      const pageItems = currentQuestions.slice(start, start + pageSize);
 
       const getFollowUps = (q) => {
         const fus = Array.isArray((q || {}).follow_ups)
@@ -2199,6 +2279,77 @@
       updateQNav();
     }
 
+    function buildGeneratedQuestionsText(items) {
+      const questions = Array.isArray(items) ? items : [];
+      if (!questions.length) {
+        return '';
+      }
+      const lines = [];
+      for (const [idx, q] of questions.entries()) {
+        const no = idx + 1;
+        const question = String((q && q.question) || '').trim() || '-';
+        const ready = typeof (q && q.ready) === 'boolean'
+          ? q.ready
+          : Boolean(String((q && q.question) || '').trim());
+        const status = ready ? '생성됨' : '미생성';
+        const type = String((q && q.type) || '-').trim() || '-';
+        const competency = String((q && q.competency) || '-').trim() || '-';
+        const code = String((q && q.ncsClCd) || '-').trim() || '-';
+        const followUps = Array.isArray((q || {}).follow_ups)
+          ? (q || {}).follow_ups.filter((item) => String(item || '').trim())
+          : [];
+        const singleFollow = String((q || {}).follow_up || '').trim();
+        if (singleFollow && !followUps.includes(singleFollow)) {
+          followUps.unshift(singleFollow);
+        }
+        lines.push(`${no}. [${code}] ${type} / ${competency} (${status})`);
+        lines.push(`   ${question}`);
+        if (!ready) {
+          lines.push('   [주의] 해당 슬롯은 생성되지 않았습니다.');
+        }
+        if (followUps.length) {
+          for (const fu of followUps) {
+            lines.push(`   - 꼬리질문: ${String(fu || '').trim()}`);
+          }
+        }
+        lines.push('');
+      }
+      return lines.join('\n').trim();
+    }
+
+    function renderGeneratedQuestionsText(items) {
+      if (generatedQuestionsText) {
+        generatedQuestionsText.value = buildGeneratedQuestionsText(items);
+      }
+    }
+
+    function copyGeneratedQuestionsText() {
+      const text = String(generatedQuestionsText ? generatedQuestionsText.value : '').trim();
+      if (!text || !btnCopyGeneratedQuestionsText) {
+        return;
+      }
+      const done = () => {
+        btnCopyGeneratedQuestionsText.textContent = '복사 완료';
+        if (questionTextCopyTimer) {
+          window.clearTimeout(questionTextCopyTimer);
+        }
+        questionTextCopyTimer = window.setTimeout(() => {
+          if (btnCopyGeneratedQuestionsText) btnCopyGeneratedQuestionsText.textContent = '목록 복사';
+        }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => {
+          generatedQuestionsText?.select();
+          if (document.execCommand('copy')) done();
+        });
+        return;
+      }
+      generatedQuestionsText?.select();
+      if (document.execCommand('copy')) {
+        done();
+      }
+    }
+
     function renderNcs(matches) {
       const table = document.getElementById('ncsTable');
       const body = document.getElementById('ncsBody');
@@ -2404,9 +2555,13 @@
       errorBox.textContent = '';
 
       const s = data.strategy || {};
-      const qList = Array.isArray(data.generated_questions_all) && data.generated_questions_all.length
-        ? data.generated_questions_all
-        : (Array.isArray(s.interview_questions) ? s.interview_questions : []);
+      const questionMode = String(data.generated_questions_mode || s.generated_questions_mode || '').trim().toLowerCase();
+      questionListMode = questionMode || 'preview';
+      const qList = questionMode === 'all'
+        ? (Array.isArray(data.generated_questions_all) ? data.generated_questions_all : [])
+        : questionMode === 'custom_limit'
+          ? (Array.isArray(data.generated_questions) ? data.generated_questions : [])
+          : (Array.isArray(data.generated_questions) ? data.generated_questions : (Array.isArray(data.generated_questions_all) ? data.generated_questions_all : []));
       const nextQualityControl = s.quality_control && typeof s.quality_control === 'object'
         ? s.quality_control
         : null;
@@ -2475,8 +2630,24 @@
       renderMeta(data);
       renderQualityReport(s.question_quality_report, notices.join(' '), currentQualityControl);
       renderPipelineDiag(data, qList);
+      const allQuestionsForTextExport = Array.isArray(data.generated_questions_all)
+        ? data.generated_questions_all
+        : qList;
+      const readyCount = Array.isArray(allQuestionsForTextExport)
+        ? allQuestionsForTextExport.filter((q) => {
+            const ready = typeof (q && q.ready) === 'boolean'
+              ? q.ready
+              : Boolean(String((q && q.question) || '').trim());
+            return ready;
+          }).length
+        : 0;
+      if (generatedQuestionsTextMeta) {
+        const modeLabel = questionMode || 'preview';
+        generatedQuestionsTextMeta.textContent = `원본 슬롯: ${allQuestionsForTextExport.length}개 (${readyCount}개 생성), 표시: ${qList.length}개, 모드: ${modeLabel}`;
+      }
       currentQPage = 0;
       renderQuestionList(qList);
+      renderGeneratedQuestionsText(allQuestionsForTextExport);
       renderNcs(data.ncs_matches || []);
       renderKsa(data.ncs_ksa || []);
       raw.textContent = JSON.stringify(data, null, 2);
@@ -2617,9 +2788,14 @@
           const knobs = collectRuntimeKnobs();
           const questionPlanItems = collectQuestionPlan();
           const interviewMethods = collectInterviewMethods();
+          const questionDisplayOptions = collectQuestionDisplayOptions();
           fd.append('jd_file', file);
           fd.append('generation_provider', INSTITUTION_GENERATION_PROVIDER);
           fd.append('openai_api_key', requestOpenAiApiKey);
+          fd.append('include_all_questions', questionDisplayOptions.includeAll ? 'true' : 'false');
+          if (Number.isFinite(questionDisplayOptions.generatedQuestionsMaxItems) && questionDisplayOptions.generatedQuestionsMaxItems > 0) {
+            fd.append('generated_questions_max_items', String(questionDisplayOptions.generatedQuestionsMaxItems));
+          }
           const nFile = noticeFile.files && noticeFile.files[0];
           if (nFile && isBlockedUploadFile(nFile)) {
             throw new Error('공고문 파일은 HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.');
@@ -2693,6 +2869,7 @@
           const knobs = collectRuntimeKnobs();
           const questionPlanItems = collectQuestionPlan();
           const interviewMethods = collectInterviewMethods();
+          const questionDisplayOptions = collectQuestionDisplayOptions();
           const manualGenerationContext = JSON.stringify({
             generationProvider: INSTITUTION_GENERATION_PROVIDER,
             codes: selected.map(row => row.ncsClCd).sort(),
@@ -2716,6 +2893,8 @@
               question_plan: { items: questionPlanItems },
               interview_methods: interviewMethods,
               runtime_knobs: knobs,
+              include_all_questions: questionDisplayOptions.includeAll,
+              generated_questions_max_items: questionDisplayOptions.generatedQuestionsMaxItems,
               avoid_questions: currentQuestionTexts(),
               generation_offset: questionGenerationOffset,
             }),
@@ -2744,9 +2923,9 @@
         }
 
         render(data);
-        const generatedCount = Array.isArray(data?.strategy?.interview_questions)
-          ? data.strategy.interview_questions.length
-          : 0;
+        const generatedCount = Array.isArray(data.generated_questions)
+          ? data.generated_questions.length
+          : (Array.isArray(data?.strategy?.interview_questions) ? data.strategy.interview_questions.length : 0);
         questionGenerationOffset += Math.max(0, generatedCount);
         stopProgress('완료');
       } catch (e) {
@@ -2809,10 +2988,14 @@
     };
     btnNextQ.onclick = () => {
       if (!currentQuestions.length) return;
-      const totalPages = Math.max(1, Math.ceil(currentQuestions.length / QUESTION_PAGE_SIZE));
+      const pageSize = Math.max(1, questionListMode === 'all' ? currentQuestions.length : QUESTION_PAGE_SIZE);
+      const totalPages = Math.max(1, Math.ceil(currentQuestions.length / pageSize));
       if (currentQPage < totalPages - 1) currentQPage += 1;
       renderQuestionList(currentQuestions);
     };
+    if (btnCopyGeneratedQuestionsText) {
+      btnCopyGeneratedQuestionsText.onclick = copyGeneratedQuestionsText;
+    }
 
     updateQNav();
     applyApiKeyTransportGuard();
