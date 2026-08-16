@@ -3597,11 +3597,22 @@ def _adjust_generated_questions(
                 for reason in main_replacement_reasons
             )
         )
+        openai_blocking_replacement_reasons = set(main_replacement_reasons) & {
+            "no_model_question",
+            "blind_hiring_cue",
+        }
         use_model_question = bool(
             raw_question
             and (
-                not main_replacement_reasons
-                or (is_subscription_cli_candidate and not cli_requires_replacement)
+                (not main_replacement_reasons)
+                or (
+                    is_subscription_cli_candidate
+                    and not cli_requires_replacement
+                )
+                or (
+                    not is_subscription_cli_candidate
+                    and not openai_blocking_replacement_reasons
+                )
             )
         )
         use_raw_model_followups = bool(
@@ -3867,6 +3878,11 @@ def _adjust_generated_questions(
         "follow_up_quality": {"follow_ups"},
         "evaluation_points": {"evaluation_points"},
         "evaluation_points_quality": {"evaluation_points"},
+        "blind_hiring_safe": {"question"},
+        "candidate_surface_safe": {"question", "follow_ups"},
+        "ncs_grounded": {"question", "task_conditions"},
+        "detail_grounded": {"question", "task_conditions"},
+        "ksa_grounded": {"question", "task_conditions"},
         "main_question_method_shape": {"question"},
         "main_question_job_context": {"question"},
         "method_shape": {"question", "follow_ups", "evaluation_points"},
