@@ -163,6 +163,12 @@ def build_stages(args: argparse.Namespace) -> list[Stage]:
             alio_stage_args.append("--print-question-list")
         else:
             alio_stage_args.append("--no-print-question-list")
+        alio_stage_args.extend(
+            (
+                "--question-list-format",
+                str(getattr(args, "alio_question_list_format", "both")),
+            )
+        )
         if getattr(args, "alio_question_list_limit", 0):
             alio_stage_args.extend(
                 ("--question-list-limit", str(max(0, int(args.alio_question_list_limit))))
@@ -411,6 +417,12 @@ def main() -> int:
         type=int,
         default=0,
         help="Limit printed questions per JD for ALIO stage (0 = no limit).",
+    )
+    parser.add_argument(
+        "--alio-question-list-format",
+        choices=("plain", "json", "both"),
+        default="both",
+        help="Question list output format for ALIO stage (default: both).",
     )
     parser.add_argument(
         "--stream-stage-output",
