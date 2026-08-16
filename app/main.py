@@ -466,6 +466,33 @@ def _clamp_int(value: int | str | None, default: int, lo: int, hi: int) -> int:
     return max(int(lo), min(int(hi), v))
 
 
+def _coerce_bool_flag(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return int(value) != 0
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "t", "yes", "y", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off", "disabled"}:
+        return False
+    return default
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 def _norm_sclass_key(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip().lower()
 
@@ -8224,6 +8251,35 @@ def _generated_question_preview_limit(
     return min(max(1, candidate), 100)
 
 
+def _build_generated_questions_payload(
+    strategy: Any,
+    question_plan: dict[str, Any] | None,
+    *,
+    include_all: bool,
+    explicit_max_items: int | None = None,
+    fallback: int = 4,
+) -> list[dict[str, Any]]:
+    """Build question list for response with optional full/limited mode."""
+
+    if include_all:
+        return _extract_all_generated_question_items(strategy)
+
+    if isinstance(explicit_max_items, int) and explicit_max_items > 0:
+        return _extract_generated_question_items(
+            strategy,
+            max_items=explicit_max_items,
+        )
+
+    return _extract_generated_question_items(
+        strategy,
+        max_items=_generated_question_preview_limit(
+            question_plan,
+            strategy,
+            fallback=fallback,
+        ),
+    )
+
+
 _QUESTION_EVIDENCE_ASSIGNMENT_POLICY = "planned-question-evidence-assignment-v1"
 
 
@@ -9727,6 +9783,8 @@ async def jd_strategy_upload(
     question_plan_json: str = Form(default=""),
     interview_methods_json: str = Form(default=""),
     avoid_questions_json: str = Form(default=""),
+    include_all_questions: bool = Form(default=False),
+    generated_questions_max_items: int | None = Form(default=None),
     generation_offset: int | None = Form(default=None),
     jd_review_json: str = Form(default=""),
 ) -> dict:
@@ -9786,6 +9844,13 @@ async def jd_strategy_upload(
         max_chars=2400,
     )
     evaluation_text_clean = str(evaluation_text or "").strip()
+    include_all_generated_questions = _coerce_bool_flag(
+        include_all_questions,
+        default=False,
+    )
+    explicit_generated_questions_max = _coerce_positive_int(
+        generated_questions_max_items
+    )
     manual_sclass_final_terms = _parse_sclass_terms(manual_sclass)
     manual_sclass_add_terms = _parse_sclass_terms(manual_sclass_add)
     manual_sclass_remove_terms = _parse_sclass_terms(manual_sclass_remove)
@@ -10217,6 +10282,28 @@ async def jd_strategy_upload(
         source_endpoint="/api/jd/strategy/upload",
         ncs_matches=ncs_matches,
     )
+    generated_questions_all = _extract_all_generated_question_items(strategy)
+    generated_questions = _build_generated_questions_payload(
+        strategy,
+        question_plan,
+        include_all=include_all_generated_questions,
+        explicit_max_items=explicit_generated_questions_max,
+        fallback=run_top_k,
+    )
+    generated_questions_mode = (
+        "all" if include_all_generated_questions else (
+            "custom_limit" if explicit_generated_questions_max is not None else "preview"
+        )
+    )
+    generated_questions_limit = (
+        explicit_generated_questions_max
+        if explicit_generated_questions_max is not None
+        else _generated_question_preview_limit(
+            question_plan,
+            strategy,
+            fallback=run_top_k,
+        )
+    )
 
     if review_session:
         _record_audit_event(
@@ -10284,15 +10371,12 @@ async def jd_strategy_upload(
         },
         "ncs_context": ncs_context,
         "strategy": strategy,
-        "generated_questions_all": _extract_all_generated_question_items(strategy),
-        "generated_questions": _extract_generated_question_items(
-            strategy,
-            max_items=_generated_question_preview_limit(
-                question_plan,
-                strategy,
-                fallback=run_top_k,
-            ),
-        ),
+        "generated_questions_all": generated_questions_all,
+        "generated_questions": generated_questions,
+        "generated_questions_mode": generated_questions_mode,
+        "generated_questions_limit": generated_questions_limit,
+        "generated_questions_count": len(generated_questions),
+        "generated_questions_total_count": len(generated_questions_all),
     }
 
 
@@ -10323,6 +10407,13 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         ncs_top_k=knobs.get("ncs_top_k"),
         ksa_units=knobs.get("ksa_units"),
         ksa_factors_per_unit=knobs.get("ksa_factors_per_unit"),
+    )
+    include_all_generated_questions = _coerce_bool_flag(
+        payload.get("include_all_questions"),
+        default=False,
+    )
+    explicit_generated_questions_max = _coerce_positive_int(
+        payload.get("generated_questions_max_items")
     )
     if not notice_text:
         raise HTTPException(status_code=400, detail="notice_text is required")
@@ -10483,6 +10574,28 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         source_endpoint="/api/questions/generate-from-text",
         ncs_matches=ncs_matches,
     )
+    generated_questions_all = _extract_all_generated_question_items(strategy)
+    generated_questions = _build_generated_questions_payload(
+        strategy,
+        question_plan,
+        include_all=include_all_generated_questions,
+        explicit_max_items=explicit_generated_questions_max,
+        fallback=run_top_k,
+    )
+    generated_questions_mode = (
+        "all" if include_all_generated_questions else (
+            "custom_limit" if explicit_generated_questions_max is not None else "preview"
+        )
+    )
+    generated_questions_limit = (
+        explicit_generated_questions_max
+        if explicit_generated_questions_max is not None
+        else _generated_question_preview_limit(
+            question_plan,
+            strategy,
+            fallback=run_top_k,
+        )
+    )
 
     _record_audit_event(
         request,
@@ -10532,15 +10645,12 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         },
         "ncs_context": ncs_context,
         "strategy": strategy,
-        "generated_questions_all": _extract_all_generated_question_items(strategy),
-        "generated_questions": _extract_generated_question_items(
-            strategy,
-            max_items=_generated_question_preview_limit(
-                question_plan,
-                strategy,
-                fallback=run_top_k,
-            ),
-        ),
+        "generated_questions_all": generated_questions_all,
+        "generated_questions": generated_questions,
+        "generated_questions_mode": generated_questions_mode,
+        "generated_questions_limit": generated_questions_limit,
+        "generated_questions_count": len(generated_questions),
+        "generated_questions_total_count": len(generated_questions_all),
     }
 
 

@@ -2404,7 +2404,9 @@
       errorBox.textContent = '';
 
       const s = data.strategy || {};
-      const qList = Array.isArray(s.interview_questions) ? s.interview_questions : [];
+      const qList = Array.isArray(data.generated_questions_all) && data.generated_questions_all.length
+        ? data.generated_questions_all
+        : (Array.isArray(s.interview_questions) ? s.interview_questions : []);
       const nextQualityControl = s.quality_control && typeof s.quality_control === 'object'
         ? s.quality_control
         : null;
