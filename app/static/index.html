@@ -2280,14 +2280,19 @@
     }
 
     function buildGeneratedQuestionsText(items) {
-      const questions = Array.isArray(items) ? items : [];
-      if (!questions.length) {
+      const rows = Array.isArray(items) ? items : [];
+      if (!rows.length) {
         return '';
       }
       const lines = [];
-      for (const [idx, q] of questions.entries()) {
-        const no = idx + 1;
-        const question = String((q && q.question) || '').trim() || '-';
+      for (const item of rows) {
+        const q = item && typeof item === 'object' ? item : {};
+        const parsedIndex = Number(item && item.index);
+        const no = Number.isFinite(parsedIndex) && parsedIndex > 0
+          ? parsedIndex
+          : lines.length + 1;
+        const question = String((q && q.question) || '').trim();
+        const source = String((q && q.question_source) || '').trim();
         const ready = typeof (q && q.ready) === 'boolean'
           ? q.ready
           : Boolean(String((q && q.question) || '').trim());
@@ -2303,9 +2308,9 @@
           followUps.unshift(singleFollow);
         }
         lines.push(`${no}. [${code}] ${type} / ${competency} (${status})`);
-        lines.push(`   ${question}`);
+        lines.push(`   ${question || '-'}${source ? ` (${source})` : ''}`);
         if (!ready) {
-          lines.push('   [주의] 해당 슬롯은 생성되지 않았습니다.');
+          lines.push('   [주의] 해당 슬롯은 생성되지 않았으며 텍스트 뷰는 추론 기반으로 보강합니다.');
         }
         if (followUps.length) {
           for (const fu of followUps) {
@@ -2633,8 +2638,15 @@
       const allQuestionsForTextExport = Array.isArray(data.generated_questions_all)
         ? data.generated_questions_all
         : qList;
-      const readyCount = Array.isArray(allQuestionsForTextExport)
-        ? allQuestionsForTextExport.filter((q) => {
+      const generatedQuestionTextRows = Array.isArray(data.generated_question_text_rows)
+        ? data.generated_question_text_rows
+        : [];
+      const textExportRows = generatedQuestionTextRows.length
+        ? generatedQuestionTextRows
+        : allQuestionsForTextExport;
+      const renderedQuestions = qList.length ? qList : textExportRows;
+      const readyCount = Array.isArray(textExportRows)
+        ? textExportRows.filter((q) => {
             const ready = typeof (q && q.ready) === 'boolean'
               ? q.ready
               : Boolean(String((q && q.question) || '').trim());
@@ -2643,11 +2655,11 @@
         : 0;
       if (generatedQuestionsTextMeta) {
         const modeLabel = questionMode || 'preview';
-        generatedQuestionsTextMeta.textContent = `원본 슬롯: ${allQuestionsForTextExport.length}개 (${readyCount}개 생성), 표시: ${qList.length}개, 모드: ${modeLabel}`;
+        generatedQuestionsTextMeta.textContent = `원본 슬롯: ${textExportRows.length}개 (${readyCount}개 생성), 표시: ${renderedQuestions.length}개, 모드: ${modeLabel}`;
       }
       currentQPage = 0;
-      renderQuestionList(qList);
-      renderGeneratedQuestionsText(allQuestionsForTextExport);
+      renderQuestionList(renderedQuestions);
+      renderGeneratedQuestionsText(textExportRows);
       renderNcs(data.ncs_matches || []);
       renderKsa(data.ncs_ksa || []);
       raw.textContent = JSON.stringify(data, null, 2);

@@ -483,6 +483,17 @@ def _coerce_bool_flag(value: Any, *, default: bool = False) -> bool:
     return default
 
 
+def _effective_partial_model_output(
+    value: Any,
+    *,
+    default: bool | None = None,
+) -> bool:
+    return _coerce_bool_flag(
+        value,
+        default=bool(default if default is not None else False),
+    )
+
+
 def _coerce_positive_int(value: Any) -> int | None:
     try:
         parsed = int(str(value).strip())
@@ -2889,6 +2900,7 @@ def _refresh_question_repeat_metadata(items: list[dict[str, Any]]) -> None:
         repeat_duplicate = any(_question_near_repeat(item, previous) for previous in previous_items)
         if repeat_duplicate and _raw_model_scenarios_are_distinct(item, previous_items):
             repeat_duplicate = False
+
         item["question_intent"] = _question_intent_key(str(item.get("question") or ""))
         item["question_repeat_signature"] = signature
         item["question_repeat_duplicate"] = bool(repeat_duplicate)
@@ -3723,6 +3735,48 @@ def _adjust_generated_questions(
             focus_type,
             surface_focus=task_frame["task_object"],
         )
+        if not str(item.get("question") or "").strip():
+            item["question"] = (
+                str(template_question or "").strip()
+                or "주어진 근거를 바탕으로 면접 질문을 제시해 주세요."
+            )
+            if not item.get("follow_ups"):
+                item["follow_ups"] = list(template_followups or [])
+            if not item.get("evaluation_points"):
+                item["evaluation_points"] = list(method_eval_points or [])
+            if not item.get("task_conditions"):
+                item["task_conditions"] = _task_conditions_for_method(
+                    method=method,
+                    subject=subject,
+                    focus=focus,
+                    detail=target_detail,
+                    comp_def=str(item.get("compeUnitDef", "")).strip(),
+                    focus_type=focus_type,
+                    variation_index=idx,
+                )
+            if not item.get("assessment_guide"):
+                item["assessment_guide"] = _behavior_anchored_evaluation(
+                    method,
+                    focus,
+                    item.get("evaluation_points") or method_eval_points,
+                    focus_type,
+                    surface_focus=task_frame["task_object"],
+                )
+            item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
+            item["question_source"] = "template_fallback"
+            item["model_question_preserved"] = False
+            item["model_replacement_reasons"] = list(
+                dict.fromkeys(
+                    [
+                        *(
+                            str(reason).strip()
+                            for reason in (item.get("model_replacement_reasons") or [])
+                            if str(reason).strip()
+                        ),
+                        "question_content_missing",
+                    ]
+                )
+            )
         focus_context_key = (ncs_code or subject, method)
         used_focuses = used_focus_by_context.setdefault(focus_context_key, set())
         repeat_signature = _question_repeat_signature(item)
@@ -8267,7 +8321,10 @@ def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]
 def _build_generated_question_text_rows(strategy: Any) -> list[dict[str, Any]]:
     """Build a flat, consumer-friendly question-list payload."""
 
-    rows = _extract_all_generated_question_items(strategy)
+    if isinstance(strategy, list):
+        rows = strategy
+    else:
+        rows = _extract_all_generated_question_items(strategy)
     output: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -8289,6 +8346,14 @@ def _build_generated_question_text_rows(strategy: Any) -> list[dict[str, Any]]:
             }
         )
     return output
+
+
+def _build_generated_question_text_payload(
+    source: Any,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    rows = _build_generated_question_text_rows(source)
+    texts = [item.get("question") for item in rows if item.get("question")]
+    return rows, texts
 
 
 def _normalize_generated_questions(
@@ -10422,12 +10487,9 @@ async def jd_strategy_upload(
         explicit_max_items=explicit_generated_questions_max,
         fallback=run_top_k,
     )
-    generated_question_text_rows = _build_generated_question_text_rows(strategy)
-    generated_question_texts = [
-        str(item.get("question") or "").strip()
-        for item in generated_question_text_rows
-        if str(item.get("question") or "").strip()
-    ]
+    generated_question_text_rows, generated_question_texts = _build_generated_question_text_payload(
+        strategy
+    )
     generated_questions_mode = (
         "all" if include_all_generated_questions else (
             "custom_limit" if explicit_generated_questions_max is not None else "preview"
@@ -10722,12 +10784,9 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         explicit_max_items=explicit_generated_questions_max,
         fallback=run_top_k,
     )
-    generated_question_text_rows = _build_generated_question_text_rows(strategy)
-    generated_question_texts = [
-        str(item.get("question") or "").strip()
-        for item in generated_question_text_rows
-        if str(item.get("question") or "").strip()
-    ]
+    generated_question_text_rows, generated_question_texts = _build_generated_question_text_payload(
+        strategy
+    )
     generated_questions_mode = (
         "all" if include_all_generated_questions else (
             "custom_limit" if explicit_generated_questions_max is not None else "preview"
@@ -10881,10 +10940,15 @@ def generate_questions_personalized(
         )
         generated_questions_count = len(generated_questions)
         generated_questions_total_count = len(result_questions)
+        generated_question_text_rows, generated_question_texts = _build_generated_question_text_payload(
+            result_questions
+        )
 
         return {
             "status": "success",
             "data": result,
+            "generated_question_text_rows": generated_question_text_rows,
+            "generated_question_texts": generated_question_texts,
             "generated_questions": generated_questions,
             "generated_questions_mode": "all",
             "generated_questions_limit": target_count,
@@ -10997,10 +11061,15 @@ def generate_questions_by_ncs_code(
         )
         generated_questions_count = len(generated_questions)
         generated_questions_total_count = len(result_main_questions)
+        generated_question_text_rows, generated_question_texts = _build_generated_question_text_payload(
+            result_main_questions
+        )
 
         return {
             "status": "success",
             "data": result,
+            "generated_question_text_rows": generated_question_text_rows,
+            "generated_question_texts": generated_question_texts,
             "generated_questions": generated_questions,
             "generated_questions_mode": "all",
             "generated_questions_limit": target_count,
@@ -11217,6 +11286,9 @@ def generate_batch_diverse_questions(
         response_data["generated_questions_limit"] = batch_count
         response_data["generated_questions_count"] = len(normalized_batch_questions)
         response_data["generated_questions_total_count"] = len(batch_questions)
+        response_data["generated_question_text_rows"], response_data["generated_question_texts"] = (
+            _build_generated_question_text_payload(batch_questions)
+        )
 
         # Return with NO-CACHE headers
         return JSONResponse(
@@ -11393,10 +11465,15 @@ def generate_diverse_questions(
         )
         generated_questions_count = len(generated_questions)
         generated_questions_total_count = len(diverse_questions)
+        generated_question_text_rows, generated_question_texts = _build_generated_question_text_payload(
+            diverse_questions
+        )
 
         return {
             "status": "success",
             "data": result,
+            "generated_question_text_rows": generated_question_text_rows,
+            "generated_question_texts": generated_question_texts,
             "generated_questions": generated_questions,
             "generated_questions_mode": "all",
             "generated_questions_limit": target_count,
