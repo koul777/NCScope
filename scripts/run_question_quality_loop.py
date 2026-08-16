@@ -134,35 +134,43 @@ def build_stages(args: argparse.Namespace) -> list[Stage]:
         )
     if not args.skip_alio:
         benchmark_mode = "model" if args.model_eval else "template"
+        alio_stage_args = [
+            "scripts/evaluate_alio_question_quality.py",
+            "--benchmark-mode",
+            benchmark_mode,
+            "--limit",
+            str(max(1, int(args.alio_limit))),
+            "--questions-per-doc",
+            str(max(1, int(args.questions_per_doc))),
+            "--follow-up-count",
+            "3",
+            "--min-evaluated-doc-rate",
+            str(min(1.0, max(0.0, float(args.alio_min_evaluated_doc_rate)))),
+            "--min-template-ready-rate",
+            str(
+                min(
+                    1.0,
+                    max(
+                        0.0,
+                        float(getattr(args, "alio_min_template_ready_rate", 1.0)),
+                    ),
+                )
+            ),
+            "--report-dir",
+            str(ROOT / "reports"),
+        ]
+        if bool(getattr(args, "print_question_list", True)):
+            alio_stage_args.append("--print-question-list")
+        else:
+            alio_stage_args.append("--no-print-question-list")
+        if getattr(args, "alio_question_list_limit", 0):
+            alio_stage_args.extend(
+                ("--question-list-limit", str(max(0, int(args.alio_question_list_limit))))
+            )
         stages.append(
             Stage(
                 name=f"alio-{benchmark_mode}-quality-benchmark",
-                command=(
-                    python,
-                    "scripts/evaluate_alio_question_quality.py",
-                    "--benchmark-mode",
-                    benchmark_mode,
-                    "--limit",
-                    str(max(1, int(args.alio_limit))),
-                    "--questions-per-doc",
-                    str(max(1, int(args.questions_per_doc))),
-                    "--follow-up-count",
-                    "3",
-                    "--min-evaluated-doc-rate",
-                    str(min(1.0, max(0.0, float(args.alio_min_evaluated_doc_rate)))),
-                    "--min-template-ready-rate",
-                    str(
-                        min(
-                            1.0,
-                            max(
-                                0.0,
-                                float(getattr(args, "alio_min_template_ready_rate", 1.0)),
-                            ),
-                        )
-                    ),
-                    "--report-dir",
-                    str(ROOT / "reports"),
-                ),
+                command=(python, *alio_stage_args),
                 timeout_seconds=max(120, int(args.alio_timeout_seconds)),
             )
         )
@@ -210,7 +218,12 @@ def _display_path(path: Path) -> str:
         return str(path.resolve())
 
 
-def run_stage(stage: Stage, cycle_dir: Path) -> StageResult:
+def run_stage(
+    stage: Stage,
+    cycle_dir: Path,
+    *,
+    stream_output: bool = False,
+) -> StageResult:
     started = _now()
     started_perf = time.perf_counter()
     log_path = cycle_dir / f"{stage.name}.log"
@@ -235,6 +248,12 @@ def run_stage(stage: Stage, cycle_dir: Path) -> StageResult:
             if part and part.strip()
         )
         log_path.write_text(output + ("\n" if output else ""), encoding="utf-8")
+        if stream_output and completed.stdout is not None and completed.stdout.strip():
+            print(f"[{stage.name}] stdout:")
+            print(completed.stdout.rstrip())
+        if stream_output and completed.stderr is not None and completed.stderr.strip():
+            print(f"[{stage.name}] stderr:", file=sys.stderr)
+            print(completed.stderr.rstrip(), file=sys.stderr)
         returncode = int(completed.returncode)
         status = "passed" if returncode == 0 else "failed"
     except subprocess.TimeoutExpired as exc:
@@ -244,6 +263,13 @@ def run_stage(stage: Stage, cycle_dir: Path) -> StageResult:
             f"Timed out after {stage.timeout_seconds}s\n{stdout}\n{stderr}".strip() + "\n",
             encoding="utf-8",
         )
+        if stream_output and (stdout.strip() or stderr.strip()):
+            if stdout.strip():
+                print(f"[{stage.name}] timed out stdout:", file=sys.stderr)
+                print(stdout.rstrip(), file=sys.stderr)
+            if stderr.strip():
+                print(f"[{stage.name}] timed out stderr:", file=sys.stderr)
+                print(stderr.rstrip(), file=sys.stderr)
         returncode = 124
         status = "timed_out"
     elapsed = round(time.perf_counter() - started_perf, 2)
@@ -312,7 +338,11 @@ def run_cycle(args: argparse.Namespace, cycle_number: int) -> tuple[bool, Path]:
     results: list[StageResult] = []
     for stage in stages:
         print(f"[{stage.name}] starting: {_safe_command(stage.command)}", flush=True)
-        result = run_stage(stage, cycle_dir)
+        result = run_stage(
+            stage,
+            cycle_dir,
+            stream_output=bool(getattr(args, "stream_stage_output", False)),
+        )
         results.append(result)
         print(f"[{stage.name}] {result.status} ({result.elapsed_seconds:.2f}s)", flush=True)
     report_path = write_cycle_report(cycle_dir, cycle_number, results)
@@ -364,6 +394,36 @@ def main() -> int:
     )
     parser.add_argument("--questions-per-doc", type=int, default=7)
     parser.add_argument("--model-eval", action="store_true", help="Use the configured OpenAI model; may incur API cost.")
+    parser.add_argument(
+        "--print-question-list",
+        default=True,
+        action="store_true",
+        help="Print generated question rows during ALIO evaluation (default: on).",
+    )
+    parser.add_argument(
+        "--no-print-question-list",
+        dest="print_question_list",
+        action="store_false",
+        help="Disable printing generated question rows during ALIO evaluation.",
+    )
+    parser.add_argument(
+        "--alio-question-list-limit",
+        type=int,
+        default=0,
+        help="Limit printed questions per JD for ALIO stage (0 = no limit).",
+    )
+    parser.add_argument(
+        "--stream-stage-output",
+        default=True,
+        action="store_true",
+        help="Print each stage stdout/stderr after execution (default: on).",
+    )
+    parser.add_argument(
+        "--no-stream-stage-output",
+        dest="stream_stage_output",
+        action="store_false",
+        help="Suppress stage output display; only write logs.",
+    )
     parser.add_argument("--skip-official", action="store_true")
     parser.add_argument("--skip-alio", action="store_true")
     parser.add_argument("--skip-feedback-eval", action="store_true")

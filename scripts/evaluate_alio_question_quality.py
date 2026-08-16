@@ -1466,7 +1466,12 @@ def _metric_int(row: dict[str, Any], key: str) -> int:
         return 0
 
 
-def _print_generated_questions(rows: list[dict[str, Any]], question_rows: list[dict[str, Any]]) -> None:
+def _print_generated_questions(
+    rows: list[dict[str, Any]],
+    question_rows: list[dict[str, Any]],
+    *,
+    question_list_limit: int | None = None,
+) -> None:
     if not rows:
         print("question_rows=(0)")
         return
@@ -1509,11 +1514,16 @@ def _print_generated_questions(rows: list[dict[str, Any]], question_rows: list[d
                 str(item.get("question") or ""),
             ),
         )
+        item_count = len(items)
+        if question_list_limit and question_list_limit > 0:
+            items = items[:question_list_limit]
         if not items:
             continue
         generated = row.get("generated_questions")
         attachment = row.get("attachment") or ""
         print(f"  [{row.get('idx')}] {attachment} generated={generated}")
+        if question_list_limit and question_list_limit > 0 and item_count > question_list_limit:
+            print(f"    (showing first {question_list_limit} / {item_count} questions)")
         for item in items:
             idx = str(item.get("question_index") or "").strip()
             question = str(item.get("question") or "").replace("\n", " ").strip() or "-"
@@ -1643,6 +1653,24 @@ def main() -> int:
     parser.add_argument("--ksa-factors-per-unit", type=int, default=6)
     parser.add_argument("--benchmark-mode", choices=sorted(BENCHMARK_MODES), default="template")
     parser.add_argument(
+        "--print-question-list",
+        default=True,
+        action="store_true",
+        help="Print generated questions to console for each evaluated JD (default: on).",
+    )
+    parser.add_argument(
+        "--no-print-question-list",
+        dest="print_question_list",
+        action="store_false",
+        help="Disable console printing of generated questions.",
+    )
+    parser.add_argument(
+        "--question-list-limit",
+        type=int,
+        default=0,
+        help="Limit printed questions per JD (0 = no limit).",
+    )
+    parser.add_argument(
         "--interview-methods",
         default="",
         help="Comma/JSON-separated interview methods or aliases. Defaults to the standard supported methods.",
@@ -1708,7 +1736,12 @@ def main() -> int:
     print(f"report={md_path}")
     print(f"csv={csv_path}")
     print(f"item_csv={item_csv_path}")
-    _print_generated_questions(rows, question_rows)
+    if args.print_question_list:
+        _print_generated_questions(
+            rows,
+            question_rows,
+            question_list_limit=max(0, int(args.question_list_limit)) or None,
+        )
     print(f"rows={len(rows)}")
     failures = quality_gate_failures(
         rows,

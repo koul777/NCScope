@@ -761,3 +761,10 @@ NCScopeì˜ ì§ë¬´ê¸°ìˆ ì„œÂ·ê³µê³ ë¬¸ íŒŒì‹± ê¸°ëŠ¥ì€ [Kordoc](https://github.c
 - `Á÷¹«±â¼ú¼­` ¹× `°ø°í¹®` ¾÷·Îµå¿¡¼­ HWP/HWPX È®ÀåÀÚ¸¦ ¾÷·Îµå ´Ü°è¿¡¼­ Â÷´ÜÇÕ´Ï´Ù.
   - ¸Ş½ÃÁö: `PDF·Î º¯È¯ ÈÄ ¾÷·ÎµåÇØ ÁÖ¼¼¿ä.`
   - ÇØ´ç Á¦¾àÀº `extract-sclass`, `parse-review`, `strategy/upload` °æ·Î ¸ğµÎ¿¡ ÀÏ°ü Àû¿ëµË´Ï´Ù.
+
+## run_question_quality_loop (ì§ˆë¬¸ ë¦¬ìŠ¤íŠ¸ ì¦‰ì‹œ í™•ì¸)
+```powershell
+python scripts\run_question_quality_loop.py --cycles 1 --print-question-list --alio-question-list-limit 0
+python scripts\run_question_quality_loop.py --cycles 1 --no-print-question-list
+python scripts\run_question_quality_loop.py --cycles 1 --no-stream-stage-output
+```
