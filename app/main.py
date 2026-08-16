@@ -9888,7 +9888,7 @@ async def jd_strategy_upload(
     question_plan_json: str = Form(default=""),
     interview_methods_json: str = Form(default=""),
     avoid_questions_json: str = Form(default=""),
-    include_all_questions: bool = Form(default=False),
+    include_all_questions: str | None = Form(default=None),
     generated_questions_max_items: int | None = Form(default=None),
     generation_offset: int | None = Form(default=None),
     jd_review_json: str = Form(default=""),
