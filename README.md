@@ -777,3 +777,6 @@ Updated for `scripts/evaluate_alio_question_quality.py`:
 - Use `--question-list-format both` to print questions in text and JSON payload.
 - Follow-ups and evaluation points are printed as itemized bullet lines when present.
 - Report artifacts now also include `Question List JSON: <path>`.
+## ALIO Generator Quality Repair Behavior
+
+`_adjust_generated_questions()` now keeps non-blocking model questions (except `no_model_question` and `blind_hiring_cue`) and attempts field-level quality repair before template fallback. This reduces hard fallbacks by repairing model content where possible.
