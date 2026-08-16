@@ -282,8 +282,8 @@
 
         <div id="uploadBlock">
           <label for="jdFile">직무기술서 파일 (필수)</label>
-          <div class="sub" style="margin:-2px 0 6px;">PDF/HWP/HWPX/DOCX/TXT/이미지 또는 지원 문서를 담은 ZIP</div>
-          <input id="jdFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt" />
+          <div class="sub" style="margin:-2px 0 6px;">PDF/DOCX/TXT/이미지 또는 지원 문서를 담은 ZIP</div>
+          <input id="jdFile" type="file" accept=".pdf,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt" />
 
           <div id="jdReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
@@ -340,8 +340,8 @@
           </div>
 
           <label for="noticeFile">공고문 파일 (선택)</label>
-          <div class="sub" style="margin:-2px 0 6px;">PDF/HWP/HWPX/DOCX/TXT 또는 지원 문서를 담은 ZIP</div>
-          <input id="noticeFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.txt,.zip" />
+          <div class="sub" style="margin:-2px 0 6px;">PDF/DOCX/TXT 또는 지원 문서를 담은 ZIP</div>
+          <input id="noticeFile" type="file" accept=".pdf,.docx,.txt,.zip" />
           <div id="noticeReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
               <label style="margin:0;">공고문 핵심 텍스트 검토</label>
@@ -649,6 +649,20 @@
     let noticeReviewConfirmed = false;
     let jdParsing = false;
     let noticeParsing = false;
+
+    const blockedUploadExtensions = new Set(['.hwp', '.hwpx']);
+    function isBlockedUploadFile(file) {
+      const name = String((file && file.name) || '').toLowerCase();
+      const dot = name.lastIndexOf('.');
+      if (dot === -1) return false;
+      return blockedUploadExtensions.has(name.slice(dot));
+    }
+    function setUploadFormatError(fileLabel) {
+      const msg = `${fileLabel}은(는) HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.`;
+      errorBox.style.display = 'block';
+      errorBox.textContent = `오류: ${msg}`;
+      raw.textContent = msg;
+    }
 
     function normSclassLabel(v) {
       return String(v || '').replace(/\s+/g, '').trim().toLowerCase();
@@ -1230,7 +1244,7 @@
       raw.textContent = `직무기술서 파싱 시작: ${file.name}`;
       startProgress(PARSE_PROGRESS_STEPS, {
         label: 'Kordoc 문서 파싱 진행 중',
-        note: 'PDF/HWP/HWPX/DOCX 문서는 표와 OCR 처리 때문에 시간이 걸릴 수 있습니다.',
+        note: 'PDF/DOCX 문서는 표와 OCR 처리 때문에 시간이 걸릴 수 있습니다.',
       });
       updateWorkflowMenu();
       try {
@@ -1395,6 +1409,11 @@
     document.getElementById('jdFile').addEventListener('change', e => {
       const file = e.target.files[0];
       if (file) {
+        if (isBlockedUploadFile(file)) {
+          setUploadFormatError('직무기술서 파일');
+          e.target.value = '';
+          return;
+        }
         sclassBlock.style.display = 'none';
         parseJdForReview(file);
       } else {
@@ -1412,6 +1431,11 @@
     noticeFile.addEventListener('change', e => {
       const file = e.target.files[0];
       if (file) {
+        if (isBlockedUploadFile(file)) {
+          setUploadFormatError('공고문 파일');
+          e.target.value = '';
+          return;
+        }
         parseNoticeForReview(file);
       } else {
         noticeReviewBlock.style.display = 'none';
@@ -2583,6 +2607,9 @@
         if (mode === 'upload') {
           const file = jdFile.files && jdFile.files[0];
           if (!file) throw new Error('직무기술서 파일을 먼저 선택해 주세요.');
+          if (isBlockedUploadFile(file)) {
+            throw new Error('직무기술서 파일은 HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.');
+          }
 
           const fd = new FormData();
           const knobs = collectRuntimeKnobs();
@@ -2592,6 +2619,9 @@
           fd.append('generation_provider', INSTITUTION_GENERATION_PROVIDER);
           fd.append('openai_api_key', requestOpenAiApiKey);
           const nFile = noticeFile.files && noticeFile.files[0];
+          if (nFile && isBlockedUploadFile(nFile)) {
+            throw new Error('공고문 파일은 HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.');
+          }
           fd.append('strengths', '');
           if ((nFile || hasNoticeSupplementText()) && !noticeReviewConfirmed) {
             throw new Error('공고문/보완 텍스트를 질문에 포함하려면 먼저 「공고문·보완 텍스트 검토·적용」 버튼을 눌러 주세요.');

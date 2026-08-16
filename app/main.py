@@ -4354,7 +4354,8 @@ async def _read_upload_limited(upload: UploadFile, label: str) -> bytes:
 
 
 _ARCHIVE_MEMBER_LIMIT = 12
-_SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
+_SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
+_BLOCKED_DOC_SUFFIXES = {".hwp", ".hwpx"}
 _REVIEW_SESSION_TTL_SEC = 30 * 60
 _REVIEW_SESSION_MAX = 100
 _REVIEW_SESSION_LOCK = threading.Lock()
@@ -4372,6 +4373,14 @@ def _safe_member_label(name: str) -> str:
         suffix = Path(value).suffix[:16]
         value = f"{value[: max(1, 160 - len(suffix))]}{suffix}"
     return value or "archive_member"
+
+
+def _reject_hwp_upload(label: str, filename: str | None = None) -> None:
+    if _suffix_of(filename or "") in _BLOCKED_DOC_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label}은(는) HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.",
+        )
 
 
 def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dict[str, Any]:
@@ -4424,6 +4433,11 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                     continue
                 member_name = info.filename
                 suffix = _suffix_of(member_name)
+                if suffix in _BLOCKED_DOC_SUFFIXES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="ZIP 내 HWP/HWPX 파일은 지원되지 않습니다. PDF로 변환 후 탑재해 주세요.",
+                    )
                 if suffix not in _SUPPORTED_ARCHIVE_DOC_SUFFIXES:
                     continue
                 total_uncompressed += int(info.file_size or 0)
@@ -4462,7 +4476,7 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
     if not chunks:
         raise HTTPException(
             status_code=422,
-            detail=f"{label} ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT/image job-description files",
+            detail=f"{label} ZIP contains no parseable PDF/DOCX/TXT/image job-description files",
         )
     return {
         "markdown": "\n\n---\n\n".join(chunks),
@@ -9435,6 +9449,7 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
     data = await _read_upload_limited(jd_file, "jd_file")
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
+    _reject_hwp_upload("직무기술서 파일", jd_file.filename)
     parsed = _parse_upload_document(data, jd_file.filename or "", "jd_file")
     structured = structure_job_description(parsed, filename=jd_file.filename or "")
     review_session = _create_review_session(data, structured, jd_file.filename or "")
@@ -9457,6 +9472,7 @@ async def parse_notice_review_endpoint(notice_file: UploadFile = File(...)) -> d
     if not data:
         raise HTTPException(status_code=400, detail="notice_file is empty")
     filename = notice_file.filename or ""
+    _reject_hwp_upload("공고문 파일", filename)
     parsed = _parse_upload_document(data, filename, "notice_file")
     return structure_job_notice(parsed, filename=filename)
 
@@ -9493,6 +9509,8 @@ async def jd_strategy_upload(
         if not upload:
             return "", b"", ""
         name = (upload.filename or "").lower()
+        file_label = "직무기술서 파일" if label == "jd_file" else "공고문 파일"
+        _reject_hwp_upload(file_label, upload.filename)
         data = await _read_upload_limited(upload, label)
         if not data:
             raise HTTPException(status_code=400, detail=f"{label} is empty")

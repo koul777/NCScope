@@ -129,7 +129,7 @@ Kordoc 문서 파싱 및 세분류 후보 추출
 
 ## 핵심 기능
 
-- PDF/HWP/HWPX/DOCX/TXT/이미지 직무기술서와 해당 파일을 담은 ZIP 파싱
+- PDF/DOCX/TXT/이미지 직무기술서와 해당 파일을 담은 ZIP 파싱
 - 소분류가 아니라 세분류 기준 NCS 후보 추출
 - Human-in-the-loop 방식의 세분류 검토·확정
 - 확정된 세분류 기준 로컬 NCS DB 검색 서버(NCS_MCP)에서 공식 능력단위 조회
@@ -211,7 +211,7 @@ HTTPS로 접속하고 reverse proxy·WAF·APM의 요청 body 기록을 꺼야 �
 
 ### 3. 직무기술서 업로드
 
-`직무기술서 파일`에 PDF/HWP/HWPX/DOCX/TXT/PNG/JPG/WEBP 파일 또는 해당 파일을 담은 ZIP을 올립니다.
+`직무기술서 파일`에 PDF/DOCX/TXT/PNG/JPG/WEBP 파일 또는 해당 파일을 담은 ZIP을 올립니다.
 
 Kordoc 파싱이 끝나면 다음 항목이 검토 영역에 표시됩니다.
 
@@ -355,7 +355,7 @@ NCScope는 앱과 로컬 NCS DB 검색 서버(NCS_MCP)를 분리해서 배포합
 | 구성요소 | 역할 |
 | --- | --- |
 | NCScope FastAPI 앱 | 화면, 업로드, 검토, 질문 생성 흐름 제어 |
-| Kordoc | PDF/HWP/HWPX/DOCX/TXT/이미지 및 ZIP 내부 지원 문서 파싱 |
+| Kordoc | PDF/DOCX/TXT/이미지 및 ZIP 내부 지원 문서 파싱 |
 | NCS_MCP | 로컬 NCS DB 검색 서버. 공식 NCS 능력단위·수행준거·KSA 조회 담당 |
 | serving DB | 약 117MB 경량 read-only SQLite DB |
 | OpenAI API | 생성 요청마다 사용자가 제공한 키로 질문 생성 |
@@ -479,7 +479,7 @@ POST /api/jd/parse-review
 
 Form:
 
-- `jd_file`: PDF/HWP/HWPX/DOCX/TXT/이미지 직무기술서 또는 지원 파일을 담은 ZIP
+- `jd_file`: PDF/DOCX/TXT/이미지 직무기술서 또는 지원 파일을 담은 ZIP
 
 반환:
 
@@ -716,7 +716,7 @@ NCScope는 화면, 문서 파싱, 사람 검토, 면접 질문 생성을 담당�
 
 ## 현재 지원 범위
 
-- ZIP은 암호가 없고 내부에 PDF/HWP/HWPX/DOCX/TXT/이미지 파일이 들어 있는 경우에만 파싱합니다. 압축 내부 파일이 너무 크거나 지원 확장자가 없으면 검토 단계에서 오류로 돌려줍니다.
+- ZIP은 암호가 없고 내부에 PDF/DOCX/TXT/이미지 파일이 들어 있는 경우에만 파싱합니다. 압축 내부 파일이 너무 크거나 지원 확장자가 없으면 검토 단계에서 오류로 돌려줍니다.
 - 기관 자체 용어가 NCS 세분류처럼 쓰이는 경우에는 자동 후보가 부족할 수 있습니다. 이 경우 검토 단계에서 담당자가 세분류를 직접 선택하거나 수정해야 합니다.
 - 생성된 면접 질문은 담당자 검토를 거쳐 최종 확정하는 초안입니다.
 
@@ -745,6 +745,6 @@ AX 단계는 합산 점수가 아닙니다. 코드나 설계만 있는 관문은
 NCScope의 직무기술서·공고문 파싱 기능은 [Kordoc](https://github.com/chrisryugj/kordoc)을 사용합니다.
 
 - 사용 위치: `scripts/kordoc_parse.mjs`
-- 사용 목적: PDF/HWP/HWPX/DOCX/TXT/이미지 문서에서 본문·표·메타데이터를 추출해 검토 후보 생성
+- 사용 목적: PDF/DOCX/TXT/이미지 문서에서 본문·표·메타데이터를 추출해 검토 후보 생성
 - 검토 원칙: Kordoc 추출 결과는 자동 확정값이 아니며, 세분류와 공고문 핵심 텍스트는 사람이 검토·확정해야 함
 - 라이선스: Kordoc은 별도 MIT 라이선스 프로젝트이며, 자세한 내용은 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)를 확인
