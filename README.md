@@ -768,3 +768,12 @@ python scripts\run_question_quality_loop.py --cycles 1 --print-question-list --a
 python scripts\run_question_quality_loop.py --cycles 1 --no-print-question-list
 python scripts\run_question_quality_loop.py --cycles 1 --no-stream-stage-output
 ```
+
+## ALIO Question List Output
+
+Updated for `scripts/evaluate_alio_question_quality.py`:
+
+- `--question-list-format` now supports `plain`, `json`, and `both`.
+- Use `--question-list-format both` to print questions in text and JSON payload.
+- Follow-ups and evaluation points are printed as itemized bullet lines when present.
+- Report artifacts now also include `Question List JSON: <path>`.
