@@ -565,6 +565,15 @@ def _clean_pdf_detail_cell(value: Any) -> list[str]:
         item = re.sub(r"^\d{1,2}\s*[.)]?\s*", "", part).strip(" .")
         if not item or item in {"-", "–", "—"}:
             continue
+        if re.sub(r"\s+", "", item) in {
+            "해당사항없음",
+            "해당없음",
+            "없음",
+            "미개발",
+            "미정",
+            "NCS미개발",
+        }:
+            continue
         if item in {"대분류", "중분류", "소분류", "세분류", "분류체계"}:
             continue
         # Do not let a duty paragraph become a detail candidate.
@@ -586,11 +595,27 @@ def _extract_detail_candidates_from_tables(
     explicit ``세분류`` header, so a neighbouring ``인사·조직`` 소분류 value
     cannot leak into the 세분류 candidates.
     """
+    stop_labels = {
+        "능력단위",
+        "직무수행내용",
+        "필요지식",
+        "필요기술",
+        "직무수행태도",
+        "직업기초능력",
+        "필요자격",
+        "참고사이트",
+    }
     for page_no, table in scope_tables:
         active_detail_index: int | None = None
+        collected: list[dict[str, Any]] = []
         for row in table[:16]:
             if not row:
                 continue
+            row_labels = {
+                re.sub(r"\s+", "", str(cell or ""))
+                for cell in row
+                if str(cell or "").strip()
+            }
             detail_index = next(
                 (
                     idx
@@ -599,6 +624,8 @@ def _extract_detail_candidates_from_tables(
                 ),
                 -1,
             )
+            if active_detail_index is not None and row_labels.intersection(stop_labels):
+                break
             if detail_index >= 0:
                 active_detail_index = detail_index
                 value_cells = row[detail_index + 1 :]
@@ -615,10 +642,9 @@ def _extract_detail_candidates_from_tables(
                 )
             else:
                 continue
-            candidates: list[dict[str, Any]] = []
             for cell in value_cells:
                 for label in _clean_pdf_detail_cell(cell):
-                    candidates.append(
+                    collected.append(
                         {
                             "label": label,
                             "page": int(page_no),
@@ -626,16 +652,16 @@ def _extract_detail_candidates_from_tables(
                             "raw": label,
                         }
                     )
-            if candidates:
-                seen: set[str] = set()
-                unique: list[dict[str, Any]] = []
-                for item in candidates:
-                    key = re.sub(r"\s+", "", str(item["label"])).casefold()
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    unique.append(item)
-                return unique
+        if collected:
+            seen: set[str] = set()
+            unique: list[dict[str, Any]] = []
+            for item in collected:
+                key = re.sub(r"\s+", "", str(item["label"])).casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(item)
+            return unique
     return []
 
 

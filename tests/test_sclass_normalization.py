@@ -179,3 +179,17 @@ def test_pdf_detail_table_preserves_all_detail_cells_in_flattened_row():
         "비서 (글로벌 경영사무 지원)",
         "예산",
     ]
+
+
+def test_pdf_detail_table_does_not_promote_no_mapping_placeholder():
+    tables = [
+        (
+            1,
+            [
+                ["분류체계", "대분류", "중분류", "소분류", "세분류"],
+                ["", "05.법률", "01.법률", "01.법무", "해당사항 없음"],
+            ],
+        )
+    ]
+
+    assert _extract_detail_candidates_from_tables(tables) == []
