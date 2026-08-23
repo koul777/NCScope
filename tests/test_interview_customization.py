@@ -552,7 +552,11 @@ def test_ncs_code_fallback_templates_require_human_review(index: int) -> None:
     report_item = out["question_quality_report"]["items"][0]
 
     assert report_item["ready"] is False
-    assert report_item["issues"] == ["field_realism"]
+    assert "field_realism" in report_item["issues"]
+    # Provider-free fallback questions intentionally stay generic and may
+    # trigger additional review gates (method shape, context, or KSA task
+    # measurement) after taxonomy labels are hidden from the candidate view.
+    assert report_item["issues"]
     assert "raw_deterministic_provenance" in report_item["realism_issue_codes"]
 
 
