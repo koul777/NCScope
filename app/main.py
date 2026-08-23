@@ -7244,6 +7244,14 @@ def _natural_question_wording_ok(q: dict[str, Any], question: str, follow_ups: l
         return False
     if re.search(r"(?:설명하고|제시하고|말씀하고)\s+또한\b", main):
         return False
+    # A purpose-clause fragment must never be exposed as a KSA surface. It is
+    # the characteristic failure mode of rows such as
+    # ``...도와주고자 하는 태도`` when the source label is stripped.
+    if re.search(
+        r"(?:하고자|고자)\s*(?:관련\s*)?(?:행동\s*기준|확인·판단\s*기준|수행·검증\s*절차)",
+        "\n".join([main, *[str(item or "") for item in follow_ups]]),
+    ):
+        return False
     if re.search(r"(?:고|며|지만|는데|면서)(?:이|가)\s*발생", main):
         return False
     if re.search(r"상황(?:이|가)\s*(?:동시에\s*)?발생한\s*상황", main):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from scripts.audit_ksa_question_surfaces import audit_rows, surface_issue_codes
-from app.services.question_surface import public_task_object
+from app.services.question_surface import has_dangling_surface, public_task_object
 from app.services.question_surface import replace_official_ksa_surface
 
 
@@ -80,6 +80,19 @@ def test_surface_issue_codes_accepts_observable_attitude_intention_clause() -> N
         surface=surface,
         surface_source=source,
     )
+
+
+def test_attitude_support_intention_becomes_a_readable_support_behavior() -> None:
+    surface, source = public_task_object(
+        factor_name="입사예정자의 조직적응을 적극적으로 도와주고자 하는 태도",
+        ksa_type="태도",
+    )
+
+    assert surface == "입사예정자의 조직적응 지원 행동 기준"
+    assert source == "factor_repair"
+    assert "도와주고자" not in surface
+    assert "관련 행동 기준" not in surface
+    assert not has_dangling_surface(surface)
 
 
 def test_surface_issue_codes_rejects_action_plus_generic_performance_glue() -> None:

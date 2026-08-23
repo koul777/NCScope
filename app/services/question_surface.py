@@ -258,6 +258,15 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             "",
             candidate,
         ).strip()
+        # NCS rows sometimes end with a purpose clause such as
+        # ``입사예정자의 조직적응을 적극적으로 도와주고자 하는 태도``.
+        # After removing ``태도`` the remaining ``...도와주고자`` must be
+        # nominalized before the public 행동 기준 suffix is attached.
+        candidate = re.sub(
+            r"(?P<object>.+?)(?:을|를)\s*(?:적극적으로\s*)?(?:도와주고자(?:\s*하는)?|도와주려는|지원하고자(?:\s*하는)?|지원하려는)$",
+            r"\g<object> 지원",
+            candidate,
+        ).strip()
         candidate = _nominalize_attitude_clause(candidate)
         if _DANGLING_END_RE.search(candidate):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
@@ -555,7 +564,14 @@ def build_question_task_frame(
 def has_dangling_surface(value: Any) -> bool:
     """Expose the public-language guard for validation and regression tests."""
 
-    return bool(_DANGLING_END_RE.search(_clean(value, max_chars=200)))
+    text = _clean(value, max_chars=200)
+    return bool(
+        _DANGLING_END_RE.search(text)
+        or re.search(
+            r"(?:하고자|고자)\s*(?:관련\s*)?(?:행동\s*기준|확인·판단\s*기준|수행·검증\s*절차)$",
+            text,
+        )
+    )
 
 
 def official_ksa_surface_aliases(factor_name: Any) -> list[str]:

@@ -480,6 +480,7 @@ def test_focus_overlay_keeps_one_opposing_policy_pair() -> None:
     [
         "승인이 대기 중이고가 발생한 직무 경험을 말씀해 주세요.",
         "자료 오류 상황이 동시에 발생한 상황입니다.",
+        "해당 직무에서 입사예정자의 조직적응을 적극적으로 도와주고자 관련 행동 기준에 따라 어떤 판단과 행동을 했는지 말씀해 주세요.",
     ],
 )
 def test_natural_wording_gate_rejects_scenario_assembly_artifacts(bad_question: str) -> None:
@@ -558,6 +559,36 @@ def test_ncs_code_fallback_templates_require_human_review(index: int) -> None:
     # measurement) after taxonomy labels are hidden from the candidate view.
     assert report_item["issues"]
     assert "raw_deterministic_provenance" in report_item["realism_issue_codes"]
+
+
+def test_fallback_template_does_not_expose_malformed_attitude_surface() -> None:
+    code = "0202030201_25v3"
+    factor = "입사예정자의 조직적응을 적극적으로 도와주고자 하는 태도"
+    question = _build_ncs_code_template_fallback_question(
+        unit={
+            "ncsClCd": code,
+            "compeUnitName": "조직문화 운영",
+            "ncsSubdCdnm": "인사",
+        },
+        comp_name="조직문화 운영",
+        ncs_code=code,
+        ksa_terms=[factor],
+        evidence_terms=[factor],
+        evidence_rows=[
+            {
+                "ncsClCd": code,
+                "factorName": factor,
+                "ksaTypeName": "태도",
+                "elementName": "조직문화 지원하기",
+            }
+        ],
+        index=0,
+        method_override="경험면접",
+    )
+
+    visible = "\n".join([question["question"], *question["follow_ups"]])
+    assert "도와주고자 관련 행동 기준" not in visible
+    assert "입사예정자의 조직적응 지원 행동 기준" in visible
 
 
 def test_runtime_knobs_allow_default_seven_ksa_units() -> None:
