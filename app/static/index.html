@@ -1177,7 +1177,7 @@
           setGenerationProviderBadge('요청 준비됨', 'good');
         } else if (requestScopedApiReady()) {
           generationProviderMessage.textContent = detectedProvider === 'openrouter_api'
-            ? 'OpenRouter · Ox Alpha로 자동 감지했습니다. 생성은 보통 수십 초, 혼잡 시 몇 분 걸릴 수 있습니다.'
+            ? 'OpenRouter · Ox Alpha로 자동 감지했습니다. 서버 제한 시간 안에 생성하고, 실패하면 공식 KSA 서버 문항으로 안전하게 전환합니다.'
             : 'OpenAI 키로 자동 감지했습니다. 생성 요청을 보낼 준비가 되었습니다.';
           setGenerationProviderBadge('요청 준비됨', 'good');
         } else if (requestScopedApiStatusValid()) {
@@ -2297,9 +2297,9 @@
         return {
           steps: OPENROUTER_PROGRESS_STEPS,
           slowState: {
-            afterSeconds: 60,
+            afterSeconds: 20,
             label: 'Ox Alpha 응답 대기 중',
-            note: '혼잡하면 몇 분 걸릴 수 있습니다. 중복 제출하지 말고 현재 탭을 유지해 주세요.',
+            note: '고추론·품질 재검사 후에도 제한 예산 안에 응답하거나 공식 KSA 서버 문항으로 자동 전환합니다. 중복 제출하지 마세요.',
           },
         };
       }

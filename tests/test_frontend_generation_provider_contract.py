@@ -176,8 +176,8 @@ def test_openrouter_latency_has_honest_progress_and_accessible_live_state() -> N
     assert "const OPENROUTER_PROGRESS_STEPS = [" in script
     assert "label: 'Ox Alpha 질문 후보 생성'" in script
     assert "label: '중복 제거·품질 선별'" in script
-    assert "afterSeconds: 60" in script
-    assert "혼잡하면 몇 분 걸릴 수 있습니다" in script
+    assert "afterSeconds: 20" in script
+    assert "고추론·품질 재검사 후에도 제한 예산 안에 응답하거나 공식 KSA 서버 문항으로 자동 전환합니다." in script
     assert "setGenerationProgress(94)" in script
     assert "btn.setAttribute('aria-busy', 'true')" in script
     assert "generationApiKey.disabled = true" in script
