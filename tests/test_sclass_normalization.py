@@ -145,6 +145,22 @@ def test_pdf_detail_table_reads_separate_detail_column_not_small_category():
     assert [row["label"] for row in rows] == ["인사"]
 
 
+def test_pdf_detail_table_accepts_ncs_detail_header_variant():
+    tables = [
+        (
+            1,
+            [
+                ["분류체계", "NCS 세분류명"],
+                ["", "01.노무관리"],
+            ],
+        )
+    ]
+
+    rows = _extract_detail_candidates_from_tables(tables)
+
+    assert [row["label"] for row in rows] == ["노무관리"]
+
+
 def test_pdf_detail_table_preserves_all_detail_cells_in_flattened_row():
     tables = [
         (

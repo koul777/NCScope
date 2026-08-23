@@ -584,6 +584,14 @@ def _clean_pdf_detail_cell(value: Any) -> list[str]:
     return out
 
 
+def _is_detail_header_cell(value: Any) -> bool:
+    """Recognize common NCS 세분류 header variants without prose matches."""
+    compact = re.sub(r"\s+", "", str(value or ""))
+    if not compact or len(compact) > 32:
+        return False
+    return "세분류" in compact
+
+
 def _extract_detail_candidates_from_tables(
     scope_tables: list[tuple[int, list[list[str]]]],
 ) -> list[dict[str, Any]]:
@@ -620,7 +628,7 @@ def _extract_detail_candidates_from_tables(
                 (
                     idx
                     for idx, cell in enumerate(row)
-                    if re.sub(r"\s+", "", str(cell or "")) == "세분류"
+                    if _is_detail_header_cell(cell)
                 ),
                 -1,
             )
@@ -670,7 +678,7 @@ def _has_detail_table_header(
     for _page_no, table in tables:
         for row in table:
             if any(
-                re.sub(r"\s+", "", str(cell or "")) == "세분류"
+                _is_detail_header_cell(cell)
                 for cell in (row or [])
             ):
                 return True
