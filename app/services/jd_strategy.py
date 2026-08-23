@@ -2853,21 +2853,16 @@ def _build_ncs_code_template_fallback_question(
         ]
         evaluation_points = ["미래예측과 문제 정의", "창의적 사고와 대안 도출", "검증 방법과 실현가능성", "의사결정과 실행계획"]
     else:
-        experience_angle = (
-            "요구사항과 기준을 확인한 뒤",
-            "마감 압박 속 우선순위를 정한 뒤",
-            "누락·오류 자료를 대조한 뒤",
-            "협업 부서와 보고 순서를 조정한 뒤",
-            "결과를 검증하고 재발을 막은 뒤",
-        )[index % 5]
-        if ksa_kind == "태도":
-            experience_angle = (
-                "압박과 이해 충돌 속에서 요구사항과 기준을 확인한 뒤",
-                "마감 압박과 상충하는 요구 속에서 우선순위를 정한 뒤",
-                "누락·오류 자료와 책임 범위를 대조한 뒤",
-                "협업 부서와 이해 충돌 속에서 보고 순서를 조정한 뒤",
-                "결과에 대한 책임을 확인하고 재발을 막은 뒤",
-            )[index % 5]
+        # Provider-free recovery must still be readable.  Use the selected
+        # KSA's semantic object as the only anchor; never assemble the old
+        # situation/role/evidence/improvement checklist here.
+        natural_focus = re.sub(
+            r"\s*(?:관련\s*)?(?:실무\s*)?(?:적용·검증\s*절차|수행·검증\s*절차|"
+            r"확인·판단\s*기준|행동\s*기준|확인\s*절차|검증\s*절차)\s*$",
+            "",
+            candidate_surface_focus,
+        ).strip(" ·ㆍ/") or "핵심 업무"
+
         def _object_particle(value: str) -> str:
             last_char = value[-1:] if value else ""
             has_batchim = bool(
@@ -2877,42 +2872,40 @@ def _build_ncs_code_template_fallback_question(
             )
             return "을" if has_batchim else "를"
 
+        variation_contexts = (
+            "자료가 서로 달랐던 때",
+            "마감이 촉박했던 때",
+            "요구가 엇갈렸던 때",
+            "예외를 판단해야 했던 때",
+            "결과를 다시 확인했던 때",
+        )
+        variation_context = variation_contexts[index % len(variation_contexts)]
         if ksa_kind == "지식":
-            experience_prompt = (
-                f"{candidate_context}에서 {surface_focus}{_object_particle(surface_focus)} 적용했던 실제 상황 하나를 골라 "
-                f"{experience_angle} 어떤 기준으로 판단했는지 말씀해 주세요."
+            question = (
+                f"{candidate_context}에서 {variation_context} {natural_focus}{_object_particle(natural_focus)} 실제 판단에 사용했던 경험을 "
+                "말씀해 주세요. 무엇을 근거로 결정했는지와 결과가 궁금합니다."
             )
         elif ksa_kind == "기술":
-            experience_prompt = (
-                f"{candidate_context}에서 업무를 수행하던 실제 상황 하나를 골라 "
-                f"{experience_angle} {surface_focus}에 따라 어떤 순서로 조치하고 결과를 확인했는지 말씀해 주세요."
+            question = (
+                f"{candidate_context}에서 {variation_context} {natural_focus}{_object_particle(natural_focus)} 활용해 문제를 해결했던 경험을 "
+                "말씀해 주세요. 본인이 한 조치와 확인된 변화는 무엇이었나요?"
             )
         elif ksa_kind == "태도":
-            attitude_focus = re.sub(
-                r"\s*(?:수행\s*시\s*)?행동\s*기준\s*$",
-                "",
-                candidate_surface_focus,
-            ).strip()
-            object_marker = _object_particle(attitude_focus)
-            experience_prompt = (
-                f"{candidate_context}에서 {attitude_focus}{object_marker} 보여준 실제 상황 하나를 골라 "
-                f"{experience_angle} 어떤 행동을 직접 선택했는지 말씀해 주세요."
+            question = (
+                f"{candidate_context}에서 {variation_context} {natural_focus}가 중요했던 경험을 하나 들려 주세요. "
+                "그때 어떤 행동을 선택했고 결과는 어땠나요?"
             )
         else:
-            experience_prompt = (
-                f"{candidate_context}에서 업무를 수행하던 실제 상황 하나를 골라 "
-                f"{experience_angle} {candidate_surface_focus}에 따라 어떤 판단과 행동을 했는지 말씀해 주세요."
+            question = (
+                f"{candidate_context}에서 {variation_context} {natural_focus}와 관련해 판단했던 경험을 말씀해 주세요. "
+                "본인의 선택과 결과를 설명해 주세요."
             )
-        question = (
-            f"{experience_prompt} "
-            "그 결과를 문서·수치·기록·피드백으로 어떻게 확인했으며 이후 무엇을 개선했는지도 설명해 주세요."
-        )
         follow_ups = [
-            "방금 답변에서 당시 상황과 본인 역할, 직접 맡은 범위를 구분해 설명해 주세요.",
-            f"앞서 말씀하신 {candidate_surface_focus} 관련 행동의 근거 자료나 기준이 달랐다면 어떤 부분을 바꾸시겠습니까?",
-            "앞서 제시한 결과를 문서·수치·기록·피드백 중 무엇으로 확인했으며, 확인값이 다르면 어떻게 조정하시겠습니까?",
+            "그때 본인이 맡은 역할과 직접 내린 결정은 무엇이었나요?",
+            f"앞서 말씀하신 {natural_focus}와 관련해 다른 선택지도 검토했나요?",
+            "결과를 어떻게 확인했고, 다시 한다면 무엇을 바꾸시겠습니까?",
         ]
-        evaluation_points = ["상황과 역할", "판단 근거", "실행 행동", "성과와 학습"]
+        evaluation_points = ["KSA가 드러난 장면", "판단 근거", "본인의 선택과 행동", "확인된 결과"]
 
     generic_case_facts = [
         f"{context_label} 관련 긴급 요청 1건과 일반 요청 2건이 같은 처리일에 접수됨",

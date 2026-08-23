@@ -133,7 +133,8 @@ def test_provider_free_experience_question_uses_natural_object_phrase() -> None:
         ncs_ksa=ncs_ksa,
     )
     question = result["interview_questions"][0]["question"]
-    assert "업무를 수행하던" in question
+    assert "업무를 수행하던" not in question
+    assert "전기설비 점검 및 보수" in question
     assert "관리을" not in question
 
 

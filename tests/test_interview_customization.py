@@ -748,7 +748,7 @@ def test_fallback_template_does_not_expose_malformed_attitude_surface() -> None:
     visible = "\n".join([question["question"], *question["follow_ups"]])
     assert "조직문화 운영에서" in question["question"]
     assert "도와주고자 관련 행동 기준" not in visible
-    assert "입사예정자의 조직적응 지원 행동 기준" in visible
+    assert "입사예정자의 조직적응 지원 행동 기준" not in visible
 
 
 def test_runtime_knobs_allow_default_seven_ksa_units() -> None:
