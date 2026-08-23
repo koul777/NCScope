@@ -3407,7 +3407,9 @@ def _question_for_method(
                 limit=2,
             )
             if source_parts:
-                source_anchor = source_parts[0][:180]
+                source_anchor = re.sub(r"\s+", " ", source_parts[0]).strip()
+                if len(source_anchor) > 84:
+                    source_anchor = source_anchor[:84].rsplit(" ", 1)[0].rstrip(" ,·") + "…"
                 break
         if source_anchor:
             label = f"{label} · 공고·직무기술서 근거: {source_anchor}"
@@ -4640,6 +4642,20 @@ def _adjust_generated_questions(
             "no_model_question",
             "blind_hiring_cue",
         }
+        if cli_source_base == "openrouter_api":
+            # OpenRouter drafts are still model-authored, but these editorial
+            # failures make the candidate-facing question unusable: a generic
+            # ``해당 직무`` opening, a mechanical KSA surface, or a checklist-
+            # like STAR sentence must not survive as a preserved draft.
+            cli_hard_replacement_reasons.update(
+                {
+                    "specific_context",
+                    "natural_wording",
+                    "ksa_measurement_task",
+                    "candidate_surface_safe",
+                    "field_realism",
+                }
+            )
         cli_requires_replacement = bool(
             is_subscription_cli_candidate
             and any(
@@ -5013,7 +5029,23 @@ def _adjust_generated_questions(
         probe_item = probe_items.get(pos + 1) or {}
         if probe_item.get("ready") is True:
             continue
-        if _is_subscription_cli_source(source):
+        raw_issues = {
+            str(issue).strip()
+            for issue in (probe_item.get("issues") or [])
+            if str(issue).strip()
+        } if isinstance(probe_item.get("issues"), list) else set()
+        openrouter_quality_failure = bool(
+            _subscription_cli_source_base(source) == "openrouter_api"
+            and raw_issues
+            & {
+                "specific_context",
+                "natural_wording",
+                "ksa_measurement_task",
+                "candidate_surface_safe",
+                "field_realism",
+            }
+        )
+        if _is_subscription_cli_source(source) and not openrouter_quality_failure:
             existing_warnings = [
                 str(reason).strip()
                 for reason in (item.get("model_quality_warnings") or [])
@@ -5030,11 +5062,6 @@ def _adjust_generated_questions(
             item["model_question_preserved"] = True
             continue
         fallback = fallback_rows[pos] if pos < len(fallback_rows) else {}
-        raw_issues = {
-            str(issue).strip()
-            for issue in (probe_item.get("issues") or [])
-            if str(issue).strip()
-        } if isinstance(probe_item.get("issues"), list) else set()
         repairable_fields: set[str] = set()
         if raw_issues and raw_issues.issubset(field_repair_issue_fields):
             for issue in raw_issues:
@@ -7244,6 +7271,26 @@ def _natural_question_wording_ok(q: dict[str, Any], question: str, follow_ups: l
         return False
     if re.search(r"(?:설명하고|제시하고|말씀하고)\s+또한\b", main):
         return False
+    # Do not let a provider fall back to the stock, label-free experience
+    # opening.  It is technically grammatical but hides the uploaded duty and
+    # encourages the rest of the sentence to become a checklist of fixed STAR
+    # clauses (the exact failure mode seen in production).
+    if re.search(
+        r"^해당\s*직무(?:에서|중에?)\s*업무를\s*수행하던\s*실제\s*상황(?:\s*하나)?를\s*골라",
+        main,
+    ):
+        return False
+    scaffold_markers = (
+        "실제 상황 하나를 골라",
+        "요구사항과 기준",
+        "당시 맡은 역할",
+        "직접 맡은 범위",
+        "문서·수치·기록·피드백",
+        "이후 무엇을 개선",
+    )
+    scaffold_hits = sum(marker in main for marker in scaffold_markers)
+    if method in {"", "경험면접"} and scaffold_hits >= 3 and len(main) >= 220:
+        return False
     # A purpose-clause fragment must never be exposed as a KSA surface. It is
     # the characteristic failure mode of rows such as
     # ``...도와주고자 하는 태도`` when the source label is stripped.
@@ -7274,6 +7321,26 @@ def _natural_question_wording_ok(q: dict[str, Any], question: str, follow_ups: l
         return False
     focus = str(q.get("question_focus") or "").strip()
     focus_surface = str(q.get("question_focus_surface") or "").strip()
+    # A public task surface is an internal bridge, not prose to paste into a
+    # sentence as ``... 기준에 따라``. Reject that mechanical attachment so
+    # the provider candidate is regenerated or replaced by the concise server
+    # template instead of being shown as a finished question.
+    if focus_surface:
+        escaped_surface = re.escape(focus_surface)
+        source = str((q or {}).get("question_source") or "").strip()
+        mechanical_surface_check = source not in {
+            "template_fallback",
+            "rule_fallback",
+            "quality_orchestrator_repair",
+            "simulation_candidate",
+            "deterministic",
+            "deterministic_template",
+        }
+        if method == "경험면접" and mechanical_surface_check and re.search(
+            rf"{escaped_surface}\s*(?:에\s*따라|관련\s*(?:행동|확인·판단)\s*기준)",
+            main,
+        ):
+            return False
     # A legitimate NCS factor can itself contain the word "관련" (for example,
     # "도로교통 관련 법규").  Repeating that exact factor is evidence
     # traceability, not conjunction stuffing, so only count scaffold wording.

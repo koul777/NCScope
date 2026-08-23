@@ -2628,7 +2628,11 @@ def _build_ncs_code_template_fallback_question(
     # instead of hiding every question behind ``해당 직무``. The unit label is
     # short, already human-reviewed, and gives the candidate an observable
     # work context when the provider path is unavailable.
-    candidate_context = context_label
+    # Only surface the NCS competency label when the source bundle is present
+    # to anchor it to the uploaded job materials. Provider-free unit tests and
+    # code-only callers without that bundle retain the neutral fallback so a
+    # taxonomy label is not presented as if it were the employer's wording.
+    candidate_context = context_label if str(job_context_text or "").strip() else "해당 직무"
     if (
         not candidate_context
         or len(candidate_context) > 80
@@ -2880,8 +2884,8 @@ def _build_ncs_code_template_fallback_question(
             )
         elif ksa_kind == "기술":
             experience_prompt = (
-                f"{candidate_context}에서 {surface_focus}{_object_particle(surface_focus)} 수행했던 실제 상황 하나를 골라 "
-                f"{experience_angle} 어떤 순서로 조치하고 결과를 확인했는지 말씀해 주세요."
+                f"{candidate_context}에서 업무를 수행하던 실제 상황 하나를 골라 "
+                f"{experience_angle} {surface_focus}에 따라 어떤 순서로 조치하고 결과를 확인했는지 말씀해 주세요."
             )
         elif ksa_kind == "태도":
             attitude_focus = re.sub(
@@ -5294,6 +5298,11 @@ def _experience_only_generation_prompt(
         "- task_semantics와 observable_evidence는 질문 설계용 의미입니다. 핵심 대상·행동을 자연스러운 "
         "직무 사건으로 바꾸고, '관련 실무 적용·검증 절차', '행동 기준', '절차·절차' 같은 메타 문구를 "
         "만들지 마세요. evidence_id, NCS 코드·능력단위명은 질문과 꼬리질문에 노출하지 마세요.\n"
+        "- 다음 고정 골격은 사용하지 마세요: '해당 직무에서 업무를 수행하던 실제 상황 하나를 골라', "
+        "'요구사항과 기준을 확인한 뒤', '문서·수치·기록·피드백으로 ... 이후 무엇을 개선'. "
+        "공고·직무기술서의 구체 명사(문서, 대상, 산출물, 협업 상대) 하나를 먼저 제시하고, "
+        "한 사건에서 핵심 판단·행동 하나만 자연스럽게 물으세요. 주질문 안에 STAR 체크리스트를 "
+        "나열하지 말고 결과 증거와 개선은 짧은 한 절로 연결하세요.\n"
         "- 꼬리1은 '방금 말씀하신'으로 시작해 답변에서 빠진 S/T의 사건 조건·본인 역할·목표를, "
         "꼬리2는 '앞서 언급한'으로 시작해 A의 선택 이유·실제 행동·사용 근거를, 꼬리3은 결과가 "
         "없거나 불명확한 경우를 열어 두고 R의 수치·문서·피드백과 학습·전이를 확인하세요. 서로 "
@@ -5765,6 +5774,10 @@ def build_strategy_with_openai(
         "- 직무/NCS 질문은 서로 다른 내부 의미 힌트와 scenario frame을 실제 사건·대상·제약으로 번역해 질문 의도가 겹치지 않게 생성\n"
         "- question_evidence_id에는 같은 index에 배정된 evidence_id를 그대로 넣고, question_focus_surface에는 required_surface_focus를 넣으세요.\n"
         "- question_focus_surface, question_focus, ksa_refs는 추적 필드입니다. 각각 required_surface_focus와 required_factorName을 정확히 저장하세요. 지원자용 문장에는 공식 required_factorName은 숨기되 required_surface_focus의 구체 업무 의미는 주질문에서 관찰 가능해야 합니다.\n"
+        "- 경험면접 주질문은 매번 같은 '해당 직무에서 ... 실제 상황 하나를 골라' 골격이나 "
+        "'요구사항과 기준을 확인한 뒤 ... 문서·수치·기록·피드백' 체크리스트를 반복하지 마세요. "
+        "배정된 업무의 구체 명사와 사건을 먼저 쓰고 핵심 행동 하나, 결과 확인 한 가지로 끝내세요. "
+        "내부 surface 문구를 '... 행동 기준에 따라' 또는 '... 확인·판단 기준에 따라'로 붙이지 마세요.\n"
         "\n"
         "[주질문 작성 필수 기준]\n"
         "- 경험면접을 제외한 과제형 주질문은 핵심 판단 1개와 그 판단을 기록하는 최소 산출물 1개에 집중하고, 경험면접은 실제 사건·역할·행동 하나·관찰 결과만 질문. 다른 판단 family와 협의·기록·사후점검은 꼬리질문으로 이동\n"

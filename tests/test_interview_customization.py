@@ -487,6 +487,98 @@ def test_natural_wording_gate_rejects_scenario_assembly_artifacts(bad_question: 
     assert _natural_question_wording_ok({}, bad_question, []) is False
 
 
+@pytest.mark.parametrize(
+    "bad_question",
+    [
+        "해당 직무에서 업무를 수행하던 실제 상황 하나를 골라 요구사항과 기준을 확인한 뒤 전략적 인적자원관리 확인·판단 기준에 따라 어떤 판단과 행동을 했는지 말씀해 주세요. 그 결과를 문서·수치·기록·피드백으로 어떻게 확인했으며 이후 무엇을 개선했는지도 설명해 주세요.",
+        "해당 직무에서 업무를 수행하던 실제 상황 하나를 골라 마감 압박과 상충하는 요구 속에서 우선순위를 정한 뒤 입사예정자의 조직적응 지원 행동 기준에 따라 어떤 판단과 행동을 했는지 말씀해 주세요.",
+        "해당 직무에서 업무를 수행하던 실제 상황 하나를 골라 누락·오류 자료와 책임 범위를 대조한 뒤 대안을 선택가능한 결정적 행동 기준에 따라 어떤 판단과 행동을 했는지 말씀해 주세요.",
+    ],
+)
+def test_natural_wording_gate_rejects_fixed_experience_checklists(bad_question: str) -> None:
+    assert _natural_question_wording_ok({}, bad_question, []) is False
+
+
+def test_natural_wording_gate_rejects_mechanical_surface_attachment() -> None:
+    question = (
+        "인사기획에서 전략적 인적자원관리 확인·판단 기준에 따라 판단했던 사례를 "
+        "말씀해 주세요."
+    )
+    assert _natural_question_wording_ok(
+        {
+            "type": "경험면접",
+            "question_focus_surface": "전략적 인적자원관리 확인·판단 기준",
+        },
+        question,
+        [],
+    ) is False
+
+
+def test_openrouter_mechanical_experience_draft_is_replaced_by_source_anchored_template() -> None:
+    code = "0202020101_23v3"
+    detail = "인사·조직"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "detail": detail,
+                        "enabled": True,
+                        "main_count": 1,
+                        "follow_up_count": 3,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+    out = _adjust_generated_questions(
+        {
+            "interview_questions": [
+                {
+                    "type": "경험면접",
+                    "question_source": "openrouter_api",
+                    "question": (
+                        "해당 직무에서 업무를 수행하던 실제 상황 하나를 골라 요구사항과 기준을 확인한 뒤 "
+                        "전략적 인적자원관리 확인·판단 기준에 따라 어떤 판단과 행동을 했는지 말씀해 주세요."
+                    ),
+                    "follow_ups": [
+                        "방금 말씀하신 역할은 무엇이었나요?",
+                        "앞서 말한 판단의 근거는 무엇이었나요?",
+                        "결과를 어떻게 확인했나요?",
+                    ],
+                    "evaluation_points": ["상황", "판단", "행동", "결과"],
+                }
+            ]
+        },
+        plan,
+        ["경험면접"],
+        ncs_matches=[
+            {
+                "ncsClCd": code,
+                "compeUnitName": "인사기획",
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[
+            {
+                "ncsClCd": code,
+                "compeUnitName": "인사기획",
+                "factorName": "전략적인 인적자원관리",
+                "ksaTypeName": "지식",
+            }
+        ],
+        job_context_text="[담당업무]인사기획 업무를 수행한다.",
+    )
+    item = out["interview_questions"][0]
+    assert item["question_source"] == "template_fallback"
+    assert item["model_question_preserved"] is False
+    assert "해당 직무에서 업무를 수행하던" not in item["question"]
+    assert "인사기획" in item["question"]
+
+
 def test_specific_definition_domain_beats_generic_title_domain() -> None:
     context = _domain_context_pack(
         detail="사무행정",
@@ -584,6 +676,7 @@ def test_fallback_template_does_not_expose_malformed_attitude_surface() -> None:
         ],
         index=0,
         method_override="경험면접",
+        job_context_text="[담당업무]신규 구성원의 적응을 지원한다.",
     )
 
     visible = "\n".join([question["question"], *question["follow_ups"]])
