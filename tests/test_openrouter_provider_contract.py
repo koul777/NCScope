@@ -614,6 +614,8 @@ def test_openrouter_strategy_promotes_presentation_to_high_without_extra_candida
     calls: list[dict] = []
     monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
     monkeypatch.setenv("OPENROUTER_HIGH_RISK_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENROUTER_TIMEOUT_SEC", "8")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_TIMEOUT_SEC", "15")
     monkeypatch.setenv("OPENAI_STRATEGY_CANDIDATE_MULTIPLIER", "1")
 
     def fake_chat(**kwargs):
@@ -645,6 +647,7 @@ def test_openrouter_strategy_promotes_presentation_to_high_without_extra_candida
 
     assert len(calls) == 1
     assert calls[0]["payload"]["reasoning_effort"] == "high"
+    assert calls[0]["timeout_sec"] == 15.0
     assert result["provider_reasoning_effort"] == "high"
     assert result["provider_reasoning_stage"] == "primary"
     assert result["provider_reasoning_reason"] == "high_risk_interview_method"
