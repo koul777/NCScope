@@ -44,7 +44,7 @@ def test_server_managed_api_card_keeps_an_optional_accessible_override_field() -
     assert 'role="alert"' in html
     assert 'id="btnRefreshGenerationProvider"' in html
     assert 'id="generationProviderModelNote"' in html
-    assert 'OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구' in html
+    assert 'OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구' in html
     assert "btnRefreshGenerationProvider.addEventListener('click', loadGenerationProviderStatus)" in script
     assert "scheduleGenerationProviderDetection(true);" in script
     assert "Vercel Production 서버 키" in html
@@ -63,7 +63,7 @@ def test_provider_is_auto_detected_from_one_key_without_a_selector() -> None:
     assert openrouter_branch < openai_branch
     assert "if (key.startsWith('sk-or-')) return 'openrouter_api'" in script
     assert "if (key.startsWith('sk-')) return 'openai_api'" in script
-    assert "modelNote: 'OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구'" in script
+    assert "modelNote: 'OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구'" in script
     assert "s.provider_fallback_used === true" in script
     assert "s.generation_mode === 'server_ksa_fallback'" in script
     status_url = "`/api/generation-provider/status?provider=${encodeURIComponent(requestedProvider)}`"

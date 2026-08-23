@@ -290,7 +290,7 @@
             <span id="generationProviderBadge" class="provider-status-pill" role="status" aria-live="polite">확인 중</span>
           </div>
           <p id="generationProviderMessage" class="provider-message">Vercel 서버의 OpenRouter 키 연결 상태를 확인하고 있습니다.</p>
-          <div id="generationProviderModelNote" class="provider-model-note" role="status" aria-live="polite">OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구</div>
+          <div id="generationProviderModelNote" class="provider-model-note" role="status" aria-live="polite">OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구</div>
           <div class="provider-key-field">
             <label id="generationApiKeyLabel" for="generationApiKey">개인 API 키 (선택)</label>
             <div class="provider-key-row">
@@ -914,13 +914,13 @@
       openrouter_api: Object.freeze({
         label: 'OpenRouter · 요청 단위 키',
         shortLabel: 'OpenRouter',
-        modelNote: 'OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구',
+        modelNote: 'OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구',
       }),
     });
     const AUTO_PROVIDER_CONFIG = Object.freeze({
       label: 'OpenRouter · Ox Alpha',
       shortLabel: 'OpenRouter',
-      modelNote: 'OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구',
+      modelNote: 'OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구',
     });
     const GENERATION_PROVIDER_LABELS = {
       openai_api: GENERATION_PROVIDER_CONFIGS.openai_api.label,
@@ -2275,7 +2275,7 @@
     const OPENROUTER_PROGRESS_STEPS = [
       { t: 0, label: '입력값 검증', pct: 10, note: '텍스트, NCS 코드, 요청 키를 확인합니다.' },
       { t: 4, label: 'NCS/KSA 근거 구성', pct: 32, note: '질문에 사용할 공식 NCS/KSA 근거를 구성합니다.' },
-      { t: 15, label: 'Ox Alpha 질문 후보 생성', pct: 62, note: 'Max 추론을 우선 사용하고 지연·형식 실패 시 저비용 모델, 필요 시 공식 KSA 서버 문항으로 자동복구합니다.' },
+      { t: 15, label: 'Ox Alpha 질문 후보 생성', pct: 62, note: '일반 문항은 medium, 고위험 면접·품질 재검사는 high 추론으로 처리하고 실패 시 공식 KSA 서버 문항으로 자동복구합니다.' },
       { t: 45, label: '중복 제거·품질 선별', pct: 84, note: '의미 중복을 제거하고 품질·다양성 기준으로 최종 문항을 고릅니다.' },
     ];
 

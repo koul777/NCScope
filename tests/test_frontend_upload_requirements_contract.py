@@ -138,7 +138,7 @@ def test_required_upload_ux_preserves_default_ox_alpha_key_contract() -> None:
     html, script = _page()
 
     assert "OpenRouter · Ox Alpha" in html
-    assert "OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구" in html
+    assert "OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구" in html
     assert "Vercel Production 서버 키가 연결되면 브라우저에 키를 입력하지 않아도 됩니다." in html
     assert "serverEnvApiStatusValid" in script
     assert "if (key.startsWith('sk-or-')) return 'openrouter_api'" in script
