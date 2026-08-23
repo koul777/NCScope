@@ -78,9 +78,45 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
     assert "출력 전 자체검사" in contract
     assert "required_surface_focus는 공식 KSA 라벨이 아니라" in contract
     assert "question_evidence_id에는 배정된 evidence_id를 정확히 저장" in contract
+
+
+def test_experience_prompt_gives_ai_ksa_semantics_without_fixed_star_script() -> None:
+    prompt = jd_strategy._experience_only_generation_prompt(
+        planned_sequence=[
+            {
+                "index": 1,
+                "detail": "인사·조직",
+                "ncsClCd": "0202020103_23v4",
+                "compeUnitName": "인력채용",
+                "compeUnitDef": "채용 계획과 선발 절차를 운영한다.",
+                "required_element_name": "채용 후속 지원",
+                "evidence_id": "ksa_test_001",
+                "required_ksa_type": "태도",
+                "required_factorName": "입사예정자의 조직적응 지원 태도",
+                "required_task_statement": "입사예정자가 필요한 정보를 파악하고 적응을 지원한다.",
+                "required_observable_behavior": "상대의 필요를 확인해 적절한 지원 행동을 선택한다.",
+            }
+        ],
+        target_count=1,
+        follow_up_count=3,
+        notice_text="신규 직원 채용과 배치 업무",
+        jd_text="입사예정자 안내와 부서 협업을 수행한다.",
+        duty_text="채용 후속 안내",
+        evaluation_text="직무 이해와 의사소통",
+        extra_context="",
+    )
+
+    assert "[KSA 기반 자유작성 계약]" in prompt
+    assert '"official_ksa":"입사예정자의 조직적응 지원 태도"' in prompt
+    assert "AI가 question, follow_ups, evaluation_points의 문구를 직접 작성" in prompt
+    assert "꼬리질문의 시작말, 순서, STAR 역할을 고정하지 마세요" in prompt
+    assert "경험면접 주질문 하나만 읽어도 S·T·A·R" not in prompt
+    assert "꼬리1은 '방금 말씀하신'" not in prompt
+    assert "수치·문서·피드백으로 확인한 결과가 모두 나오게" not in prompt
+    contract = _model_question_gate_contract()
     assert "실제 사건·문서·데이터·이해관계자·제약·판단" in contract
     assert "경험면접을 제외한 과제형 주질문에는 핵심 판단 1개" in contract
-    assert "실제 사건, 당시 본인 역할, 본인이 택한 선택 또는 직접 행동 1개, 관찰된 결과만" in contract
+    assert "배정 KSA가 실제로 쓰인 과거 업무 장면 또는 가장 가까운 실제 사례" in contract
     assert "반사실 검사를 하세요" in contract
     assert "유능한 일반 행정 담당자도 같은 답을 할 수 있다면" in contract
     assert "지식 KSA는 그 지식만의 정의·적용 근거·범위·예외" in contract
@@ -116,17 +152,52 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
     assert "임시 변수 F" not in contract
 
 
-def test_experience_prompt_contract_elicits_star_without_polluting_other_methods() -> None:
+def test_ksa_free_prompt_uses_selected_debate_method_without_server_scenario() -> None:
+    prompt = jd_strategy._experience_only_generation_prompt(
+        planned_sequence=[
+            {
+                "index": 1,
+                "type": "토론면접",
+                "detail": "인사·조직",
+                "ncsClCd": "0202020103_23v4",
+                "compeUnitName": "인력채용",
+                "compeUnitDef": "채용 계획과 선발 절차를 운영한다.",
+                "required_element_name": "채용 기준 협의",
+                "evidence_id": "ksa_debate_001",
+                "required_ksa_type": "지식",
+                "required_factorName": "채용 기준 수립 방법",
+                "required_task_statement": "채용 목적에 맞는 선발 기준을 수립한다.",
+                "required_observable_behavior": "상충하는 기준의 근거와 영향을 비교한다.",
+                "required_scenario_frame": "서버가 만든 고정 갈등 사례",
+            }
+        ],
+        target_count=1,
+        follow_up_count=3,
+        notice_text="직무 역량 중심 채용",
+        jd_text="채용 기준을 검토하고 관계 부서와 협의한다.",
+        duty_text="채용 기준 설계",
+        evaluation_text="논리성과 조정 능력",
+        extra_context="",
+    )
+
+    assert '"type":"토론면접"' in prompt
+    assert '"official_ksa":"채용 기준 수립 방법"' in prompt
+    assert "토론면접은 KSA와 연결된 서로 방어 가능한 입장과 공동 판단 쟁점" in prompt
+    assert "서버가 만든 고정 갈등 사례" not in prompt
+    assert "required_scenario_frame" not in prompt
+
+
+def test_experience_prompt_contract_keeps_star_internal_and_model_wording_free() -> None:
     experience_contract = _model_question_gate_contract(["경험면접"])
     situation_contract = _model_question_gate_contract(["상황면접"])
 
-    assert "경험면접(STAR)" in experience_contract
-    assert "S(Situation)는 사건의 시점·맥락·제약" in experience_contract
-    assert "T(Task)는 당시 맡은 역할·목표·책임" in experience_contract
-    assert "A(Action)는 본인이 실제로 선택하고 수행한 행동" in experience_contract
-    assert "R(Result)는 관찰 가능한 결과·증거" in experience_contract
-    assert "evaluation_points 4개도 S·T·A·R" in experience_contract
-    assert "경험면접(STAR)" not in situation_contract
+    assert "배정 KSA가 실제로 쓰인 과거 업무 장면" in experience_contract
+    assert "KSA를 가장 잘 드러내는 판단이나 직접 행동 하나" in experience_contract
+    assert "STAR는 답변을 분석하는 내부 틀" in experience_contract
+    assert "꼬리질문의 순서·시작말·STAR 역할을 고정하지 않고" in experience_contract
+    assert "S(Situation)는 사건의 시점·맥락·제약" not in experience_contract
+    assert "evaluation_points 4개도 S·T·A·R" not in experience_contract
+    assert "배정 KSA가 실제로 쓰인 과거 업무 장면" not in situation_contract
 
 
 def test_planned_question_sequence_for_prompt_expands_detail_order_and_methods():
@@ -260,8 +331,16 @@ def test_experience_scenarios_follow_each_assigned_project_ksa_instead_of_stock_
         item["required_task_statement"] in item["required_scenario_frame"]
         for item in result
     )
-    assert all("본인의 역할·목표" in item["required_scenario_frame"] for item in result)
-    assert all("관찰 가능한 결과 증거" in item["required_scenario_frame"] for item in result)
+    assert all(
+        "배정 KSA를 가장 잘 드러내는 판단 또는 직접 행동 하나"
+        in item["required_scenario_frame"]
+        for item in result
+    )
+    assert all(
+        "나머지 증거는 답변 내용에 맞춰 후속 질문에서 확인"
+        in item["required_scenario_frame"]
+        for item in result
+    )
     assert "현재 상황에 다시 써야 할 원칙" in result[2]["required_scenario_frame"]
     assert "그대로 따르지 않을 조건" in result[2]["required_scenario_frame"]
     assert "이해관계자 요청이 충돌한 상황에서 조정한 경험" not in result[2]["required_scenario_frame"]
@@ -441,10 +520,7 @@ def test_method_design_briefs_are_distinct_and_never_interpolate_ncs_labels():
     assert len(set(followup_briefs)) == len(methods)
     assert all(brief.startswith("설계 자산:") for brief in question_briefs)
     assert all(brief.startswith("답변 연동 설계:") for brief in followup_briefs)
-    assert any(
-        "required_scenario_frame" in brief and "required_task_statement" in brief
-        for brief in question_briefs
-    )
+    assert any("required_task_statement" in brief for brief in question_briefs)
     assert any("두 문서" in brief and "당일 마감" in brief for brief in question_briefs)
     assert any("월별 지표표" in brief and "급변한 수치" in brief for brief in question_briefs)
     assert any("1순위" in brief and "처리 주체" in brief for brief in followup_briefs)
@@ -579,64 +655,19 @@ def test_openai_prompt_preserves_evidence_metadata_but_forbids_surface_copy(monk
     assert result["provider_generation_request_limit"] == 2
     assert result["transport_attempt_limit_per_generation_request"] == 1
     prompt = captured_payloads[0]["messages"][1]["content"]
-    assert jd_strategy._editorial_realism_prompt_contract() in prompt
-    assert "경험형은 실제 사건·역할·KSA 고유 행동 하나·관찰 결과" in prompt
-    assert "수정했다면/하지 않았다면" in prompt
-    assert "자원 총량의 검증 숫자가 없으면" not in prompt
-    assert '"question_evidence_id":"배정된 evidence_id"' in prompt
-    assert '"question_focus_surface":"required_surface_focus 원문"' in prompt
-    assert '"question":"경험형은 실제 사건·역할·KSA 고유 행동 하나·관찰 결과' in prompt
-    assert (
-        '"evaluation_points":["관찰 가능한 핵심1","관찰 가능한 핵심2",'
-        '"관찰 가능한 핵심3","관찰 가능한 핵심4"]'
-    ) in prompt
-    assert "question_evidence_id에는 같은 index에 배정된 evidence_id를 그대로" in prompt
-    assert "question_focus_surface, question_focus, ksa_refs는 추적 필드" in prompt
-    assert "required_ksa_type에 따라 지식은 고유 적용 논리" in prompt
-    assert "협의·기록·사후점검은 꼬리질문으로 이동" in prompt
-    assert "상황면접: 오류·불일치·충돌이 있는 구체 자료" in prompt
-    assert "실제 사건, 당시 본인 역할, 본인이 택한 선택 또는 직접 행동 1개" not in prompt
-    assert "유능한 일반 행정 담당자도 같은 답을 할 수 있다면" in prompt
-    assert "지식 KSA는 그 지식만의 정의·적용 근거·범위·예외" in prompt
-    assert jd_strategy._neutral_attitude_prompt_contract() in prompt
-    assert "어느 한쪽도 명백한 정답이 아닌 현실적 대응을 최소 2개" in prompt
-    assert "역할·승인 권한 안에서 대응 하나" in prompt
-    assert "예상 상충효과·검증 또는 수정 조건과 담당 역할" in prompt
-    assert "개인의 결과 책임이나 자기희생이 아니라" in prompt
-    assert "좋음(중립적 정확성 딜레마)" in prompt
-    assert "좋음(중립적 자원배분 딜레마)" in prompt
-    assert "올바른 선택을 완성해 제시하지 말고" in prompt
-    assert "측정 차원·포함/제외 기준·관찰 기간" in prompt
-    assert "산출물에 요구한 필드·구조·판정 규칙" in prompt
-    assert "본문·주석·잠정값·증빙 처리" in prompt
-    assert "확정값/잠정값 구분" in prompt
-    assert "같은 보고서 한 장의 구성요소" in prompt
-    assert "지원자 본인이 감수할 비용" not in prompt
-    assert "본인이 질 결과 책임을 모두 요구" not in prompt
-    assert "게시 지연을 감수하더라도 어떤 수치를 보류·수정" not in prompt
-    assert "follow_ups와 evaluation_points를 지웠을 때" in prompt
-    assert "내부 factor를 다른 KSA로 바꿔도" in prompt
-    assert "evaluation_points는 정확히 4개" in prompt
-    assert "질문하지 않은 숨은 기준" in prompt
-    assert "시장환경 분석·판단 기준에 따라" in prompt
-    assert "문서 요구사항 확인 절차에 따라" in prompt
-    assert "follow_ups가 3개이면 최소 2개" in prompt
-    assert "나머지 1개만 표준화 가능" in prompt
-    assert "서로 다른 판단 family" in prompt
-    assert "토론면접 꼬리질문" not in prompt
-    assert "발표면접은 답변 형식이지 과제 범위를 넓히는 면접이 아닙니다" not in prompt
-    assert "1. 경험면접:" not in prompt
-    assert "3. 발표면접:" not in prompt
-    assert "4. 토론면접:" not in prompt
-    assert "5. 인바스켓면접:" not in prompt
-    assert "6. 직무지식면접:" not in prompt
-    assert "7. 창의적 문제해결력면접:" not in prompt
+    assert "[KSA 기반 자유작성 계약]" in prompt
+    assert '"type":"상황면접"' in prompt
+    assert '"official_ksa":"예산항목 간 비중 배분 능력"' in prompt
+    assert "AI가 question, follow_ups, evaluation_points의 문구를 직접 작성" in prompt
+    assert "상황면접은 KSA가 필요한 구체 상황에서 판단과 대응" in prompt
+    assert "꼬리질문의 시작말, 순서, STAR 역할을 고정하지 마세요" in prompt
+    assert "required_scenario_frame" not in prompt
+    assert jd_strategy._editorial_realism_prompt_contract() not in prompt
     type_schema = captured_payloads[0]["response_format"]["json_schema"]["schema"]["properties"][
         "interview_questions"
     ]["items"]["properties"]["type"]
     assert type_schema["enum"] == ["상황면접"]
     assert "서버가 위치·필드·값을 검증한 material_registry" in prompt
-    assert "업로드 원문에 표나 조항이 보인다는 이유로 예외를 두지 않음" in prompt
     assert "완결형 가상 숫자" in prompt
     assert jd_strategy._unverified_material_precision_prompt_contract() in prompt
     assert jd_strategy._untrusted_context_prompt_contract() in prompt
@@ -724,12 +755,12 @@ def test_openai_slim_retry_keeps_exact_four_evaluation_point_contract(
     assert len(captured_payloads) == 2
     slim_prompt = captured_payloads[1]["messages"][1]["content"]
     assert jd_strategy._editorial_realism_prompt_contract() in slim_prompt
-    assert "경험형은 실제 사건·역할·KSA 고유 행동 하나·관찰 결과" in slim_prompt
+    assert "배정 KSA와 직무 맥락에 맞게 AI가 작성한 주질문" in slim_prompt
     assert "수정했다면/하지 않았다면" in slim_prompt
     assert "자원 총량의 검증 숫자가 없으면" in slim_prompt
     assert (
-        '"evaluation_points":["직접 관찰 가능한 핵심1","핵심2",'
-        '"핵심3","핵심4"]'
+        '"evaluation_points":["질문에서 관찰 가능한 근거1","근거2",'
+        '"근거3","근거4"]'
     ) in slim_prompt
     assert "evaluation_points는 정확히 4개" in slim_prompt
     assert "숨은 기준은 금지" in slim_prompt

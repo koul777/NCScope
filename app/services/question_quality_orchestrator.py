@@ -4048,7 +4048,9 @@ def _question_dedup_text(item: dict[str, Any]) -> str:
 
     source = str((item or {}).get("question_source") or "").strip()
     raw = str((item or {}).get("model_question_raw") or "").strip()
-    if raw and source.startswith(("openai_api", "codex_cli", "claude_code")):
+    if raw and source.startswith(
+        ("openai_api", "openrouter_api", "codex_cli", "claude_code")
+    ):
         return raw
     return _question_text(item)
 
@@ -4100,8 +4102,24 @@ def _uses_freeform_evidence_translation(item: dict[str, Any]) -> bool:
         return False
     return any(
         source == prefix or source.startswith(f"{prefix}_")
-        for prefix in ("openai_api", "codex_cli", "claude_code")
+        for prefix in ("openai_api", "openrouter_api", "codex_cli", "claude_code")
     )
+
+
+def _has_verified_provider_evidence_assignment(item: dict[str, Any]) -> bool:
+    """Return whether the server verified the model's exact KSA evidence id."""
+
+    if not _uses_freeform_evidence_translation(item):
+        return False
+    evidence_id = str((item or {}).get("question_evidence_id") or "").strip()
+    if not evidence_id:
+        return False
+    if (item or {}).get("question_evidence_assignment_valid") is True:
+        return True
+    server_selected = str(
+        (item or {}).get("_server_selected_evidence_id") or ""
+    ).strip()
+    return bool(server_selected and server_selected == evidence_id)
 
 
 def _strip_focus_grammar(token: str) -> str:
@@ -4599,7 +4617,11 @@ def _has_freeform_marker(question: str, markers: tuple[str, ...]) -> bool:
 
 
 def _freeform_ksa_type_operationalized(item: dict[str, Any], question: str) -> bool:
-    bridge_match = _freeform_meaning_bridge_match(item, question)
+    bridge_match = (
+        None
+        if _has_verified_provider_evidence_assignment(item)
+        else _freeform_meaning_bridge_match(item, question)
+    )
     if bridge_match is not None:
         return bridge_match
     # Focus grounding is a separate top-level contract (`focus_visible`).  Do
@@ -4636,7 +4658,11 @@ def _freeform_ksa_type_operationalized(item: dict[str, Any], question: str) -> b
 def _freeform_observable_task(item: dict[str, Any], question: str) -> bool:
     if not _uses_freeform_evidence_translation(item):
         return False
-    bridge_match = _freeform_meaning_bridge_match(item, question)
+    bridge_match = (
+        None
+        if _has_verified_provider_evidence_assignment(item)
+        else _freeform_meaning_bridge_match(item, question)
+    )
     if bridge_match is not None:
         return bridge_match
     has_response_action = _has_freeform_marker(
@@ -4654,6 +4680,12 @@ def _focus_visible(item: dict[str, Any], question: str) -> bool:
     focus = _question_focus(item)
     if not focus:
         return False
+    # The provider received the exact official KSA and returned its locked
+    # evidence id.  Do not force the candidate-facing question to repeat any
+    # KSA label, public surface, or token merely to satisfy a deterministic
+    # string gate; method/task observability is checked independently below.
+    if _has_verified_provider_evidence_assignment(item):
+        return True
     compact_question = _compact(question)
     surface_focus = str((item or {}).get("question_focus_surface") or "").strip()
     operational_focus = _operational_focus(item)

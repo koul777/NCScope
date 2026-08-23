@@ -4780,20 +4780,10 @@ def _adjust_generated_questions(
             "no_model_question",
             "blind_hiring_cue",
         }
-        if cli_source_base == "openrouter_api":
-            # OpenRouter drafts are still model-authored, but these editorial
-            # failures make the candidate-facing question unusable: a generic
-            # ``해당 직무`` opening, a mechanical KSA surface, or a checklist-
-            # like STAR sentence must not survive as a preserved draft.
-            cli_hard_replacement_reasons.update(
-                {
-                    "specific_context",
-                    "natural_wording",
-                    "ksa_measurement_task",
-                    "candidate_surface_safe",
-                    "field_realism",
-                }
-            )
+        # A non-empty provider draft remains model-authored.  Editorial or KSA
+        # quality failures must stay visible to the quality gate so the outer
+        # provider pass can regenerate them; replacing them here with a server
+        # template makes every KSA sound like the same canned STAR question.
         cli_requires_replacement = bool(
             is_subscription_cli_candidate
             and any(
@@ -4893,18 +4883,11 @@ def _adjust_generated_questions(
         else:
             item["follow_ups"] = template_followups
         item["follow_up"] = item["follow_ups"][0] if item["follow_ups"] else ""
-        if (
-            use_model_question
-            and is_subscription_cli_candidate
-            and method == "경험면접"
-        ):
-            item["evaluation_points"] = method_eval_points
-            candidate_surface_repaired_fields.add("evaluation_points")
-        elif use_model_question and is_subscription_cli_candidate:
-            # OpenAI/Codex/Claude drafts are reviewed under one exact-four
-            # contract.  Preserve an invalid 3/5/6-item response so the final
-            # quality report can block readiness without replacing the model's
-            # question body or laundering the count through deterministic fill.
+        if use_model_question and is_subscription_cli_candidate:
+            # The provider authors the candidate question, follow-ups and
+            # observable evaluation points from the assigned KSA.  Preserve an
+            # invalid count/content so the final gate can request a model retry
+            # instead of laundering it through deterministic server wording.
             item["evaluation_points"] = list(raw_evaluation_points)
         elif use_model_question:
             item["evaluation_points"] = _merge_question_items(
@@ -5173,18 +5156,7 @@ def _adjust_generated_questions(
             for issue in (probe_item.get("issues") or [])
             if str(issue).strip()
         } if isinstance(probe_item.get("issues"), list) else set()
-        openrouter_quality_failure = bool(
-            _subscription_cli_source_base(source) == "openrouter_api"
-            and raw_issues
-            & {
-                "specific_context",
-                "natural_wording",
-                "ksa_measurement_task",
-                "candidate_surface_safe",
-                "field_realism",
-            }
-        )
-        if _is_subscription_cli_source(source) and not openrouter_quality_failure:
+        if _is_subscription_cli_source(source):
             existing_warnings = [
                 str(reason).strip()
                 for reason in (item.get("model_quality_warnings") or [])
@@ -8149,6 +8121,9 @@ def _run_runtime_question_quality_orchestration(
     normalized_questions: list[dict[str, Any]] = []
     for raw_item in questions:
         item = dict(raw_item)
+        provider_authored = _is_subscription_cli_source(
+            item.get("question_source")
+        )
         method = str(item.get("type") or item.get("method") or "경험면접").strip()
         ncs_code = str(item.get("ncsClCd") or "").strip()
         provided_focus_evidence = _evidence_row_for_id(
@@ -8191,18 +8166,28 @@ def _run_runtime_question_quality_orchestration(
             item.get("question"),
             subject=subject,
         )
-        repaired_question, repaired = _repair_candidate_surface_text(
-            cleaned_question,
-            focus,
-            task_frame["task_object"],
-        )
+        if provider_authored:
+            repaired_question, repaired = cleaned_question, False
+        else:
+            repaired_question, repaired = _repair_candidate_surface_text(
+                cleaned_question,
+                focus,
+                task_frame["task_object"],
+            )
         item["question"] = repaired_question
         if repaired:
             surface_repairs.add("question")
         repaired_followups: list[str] = []
         for value in item.get("follow_ups") or []:
             cleaned_value = _sanitize_candidate_document_leaks(value, subject=subject)
-            repaired_value, repaired = _repair_candidate_surface_text(cleaned_value, focus, task_frame["task_object"])
+            if provider_authored:
+                repaired_value, repaired = cleaned_value, False
+            else:
+                repaired_value, repaired = _repair_candidate_surface_text(
+                    cleaned_value,
+                    focus,
+                    task_frame["task_object"],
+                )
             repaired_followups.append(repaired_value)
             if repaired:
                 surface_repairs.add("follow_ups")
@@ -8212,7 +8197,14 @@ def _run_runtime_question_quality_orchestration(
         repaired_points: list[str] = []
         for value in item.get("evaluation_points") or []:
             cleaned_value = _sanitize_candidate_document_leaks(value, subject=subject)
-            repaired_value, repaired = _repair_candidate_surface_text(cleaned_value, focus, task_frame["task_object"])
+            if provider_authored:
+                repaired_value, repaired = cleaned_value, False
+            else:
+                repaired_value, repaired = _repair_candidate_surface_text(
+                    cleaned_value,
+                    focus,
+                    task_frame["task_object"],
+                )
             repaired_points.append(repaired_value)
             if repaired:
                 surface_repairs.add("evaluation_points")
@@ -8301,27 +8293,11 @@ def _run_runtime_question_quality_orchestration(
         source_is_preserved_provider = _is_subscription_cli_source(
             original.get("question_source")
         )
-        duplicate_only_codes = {
-            "history_duplicate",
-            "unique_question",
-            "full_quality_unique_question",
-            "repair_exhausted",
-        }
-        reason_codes = {
-            str(reason or "").strip()
-            for reason in reasons
-            if str(reason or "").strip()
-        }
-        preserved_duplicate_repair = bool(
-            source_is_preserved_provider
-            and method == "경험면접"
-            and reason_codes
-            and reason_codes <= duplicate_only_codes
-        )
-        if source_is_preserved_provider and not preserved_duplicate_repair:
-            # Provider drafts are rewritten deterministically only for semantic
-            # duplication. Evidence, safety, precision and realism failures stay
-            # fail-closed and remain visible to the human reviewer.
+        if source_is_preserved_provider:
+            # Provider-authored wording is validate-only at this boundary.
+            # Duplicates and quality failures remain unresolved so the outer
+            # provider retry can ask the AI for a genuinely different question;
+            # a deterministic rewrite would reintroduce the canned STAR text.
             return None
         ncs_code = str(item.get("ncsClCd") or "").strip()
         current_focus = _clean_question_text(item.get("question_focus"), max_chars=60)
@@ -8330,11 +8306,7 @@ def _run_runtime_question_quality_orchestration(
             ncs_code=ncs_code,
             fallback_terms=[current_focus] if current_focus else [],
         )
-        focus_candidates = (
-            [current_focus]
-            if preserved_duplicate_repair
-            else [current_focus, *official_terms]
-        )
+        focus_candidates = [current_focus, *official_terms]
         focus_candidates = [
             value
             for pos, value in enumerate(focus_candidates)
@@ -8388,44 +8360,14 @@ def _run_runtime_question_quality_orchestration(
         )
         repaired_source = "quality_orchestrator_repair"
         repaired_model_preserved = False
-        if preserved_duplicate_repair:
-            repaired_question = _rewrite_preserved_experience_duplicate(
-                item,
-                focus_type=focus_type,
-                surface_focus=task_frame["task_object"],
-                variation_index=variation_index,
-            )
-            original_model_question = str(item.get("model_question_raw") or "").strip()
-            if original_model_question and not str(
-                item.get("model_question_original") or ""
-            ).strip():
-                item["model_question_original"] = original_model_question
-            # The deduplication layer intentionally compares model_question_raw
-            # for provider drafts. Point it at the repaired provider scenario,
-            # while retaining the untouched provider text above for audit.
-            item["model_question_raw"] = repaired_question
-            repaired_source = (
-                str(item.get("question_source") or "openai_api").strip()
-                + "_uniqueness_repaired"
-            )
-            repaired_model_preserved = True
-
-        repaired_followups = (
-            _experience_star_followups(
-                focus_type=focus_type,
-                surface_focus=task_frame["task_object"],
-                count=follow_count,
-            )
-            if preserved_duplicate_repair
-            else _followups_for_method(
-                method=method,
-                subject=subject,
-                focus=focus,
-                count=follow_count,
-                variant_index=variation_index,
-                focus_type=focus_type,
-                task_frame=task_frame,
-            )
+        repaired_followups = _followups_for_method(
+            method=method,
+            subject=subject,
+            focus=focus,
+            count=follow_count,
+            variant_index=variation_index,
+            focus_type=focus_type,
+            task_frame=task_frame,
         )
 
         item.update(
@@ -10405,11 +10347,15 @@ def _quality_retry_context(
     instruction = (
         "[서버 품질 재생성 지침]\n"
         "- 이전 후보 세트를 복사하거나 일부 수정하지 말고 전 문항을 새로 작성하세요.\n"
-        "- NCS 내부 명칭을 질문 문장에 노출하지 말고 사건·판단·행동·산출물로 번역하세요.\n"
-        "- 경험면접 주질문은 구체 사건, 당시 맡은 역할·목표, 배정 KSA로 직접 한 행동 한 가지와 근거, "
-        "수치·문서·피드백으로 확인한 결과가 모두 나오게 하세요. 그 밖의 과제형 주질문은 핵심 판단 "
-        "1개와 필수 산출물 1개에 집중하세요.\n"
-        "- 꼬리질문 3개 중 최소 2개는 지원자의 직전 답변 슬롯을 받아 묻고, 평가기준은 정확히 4개 모두 질문에서 관찰 가능해야 합니다.\n"
+        "- index별 evidence_id에 잠긴 KSA의 의미를 공고·직무기술서의 실제 업무 맥락으로 번역하되, "
+        "NCS 내부 명칭이나 KSA 문구를 질문 문장에 복사하지 마세요.\n"
+        "- 경험면접은 그 KSA를 가장 잘 드러내는 실제 업무 장면과 핵심 판단 또는 직접 행동 하나를 "
+        "자연스럽게 물으세요. STAR 항목, 역할·목표·근거·결과 목록, 문서·수치·피드백 목록을 "
+        "주질문에 고정해서 나열하지 마세요.\n"
+        "- 꼬리질문은 같은 답변을 더 깊게 확인하되 시작말과 역할을 고정하지 말고, 평가기준 네 개는 "
+        "질문과 배정 KSA에서 실제로 관찰할 수 있는 서로 다른 증거로 자유롭게 작성하세요.\n"
+        "- 품질 코드는 고쳐야 할 성질만 알려 주는 진단값입니다. 이전 질문의 문장 골격이나 서버의 "
+        "공통 문구를 재사용하지 마세요.\n"
         f"- 서버 품질 코드: {','.join(safe_codes)}\n"
         f"- 실제 탈락 검사 코드: {','.join(safe_issue_codes) or 'none'}\n"
         f"- index별 evidence_id 잠금(JSON): {json.dumps(lock_payload, ensure_ascii=True, separators=(',', ':'))}"

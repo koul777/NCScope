@@ -8,6 +8,22 @@ from app.services.question_quality_orchestrator import orchestrate_question_set
 REQUEST_OPENAI_KEY = "sk-request-scoped-question-history-test"
 
 
+def test_quality_retry_context_keeps_ksa_freewriting_contract() -> None:
+    context = main._quality_retry_context(
+        trigger_codes=["question_quality_report_failed"],
+        previous_questions=["이전의 기계적인 질문"],
+        evidence_locks=[(1, "ksa_test_001")],
+        quality_issue_codes=["natural_wording", "ksa_measurement_task"],
+        original_context="",
+    )
+
+    assert "index별 evidence_id에 잠긴 KSA의 의미" in context
+    assert "STAR 항목" in context and "고정해서 나열하지 마세요" in context
+    assert "꼬리질문은 같은 답변을 더 깊게 확인하되 시작말과 역할을 고정하지 말고" in context
+    assert "수치·문서·피드백으로 확인한 결과가 모두 나오게" not in context
+    assert "당시 맡은 역할·목표" not in context
+
+
 def test_model_star_completion_does_not_create_false_history_duplicate() -> None:
     shared_completion = (
         " 이어서 당시 맡은 역할과 목표, 본인이 직접 수행한 행동과 판단 근거, "

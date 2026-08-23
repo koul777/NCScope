@@ -4600,23 +4600,12 @@ _PROMPT_INTERVIEW_METHODS = (
 
 _SELECTED_METHOD_PROMPT_RULES = {
     "경험면접": (
-        "- 경험면접(STAR): 실제 사건, 당시 본인 역할, 본인이 택한 선택 또는 직접 행동 1개, "
-        "관찰된 결과만 묻습니다. STAR는 지원자가 답을 구성하는 흐름이며 질문에 영문 약자를 "
-        "나열하게 하는 암기 검사가 아닙니다.\n"
-        "- 경험면접 주질문 하나만 읽어도 S·T·A·R 답변이 나오게 하세요. 반드시 ① 언제·어떤 "
-        "직무 사건이었는지 ② 당시 맡은 역할·목표·책임 ③ 배정된 KSA로 직접 판단하거나 수행한 "
-        "핵심 행동 한 가지와 그 근거 ④ 수치·문서·피드백 등으로 확인한 결과를 모두 요구하세요. "
-        "'관련 경험을 말씀해 주세요' 뒤에 일반적인 행동·결과만 붙이는 문장은 실패입니다.\n"
-        "- 지식은 당시 확인한 규정·문서·개념과 적용/제외 근거, 기술은 실제 사용 자료·도구·수행 "
-        "순서와 산출물 품질, 태도는 압박·이해 충돌 속에서 고른 행동과 상충효과가 주질문에 "
-        "드러나야 합니다. 배정된 업무 대상 없이 일반 협업·문제해결 경험으로 바꾸지 마세요.\n"
-        "- S(Situation)는 사건의 시점·맥락·제약, T(Task)는 당시 맡은 역할·목표·책임, "
-        "A(Action)는 본인이 실제로 선택하고 수행한 행동과 판단 근거, R(Result)는 관찰 가능한 "
-        "결과·증거와 학습 또는 전이를 각각 끌어내야 합니다.\n"
-        "- follow_ups가 3개이면 1번은 빠진 S/T 사실, 2번은 답변에서 언급한 A의 선택 이유와 "
-        "배정 KSA가 드러난 실제 행동, 3번은 R의 수치·기록·피드백 등 결과 증거와 학습을 "
-        "답변 연동형으로 묻습니다. evaluation_points 4개도 S·T·A·R을 서로 겹치지 않게 하나씩 "
-        "평가합니다. 새 산출물을 요구하지 않고 기록·증빙은 답변 연동 follow_ups로 확인합니다.\n"
+        "- 경험면접은 배정 KSA가 실제로 쓰인 과거 업무 장면 또는 가장 가까운 실제 사례를 묻습니다. "
+        "KSA를 가장 잘 드러내는 판단이나 직접 행동 하나를 중심으로 자연스럽게 작성하세요.\n"
+        "- STAR는 답변을 분석하는 내부 틀일 뿐 질문의 필수 문구·순서가 아닙니다. 상황·역할·행동·결과를 "
+        "한 문장에 모두 나열하거나 KSA 유형별 공통 골격을 반복하지 마세요.\n"
+        "- follow_ups와 evaluation_points도 같은 KSA와 답변에서 실제로 확인할 수 있는 증거를 자유롭게 "
+        "선택합니다. 꼬리질문의 순서·시작말·STAR 역할을 고정하지 않고 새 산출물을 요구하지 마세요.\n"
     ),
     "상황면접": (
         "- 상황면접: 오류·불일치·충돌이 있는 구체 자료와 현실적 제약을 제시하고, "
@@ -5019,8 +5008,8 @@ def _planned_ksa_scenario_frame_for_prompt(
     if method == "경험면접":
         return (
             "실제 경험 사건으로 설계. "
-            f"{core} 당시 상황·제약, 본인의 역할·목표, 본인이 직접 선택한 행동 하나와 판단 근거, "
-            "수치·기록·피드백 등 관찰 가능한 결과 증거가 모두 답변에서 나오게 할 것."
+            f"{core} 배정 KSA를 가장 잘 드러내는 판단 또는 직접 행동 하나를 중심으로 자연스럽게 "
+            "묻고, 나머지 증거는 답변 내용에 맞춰 후속 질문에서 확인할 것."
         )
     return f"선택 면접기법의 과제로 설계. {core}"
 
@@ -5032,7 +5021,7 @@ def _planned_question_example_for_prompt(method: str, job_context: str, factor_n
     _ = job_context, factor_name
     method = _canonical_interview_method_for_prompt(method)
     briefs = {
-        "경험면접": "설계 자산: required_scenario_frame의 실제 사건 + 당시 역할·목표 + required_task_statement에 해당하는 본인의 판단·행동 하나 + 행동 전후의 관찰 가능한 결과 증거.",
+        "경험면접": "설계 자산: required_task_statement가 실제로 쓰인 과거 업무 장면에서 배정 KSA를 가장 잘 드러내는 판단 또는 직접 행동 하나.",
         "상황면접": "설계 자산: 금액이나 조항이 서로 다른 두 문서 + 당일 마감 + 확인 가능한 담당자 + 첫 판단과 수정안.",
         "발표면접": "설계 자산: 월별 지표표와 민원 기록 + 급변한 수치 하나 + 제한된 예산 + KSA에 가장 가까운 핵심 판단 하나 + 그 판단을 기록하는 산출물 하나.",
         "토론면접": "설계 자산: 실제 운영 사건 + 속도 우선과 검증 우선의 양립하기 어려운 두 입장 + 확인할 사실 + 합의 적용 범위.",
@@ -5241,7 +5230,7 @@ def _experience_only_generation_prompt(
     evaluation_text: str,
     extra_context: str,
 ) -> str:
-    """Build a compact, non-conflicting STAR prompt for experience interviews."""
+    """Build a compact KSA-semantic prompt with model-owned wording."""
 
     slots: list[dict[str, Any]] = []
     for fallback_index, raw in enumerate(planned_sequence[:target_count], start=1):
@@ -5250,7 +5239,9 @@ def _experience_only_generation_prompt(
         slots.append(
             {
                 "index": int(raw.get("index") or fallback_index),
-                "type": "경험면접",
+                "type": _canonical_interview_method_for_prompt(
+                    str(raw.get("type") or "경험면접")
+                ),
                 "detail": str(raw.get("detail") or "").strip(),
                 "ncsClCd": str(raw.get("ncsClCd") or "").strip(),
                 "competency": str(raw.get("compeUnitName") or "").strip(),
@@ -5258,6 +5249,7 @@ def _experience_only_generation_prompt(
                 "work_element": str(raw.get("required_element_name") or "").strip(),
                 "evidence_id": str(raw.get("evidence_id") or "").strip(),
                 "ksa_type": str(raw.get("required_ksa_type") or "").strip(),
+                "official_ksa": str(raw.get("required_factorName") or "").strip(),
                 "task_semantics": str(raw.get("required_task_statement") or "").strip(),
                 "observable_evidence": str(
                     raw.get("required_observable_behavior") or ""
@@ -5273,48 +5265,39 @@ def _experience_only_generation_prompt(
     }
     retry_context = str(extra_context or "")[:1400]
     return (
-        "JSON만 출력하세요. 공공기관 NCS 기반 경험(행동)면접 질문을 작성합니다.\n"
+        "JSON만 출력하세요. 공공기관 NCS 기반 구조화면접 질문을 작성합니다.\n"
         f"interview_questions를 정확히 {target_count}개, 입력 slot 순서대로 작성하세요. "
         f"각 문항은 follow_ups를 정확히 {follow_up_count}개, evaluation_points를 정확히 4개 가집니다.\n"
-        "[핵심 원칙]\n"
-        "- 주질문 하나만 읽어도 지원자가 STAR로 답해야 합니다. 구체적인 과거 직무 사건(S)을 먼저 "
-        "묻고, 당시 역할·목표(T), 직접 선택·수행한 핵심 행동과 판단 근거(A), 수치·문서·피드백으로 "
-        "확인한 결과(R)를 자연스럽게 연결하세요. 주질문은 두 문장, 약 170자 이내로 쓰고 STAR를 "
-        "체크리스트처럼 길게 나열하지 마세요. 부족한 세부 증거는 답변 연동 꼬리질문으로 확인합니다.\n"
-        "- '관련 경험을 말씀해 주세요'처럼 일반 경험만 묻지 마세요. slot의 work_element, "
-        "competency_definition, task_semantics를 이용해 실제 문서·자료·도구·이해관계자·산출물 중 "
-        "최소 두 가지를 주질문에 넣으세요.\n"
-        "- ksa_type=지식이면 당시 확인한 규정·문서·개념, 적용하거나 제외한 범위와 그 판단 근거가 "
-        "행동을 어떻게 바꿨는지 물으세요. ksa_type=기술이면 사용한 자료·도구, 실제 수행 순서·조치, "
-        "만든 산출물과 품질 확인 결과를 물으세요. ksa_type=태도이면 마감 압박·정확성·이해 충돌 중 "
-        "구체 제약을 제시하고 본인이 고른 행동과 상충효과, 확인 결과를 물으세요.\n"
-        "- task_semantics와 observable_evidence는 질문 설계용 의미입니다. 핵심 대상·행동을 자연스러운 "
-        "직무 사건으로 바꾸고, '관련 실무 적용·검증 절차', '행동 기준', '절차·절차' 같은 메타 문구를 "
-        "만들지 마세요. evidence_id, NCS 코드·능력단위명은 질문과 꼬리질문에 노출하지 마세요.\n"
-        "- 다음 고정 골격은 사용하지 마세요: '해당 직무에서 업무를 수행하던 실제 상황 하나를 골라', "
-        "'요구사항과 기준을 확인한 뒤', '문서·수치·기록·피드백으로 ... 이후 무엇을 개선'. "
-        "공고·직무기술서의 구체 명사(문서, 대상, 산출물, 협업 상대) 하나를 먼저 제시하고, "
-        "한 사건에서 핵심 판단·행동 하나만 자연스럽게 물으세요. 주질문 안에 STAR 체크리스트를 "
-        "나열하지 말고 결과 증거와 개선은 짧은 한 절로 연결하세요.\n"
-        "- KSA는 질문의 근거일 뿐 문장 템플릿이 아닙니다. assigned KSA의 task_semantics와 "
-        "observable_evidence에서 가장 구체적인 대상·행동 하나를 골라, 공고·직무기술서의 실제 명사와 "
-        "자연스럽게 결합해 자유롭게 질문하세요. 상황·역할·행동·결과·개선을 모두 한 문장에 넣지 말고, "
-        "그 KSA를 가장 잘 드러내는 한 가지 판단이나 행동만 주질문에 남기세요.\n"
-        "- 주질문에 '문서·수치·기록·피드백', '당시 맡은 역할과 직접 맡은 범위', "
-        "'요구사항과 기준을 확인한 뒤' 같은 공통 점검 목록을 자동으로 넣지 마세요. "
-        "결과 확인은 실제 사건에 어울리는 증거가 있을 때만 짧게 묻고, 나머지는 답변 연동 꼬리질문으로 넘기세요.\n"
-        "- 꼬리1은 '방금 말씀하신'으로 시작해 답변에서 빠진 S/T의 사건 조건·본인 역할·목표를, "
-        "꼬리2는 '앞서 언급한'으로 시작해 A의 선택 이유·실제 행동·사용 근거를, 꼬리3은 결과가 "
-        "없거나 불명확한 경우를 열어 두고 R의 수치·문서·피드백과 학습·전이를 확인하세요. 서로 "
-        "독립적인 새 질문을 만들지 마세요.\n"
-        "- 같은 detail의 여러 slot도 work_element와 task_semantics에 맞춰 서로 다른 사건·판단·산출물을 "
-        "물어야 합니다. 다른 slot의 질문 골격이나 '절차·절차' 같은 구를 반복하지 마세요.\n"
-        "- evaluation_points는 질문과 꼬리질문에서 실제로 관찰할 수 있는 응답만 작성하세요. "
-        "모든 문항에 상황·역할·판단·행동·결과를 고정 배치하지 말고, assigned KSA에서 관찰 가능한 "
-        "서로 다른 네 가지 근거를 자유롭게 고르세요. 'KSA 고유', '직무역량', '구체성' 같은 추상 "
-        "평가어만 쓰지 마세요.\n"
+        "[KSA 기반 자유작성 계약]\n"
+        "- 각 slot의 evidence_id가 가리키는 KSA가 유일한 평가 근거입니다. official_ksa, "
+        "competency_definition, work_element, task_semantics, observable_evidence를 함께 해석하되 어느 필드도 완성 문장이나 "
+        "질문 템플릿으로 복사하지 마세요.\n"
+        "- AI가 question, follow_ups, evaluation_points의 문구를 직접 작성합니다. 서버가 뒤에서 STAR "
+        "문구나 공통 질문 골격을 덧붙인다고 가정하지 마세요.\n"
+        "- 공고·직무기술서에서 그 KSA가 실제로 쓰이는 업무 대상, 문서, 설비, 자료, 도구, 산출물, "
+        "이해관계자를 찾아 질문의 직무 맥락으로 사용하세요. 입력에 없는 기관 사실·수치·법 조항·사건은 "
+        "사실처럼 만들지 마세요.\n"
+        "- question은 slot의 type과 KSA에 맞는 자연스러운 한국어 1~2문장으로 작성합니다. 질문의 사건, "
+        "쟁점, 판단 또는 행동은 AI가 KSA와 채용 문맥을 읽고 직접 선택하세요.\n"
+        "- 경험면접은 실제 또는 가장 가까운 실제 사례에서 KSA를 가장 잘 보여 주는 판단·행동 하나를, "
+        "상황면접은 KSA가 필요한 구체 상황에서 판단과 대응을, 토론면접은 KSA와 연결된 서로 방어 가능한 "
+        "입장과 공동 판단 쟁점을, 발표면접은 제공 맥락을 분석해 설명할 핵심 과제를 묻습니다. 인바스켓·"
+        "직무지식·창의적 문제해결력면접도 해당 방식의 목적에 맞게 KSA를 직접 측정하세요.\n"
+        "- STAR는 경험면접 답변의 분석 틀일 뿐 질문 문구의 필수 순서가 아닙니다. 상황·역할·기준·행동·"
+        "결과·개선을 주질문에 모두 나열하지 말고, 어떤 면접형태에도 공통 시나리오나 산출물 목록을 "
+        "자동으로 붙이지 마세요.\n"
+        "- '해당 직무에서 업무를 수행하던 실제 상황 하나를 골라', '요구사항과 기준을 확인한 뒤', "
+        "'문서·수치·기록·피드백', '관련 행동 기준에 따라' 같은 공통 문구를 재사용하지 마세요. "
+        "NCS 코드, evidence_id, 공식 KSA 라벨, 내부 메타 용어도 지원자용 문장에 노출하지 마세요.\n"
+        "- follow_ups는 같은 답변을 더 깊게 확인하는 질문으로 자유롭게 작성하세요. 꼬리질문의 시작말, "
+        "순서, STAR 역할을 고정하지 마세요. 지원자가 하지 않았을 행동이나 성과를 사실로 전제하지 않고, "
+        "주질문을 다른 말로 반복하거나 별개의 새 사례를 요구하지 마세요.\n"
+        "- evaluation_points 네 개도 배정 KSA와 질문에서 실제로 들을 수 있는 판단·행동·근거·결과 중 "
+        "서로 다른 관찰 증거를 AI가 선택해 작성하세요. 질문하지 않은 숨은 기준이나 추상 평가어만 쓰지 마세요.\n"
+        "- 같은 detail의 여러 slot은 배정된 work_element, KSA 의미, type에 따라 서로 다른 업무 장면과 "
+        "관찰 초점을 사용해야 하며, 문장 골격만 바꾼 질문은 허용하지 않습니다.\n"
         "[메타데이터 규칙]\n"
-        "- 각 출력 row의 type='경험면접', competency, ncsClCd, question_evidence_id는 같은 slot 값을 "
+        "- 각 출력 row의 type, competency, ncsClCd, question_evidence_id는 같은 slot 값을 "
         "정확히 복사하세요. 내부 NCS/KSA 명칭은 서버가 evidence_id로 복구하므로 "
         "question_focus_surface='', question_focus='', ksa_refs=[]로 출력하세요.\n"
         f"[질문 SLOT JSON]{json.dumps(slots, ensure_ascii=False, separators=(',', ':'))}\n"
@@ -5324,7 +5307,11 @@ def _experience_only_generation_prompt(
             if retry_context
             else ""
         )
+        + _unverified_material_precision_prompt_contract()
         + _untrusted_context_prompt_contract()
+        + "[안전·권한 경계]\n"
+        + "- 출신학교·지역·성별·연령·가족관계 등 블라인드 채용 위반 질문을 만들지 마세요.\n"
+        + "- 지원자에게 공고에 없는 최종 승인 권한이나 개인 책임을 부여하지 말고, 질문 속 역할의 권한 안에서 답할 수 있게 하세요.\n"
     )
 
 
@@ -5716,15 +5703,14 @@ def build_strategy_with_openai(
                 "- 진행·조건부 진행·보류·권한자 이송은 선택지의 예일 뿐 특정 행동을 정답으로 강제하지 마세요. 보고서 작성 요령이면 question 자체에 확정/잠정 구분·본문/주석 배치·증빙 연결 중 최소 2개를 같은 보고서 한 장에 적용하게 하세요.\n"
                 "- required_task_statement와 required_observable_behavior의 뜻을 관찰 가능한 판단·행동·산출물로 번역하되 그 문구도 완성문 골격처럼 복사하지 마세요.\n"
                 "- question_evidence_id, question_focus_surface, question_focus, ksa_refs에는 같은 index의 내부 값을 정확히 보존해 문항과 근거를 연결하세요.\n"
-                "- required_scenario_frame은 해당 index의 required_task_statement에 맞춰 서버가 만든 KSA 정렬 상황 축입니다. 다른 일반 사건으로 교체하지 말고, 같은 표현을 복사하는 대신 구체 문서·데이터·이해관계자·제약을 정하세요. frame이 다르면 사건도 달라야 합니다.\n"
+                "- required_scenario_frame은 해당 KSA를 이해하기 위한 선택적 의미 힌트입니다. 문구나 사건 골격을 복사하지 말고, 공고·직무기술서와 KSA 의미에 더 자연스러운 업무 장면을 AI가 직접 선택하세요.\n"
                 "- required_difficulty는 문항의 추론 난이도, required_question_angle은 주된 관찰 초점, required_constraint_axis는 사건의 핵심 제약입니다. 세 축을 해당 index의 사건·판단·최소 산출물에 실제로 반영하되 지원자에게 축 이름을 읽어 주지는 마세요.\n"
                 "- 기본/심화/고난도, 적용 근거/직접 수행/오류·예외/결과 검증, 자료 불일치/마감/이해관계자/권한/자원 제약이 전체 세트에서 고르게 분산되어야 합니다.\n"
-                "- required_question_example은 완성 질문이 아니라 면접기법별 설계 자산입니다. 필요한 자산만 골라 자연스러운 하나의 사건으로 구성하고 문구를 복사하지 마세요.\n"
-                "- required_followup_focus_example은 완성 꼬리질문이 아니라 답변 연동 방식입니다. 지정 slot을 포함해 꼬리질문 3개 중 최소 2개가 지원자의 직전 답변 내용·누락·선택·결과를 명시적으로 받아 묻게 하세요. 가능하면 꼬리1은 '방금 …', 꼬리2는 '앞서 …'로 시작해 참조 대상을 드러내세요.\n"
+                "- required_question_example과 required_followup_focus_example은 선택적 의미 힌트일 뿐 완성 문장이나 순서 규칙이 아닙니다. AI가 같은 KSA와 답변을 더 잘 측정하는 자연스러운 질문을 자유롭게 작성하세요.\n"
                 "- type=토론면접이면 '[토론과제]'로 시작하고 현장 사건, 구체적인 두 입장 충돌, 근거 검토와 공동안 또는 미합의 쟁점·결정권자 이송 기준을 포함하세요. 합의를 강제하거나 시간·입장발표 조건을 넣지 마세요.\n"
                 "- type=인바스켓면접이면 구체 문서·요청의 마감과 권한 충돌을 제시하고 지정 follow_up slot에서 지원자가 고른 우선순위와 처리 주체를 받아 묻습니다.\n"
                 "- 각 index의 type은 반드시 [질문별 생성 순서]의 type과 같아야 합니다. 이전 index의 직무 표현을 다음 index로 재사용하지 마세요.\n"
-                "- index별 detail/type이 맞지 않으면 해당 모델 질문은 템플릿으로 교체됩니다.\n"
+                "- index별 detail/type과 evidence_id가 맞지 않으면 품질검사에서 탈락하고 같은 KSA로 AI 재생성을 요청합니다.\n"
             )
         custom_plan_rules = (
             "[사용자 지정 질문 계획]\n"
@@ -5754,7 +5740,7 @@ def build_strategy_with_openai(
         "목표: NCS 능력단위 기반 구조화 면접 질문 생성\n"
         "언어: 모든 문자열은 한국어\n"
         "출력 스키마: {"
-        f'"interview_questions":[{{"type":"{method_schema_hint}","competency":"능력단위명","ncsClCd":"코드","question":"경험형은 실제 사건·역할·KSA 고유 행동 하나·관찰 결과, 과제형은 핵심 판단 1개와 최소 산출물 1개를 묻는 주질문","follow_ups":["조건부 답변 연동 질문","조건부 답변 연동 질문","표준화 가능 질문"],"evaluation_points":["관찰 가능한 핵심1","관찰 가능한 핵심2","관찰 가능한 핵심3","관찰 가능한 핵심4"],"question_evidence_id":"배정된 evidence_id","question_focus_surface":"required_surface_focus 원문","question_focus":"평가위원용 required_factorName","ksa_refs":["평가위원용 required_factorName"]}}],'
+        f'"interview_questions":[{{"type":"{method_schema_hint}","competency":"능력단위명","ncsClCd":"코드","question":"배정 KSA와 직무 맥락에 맞게 AI가 작성한 주질문","follow_ups":["같은 답변을 심화하는 질문"],"evaluation_points":["질문에서 관찰 가능한 근거1","근거2","근거3","근거4"],"question_evidence_id":"배정된 evidence_id","question_focus_surface":"required_surface_focus 원문","question_focus":"평가위원용 required_factorName","ksa_refs":["평가위원용 required_factorName"]}}],'
         '"ncs_link":[{"ncsClCd":"...","compeUnitName":"...","why":"..."}]'
         "}\n\n"
         "[구조화 면접 원칙]\n"
@@ -5791,9 +5777,9 @@ def build_strategy_with_openai(
         "\n"
         "[꼬리질문 작성 기준]\n"
         "- 꼬리물기 구조: 주질문 → 꼬리질문, 앞 답변에서 실제로 언급한 내용·누락·선택·결과를 받아 더 깊이 파고드는 질문\n"
-        "- follow_ups가 3개이면 최소 2개는 '방금 말씀하신 선택', '앞서 언급한 결과', '답변에 근거가 없다면'처럼 답변 참조 또는 조건을 명시하고, 나머지 1개만 표준화 가능\n"
-        "- 적응형 꼬리질문 2개는 가능하면 각각 '방금 …', '앞서 …'로 시작하고, 앞 답변에서 언급한 자료·선택·누락·결과 중 하나를 다시 집어야 함. 수정·승인·변화를 사실로 전제하지 말고 '수정했다면/하지 않았다면', '변화를 만들었다면/없었다면'처럼 조건을 두 갈래로 열 것. 답변 참조 없이 일반론으로 반복하면 실패\n"
-        "- 꼬리1·2·3은 각각 evaluation_points의 서로 다른 항목을 검증\n"
+        "- 시작말, 순서, STAR 역할을 고정하지 않습니다. 같은 답변에서 더 확인해야 할 근거·선택·행동·결과를 KSA에 맞춰 자유롭게 고르세요.\n"
+        "- 지원자가 수정·승인·성과를 냈다고 미리 단정하지 말고, 답변에서 확인되지 않은 사실은 조건을 열어 두어 묻습니다.\n"
+        "- 각 꼬리질문은 서로 다른 관찰 근거를 확인하되 기계적으로 역할을 하나씩 배정하지 않습니다.\n"
         "- 같은 내용을 반복하거나 독립적인 질문 나열 금지\n"
         "- 주질문은 개방형 단일 의도, '네/아니오'로 답할 수 없는 문장\n"
         "- 각 질문은 compeUnitDef의 의미를 실제 업무 사건으로 반영하되 능력단위명이나 정의 문구를 복사하지 말 것\n"
@@ -5810,8 +5796,8 @@ def build_strategy_with_openai(
         f"[NCS평가요소]{json.dumps((ncs_ksa or [])[:15], ensure_ascii=False)}\n"
         + (f"[추가 반복회피 컨텍스트]\n{extra_context[:2000]}\n" if extra_context else "")
     )
-    experience_only = method_names == ["경험면접"] and bool(planned_sequence)
-    if experience_only:
+    ksa_free_planned_generation = bool(planned_sequence)
+    if ksa_free_planned_generation:
         prompt = _experience_only_generation_prompt(
             planned_sequence=planned_sequence,
             target_count=target_count,
@@ -6209,14 +6195,13 @@ def build_strategy_with_openai(
             "목표: NCS 능력단위 기반 구조화 면접 질문 생성\n"
             "언어: 한국어\n"
             "스키마: {"
-            f'"interview_questions":[{{"type":"{method_schema_hint}","competency":"...","ncsClCd":"...","question":"경험형은 실제 사건·역할·KSA 고유 행동 하나·관찰 결과, 과제형은 핵심 판단 1개와 최소 산출물 1개를 묻는 주질문","follow_ups":["조건부 답변 연동 질문","조건부 답변 연동 질문","표준화 가능 질문"],"evaluation_points":["직접 관찰 가능한 핵심1","핵심2","핵심3","핵심4"],"question_evidence_id":"배정된 evidence_id","question_focus_surface":"required_surface_focus 원문","question_focus":"평가위원용 required_factorName","ksa_refs":["평가위원용 required_factorName"]}}],'
+            f'"interview_questions":[{{"type":"{method_schema_hint}","competency":"...","ncsClCd":"...","question":"배정 KSA와 직무 맥락에 맞게 AI가 작성한 주질문","follow_ups":["같은 답변을 심화하는 질문"],"evaluation_points":["질문에서 관찰 가능한 근거1","근거2","근거3","근거4"],"question_evidence_id":"배정된 evidence_id","question_focus_surface":"required_surface_focus 원문","question_focus":"평가위원용 required_factorName","ksa_refs":["평가위원용 required_factorName"]}}],'
             '"ncs_link":[{"ncsClCd":"...","compeUnitName":"...","why":"..."}]'
             "}\n"
             "규칙:\n"
             f"{_untrusted_context_prompt_contract()}"
             f"- interview_questions {retry_target_count}개 생성\n"
-            f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 {follow_up_count}개 (3개이면 최소 2개는 앞 답변의 내용·누락·선택·결과를 명시적으로 받아 묻고, 1개만 표준화 가능)\n"
-            "- 적응형 꼬리질문 2개는 가능하면 각각 '방금 …', '앞서 …'로 시작해 참조 대상을 드러내되, 수정·승인·변화를 사실로 전제하지 말고 '수정했다면/하지 않았다면', '변화를 만들었다면/없었다면'처럼 조건을 두 갈래로 열 것\n"
+            f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 {follow_up_count}개. 같은 답변과 배정 KSA를 더 깊게 확인하되 시작말·순서·역할을 고정하지 말 것\n"
             f"- 선택 면접기법: {', '.join(method_names)}\n"
             f"{_gate_contract}"
             f"{custom_plan_rules}"
@@ -6236,7 +6221,7 @@ def build_strategy_with_openai(
             f"[jd_core]{jd_text[:1200]}\n"
             + (f"[avoid_questions]\n{extra_context[:1200]}\n" if extra_context else "")
         )
-        if experience_only:
+        if ksa_free_planned_generation:
             slim_prompt = _experience_only_generation_prompt(
                 planned_sequence=planned_sequence,
                 target_count=retry_target_count,

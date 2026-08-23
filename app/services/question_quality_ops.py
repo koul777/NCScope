@@ -99,7 +99,10 @@ _SENSITIVE_EXACT_KEYS = frozenset(
 )
 _ISSUE_GUIDANCE_KO = {
     "wrong_ncs_alignment": "NCS 직무·능력단위와 질문의 정렬을 바로잡기",
-    "behavioral_not_star_like": "과거의 구체적 상황·과제·행동·결과가 드러나는 STAR 질문으로 바꾸기",
+    "behavioral_not_star_like": (
+        "배정 KSA가 실제로 쓰인 과거 업무 장면과 핵심 판단 또는 직접 행동 하나를 "
+        "자연스럽게 묻되 STAR 항목을 체크리스트처럼 나열하지 않기"
+    ),
     "too_generic": "실제 직무 맥락, 제약, 판단 기준을 구체화하기",
     "duplicate_intent": "기존 질문과 같은 평가 의도나 상황 프레임을 반복하지 않기",
     "difficulty_too_low": "직무 판단과 근거를 확인할 수 있도록 난이도를 높이기",
@@ -109,8 +112,8 @@ _ISSUE_GUIDANCE_KO = {
     "focus_scenario_mismatch": "평가 초점과 질문 시나리오를 일치시키기",
     "missing_task_conditions": "응시자 지시문, 동일 시간·자료 조건과 필수 산출물을 명시하기",
     "missing_ksa_evidence": (
-        "K는 판단 근거·적용 범위·예외, S는 수행 단계·조치·산출물·품질 확인, "
-        "A는 압박·상충 요구 속 선택 행동과 감수한 결과가 답변에서 관찰되도록 바꾸기"
+        "배정된 지식·기술·태도의 의미에서 이 문항에 가장 적합한 판단, 행동, 근거 또는 "
+        "관찰 결과를 골라 직무 장면에 자연스럽게 반영하기"
     ),
     "method_task_mismatch": (
         "경험은 상황·본인 행동·결과, 상황은 판단 기준·행동 순서, 발표·토론·인바스켓은 "

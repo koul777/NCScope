@@ -55,6 +55,51 @@ def test_accepts_experience_question_that_elicits_actual_ksa_evidence() -> None:
     assert result["observation_group_hits"] == [True, True, True]
 
 
+def test_verified_openrouter_ksa_does_not_require_label_words_in_debate_question() -> None:
+    question = (
+        "신규 직원에게 첫 주 교육을 일괄 제공하자는 입장과 부서별 적응 지원을 "
+        "우선하자는 입장이 충돌합니다. 두 방안의 근거와 위험을 비교하고, 공통 운영 "
+        "원칙과 합의되지 않은 쟁점을 토론해 주세요."
+    )
+    result = evaluate_ksa_measurement(
+        {
+            "type": "토론면접",
+            "question_source": "openrouter_api",
+            "question_focus": "입사예정자의 조직적응을 적극적으로 도와주고자 하는 태도",
+            "question_focus_surface": "입사예정자의 조직적응 지원 행동",
+            "question_focus_type": "태도",
+            "question_evidence_id": "ksa_onboarding_001",
+            "question_evidence_assignment_valid": True,
+            "question": question,
+        }
+    )
+
+    assert "입사예정자의 조직적응" not in question
+    assert result["checks"]["focus_visible"] is True
+    assert result["passed"] is True, result
+
+
+def test_unverified_provider_cannot_claim_ksa_alignment_by_id_alone() -> None:
+    result = evaluate_ksa_measurement(
+        {
+            "type": "토론면접",
+            "question_source": "openrouter_api",
+            "question_focus": "입사예정자의 조직적응을 적극적으로 도와주고자 하는 태도",
+            "question_focus_surface": "입사예정자의 조직적응 지원 행동",
+            "question_focus_type": "태도",
+            "question_evidence_id": "ksa_onboarding_001",
+            "question_evidence_assignment_valid": False,
+            "question": (
+                "예산 확대와 비용 절감 입장이 충돌합니다. 두 방안의 근거와 위험을 "
+                "비교하고 공통 원칙을 토론해 주세요."
+            ),
+        }
+    )
+
+    assert result["checks"]["focus_visible"] is False
+    assert result["passed"] is False
+
+
 @pytest.mark.parametrize(
     ("method", "focus_type", "focus", "question"),
     [
@@ -794,7 +839,10 @@ def _codex_runtime_strategy(question: str) -> tuple[dict, dict, list[dict]]:
     return strategy, plan, ksa
 
 
-@pytest.mark.parametrize("source", ["openai_api", "codex_cli", "claude_code"])
+@pytest.mark.parametrize(
+    "source",
+    ["openai_api", "openrouter_api", "codex_cli", "claude_code"],
+)
 @pytest.mark.parametrize("point_count", [3, 5, 6])
 def test_final_quality_report_requires_exactly_four_points_for_all_model_sources(
     source: str,
@@ -1196,6 +1244,33 @@ def test_runtime_orchestration_rebuilds_history_duplicate_and_keeps_count() -> N
     assert orchestration["status"] == "needs_review"
     assert result["question_quality_report"]["passed"] is False
     assert "field_realism" in result["question_quality_report"]["items"][0]["issues"]
+
+
+def test_runtime_keeps_openrouter_history_duplicate_for_ai_retry() -> None:
+    original_question = (
+        "부서별 집행표와 회계 원장의 금액이 다르고 결산 마감이 오늘입니다. "
+        "어떤 원자료를 먼저 대조하고 어느 수정안을 제안하시겠습니까?"
+    )
+    strategy, plan, ksa = _codex_runtime_strategy(original_question)
+    item = strategy["interview_questions"][0]
+    item["question_source"] = "openrouter_api"
+
+    result = _run_runtime_question_quality_orchestration(
+        strategy,
+        question_plan=plan,
+        ncs_ksa=ksa,
+        avoid_questions=[original_question],
+    )
+
+    retained = result["interview_questions"][0]
+    event = result["question_quality_orchestration"]["items"][0]
+    assert retained["question"] == original_question
+    assert retained["question_source"] == "openrouter_api"
+    assert retained["model_question_preserved"] is True
+    assert result["question_quality_orchestration"]["repaired_count"] == 0
+    assert result["question_quality_orchestration"]["status"] == "needs_review"
+    assert "history_duplicate" in event["final_issues"]
+    assert "repair_exhausted" in event["final_issues"]
 
 
 def test_runtime_repairs_invalid_task_conditions_without_replacing_question() -> None:

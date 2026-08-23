@@ -514,7 +514,7 @@ def test_natural_wording_gate_rejects_mechanical_surface_attachment() -> None:
     ) is False
 
 
-def test_openrouter_mechanical_experience_draft_is_replaced_by_source_anchored_template() -> None:
+def test_openrouter_mechanical_experience_draft_is_preserved_for_ai_quality_retry() -> None:
     code = "0202020101_23v3"
     detail = "인사·조직"
     plan = _parse_question_plan_json(
@@ -573,10 +573,14 @@ def test_openrouter_mechanical_experience_draft_is_replaced_by_source_anchored_t
         job_context_text="[담당업무]인사기획 업무를 수행한다.",
     )
     item = out["interview_questions"][0]
-    assert item["question_source"] == "template_fallback"
-    assert item["model_question_preserved"] is False
-    assert "해당 직무에서 업무를 수행하던" not in item["question"]
-    assert "인사기획" in item["question"]
+    assert item["question"] == (
+        "해당 직무에서 업무를 수행하던 실제 상황 하나를 골라 요구사항과 기준을 확인한 뒤 "
+        "전략적 인적자원관리 확인·판단 기준에 따라 어떤 판단과 행동을 했는지 말씀해 주세요."
+    )
+    assert item["question_source"] == "openrouter_api"
+    assert item["model_question_preserved"] is True
+    assert "quality_gate_natural_wording" in item["model_quality_warnings"]
+    assert item["model_replacement_reasons"] == []
 
 
 def test_openrouter_natural_ksa_experience_keeps_model_wording_without_star_appendix() -> None:
@@ -639,7 +643,10 @@ def test_openrouter_natural_ksa_experience_keeps_model_wording_without_star_appe
         job_context_text="[담당업무]인력 수요와 예산을 기획한다.",
     )
     item = out["interview_questions"][0]
-    assert item["question_source"] in {"openrouter_api", "template_fallback"}
+    assert item["question"] == natural_question
+    assert item["question_source"] == "openrouter_api"
+    assert item["model_question_preserved"] is True
+    assert item["evaluation_points"] == ["상황", "판단", "행동", "결과"]
     assert "문서·수치·기록·피드백" not in item["question"]
     assert "당시 맡은 역할과 구체적인 목표" not in item["question"]
     assert "해당 직무에서 업무를 수행하던" not in item["question"]

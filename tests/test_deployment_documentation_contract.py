@@ -17,8 +17,8 @@ def test_current_readme_matches_public_generation_contract() -> None:
 
     assert "https://ncscope.vercel.app" in current
     assert "Vercel Production" in current
-    assert "주질문 1개" in current
-    assert "2개 이상 계획" in current
+    assert "주질문을 최대 5개" in current
+    assert "6개 이상 계획" in current
     assert "각각 드롭다운에서 하나만 선택" in current
     assert "회피 이력에 누적" in current
     assert "285초 공통 예산" in current
@@ -26,6 +26,8 @@ def test_current_readme_matches_public_generation_contract() -> None:
     assert "최대 15초" in current
     assert "`OPENROUTER_RECOVERY_MODEL`" in current
     assert "공식 NCS KSA `evidence_id`" in current
+    assert "KSA 라벨이나 원문 단어" in current
+    assert "모델이 주질문·꼬리질문·평가포인트를 직접 작성" in current
     assert "human_review_required" in current
     assert "서명된 검토 세션" in current
 

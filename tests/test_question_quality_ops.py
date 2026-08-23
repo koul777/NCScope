@@ -342,12 +342,31 @@ def test_feedback_prompt_context_turns_ksa_and_method_failures_into_specific_reg
         "A",
     )
 
-    assert "K는 판단 근거·적용 범위·예외" in context
-    assert "S는 수행 단계·조치·산출물·품질 확인" in context
-    assert "A는 압박·상충 요구 속 선택 행동" in context
+    assert "배정된 지식·기술·태도의 의미" in context
+    assert "가장 적합한 판단, 행동, 근거 또는 관찰 결과" in context
+    assert "K는 판단 근거·적용 범위·예외" not in context
     assert "경험은 상황·본인 행동·결과" in context
     assert "발표·토론·인바스켓" in context
     assert "해당 문제를 수정하기" not in context
+
+
+def test_behavioral_feedback_requests_ksa_evidence_without_star_checklist() -> None:
+    context = feedback_prompt_context(
+        [
+            {
+                "ncs_code": "A",
+                "verdict": "needs_edit",
+                "question": "일반적인 경험을 말씀해 주세요.",
+                "issue_codes": ["behavioral_not_star_like"],
+            }
+        ],
+        "A",
+    )
+
+    assert "배정 KSA가 실제로 쓰인 과거 업무 장면" in context
+    assert "핵심 판단 또는 직접 행동 하나" in context
+    assert "STAR 항목을 체크리스트처럼 나열하지 않기" in context
+    assert "상황·과제·행동·결과가 드러나는 STAR 질문" not in context
 
 
 def test_aggregate_quality_metrics_counts_rates_and_unique_issues_per_review() -> None:
