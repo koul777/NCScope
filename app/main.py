@@ -84,6 +84,7 @@ from app.services.provider_config import (
     normalize_generation_provider,
     openrouter_recovery_model,
     openrouter_reasoning_effort,
+    provider_timeout_sec,
     resolve_generation_credential,
     resolve_generation_model,
     request_key_error_code,
@@ -8755,6 +8756,14 @@ def _generation_provider_descriptor(provider: str = "") -> dict[str, Any]:
                 "standard": standard_effort,
                 "high_risk": high_risk_effort,
                 "quality_retry": quality_retry_effort,
+            }
+            descriptor["timeout_profiles_sec"] = {
+                "standard": provider_timeout_sec(provider, 0),
+                "high_risk": provider_timeout_sec(
+                    provider,
+                    0,
+                    openrouter_env_name="OPENROUTER_HIGH_RISK_TIMEOUT_SEC",
+                ),
             }
             if server_key_state == "configured":
                 descriptor.update(

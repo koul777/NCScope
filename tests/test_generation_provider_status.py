@@ -72,6 +72,8 @@ def test_status_advertises_configured_openrouter_server_environment_without_echo
     monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
     monkeypatch.setenv("OPENROUTER_HIGH_RISK_REASONING_EFFORT", "high")
     monkeypatch.setenv("OPENROUTER_QUALITY_RETRY_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENROUTER_TIMEOUT_SEC", "8")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_TIMEOUT_SEC", "15")
 
     with TestClient(main.app) as client:
         response = client.get("/api/generation-provider/status?provider=openrouter")
@@ -92,6 +94,10 @@ def test_status_advertises_configured_openrouter_server_environment_without_echo
         "standard": "medium",
         "high_risk": "high",
         "quality_retry": "high",
+    }
+    assert payload["timeout_profiles_sec"] == {
+        "standard": 8.0,
+        "high_risk": 15.0,
     }
     assert payload["generation_limits"] == {
         "max_main_questions_per_request": 5,
