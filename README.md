@@ -824,3 +824,4 @@ NCScope의 직무기술서·공고문 파싱 기능은 [Kordoc](https://github.c
 - 라이선스: Kordoc은 별도 MIT 라이선스 프로젝트이며, 자세한 내용은 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)를 확인
 
 - ALIO 16-document benchmark (2026-08-23): 16/16 parsed, 9 with explicit detail candidates, 0 MCP connection errors, average parse 731 ms. Five documents had candidates without an exact MCP match and six had no explicit NCS detail; all remain human-review gated. Report: `reports/alio_jd_benchmark_20260823_153817_697074-a9c7fac2.md`.
+- The matching 16-document template quality loop evaluated 4 documents and produced 8 fallback questions; 0 were marked ready by design because deterministic fallback output remains human-review-only. Report: `reports/alio_question_quality_20260823_154027_386221-7f228ae8.md`.
