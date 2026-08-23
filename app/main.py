@@ -9921,6 +9921,17 @@ def _normalize_generated_questions(
             "competency": str(item.get("competency") or item.get("compeUnitName") or "").strip(),
             "question_source": str(item.get("question_source") or "").strip(),
         }
+        review_only = bool(
+            item.get("human_review_required")
+            or item.get("degraded")
+            or row["question_source"] in {
+                "server_ksa_fallback",
+                "template_fallback",
+                "rule_fallback",
+            }
+        )
+        if review_only:
+            row["review_required"] = True
         follow_ups = [
             _clean_question_text(fu, max_chars=260)
             for fu in (item.get("follow_ups") or [])
@@ -9939,7 +9950,11 @@ def _normalize_generated_questions(
             row["question_hash"] = str(item.get("question_hash"))
         if item.get("question_evidence_id"):
             row["question_evidence_id"] = str(item.get("question_evidence_id"))
-        row["ready"] = bool(row["question"])
+        # A degraded/provider-free draft must never look production-ready just
+        # because it contains non-empty text. The full strategy carries the
+        # detailed quality report; this compact export mirrors that release
+        # boundary so the UI and downloads cannot silently approve a fallback.
+        row["ready"] = bool(row["question"]) and not review_only
         output.append(row)
 
     target_count = int(expected_count) if expected_count and int(expected_count) > 0 else len(output)
