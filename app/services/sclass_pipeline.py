@@ -553,6 +553,105 @@ def extract_pdf_text_fallback(pdf_bytes: bytes, max_pages: int = 6) -> str:
     return "\n".join(lines).strip()
 
 
+def _clean_pdf_detail_cell(value: Any) -> list[str]:
+    """Normalize one PDF 세분류 table cell without consulting 소분류 data."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return []
+    # A flattened cell can contain more than one numbered value.
+    parts = re.split(r"\s+(?=\d{1,2}\s*[.)])", text)
+    out: list[str] = []
+    for part in parts:
+        item = re.sub(r"^\d{1,2}\s*[.)]?\s*", "", part).strip(" .")
+        if not item or item in {"-", "–", "—"}:
+            continue
+        if item in {"대분류", "중분류", "소분류", "세분류", "분류체계"}:
+            continue
+        # Do not let a duty paragraph become a detail candidate.
+        if len(item) > 80:
+            continue
+        if re.search(r"[가-힣A-Za-z]", item):
+            out.append(item)
+    return out
+
+
+def _extract_detail_candidates_from_tables(
+    scope_tables: list[tuple[int, list[list[str]]]],
+) -> list[dict[str, Any]]:
+    """Extract values from the actual NCS 세분류 column of PDF tables.
+
+    The previous structural fallback intentionally read the 소분류 row. That
+    is useful for the legacy helper, but it is the wrong level for the review
+    dropdown. This table-first path only accepts cells to the right of an
+    explicit ``세분류`` header, so a neighbouring ``인사·조직`` 소분류 value
+    cannot leak into the 세분류 candidates.
+    """
+    for page_no, table in scope_tables:
+        active_detail_index: int | None = None
+        for row in table[:16]:
+            if not row:
+                continue
+            detail_index = next(
+                (
+                    idx
+                    for idx, cell in enumerate(row)
+                    if re.sub(r"\s+", "", str(cell or "")) == "세분류"
+                ),
+                -1,
+            )
+            if detail_index >= 0:
+                active_detail_index = detail_index
+                value_cells = row[detail_index + 1 :]
+                # Most flattened PDFs keep the values on the same row as the
+                # header. If this is only a header row, continue below and
+                # read the corresponding column from the next data row.
+            elif active_detail_index is not None:
+                # Markdown/HTML table projections often repeat the values
+                # without repeating the header cell.
+                value_cells = (
+                    [row[active_detail_index]]
+                    if active_detail_index < len(row)
+                    else []
+                )
+            else:
+                continue
+            candidates: list[dict[str, Any]] = []
+            for cell in value_cells:
+                for label in _clean_pdf_detail_cell(cell):
+                    candidates.append(
+                        {
+                            "label": label,
+                            "page": int(page_no),
+                            "source": "pdf_table_detail",
+                            "raw": label,
+                        }
+                    )
+            if candidates:
+                seen: set[str] = set()
+                unique: list[dict[str, Any]] = []
+                for item in candidates:
+                    key = re.sub(r"\s+", "", str(item["label"])).casefold()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    unique.append(item)
+                return unique
+    return []
+
+
+def extract_detail_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[str, Any]:
+    """Return human-reviewable NCS 세분류 candidates from a PDF table."""
+    _ = filename
+    parsed = _extract_pdf_content(pdf_bytes, max_pages=6)
+    details = _extract_detail_candidates_from_tables(parsed["scope_tables"])
+    return {
+        "matched": [str(item["label"]) for item in details],
+        "detail_candidates": [str(item["label"]) for item in details],
+        "detail_candidate_evidence": details,
+        "source": "pdf_table_detail" if details else "",
+    }
+
+
 def _collect_scope_candidates(
     scope_rows: list[dict[str, Any]],
     scope_tables: list[tuple[int, list[list[str]]]],
@@ -708,6 +807,7 @@ def extract_sclass_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[
     all_tables = parsed["all_tables"]
     scope_lines = [str(r.get("line", "")) for r in scope_rows]
     scope_text = "\n".join(scope_lines)
+    detail_table_rows = _extract_detail_candidates_from_tables(scope_tables)
 
     typed_candidates = _collect_scope_candidates(scope_rows, scope_tables)
     candidate_terms = [
@@ -816,6 +916,9 @@ def extract_sclass_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[
         "matched": matched,
         "unmatched": unmatched,
         "ncs_cats": ncs_cats,
+        "detail_candidates": [str(item.get("label", "")) for item in detail_table_rows],
+        "detail_candidate_evidence": detail_table_rows,
+        "detail_source": "pdf_table_detail" if detail_table_rows else "",
         "matched_detail": matched_detail,
         "unmatched_detail": unmatched_detail,
         "rejected": rejected,

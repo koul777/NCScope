@@ -62,3 +62,45 @@ def test_parse_review_keeps_kordoc_candidates_as_primary_source(mocker):
     assert fields["ncs_detail_candidates"] == ["경영기획"]
     assert fields.get("ncs_detail_source") != "pdf_structural_fallback"
     structural.assert_not_called()
+
+
+def test_parse_review_prefers_pdf_detail_column_over_legacy_small_matches(mocker):
+    mocker.patch(
+        "app.main._parse_upload_document",
+        return_value={"markdown": "NCS 분류체계", "blocks": []},
+    )
+    mocker.patch(
+        "app.main.structure_job_description",
+        return_value={
+            "document": {"markdown": "NCS 분류체계"},
+            "fields": {"ncs_detail_candidates": []},
+        },
+    )
+    mocker.patch(
+        "app.main.extract_sclass_from_pdf_bytes",
+        return_value={
+            "matched": ["인사·조직", "일반사무"],
+            "detail_candidates": ["인사", "일반사무 지원"],
+            "detail_candidate_evidence": [
+                {"label": "인사", "page": 1, "source": "pdf_table_detail", "raw": "인사"},
+                {
+                    "label": "일반사무 지원",
+                    "page": 1,
+                    "source": "pdf_table_detail",
+                    "raw": "일반사무 지원",
+                },
+            ],
+        },
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("alio-jd.pdf", b"%PDF-test", "application/pdf")},
+        )
+
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    assert fields["ncs_detail_candidates"] == ["인사", "일반사무 지원"]
+    assert fields["ncs_detail_source"] == "pdf_table_detail"
+    assert fields["ncs_detail_candidate_evidence"][0]["detail"] == "인사"

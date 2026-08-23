@@ -11986,6 +11986,18 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                     data,
                     filename=jd_file.filename or "",
                 )
+                # The legacy structural endpoint returns 소분류 matches for
+                # compatibility, but the review dropdown must contain the
+                # actual 세분류 column. Prefer the table-level detail trace;
+                # only fall back to legacy matches when no detail column was
+                # recoverable at all.
+                detail_candidates = _parse_sclass_terms(
+                    "\n".join(
+                        str(value or "").strip()
+                        for value in (structural_result.get("detail_candidates") or [])
+                        if str(value or "").strip()
+                    )
+                )
                 recovered_candidates = _parse_sclass_terms(
                     "\n".join(
                         str(value or "").strip()
@@ -11993,18 +12005,45 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                         if str(value or "").strip()
                     )
                 )
+                if detail_candidates:
+                    recovered_candidates = detail_candidates
                 if recovered_candidates:
                     structured_fields["ncs_detail_candidates"] = recovered_candidates
-                    structured_fields["ncs_detail_source"] = "pdf_structural_fallback"
-                    structured_fields["ncs_detail_candidate_evidence"] = [
-                        {
-                            "text": candidate,
-                            "page": 0,
-                            "source": "pdf_structural_fallback",
-                            "raw": candidate,
+                    detail_evidence = structural_result.get("detail_candidate_evidence") or []
+                    if detail_candidates and isinstance(detail_evidence, list):
+                        evidence_by_key = {
+                            _norm_sclass_key(str(item.get("label", ""))): item
+                            for item in detail_evidence
+                            if isinstance(item, dict) and str(item.get("label", "")).strip()
                         }
-                        for candidate in recovered_candidates
-                    ]
+                        structured_fields["ncs_detail_source"] = "pdf_table_detail"
+                        structured_fields["ncs_detail_candidate_evidence"] = [
+                            {
+                                "detail": candidate,
+                                "text": candidate,
+                                "page": int(
+                                    (evidence_by_key.get(_norm_sclass_key(candidate)) or {}).get("page", 0)
+                                    or 0
+                                ),
+                                "source": "pdf_table_detail",
+                                "raw": candidate,
+                                "snippet": candidate,
+                            }
+                            for candidate in recovered_candidates
+                        ]
+                    else:
+                        structured_fields["ncs_detail_source"] = "pdf_structural_fallback"
+                        structured_fields["ncs_detail_candidate_evidence"] = [
+                            {
+                                "detail": candidate,
+                                "text": candidate,
+                                "page": 0,
+                                "source": "pdf_structural_fallback",
+                                "raw": candidate,
+                                "snippet": candidate,
+                            }
+                            for candidate in recovered_candidates
+                        ]
                     structured_fields["ncs_detail_absence_reason"] = ""
                     structured_fields["ncs_detail_absence_state"] = ""
                     structured_fields["ncs_detail_absence_evidence"] = ""
