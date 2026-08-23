@@ -1402,6 +1402,28 @@ class TestExtractSmallCategoriesFromJD:
         # All of these should be recognized with expanded list
         assert len(result) >= 3
 
+    def test_extract_small_categories_recovers_split_admin_labels(self):
+        """Flattened NCS tables must keep 소분류 distinct from 세분류."""
+        text = """
+        [NCS 기반 채용 직무 설명자료 : 일반행정]
+        대분류 01.사업관리 02.경영·회계·사무
+        중분류 01.사업관리 01.기획사무 02.총무·인사 03.재무회계
+        채용 정책 분류 02.인사∙ 03.일반
+        소분류 01.프로젝트관리 01.경영기획 01.총무 .01.재무
+        분야 개발 체계 조직 사무
+        01. 비서
+        02. 03. 01. 02.
+        01. 01. (글로벌
+        세분류 프로젝트 산학협력 경영 경영 01. 예산
+        총무 인사 경영사무
+        관리 관리 기획 평가
+        지원)
+        능력단위
+        """
+        result = extract_small_categories_from_jd(text)
+        assert "인사·조직" in result
+        assert "일반사무" in result
+
     def test_extract_small_categories_pdf_style_klri(self):
         """소분류/세분류 헤더가 세로로 분리된 직무기술서 패턴."""
         text = """

@@ -1196,6 +1196,80 @@ def _extract_small_categories_by_anchor_direction(
     return merged[:max_items]
 
 
+def _recover_split_sclass_labels(
+    lines: list[str],
+    max_items: int = 15,
+) -> list[str]:
+    """Recover catalogue labels split across flattened classification rows.
+
+    PDF text extraction can place a prefix after a numeric cell marker and its
+    suffix several lines later (for example ``02.인사∙`` / ``조직`` and
+    ``03.일반`` / ``사무``).  The ordinary anchor scanner quite correctly
+    ignores those fragments because neither fragment is a complete NCS label.
+    Use the official local catalogue as the only source of reconstructed names,
+    and require the fragments to occur in the bounded classification window.
+    """
+    if not lines:
+        return []
+    compact = [_compact_line(line) for line in lines]
+    anchors = [i for i, line in enumerate(compact) if "소분류" in line]
+    if not anchors:
+        return []
+
+    anchor = anchors[0]
+    start = max(0, anchor - 4)
+    end = min(len(lines), anchor + 10)
+    window = lines[start:end]
+    normalized_lines = [_sclass_norm_key(line) for line in window]
+    catalogue = sorted(
+        {
+            str(name).strip()
+            for name in _load_ncs_small_categories()
+            if str(name).strip()
+        },
+        key=lambda value: (-len(_sclass_norm_key(value)), value),
+    )
+    if not catalogue:
+        return []
+
+    recovered: list[str] = []
+    for name in catalogue:
+        key = _sclass_norm_key(name)
+        if len(key) < 4:
+            continue
+        if any(key in line_key for line_key in normalized_lines):
+            recovered.append(name)
+            continue
+
+        # Try every meaningful split.  The prefix must be attached to a
+        # numeric classification cell; the suffix may be on a later flattened
+        # line, but only within this table's small bounded window.
+        found = False
+        for split_at in range(2, len(key) - 1):
+            prefix = key[:split_at]
+            suffix = key[split_at:]
+            prefix_rows: list[int] = []
+            for row, line_key in enumerate(normalized_lines):
+                raw = _compact_line(lines[start + row])
+                if prefix in line_key and re.search(
+                    r"(?:^|[^0-9])\d{1,2}\s*[.)]?", raw
+                ):
+                    prefix_rows.append(row)
+            if not prefix_rows:
+                continue
+            for row in prefix_rows:
+                for next_row in range(row + 1, min(len(normalized_lines), row + 7)):
+                    if suffix in normalized_lines[next_row]:
+                        found = True
+                        break
+                if found:
+                    break
+            if found:
+                recovered.append(name)
+                break
+    return _dedup_keep_order(recovered)[:max_items]
+
+
 def extract_subcategory_text(jd_text: str) -> str:
     """
     Extract text around '소분류' (preferred) / '세분류' row from JD.
@@ -1713,8 +1787,13 @@ def extract_small_categories_from_jd(jd_text: str) -> list[str]:
     structural = _extract_small_categories_by_code_pairs(focus_lines)
     # 1-c) 소분류 앵커 주변 방향성 스캔
     anchored = _extract_small_categories_by_anchor_direction(focus_lines, max_items=15)
+    # 1-d) Flattened PDFs may split a single official label across rows.
+    # Catalogue-backed recovery prevents a fragment such as "인사" or
+    # "일반" from being mistaken for a complete small category.
+    split_recovered = _recover_split_sclass_labels(focus_lines, max_items=15)
+    anchored = _dedup_keep_order(anchored + split_recovered)
 
-    # 1-d) 후보들 중 실제 소분류 매핑이 가장 좋은 집합을 선택
+    # 1-e) 후보들 중 실제 소분류 매핑이 가장 좋은 집합을 선택
     # vertical_blocks는 표 붕괴가 강한 경우에만 사용(그 외에는 과추출 위험).
     candidates_pool: list[tuple[str, list[str], int]] = []
     if len(_dedup_keep_order(vertical_blocks)) >= 4:
