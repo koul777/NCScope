@@ -365,6 +365,45 @@ def test_primary_endpoint_does_not_retry_when_first_candidate_passes(
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
+def test_transport_recovery_output_is_reviewable_without_outer_quality_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    build_calls: list[dict[str, Any]] = []
+
+    def builder(**kwargs: Any) -> dict[str, Any]:
+        build_calls.append(copy.deepcopy(kwargs))
+        return {
+            **_model_strategy(),
+            "provider_timeout_recovery_used": True,
+            "provider_timeout_recovery_model": "stealth/ox-alpha",
+            "provider_timeout_recovery_reasoning_effort": "medium",
+        }
+
+    _patch_pipeline(monkeypatch, builder)
+    monkeypatch.setattr(
+        main,
+        "_run_runtime_question_quality_orchestration",
+        lambda strategy, **_kwargs: _quality_result(strategy, passed=False),
+    )
+
+    with TestClient(main.app, client=REMOTE_CLIENT) as client:
+        response = _post_primary(client, path)
+
+    assert response.status_code == 200
+    assert len(build_calls) == 1
+    strategy = response.json()["strategy"]
+    assert strategy["question_release_status"] == "human_review_required"
+    retry = strategy["model_quality_retry"]
+    assert retry["attempted"] is False
+    assert retry["retry_count"] == 0
+    assert retry["attempt_count"] == 1
+    assert retry["outcome"] == "accepted_for_human_review"
+    assert "question_quality_report_failed" in retry["trigger_codes"]
+    assert REQUEST_KEY not in response.text
+
+
+@pytest.mark.parametrize("path", PRIMARY_PATHS)
 def test_primary_endpoint_stops_after_one_quality_retry_and_uses_server_fallback(
     monkeypatch: pytest.MonkeyPatch,
     path: str,

@@ -10572,6 +10572,42 @@ async def _generate_quality_gated_institution_strategy(
         strategy,
         require_quality_metadata=True,
     )
+    transport_recovery_has_output = bool(
+        strategy.get("provider_timeout_recovery_used") is True
+        and any(
+            isinstance(item, dict)
+            and str(item.get("question") or "").strip()
+            for item in (strategy.get("interview_questions") or [])
+        )
+    )
+    if transport_recovery_has_output:
+        # The transport layer already spent the bounded recovery budget. Keep
+        # that model-authored response available for human review instead of
+        # opening the outer semantic quality regeneration, which would turn a
+        # single timeout recovery into another full provider request cycle.
+        logger.warning(
+            "institution_question_transport_recovery_reviewable provider=%s codes=%s",
+            active_generation_provider,
+            ",".join(sorted(set(trigger_codes))),
+        )
+        strategy["model_quality_retry"] = {
+            "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
+            "provider": active_generation_provider,
+            "attempted": False,
+            "retry_count": 0,
+            "attempt_count": 1,
+            "outcome": "accepted_for_human_review",
+            "trigger_codes": sorted(trigger_codes),
+            "remaining_codes": sorted(trigger_codes),
+            "remaining_issue_codes": first_quality_issue_codes,
+            "previous_candidate_count": 0,
+            "evidence_lock_count": len(planned_evidence_locks),
+            "provider_generation_request_count": first_generation_request_count,
+            "provider_generation_request_limit": provider_generation_request_limit,
+            "transport_attempt_limit_per_generation_request": 1,
+        }
+        strategy["question_release_status"] = "human_review_required"
+        return with_generation_timing(strategy)
     if not first_hard_codes:
         logger.warning(
             "institution_question_quality_reviewable_without_retry provider=%s codes=%s issues=%s",
