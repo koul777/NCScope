@@ -2709,6 +2709,71 @@ def _presentation_source_segments(text: str, anchors: list[str], limit: int = 6)
     return list(dict.fromkeys(selected))[:limit]
 
 
+def _presentation_work_segments(text: str, anchors: list[str], limit: int = 6) -> list[str]:
+    """Extract operational duty/JD statements for a presentation packet.
+
+    Notice parsers often return a single long paragraph containing the
+    institution introduction, eligibility rules, and the actual duty.  A
+    presentation task must lead with the duty section, so split known source
+    headings and rank statements containing the selected NCS/job anchors.
+    """
+
+    compact = re.sub(r"\s+", " ", str(text or "").strip())
+    compact = re.sub(
+        r"\[(?:공고문|직무기술서|담당업무|지원자격|우대사항|면접평가항목|발표자료)[^\]]*\]\s*",
+        "",
+        compact,
+    )
+    if not compact:
+        return []
+
+    # Prefer the actual duty section when the source is a full recruitment
+    # notice.  The lookahead stops before eligibility/benefits/evaluation text.
+    duty_match = re.search(
+        r"(?:\d\s*)?(?:채용\s*분야\s*및\s*담당\s*업무|담당\s*업무|수행\s*업무)"
+        r"\s*[:：]?\s*(.*?)(?=(?:\d\s*)?(?:응시\s*자격|자격\s*요건|우대\s*사항|전형\s*방법|필요\s*지식|필요\s*기술|직무\s*수행\s*태도|직업\s*기초\s*능력)|$)",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    working_text = duty_match.group(1).strip() if duty_match else compact
+    working_text = re.sub(r"(?:※|참고\s*사항).*?$", "", working_text).strip()
+    working_text = re.sub(r"(?=\d+[.)]\s*)", "\n", working_text)
+    working_text = re.sub(r"(?=[○◦•▪●])", "\n", working_text)
+    working_text = re.sub(
+        r"(?=(?:능력단위\s*[·.]?\s*정의|필요\s*지식|필요\s*기술|직무\s*수행\s*태도|필요\s*자격|직업\s*기초\s*능력))",
+        "\n",
+        working_text,
+    )
+    segments = [
+        re.sub(r"\s+", " ", part).strip(" -·•○◦▪●")
+        for part in re.split(r"\n+|(?<=[.!?。])\s+", working_text)
+        if len(part.strip()) >= 10
+    ]
+    if not segments:
+        return []
+    normalized_anchors = [
+        re.sub(r"\s+", "", str(value or "").casefold())
+        for value in anchors
+        if str(value or "").strip()
+    ]
+    operational_markers = (
+        "담당", "수행", "관리", "운영", "점검", "유지", "보수", "작성", "분석",
+        "설계", "조작", "운전", "기록", "보고", "검토", "계획", "절차", "안전",
+        "대응", "복구", "협업", "민원", "성과", "지표",
+    )
+    scored: list[tuple[int, int, str]] = []
+    for index, segment in enumerate(segments):
+        normalized = re.sub(r"\s+", "", segment.casefold())
+        anchor_score = sum(2 for anchor in normalized_anchors if len(anchor) >= 2 and anchor in normalized)
+        marker_score = sum(1 for marker in operational_markers if marker in segment)
+        # Introductory institution/eligibility paragraphs are not operational
+        # duty evidence unless they also contain a selected anchor.
+        penalty = 3 if any(token in segment for token in ("설립", "비전", "지원 바랍니다", "응시 자격")) and not anchor_score else 0
+        scored.append((anchor_score + marker_score - penalty, -index, segment))
+    ranked = [row[2] for row in sorted(scored, key=lambda row: (row[0], row[1]), reverse=True)]
+    return list(dict.fromkeys(ranked))[: max(1, int(limit or 6))]
+
+
 def _generation_job_context_text(
     *,
     duty_text: str = "",
@@ -2807,7 +2872,7 @@ def _build_presentation_material_packet(
     ]
     source_chunks_by_layer: list[tuple[str, list[str]]] = []
     for source_label, source_value in source_layers:
-        layer_chunks = _presentation_source_segments(
+        layer_chunks = _presentation_work_segments(
             str(source_value or ""),
             source_anchors,
             limit=3,
@@ -2852,22 +2917,30 @@ def _build_presentation_material_packet(
     )
     facts = list(dict.fromkeys([
         *[
-            f"{source_label} 근거: {chunk[:420]}"
+            f"{source_label}에서 확인된 업무 근거: {chunk[:420]}"
             for source_label, chunks in source_chunks_by_layer
             for chunk in chunks[:2]
         ],
         f"능력단위 정의: {comp_def[:500] or unit_name}",
         f"KSA 평가 근거: {focus}",
-        "자료 간 불일치가 남아 확정 전 추가 확인과 일정 내 조건부 실행 중 하나를 선택해야 함",
-        "입력 자료에서 확인되지 않은 기관 고유 수치·사실은 발표 전에 확인 대상으로 표시함",
-    ]))[:8]
+        (
+            f"발표 시나리오(가정): {task_duty_summary}를 수행하는 중 "
+            f"'{focus}' 적용에 필요한 확인자료가 일부 누락되거나 값이 충돌한 경우"
+        ),
+        (
+            f"판단 과제: {unit_name}의 수행 범위·예외·보고 기준을 확인하고 "
+            "안전·품질·일정 기준으로 실행 순서를 정함"
+        ),
+        "입력 자료에 없는 기관 고유 수치·사실은 가정과 사실을 구분해 발표함",
+    ]))[:10]
     presentation_task = str(context.get("presentation_task") or "").strip()
     if not presentation_task:
         presentation_task = (
-            f"공고문·직무기술서에 제시된 '{task_duty_summary}' 업무를 대상으로, "
-            f"'{focus}' 근거를 적용해야 하는 상황에서 핵심 자료가 일부 불일치하고 일정 제약이 발생했다고 가정합니다. "
-            "제공된 공고문·직무기술서·담당업무 보완 내용에서 확인되는 사실과 제약을 먼저 구분한 뒤, "
-            "확인할 사실, 판단 기준, 대안과 선택 근거, 실행·보고 순서, 결과 확인 방법을 발표하십시오."
+            f"공고문·직무기술서에 제시된 '{task_duty_summary}' 업무를 수행하는 담당자라고 가정합니다. "
+            f"능력단위 '{unit_name}'의 정의({comp_def[:260] or '직무 수행 절차와 기준'})와 "
+            f"KSA 근거 '{focus}'를 적용해, 필요한 확인자료·판단 기준·적용 범위·예외·보고 순서를 발표하십시오. "
+            "자료 일부가 누락되거나 값이 충돌하는 경우에는 사실과 가정을 구분하고, "
+            "안전·품질·일정·권한 기준으로 대안 2가지를 비교한 뒤 실행안과 검증 가능한 결과자료를 제시하십시오."
         )
     constraints = [
         str(value).strip()
@@ -2887,10 +2960,10 @@ def _build_presentation_material_packet(
     ][:6]
     if not deliverables:
         deliverables = [
-            f"{detail} 업무의 핵심 사실과 문제 정의표",
-            f"'{focus}' 기반 판단 기준과 확인자료 목록",
-            "대안 2가지·선택 근거·실행 순서·보고 대상",
-            "결과를 확인할 산출물·수치·기록·피드백과 보완 조치",
+            f"{task_duty_summary[:260]} 업무의 핵심 사실·위험·우선순위 표",
+            f"'{focus}' 적용을 위한 확인자료·판단 기준·적용 범위·예외 목록",
+            f"{unit_name} 수행 대안 2가지·선택 근거·역할·보고 순서",
+            "검증 가능한 산출물·기록·피드백과 재발 방지 보완 조치",
         ]
     material_rows = [
         {
@@ -2941,10 +3014,10 @@ def _build_presentation_material_packet(
         "constraints": constraints,
         "required_deliverables": deliverables,
         "slide_outline": [
-            {"slide": 1, "title": "현황·문제·즉시 영향", "instruction": "제공된 사건의 사실, 누락·불일치 자료, 즉시 영향과 우선순위부터 정리합니다."},
-            {"slide": 2, "title": "판단 근거·위험 통제", "instruction": f"NCS KSA와 제공자료({str(context.get('evidence') or '공고문·직무기술서·현황자료')[:180]})를 연결해 위험요인과 통제 기준을 설명합니다."},
-            {"slide": 3, "title": "대안 비교·선택", "instruction": "검증 완료 후 실행하는 대안과 제한된 범위에서 조건부 준비하는 대안 등 2개를 품질·일정·권한·운영 영향으로 비교합니다."},
-            {"slide": 4, "title": "실행 순서·성과 확인", "instruction": "담당자별 행동, 보고·승인 순서, 산출물·수치·기록·피드백으로 결과를 확인하고 보완하는 방법을 제시합니다."},
+            {"slide": 1, "title": "담당업무·핵심 문제", "instruction": f"'{task_duty_summary[:260]}'에서 실제 수행 대상, 위험요인, 누락·충돌 자료와 즉시 영향을 구분해 우선순위를 정리합니다."},
+            {"slide": 2, "title": "NCS KSA 판단 근거", "instruction": f"능력단위 정의와 KSA '{focus}'를 실제 업무 단계·확인자료·적용 범위·예외 판단에 연결합니다."},
+            {"slide": 3, "title": "대안 비교·선택", "instruction": f"{unit_name} 수행 대안 2가지를 안전·품질·일정·권한 기준으로 비교하고 선택 근거와 조건을 제시합니다."},
+            {"slide": 4, "title": "실행 순서·검증", "instruction": "담당자별 행동, 보고·승인 순서, 산출물과 기록·피드백으로 결과를 확인하고 재발 방지 조치를 제시합니다."},
         ],
         "use_rules": [
             "제공자료에 없는 정밀 수치·법령 조항은 사실처럼 만들지 않습니다.",

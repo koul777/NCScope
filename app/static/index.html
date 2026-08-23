@@ -153,11 +153,6 @@
     .quality-summary { display:flex; flex-wrap:wrap; gap:7px; margin:0 0 10px; }
     .quality-summary .pill { margin:0; }
     .quality-notice { flex-basis:100%; border-left:3px solid var(--primary-2); padding:7px 10px; color:var(--muted); background:#f4fbfb; border-radius:6px; font-size:12px; line-height:1.45; }
-     .presentation-material-result { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 10px; padding:10px 12px; border:1px solid #b9ddec; border-radius:12px; background:#f2fbff; }
-     .presentation-material-result strong { display:block; color:#17345c; font-size:13px; }
-     .presentation-material-result .sub { margin-top:3px; }
-     .presentation-material-prompt { margin-top:8px; padding:9px 10px; border-left:3px solid #0f766e; border-radius:7px; background:#fff; color:#17345c; font-size:12.5px; line-height:1.55; }
-     .presentation-material-download { width:auto; flex:none; margin:0; padding:8px 11px; border-radius:8px; background:#0f766e; box-shadow:none; white-space:nowrap; }
     .qnav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .qnav-btn { width:auto; margin:0; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; }
     .qnav-ind { font-size:13px; color:var(--muted); }
@@ -415,7 +410,6 @@
             <select id="interviewMethodSelect" class="dropdown" aria-describedby="interviewMethodHelp">
               <option value="경험면접" selected>경험(행동)면접</option>
               <option value="상황면접">상황면접</option>
-              <option value="발표면접">발표면접</option>
               <option value="토론면접">토론면접</option>
               <option value="인바스켓면접">인바스켓면접</option>
               <option value="직무지식면접">직무지식면접</option>
@@ -423,16 +417,6 @@
             </select>
             <div id="interviewMethodHelp" class="sub" style="margin-top:4px;">이번 실행에서 사용할 면접 형태 1개만 선택합니다.</div>
 
-            <div id="presentationMaterialBlock" class="presentation-material-block" style="display:none; margin-top:12px; padding:10px; border:1px solid #cfe1f5; border-radius:10px; background:#f8fbff;">
-              <label style="margin-top:0;">발표자료 자동 구성</label>
-              <div class="sub" style="margin:4px 0 8px;">발표면접을 선택하면 서버가 공고문·직무기술서·NCS KSA를 바탕으로 발표 과제 자료를 자동 구성합니다. 생성 후 결과에서 파일로 내려받을 수 있습니다.</div>
-              <label for="presentationMaterialText" style="margin-top:8px;">추가 보완자료 (선택)</label>
-              <textarea id="presentationMaterialText" rows="3" maxlength="6000" placeholder="기관이 제공한 추가 현황·표·제약이 있으면 입력하세요."></textarea>
-              <label for="presentationMaterialFile" style="margin-top:8px;">보완자료 파일 (선택)</label>
-              <input id="presentationMaterialFile" type="file" accept=".pdf,.docx,.txt,.zip,.png,.jpg,.jpeg,.webp" aria-describedby="presentationMaterialHelp" />
-              <div id="presentationMaterialHelp" class="sub" style="margin-top:4px;">PDF·DOCX·TXT·ZIP·이미지 파일을 지원합니다. HWP/HWPX는 PDF로 변환하세요.</div>
-              <div id="presentationMaterialState" class="sub" role="status" aria-live="polite">자동 생성 자료에 필요한 경우에만 보완자료를 추가합니다.</div>
-            </div>
           </div>
 
           <div id="runActionBlock">
@@ -525,10 +509,6 @@
 
           <div id="meta" class="meta"></div>
            <div id="qualitySummary" class="quality-summary" style="display:none;"></div>
-           <div id="presentationMaterialResult" class="presentation-material-result" style="display:none;" aria-live="polite">
-             <div style="min-width:0; flex:1;"><strong id="presentationMaterialResultTitle">발표자료가 준비되었습니다.</strong><div id="presentationMaterialResultMeta" class="sub">공고문·직무기술서·NCS KSA 기반 · 사람 검토 필요</div><div id="presentationMaterialResultPrompt" class="presentation-material-prompt" style="display:none;"></div></div>
-             <button id="btnDownloadPresentationMaterial" class="presentation-material-download" type="button">발표자료 Word 다운로드</button>
-           </div>
 
           <div class="section">
             <h3>파이프라인 진단</h3>
@@ -600,11 +580,6 @@
     const progressFill = document.getElementById('progressFill');
     const progressNote = document.getElementById('progressNote');
     const qualitySummary = document.getElementById('qualitySummary');
-    const presentationMaterialResult = document.getElementById('presentationMaterialResult');
-    const presentationMaterialResultTitle = document.getElementById('presentationMaterialResultTitle');
-    const presentationMaterialResultMeta = document.getElementById('presentationMaterialResultMeta');
-    const presentationMaterialResultPrompt = document.getElementById('presentationMaterialResultPrompt');
-    const btnDownloadPresentationMaterial = document.getElementById('btnDownloadPresentationMaterial');
     const btnPrevQ = document.getElementById('btnPrevQ');
     const btnNextQ = document.getElementById('btnNextQ');
     const qIndicator = document.getElementById('qIndicator');
@@ -662,10 +637,6 @@
     const defaultFollowCount = document.getElementById('defaultFollowCount');
     const questionPlanCapacity = document.getElementById('questionPlanCapacity');
     const interviewMethodSelect = document.getElementById('interviewMethodSelect');
-    const presentationMaterialBlock = document.getElementById('presentationMaterialBlock');
-    const presentationMaterialText = document.getElementById('presentationMaterialText');
-    const presentationMaterialFile = document.getElementById('presentationMaterialFile');
-    const presentationMaterialState = document.getElementById('presentationMaterialState');
     const showAllGeneratedQuestions = document.getElementById('showAllGeneratedQuestions');
     const generatedQuestionsMaxItems = document.getElementById('generatedQuestionsMaxItems');
     const flowApi = document.getElementById('flowApi');
@@ -690,7 +661,6 @@
     let questionGenerationInFlight = false;
     let currentQPage = 0;
     let currentQualityControl = null;
-    let currentPresentationMaterialPacket = null;
     let generationProviderStatus = null;
     let generationProviderLoading = false;
     let generationProviderLoadError = '';
@@ -699,8 +669,6 @@
     let lastDetectedGenerationProvider = '';
     const MAX_SINGLE_UPLOAD_FILE_BYTES = 4 * 1024 * 1024;
     const MAX_COMBINED_GENERATION_UPLOAD_BYTES = 3 * 1024 * 1024;
-    const MAX_PRESENTATION_MATERIAL_TEXT_CHARS = 6000;
-    const MAX_PRESENTATION_MATERIAL_FILE_BYTES = 2 * 1024 * 1024;
     const MAX_REVIEW_NCS_DETAIL_CHARS = 2000;
     const MAX_NOTICE_TEXT_CHARS = 12000;
     const MAX_STRENGTHS_CHARS = 2000;
@@ -710,12 +678,10 @@
       preferenceText: 2400,
       evalText: 2400,
       evalTextManual: 2400,
-      presentationMaterialText: MAX_PRESENTATION_MATERIAL_TEXT_CHARS,
     });
     const SUPPORTED_INTERVIEW_METHODS = Object.freeze([
       '경험면접',
       '상황면접',
-      '발표면접',
       '토론면접',
       '인바스켓면접',
       '직무지식면접',
@@ -839,15 +805,10 @@
     function uploadPayloadBoundaryState(nextField = '', nextFile = null) {
       const jd = nextField === 'jd' ? nextFile : (jdFile.files && jdFile.files[0]);
       const notice = nextField === 'notice' ? nextFile : (noticeFile.files && noticeFile.files[0]);
-      const presentation = nextField === 'presentation'
-        ? nextFile
-        : (presentationMaterialFile?.files && presentationMaterialFile.files[0]);
-      const presentationSelected = String(interviewMethodSelect?.value || '').trim() === '발표면접';
       const files = [
         ['직무기술서 파일', jd, jdFile],
         ['공고문 파일', notice, noticeFile],
       ];
-      if (presentationSelected) files.push(['발표 자료 파일', presentation, presentationMaterialFile]);
       for (const [label, file, target] of files) {
         if (file && Number(file.size || 0) > MAX_SINGLE_UPLOAD_FILE_BYTES) {
           return {
@@ -859,18 +820,15 @@
         }
       }
       if (jd && notice) {
-        const combinedSize = Number(jd.size || 0) + Number(notice.size || 0)
-          + (presentationSelected && presentation ? Number(presentation.size || 0) : 0);
+        const combinedSize = Number(jd.size || 0) + Number(notice.size || 0);
         if (combinedSize > MAX_COMBINED_GENERATION_UPLOAD_BYTES) {
           return {
             kind: 'combined_upload_size',
             button: '파일 2종 합산 용량 줄이기',
-            message: presentationSelected
-              ? `생성 요청에 전송되는 파일 합산은 ${formatBinaryMiB(MAX_COMBINED_GENERATION_UPLOAD_BYTES)} 이하로 맞춰 주세요. 현재 ${formatBinaryMiB(combinedSize)}입니다.`
-              : `생성 요청은 직무기술서·공고문 PDF와 검토 JSON을 함께 전송하므로 두 파일 합산은 ${formatBinaryMiB(MAX_COMBINED_GENERATION_UPLOAD_BYTES)} 이하로 맞춰 주세요. 현재 ${formatBinaryMiB(combinedSize)}입니다.`,
+            message: `생성 요청은 직무기술서·공고문 PDF와 검토 JSON을 함께 전송하므로 두 파일 합산은 ${formatBinaryMiB(MAX_COMBINED_GENERATION_UPLOAD_BYTES)} 이하로 맞춰 주세요. 현재 ${formatBinaryMiB(combinedSize)}입니다.`,
             target: nextField === 'notice'
               ? noticeFile
-              : (nextField === 'presentation' ? presentationMaterialFile : jdFile),
+              : jdFile,
           };
         }
       }
@@ -882,7 +840,6 @@
         ? [
           ['직접입력 공고문 텍스트', noticeText, MAX_NOTICE_TEXT_CHARS],
           ['직접입력 평가항목 텍스트', evalTextManual, UPLOAD_TEXT_FIELD_LIMITS.evalTextManual],
-          ['발표 자료 텍스트', presentationMaterialText, UPLOAD_TEXT_FIELD_LIMITS.presentationMaterialText],
           ['강점 텍스트', strengthsInput, MAX_STRENGTHS_CHARS],
         ]
         : [
@@ -891,7 +848,6 @@
           ['지원자격 텍스트', qualificationText, UPLOAD_TEXT_FIELD_LIMITS.qualificationText],
           ['우대사항 텍스트', preferenceText, UPLOAD_TEXT_FIELD_LIMITS.preferenceText],
           ['면접 평가항목 텍스트', evalText, UPLOAD_TEXT_FIELD_LIMITS.evalText],
-          ['발표 자료 텍스트', presentationMaterialText, UPLOAD_TEXT_FIELD_LIMITS.presentationMaterialText],
           ['강점 텍스트', strengthsInput, MAX_STRENGTHS_CHARS],
         ];
       for (const [label, element, limit] of candidates) {
@@ -1314,25 +1270,6 @@
     function currentReviewedDetails() {
       const detail = String(reviewNcsDetail.value || '').trim();
       return detail ? [detail] : [];
-    }
-
-    function presentationMethodSelected() {
-      return String(interviewMethodSelect?.value || '').trim() === '발표면접';
-    }
-
-    function syncPresentationMaterialVisibility() {
-      const enabled = presentationMethodSelected();
-      if (presentationMaterialBlock) presentationMaterialBlock.style.display = enabled ? 'block' : 'none';
-      if (presentationMaterialState) {
-        const textLength = String(presentationMaterialText?.value || '').trim().length;
-        const fileName = String(presentationMaterialFile?.files?.[0]?.name || '').trim();
-        presentationMaterialState.textContent = enabled
-          ? (textLength || fileName
-            ? `자동 생성 자료에 보완자료 추가 대기 · 텍스트 ${textLength.toLocaleString('ko-KR')}자${fileName ? ` · 파일 ${fileName}` : ''}`
-            : '공고문·직무기술서·NCS KSA로 발표자료를 자동 구성합니다.')
-          : '발표면접을 선택할 때만 발표자료 자동 구성을 준비합니다.';
-      }
-      refreshRunButtonState();
     }
 
     function refreshRequiredDocumentStatus() {
@@ -2128,30 +2065,8 @@
       updateWorkflowMenu();
     });
     interviewMethodSelect?.addEventListener('change', () => {
-      syncPresentationMaterialVisibility();
       refreshRunButtonState();
       updateWorkflowMenu();
-    });
-    presentationMaterialText?.addEventListener('input', () => {
-      syncPresentationMaterialVisibility();
-      refreshRunButtonState();
-    });
-    presentationMaterialFile?.addEventListener('change', (event) => {
-      const file = event.target.files && event.target.files[0];
-      if (file && isBlockedUploadFile(file)) {
-        setUploadFormatError('발표 자료 파일');
-        event.target.value = '';
-        syncPresentationMaterialVisibility();
-        return;
-      }
-      if (file) {
-        const uploadBoundary = uploadPayloadBoundaryState('presentation', file);
-        if (uploadBoundary) {
-          showClientBoundaryError(uploadBoundary);
-          event.target.value = '';
-        }
-      }
-      syncPresentationMaterialVisibility();
     });
     defaultMainCount.addEventListener('input', () => {
       const next = Math.max(1, Math.min(generationMaxMainQuestions(), Number(defaultMainCount.value || 1)));
@@ -2530,58 +2445,6 @@
       meta.appendChild(p);
     }
 
-    function renderPresentationMaterial(packet) {
-      currentPresentationMaterialPacket = packet && typeof packet === 'object' ? packet : null;
-      if (!presentationMaterialResult) return;
-      if (!currentPresentationMaterialPacket) {
-        presentationMaterialResult.style.display = 'none';
-        if (presentationMaterialResultPrompt) presentationMaterialResultPrompt.style.display = 'none';
-        return;
-      }
-      presentationMaterialResult.style.display = 'flex';
-      if (presentationMaterialResultTitle) {
-        presentationMaterialResultTitle.textContent = String(currentPresentationMaterialPacket.title || '발표자료가 준비되었습니다.');
-      }
-      if (presentationMaterialResultMeta) {
-        const rows = Array.isArray(currentPresentationMaterialPacket.case_materials) ? currentPresentationMaterialPacket.case_materials.length : 0;
-        presentationMaterialResultMeta.textContent = `서버 자동 구성 · 근거 ${rows}개 · 사람 검토 필요`;
-      }
-      if (presentationMaterialResultPrompt) {
-        const prompt = String(currentPresentationMaterialPacket.task_prompt || '').trim();
-        presentationMaterialResultPrompt.textContent = prompt ? `발표 메인 질문: ${prompt}` : '';
-        presentationMaterialResultPrompt.style.display = prompt ? 'block' : 'none';
-      }
-    }
-
-    btnDownloadPresentationMaterial?.addEventListener('click', async () => {
-      if (!currentPresentationMaterialPacket) return;
-      btnDownloadPresentationMaterial.disabled = true;
-      const originalLabel = btnDownloadPresentationMaterial.textContent;
-      btnDownloadPresentationMaterial.textContent = 'Word 준비 중...';
-      try {
-        const response = await fetch('/api/presentation-material/docx', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({presentation_material: currentPresentationMaterialPacket}),
-        });
-        if (!response.ok) throw new Error('Word 파일 생성에 실패했습니다.');
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = 'presentation-material.docx';
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 0);
-      } catch (error) {
-        if (presentationMaterialResultMeta) presentationMaterialResultMeta.textContent = String(error?.message || 'Word 파일 생성에 실패했습니다.');
-      } finally {
-        btnDownloadPresentationMaterial.disabled = false;
-        btnDownloadPresentationMaterial.textContent = originalLabel || '발표자료 Word 다운로드';
-      }
-    });
-
     function renderMeta(data) {
       const meta = document.getElementById('meta');
       meta.innerHTML = '';
@@ -2591,15 +2454,6 @@
       addMetaPill(meta, `담당업무 글자수: ${(data.duty_text_preview || '').length}`);
       addMetaPill(meta, `지원자격 글자수: ${(data.qualification_text_preview || '').length}`);
       addMetaPill(meta, `우대사항 글자수: ${(data.preference_text_preview || '').length}`);
-      const presentationMaterialName = String(data.presentation_material_filename || '').trim();
-      const presentationMaterialLength = String(data.presentation_material_text_preview || '').length;
-      if (presentationMaterialName || presentationMaterialLength) {
-        addMetaPill(
-          meta,
-          `발표 자료 적용: ${presentationMaterialName || '직접 입력'} · ${presentationMaterialLength}자`,
-          'pill good'
-        );
-      }
       addMetaPill(meta, `NCS 소스: ${data.ncs_source || '-'}`, 'pill good');
       const resultGeneration = data.question_generation && typeof data.question_generation === 'object'
         ? data.question_generation
@@ -3443,7 +3297,6 @@
       ].filter(Boolean);
 
       renderMeta(data);
-      renderPresentationMaterial(data.presentation_material || s.presentation_material || null);
       renderQualityReport(s.question_quality_report, notices.join(' '), currentQualityControl);
       renderPipelineDiag(data, qList);
       const allQuestionsForTextExport = Array.isArray(data.generated_questions_all)
@@ -3664,12 +3517,6 @@
           const knobs = collectRuntimeKnobs();
           const questionPlanItems = collectQuestionPlan();
           const interviewMethods = collectInterviewMethods();
-          const presentationText = presentationMethodSelected()
-            ? String(presentationMaterialText?.value || '').trim()
-            : '';
-          const presentationFile = presentationMethodSelected()
-            ? (presentationMaterialFile?.files && presentationMaterialFile.files[0])
-            : null;
           const questionDisplayOptions = collectQuestionDisplayOptions();
           fd.append('jd_file', file);
           fd.append('generation_provider', requestGenerationProvider);
@@ -3696,8 +3543,6 @@
           }
           fd.append('question_plan_json', JSON.stringify({ items: questionPlanItems }));
           fd.append('interview_methods_json', JSON.stringify(interviewMethods));
-          if (presentationText) fd.append('presentation_material_text', presentationText);
-          if (presentationFile) fd.append('presentation_material_file', presentationFile);
           if (!reviewConfirmed || !jdReviewPayload) {
             throw new Error('Kordoc 추출 결과를 검토·확정한 뒤 실행해 주세요.');
           }
@@ -3725,8 +3570,6 @@
             qualification: (qualificationText.value || '').trim(),
             preference: (preferenceText.value || '').trim(),
             evaluation: (evalText.value || '').trim(),
-            presentationMaterialText: presentationText,
-            presentationMaterialFile: presentationFile ? [presentationFile.name, presentationFile.size, presentationFile.lastModified] : null,
             questionPlanItems,
             interviewMethods,
             knobs,
@@ -3760,16 +3603,12 @@
           const knobs = collectRuntimeKnobs();
           const questionPlanItems = collectQuestionPlan();
           const interviewMethods = collectInterviewMethods();
-          const presentationText = presentationMethodSelected()
-            ? String(presentationMaterialText?.value || '').trim()
-            : '';
           const questionDisplayOptions = collectQuestionDisplayOptions();
           const manualGenerationContext = JSON.stringify({
             generationProvider: requestGenerationProvider,
             codes: selected.map(row => row.ncsClCd).sort(),
             noticeText,
             evaluation: (evalTextManual.value || '').trim(),
-            presentationMaterialText: presentationText,
             questionPlanItems,
             interviewMethods,
             knobs,
@@ -3787,7 +3626,6 @@
               selected_ncs: selected,
               question_plan: { items: questionPlanItems },
               interview_methods: interviewMethods,
-              presentation_material_text: presentationText,
               runtime_knobs: knobs,
               include_all_questions: questionDisplayOptions.includeAll,
               generated_questions_max_items: questionDisplayOptions.generatedQuestionsMaxItems,
@@ -3899,7 +3737,6 @@
 
     updateQNav();
     applyApiKeyTransportGuard();
-    syncPresentationMaterialVisibility();
     setInputMode(inputMode.value || 'upload');
     scheduleGenerationProviderDetection(true);
     loadNcsOptions('')
