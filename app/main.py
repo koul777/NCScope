@@ -9774,6 +9774,18 @@ def _extract_generated_question_items(
             "competency": str(item.get("competency") or "").strip(),
             "question_source": str(item.get("question_source") or "").strip(),
         }
+        review_only = bool(
+            item.get("human_review_required")
+            or item.get("degraded")
+            or row["question_source"] in {
+                "server_ksa_fallback",
+                "template_fallback",
+                "rule_fallback",
+            }
+        )
+        if review_only:
+            row["review_required"] = True
+        row["ready"] = bool(question) and not review_only
         if follow_ups:
             row["follow_ups"] = follow_ups
         output.append(row)
@@ -9842,7 +9854,18 @@ def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]
                 row["question_hash"] = str(item.get("question_hash"))
             if item.get("question_evidence_id"):
                 row["question_evidence_id"] = str(item.get("question_evidence_id"))
-            row["ready"] = bool(question)
+            review_only = bool(
+                item.get("human_review_required")
+                or item.get("degraded")
+                or row["question_source"] in {
+                    "server_ksa_fallback",
+                    "template_fallback",
+                    "rule_fallback",
+                }
+            )
+            if review_only:
+                row["review_required"] = True
+            row["ready"] = bool(question) and not review_only
             if "index" in item:
                 try:
                     row["source_index"] = int(item.get("index"))
@@ -9876,16 +9899,17 @@ def _build_generated_question_text_rows(strategy: Any) -> list[dict[str, Any]]:
             index = int(raw_index)
         except Exception:
             index = len(output) + 1
-        output.append(
-            {
-                "index": index,
-                "question": question,
-                "type": str(row.get("type") or "").strip(),
-                "ncsClCd": str(row.get("ncsClCd") or "").strip(),
-                "competency": str(row.get("competency") or "").strip(),
-                "ready": bool(row.get("ready")),
-            }
-        )
+        output_row = {
+            "index": index,
+            "question": question,
+            "type": str(row.get("type") or "").strip(),
+            "ncsClCd": str(row.get("ncsClCd") or "").strip(),
+            "competency": str(row.get("competency") or "").strip(),
+            "ready": bool(row.get("ready")),
+        }
+        if row.get("review_required") is True:
+            output_row["review_required"] = True
+        output.append(output_row)
     return output
 
 
