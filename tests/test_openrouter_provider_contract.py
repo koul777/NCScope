@@ -363,6 +363,119 @@ def test_openrouter_timeout_can_use_explicit_effort_rescue(
     assert calls[1]["reasoning_effort"] == "high"
 
 
+def test_openrouter_high_timeout_can_use_explicit_effort_rescue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """High-risk Ox Alpha requests get the same bounded effort rescue as Max."""
+
+    calls: list[dict] = []
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+    class _TimeoutThenSuccessClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def post(self, _url: str, *, headers: dict[str, str], json: dict) -> _Response:
+            del headers
+            calls.append(dict(json))
+            if len(calls) == 1:
+                raise httpx.ReadTimeout("slow high-risk Ox Alpha response")
+            return _Response()
+
+    monkeypatch.delenv("OPENROUTER_RECOVERY_MODEL", raising=False)
+    monkeypatch.setenv("OPENROUTER_FALLBACK_REASONING_EFFORT", "medium")
+    monkeypatch.setattr(openai_http.httpx, "Client", _TimeoutThenSuccessClient)
+    result = openai_http.post_chat_completions_with_retries(
+        payload={
+            "model": OPENROUTER_DEFAULT_MODEL,
+            "messages": [],
+            "reasoning_effort": "high",
+            "max_tokens": 12000,
+        },
+        api_key="sk-or-v1-secret",
+        timeout_sec=30,
+        max_attempts=1,
+        provider="openrouter_api",
+    )
+
+    assert result["choices"]
+    assert result["_ncscope_openrouter_timeout_recovery_used"] is True
+    assert result["_ncscope_openrouter_timeout_recovery_model"] == OPENROUTER_DEFAULT_MODEL
+    assert result["_ncscope_openrouter_timeout_recovery_reasoning_effort"] == "medium"
+    assert len(calls) == 2
+    assert calls[0]["reasoning_effort"] == "high"
+    assert calls[1]["reasoning_effort"] == "medium"
+
+
+def test_openrouter_high_timeout_can_use_configured_recovery_model_without_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured recovery model alone is sufficient for a high-risk rescue."""
+
+    calls: list[dict] = []
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+    class _TimeoutThenSuccessClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def post(self, _url: str, *, headers: dict[str, str], json: dict) -> _Response:
+            del headers
+            calls.append(dict(json))
+            if len(calls) == 1:
+                raise httpx.ReadTimeout("slow high-risk Ox Alpha response")
+            return _Response()
+
+    monkeypatch.delenv("OPENROUTER_FALLBACK_REASONING_EFFORT", raising=False)
+    monkeypatch.setenv("OPENROUTER_RECOVERY_MODEL", "openai/gpt-oss-20b")
+    monkeypatch.setattr(openai_http.httpx, "Client", _TimeoutThenSuccessClient)
+    result = openai_http.post_chat_completions_with_retries(
+        payload={
+            "model": OPENROUTER_DEFAULT_MODEL,
+            "messages": [],
+            "reasoning_effort": "high",
+            "response_format": {"type": "json_object"},
+        },
+        api_key="sk-or-v1-secret",
+        timeout_sec=8,
+        max_attempts=1,
+        provider="openrouter_api",
+    )
+
+    assert result["_ncscope_openrouter_timeout_recovery_used"] is True
+    assert result["_ncscope_openrouter_timeout_recovery_model"] == "openai/gpt-oss-20b"
+    assert result["_ncscope_openrouter_timeout_recovery_reasoning_effort"] == ""
+    assert len(calls) == 2
+    assert calls[0]["reasoning_effort"] == "high"
+    assert calls[1]["model"] == "openai/gpt-oss-20b"
+    assert "reasoning_effort" not in calls[1]
+    assert calls[1]["response_format"] == {"type": "json_object"}
+
+
 def test_openrouter_timeout_can_fail_over_to_server_owned_free_router(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -798,6 +911,89 @@ def test_openrouter_timeout_fallback_metadata_reflects_actual_recovery_path(
     assert result["provider_reasoning_stage"] == "transport_fallback"
     assert result["provider_reasoning_reason"] == "timeout_recovery"
     assert not any(str(key).startswith("_ncscope_") for key in result)
+
+
+def test_openrouter_high_timeout_effort_rescue_reaches_public_strategy_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real transport rescue must be reflected in the public result."""
+
+    request_calls: list[dict] = []
+    transport_calls: list[dict] = []
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENROUTER_FALLBACK_REASONING_EFFORT", "medium")
+    monkeypatch.delenv("OPENROUTER_RECOVERY_MODEL", raising=False)
+    monkeypatch.setenv("OPENROUTER_TIMEOUT_SEC", "8")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_TIMEOUT_SEC", "15")
+    monkeypatch.setenv("OPENAI_STRATEGY_CANDIDATE_MULTIPLIER", "1")
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            content = {
+                "interview_questions": [
+                    _candidate(slot=slot, variant=2) for slot in range(3)
+                ],
+                "ncs_link": [],
+            }
+            return {
+                "choices": [
+                    {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+                ]
+            }
+
+    class _TimeoutThenSuccessClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def post(self, _url: str, *, headers: dict[str, str], json: dict) -> _Response:
+            del headers
+            transport_calls.append(dict(json))
+            if len(transport_calls) == 1:
+                raise httpx.ReadTimeout("slow high-risk Ox Alpha response")
+            return _Response()
+
+    def actual_transport(**kwargs):
+        request_calls.append(kwargs)
+        return openai_http.post_chat_completions_with_retries(**kwargs)
+
+    monkeypatch.setattr(openai_http.httpx, "Client", _TimeoutThenSuccessClient)
+    monkeypatch.setattr(jd_strategy, "post_chat_completions_with_retries", actual_transport)
+    result = jd_strategy.build_strategy_with_openai(
+        jd_text="발표 자료 기반 직무기술서",
+        notice_text="공공기관 채용공고",
+        strengths="",
+        region="",
+        ncs_matches=[],
+        ncs_ksa=[],
+        api_key_override="sk-or-v1-test",
+        generation_provider="openrouter",
+        target_count_override=3,
+        follow_up_count=4,
+        interview_methods=["��ǥ����"],
+        max_model_requests=1,
+    )
+
+    assert len(request_calls) == 1
+    assert len(transport_calls) == 2
+    assert transport_calls[0]["reasoning_effort"] == "high"
+    assert transport_calls[1]["reasoning_effort"] == "medium"
+    assert result["provider_timeout_recovery_used"] is True
+    assert result["provider_timeout_recovery_model"] == OPENROUTER_DEFAULT_MODEL
+    assert result["provider_timeout_recovery_reasoning_effort"] == "medium"
+    assert result["provider_generation_model"] == OPENROUTER_DEFAULT_MODEL
+    assert result["provider_reasoning_effort"] == "medium"
+    assert result["provider_reasoning_stage"] == "transport_fallback"
+    assert result["provider_reasoning_reason"] == "timeout_recovery"
 
 
 def test_openrouter_invalid_max_output_uses_one_bounded_medium_correction(

@@ -125,21 +125,27 @@ def _is_retryable_status(status_code: int) -> bool:
 
 
 def _openrouter_timeout_fallback_effort(provider: str, payload: dict[str, Any]) -> str:
-    """Return an explicit latency rescue effort for slow serverless calls.
+    """Return a bounded latency-rescue profile for a slow OpenRouter call.
 
-    Ox Alpha is still attempted with Max first.  A deployment may opt into a
-    bounded rescue only after the Max request has timed out; local/default
-    behavior remains Max-only when the variable is unset.
+    High-risk and Max Ox Alpha requests may spend the whole serverless window
+    in hidden reasoning.  Recovery is opt-in: a configured lower effort or a
+    server-owned recovery model must exist before a second request is allowed.
+    Ordinary/medium requests never receive this extra attempt.
     """
 
     if normalize_generation_provider(provider) != OPENROUTER_PROVIDER:
         return ""
-    if str(payload.get("reasoning_effort") or "").strip().casefold() != "max":
+    requested_effort = str(payload.get("reasoning_effort") or "").strip().casefold()
+    if requested_effort not in {"high", "max"}:
         return ""
     effort = str(os.getenv("OPENROUTER_FALLBACK_REASONING_EFFORT", "")).strip().casefold()
-    if effort not in {"low", "medium", "high", "xhigh"}:
-        return ""
-    return effort
+    if effort in {"low", "medium", "high", "xhigh"}:
+        return effort
+    # The recovery branch uses the configured model and deliberately removes
+    # reasoning_effort, so the requested effort is only a non-empty gate here.
+    # Without either this model or a valid lower effort, no extra request is
+    # made and the caller retains its existing bounded failure path.
+    return requested_effort if openrouter_recovery_model() else ""
 
 
 def _openrouter_fallback_timeout_sec(primary_timeout_sec: float) -> float:
@@ -411,11 +417,12 @@ def post_chat_completions_with_retries(
                     raise
                 last_error = e
 
-                # A Max response can spend the whole serverless request
-                # window in hidden reasoning.  If the deployment explicitly
+                # A high/Max response can spend the whole serverless request
+                # window in hidden reasoning. If the deployment explicitly
                 # opts in, make one same-origin rescue request with a lower
-                # effort before giving up. This preserves Max whenever it
-                # finishes and avoids silently changing local behavior.
+                # effort or configured recovery model before giving up. This
+                # preserves the requested profile whenever it finishes and
+                # avoids silently changing local behavior.
                 fallback_effort = _openrouter_timeout_fallback_effort(
                     provider,
                     payload,
