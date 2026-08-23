@@ -6,6 +6,7 @@ from app.services.alio_ingestion import (
     AlioIngestionError,
     ALIO_MAX_HTML_BYTES,
     _validate_alio_url,
+    _attachment_kind,
     inspect_alio_url,
 )
 
@@ -66,6 +67,11 @@ def test_validate_alio_url_allowlists_public_list_detail_and_attachment_paths():
     ):
         with pytest.raises(AlioIngestionError):
             _validate_alio_url(value)
+
+
+def test_attachment_kind_classifies_real_korean_alio_filenames():
+    assert _attachment_kind("채용공고문.pdf") == "notice"
+    assert _attachment_kind("NCS 기반 직무기술서.pdf") == "job_description"
 
 
 def test_inspect_list_returns_postings_and_human_review_contract():
