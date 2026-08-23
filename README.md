@@ -822,3 +822,5 @@ NCScope의 직무기술서·공고문 파싱 기능은 [Kordoc](https://github.c
 - 사용 목적: PDF/HWP/HWPX/DOCX/TXT/이미지 문서에서 본문·표·메타데이터를 추출해 검토 후보 생성
 - 검토 원칙: Kordoc 추출 결과는 자동 확정값이 아니며, 세분류와 공고문 핵심 텍스트는 사람이 검토·확정해야 함
 - 라이선스: Kordoc은 별도 MIT 라이선스 프로젝트이며, 자세한 내용은 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)를 확인
+
+- ALIO 16-document benchmark (2026-08-23): 16/16 parsed, 9 with explicit detail candidates, 0 MCP connection errors, average parse 731 ms. Five documents had candidates without an exact MCP match and six had no explicit NCS detail; all remain human-review gated. Report: `reports/alio_jd_benchmark_20260823_153817_697074-a9c7fac2.md`.
