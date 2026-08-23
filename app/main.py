@@ -11835,13 +11835,58 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
         # Kordoc can return an entire numbered table row as one candidate.
         # Normalize it before the browser renders the review dropdown and
         # before the signed review session is created.
-        structured_fields["ncs_detail_candidates"] = _parse_sclass_terms(
+        normalized_detail_candidates = _parse_sclass_terms(
             "\n".join(
                 str(value or "").strip()
                 for value in (structured_fields.get("ncs_detail_candidates") or [])
                 if str(value or "").strip()
             )
         )
+        # Kordoc's table projection can lose the classification columns on
+        # some ALIO/HWP-to-PDF layouts.  Keep the normal Kordoc result as the
+        # primary source, but recover official NCS labels from the structural
+        # PDF parser when that result is empty.  This is deliberately
+        # fallback-only so a human-review candidate list is never silently
+        # replaced by a heuristic list when Kordoc already found candidates.
+        structured_fields["ncs_detail_candidates"] = normalized_detail_candidates
+        if not normalized_detail_candidates and str(jd_file.filename or "").lower().endswith(".pdf"):
+            try:
+                structural_result = extract_sclass_from_pdf_bytes(
+                    data,
+                    filename=jd_file.filename or "",
+                )
+                recovered_candidates = _parse_sclass_terms(
+                    "\n".join(
+                        str(value or "").strip()
+                        for value in (structural_result.get("matched") or [])
+                        if str(value or "").strip()
+                    )
+                )
+                if recovered_candidates:
+                    structured_fields["ncs_detail_candidates"] = recovered_candidates
+                    structured_fields["ncs_detail_source"] = "pdf_structural_fallback"
+                    structured_fields["ncs_detail_candidate_evidence"] = [
+                        {
+                            "text": candidate,
+                            "page": 0,
+                            "source": "pdf_structural_fallback",
+                            "raw": candidate,
+                        }
+                        for candidate in recovered_candidates
+                    ]
+                    structured_fields["ncs_detail_absence_reason"] = ""
+                    structured_fields["ncs_detail_absence_state"] = ""
+                    structured_fields["ncs_detail_absence_evidence"] = ""
+                    structured_fields["ncs_detail_absence_filtered_candidate_reason"] = ""
+                    structured_fields["ncs_detail_absence_saw_ncs_table"] = True
+                    structured_fields["ncs_detail_absence_saw_detail_header"] = True
+                    structured_fields["ncs_detail_absence_blank_or_dash_detail_cell"] = False
+                    structured_fields["ncs_detail_absence_declared_no_mapping"] = False
+            except Exception as exc:
+                # Structural recovery is an availability enhancement.  A
+                # Kordoc response (including an empty review state) must still
+                # be returned when the optional parser is unavailable.
+                logger.warning("jd_parse_review_structural_sclass_fallback_failed: %s", exc)
     review_session = _create_review_session(data, structured, jd_file.filename or "")
     _record_audit_event(
         request,
