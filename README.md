@@ -1,4 +1,4 @@
-# NCScope v1.4.3
+# NCScope v1.4.4
 
 ## OpenRouter 개인정보·데이터 처리 안내
 

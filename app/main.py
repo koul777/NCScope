@@ -357,7 +357,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="1.4.3", lifespan=_lifespan)
+app = FastAPI(title="NCScope", version="1.4.4", lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
 app.add_middleware(ExpensiveRequestLimitMiddleware)
