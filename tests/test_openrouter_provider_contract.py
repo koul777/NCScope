@@ -19,6 +19,7 @@ from app.services.provider_config import (
     provider_base_url,
     resolve_generation_credential,
     resolve_generation_model,
+    provider_timeout_sec,
 )
 
 
@@ -57,6 +58,23 @@ def test_openrouter_reasoning_policy_promotes_quality_retry_and_keeps_standard_m
 
     assert (standard, standard_reason) == ("medium", "standard_generation")
     assert (retry, retry_reason) == ("high", "quality_retry")
+
+
+def test_openrouter_high_risk_timeout_is_separate_from_fast_standard_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_TIMEOUT_SEC", "8")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_TIMEOUT_SEC", "15")
+
+    assert provider_timeout_sec("openrouter_api", 120) == 8.0
+    assert (
+        provider_timeout_sec(
+            "openrouter_api",
+            120,
+            openrouter_env_name="OPENROUTER_HIGH_RISK_TIMEOUT_SEC",
+        )
+        == 15.0
+    )
 
 
 def test_openrouter_internal_reasoning_effort_overrides_primary_deployment_default(

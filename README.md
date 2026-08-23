@@ -496,6 +496,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
 | `OPENAI_HTTP_CURL_FALLBACK_ENABLED` | 선택 | `false` | Python HTTP 실패 시 curl fallback 사용. 요청 키 노출 위험 때문에 opt-in |
 | `OPENROUTER_TIMEOUT_SEC` | 선택 | `105` | OpenRouter 최초 호출 상한. Vercel Production은 Max 최초 시도를 `8`초로 제한 |
+| `OPENROUTER_HIGH_RISK_TIMEOUT_SEC` | 선택 | `20` | 발표·토론·인바스켓·창의적 문제해결력 또는 복합 질문 계획의 high 추론 호출 상한. Vercel Production은 `15`초 |
 | `OPENROUTER_PRIMARY_REASONING_EFFORT` | 선택 | `max` (Vercel `medium`) | 일반 생성의 추론 강도. 요청 수를 늘리지 않고 표준 단계의 지연을 제한 |
 | `OPENROUTER_HIGH_RISK_REASONING_EFFORT` | 선택 | `max` (Vercel `high`) | 발표·토론·인바스켓·창의적 문제해결력 및 복합 질문 계획에만 승격 |
 | `OPENROUTER_QUALITY_RETRY_REASONING_EFFORT` | 선택 | `high` | 품질 게이트 실패 후의 단일 재생성 단계에만 적용 |
@@ -521,6 +522,7 @@ OPENROUTER_PRIMARY_REASONING_EFFORT=medium
 OPENROUTER_HIGH_RISK_REASONING_EFFORT=high
 OPENROUTER_QUALITY_RETRY_REASONING_EFFORT=high
 OPENROUTER_TIMEOUT_SEC=8
+OPENROUTER_HIGH_RISK_TIMEOUT_SEC=15
 OPENROUTER_RECOVERY_MODEL=openai/gpt-oss-20b
 OPENROUTER_FALLBACK_TIMEOUT_SEC=15
 GENERATION_REQUEST_BUDGET_SEC=285

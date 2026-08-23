@@ -5740,9 +5740,19 @@ def build_strategy_with_openai(
         primary_reasoning_effort,
     )
     retry_reasoning_effort = ""
+    high_risk_timeout_env = (
+        "OPENROUTER_HIGH_RISK_TIMEOUT_SEC"
+        if generation_provider == OPENROUTER_PROVIDER
+        and primary_reasoning_reason in {
+            "high_risk_interview_method",
+            "complex_question_plan",
+        }
+        else "OPENROUTER_TIMEOUT_SEC"
+    )
     timeout_sec = provider_timeout_sec(
         generation_provider,
         float(os.getenv("OPENAI_STRATEGY_TIMEOUT_SEC", "120") or "120"),
+        openrouter_env_name=high_risk_timeout_env,
     )
     model_error = ""
     recovered_with_slim_retry = False

@@ -375,11 +375,18 @@ def provider_candidate_concurrency(provider: Any, requested_variants: int) -> in
     return max(1, min(requested, configured, 3))
 
 
-def provider_timeout_sec(provider: Any, openai_timeout_sec: float) -> float:
+def provider_timeout_sec(
+    provider: Any,
+    openai_timeout_sec: float,
+    *,
+    openrouter_env_name: str = "OPENROUTER_TIMEOUT_SEC",
+) -> float:
     if normalize_generation_provider(provider) != OPENROUTER_PROVIDER:
         return max(8.0, min(300.0, float(openai_timeout_sec or 60.0)))
     try:
-        configured = float(str(os.getenv("OPENROUTER_TIMEOUT_SEC", "105")).strip())
+        configured = float(
+            str(os.getenv(openrouter_env_name, os.getenv("OPENROUTER_TIMEOUT_SEC", "105"))).strip()
+        )
     except (TypeError, ValueError):
         configured = 105.0
     # Keep a bounded lower cap so serverless deployments can fail over from a

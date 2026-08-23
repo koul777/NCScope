@@ -33,6 +33,7 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["MAX_REQUEST_BODY_MB"] == "4"
     assert environment["OPENROUTER_ALLOW_SERVER_KEY"] == "true"
     assert environment["OPENROUTER_TIMEOUT_SEC"] == "8"
+    assert environment["OPENROUTER_HIGH_RISK_TIMEOUT_SEC"] == "15"
     assert environment["OPENROUTER_FALLBACK_TIMEOUT_SEC"] == "15"
     assert environment["OPENROUTER_RECOVERY_MODEL"] == "openai/gpt-oss-20b"
     assert environment["OPENAI_STRATEGY_CANDIDATE_MULTIPLIER"] == "1"
