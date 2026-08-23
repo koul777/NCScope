@@ -6870,13 +6870,26 @@ def _sanitize_candidate_document_leaks(value: Any, *, subject: str = "") -> str:
     if not text:
         return ""
     label = _normalize_ncs_detail_term(subject) or "해당 직무"
-    leaked_prefix = re.compile(
-        r"공고\s*[·ㆍ./]?\s*직무\s*기술\s*서\s*상?\s*.*?(?:을|를)\s*수행",
+    # Models may copy the notice/JD preamble and attach a Korean particle to
+    # the copied sentence ("...채용한다.에서", "...채용한다.의", or
+    # "...채용한다.을 수행하던").  Replace the whole sentence while keeping
+    # the particle's grammatical role in a short, candidate-facing label.
+    leaked_sentence = re.compile(
+        r"공고\s*[·ㆍ./]?\s*직무\s*기술\s*서\s*상?\s*"
+        r"[^.。!?]{1,520}?[.。!?]\s*"
+        r"(에서|으로|부터|까지|에게|의|에|은|는|이|가|을|를)?",
         flags=re.IGNORECASE,
     )
-    text = leaked_prefix.sub(f"{label} 업무를 수행", text)
-    # If the model stopped before the verb, remove the same copied row up to
-    # the first candidate-facing experience/situation phrase.
+
+    def replace_leaked_sentence(match: re.Match[str]) -> str:
+        particle = str(match.group(1) or "").strip()
+        particle_map = {"을": "를", "를": "를"}
+        normalized_particle = particle_map.get(particle, particle)
+        return f"{label} 업무{normalized_particle}"
+
+    text = leaked_sentence.sub(replace_leaked_sentence, text)
+    # If the model stopped before a sentence boundary, remove the same copied
+    # row up to the first candidate-facing experience/situation phrase.
     text = re.sub(
         r"공고\s*[·ㆍ./]?\s*직무\s*기술\s*서\s*상?\s*[^.。!?]{0,520}?(?=(?:실제\s*상황|경험\s*사례|상황에서|사례를))",
         f"{label} 업무에서 ",

@@ -15,6 +15,10 @@ POLLUTED_QUESTION = (
     "- 1 - [NCS 기반 채용 직무 설명자료 :…을 수행하던 실제 상황에서 "
     "본인이 겪은 경험 사례 하나를 골라 어떤 판단과 행동을 했는지 말씀해 주세요."
 )
+POLLUTED_PARTICLE_QUESTIONS = (
+    "공고·직무기술서상 공공기관 사무행정 담당자를 채용한다.에서 문서 작성 기준에 따라 판단한 상황을 설명해 주세요.",
+    "공고·직무기술서상 공공기관 사무행정 담당자를 채용한다.의 문서 작성 기준에 관한 판단 근거를 설명해 주세요.",
+)
 
 
 def _plan(method: str) -> dict:
@@ -62,31 +66,33 @@ def test_all_public_methods_remove_notice_boilerplate_from_candidate_text() -> N
         }
     ]
     for method in methods:
-        result = _adjust_generated_questions(
-            {
-                "interview_questions": [
-                    {
-                        "type": method,
-                        "question": POLLUTED_QUESTION,
-                        "follow_ups": [POLLUTED_QUESTION] * 3,
-                        "evaluation_points": [POLLUTED_QUESTION] * 4,
-                    }
+        for polluted_question in (POLLUTED_QUESTION, *POLLUTED_PARTICLE_QUESTIONS):
+            result = _adjust_generated_questions(
+                {
+                    "interview_questions": [
+                        {
+                            "type": method,
+                            "question": polluted_question,
+                            "follow_ups": [polluted_question] * 3,
+                            "evaluation_points": [polluted_question] * 4,
+                        }
+                    ]
+                },
+                _plan(method),
+                [method],
+                ncs_matches=ncs_matches,
+                ncs_ksa=ncs_ksa,
+            )
+            item = result["interview_questions"][0]
+            visible = " ".join(
+                [
+                    str(item.get("question") or ""),
+                    *(str(value or "") for value in item.get("follow_ups") or []),
+                    *(str(value or "") for value in item.get("evaluation_points") or []),
                 ]
-            },
-            _plan(method),
-            [method],
-            ncs_matches=ncs_matches,
-            ncs_ksa=ncs_ksa,
-        )
-        item = result["interview_questions"][0]
-        visible = " ".join(
-            [
-                str(item.get("question") or ""),
-                *(str(value or "") for value in item.get("follow_ups") or []),
-                *(str(value or "") for value in item.get("evaluation_points") or []),
-            ]
-        )
-        assert "국가유공자" not in visible
-        assert "NCS 기반 채용 직무 설명자료" not in visible
-        assert "공고·직무기술서상" not in visible
-        assert "- 1 -" not in visible
+            )
+            assert "국가유공자" not in visible
+            assert "NCS 기반 채용 직무 설명자료" not in visible
+            assert "공고·직무기술서상" not in visible
+            assert "공공기관 사무행정 담당자를 채용한다" not in visible
+            assert "- 1 -" not in visible
