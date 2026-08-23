@@ -563,12 +563,42 @@ def _norm_sclass_key(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip().lower()
 
 
+def _normalize_ncs_detail_term(value: Any) -> str:
+    """Return a single human-confirmable NCS detail label.
+
+    OCR/Kordoc sometimes returns a whole table row as the detail candidate,
+    e.g. ``(전기안전관리) 01.... 05....``.  Passing that row downstream makes
+    the model repeat eligibility text, page markers and unrelated legal notes
+    in every interview question.  Only collapse long numbered rows; ordinary
+    detail names (including names containing parentheses) are preserved.
+    """
+
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return ""
+    numbered = re.search(r"(?:^|\s)0?1\s*[.)]", text) and re.search(
+        r"(?:^|\s)0?2\s*[.)]", text
+    )
+    if len(text) >= 60 and numbered:
+        parenthesized = re.search(r"\(([^()\n]{2,80})\)", text)
+        if parenthesized:
+            candidate = re.sub(r"\s+", " ", parenthesized.group(1)).strip(" -:：")
+            if candidate:
+                return candidate
+        prefix = re.split(r"\s+(?=0?1\s*[.)])", text, maxsplit=1)[0]
+        prefix = re.sub(r"^(?:공고\s*[·ㆍ./]?\s*직무\s*기술\s*서\s*상?|NCS\s*세분류\s*[:：]?)\s*", "", prefix, flags=re.IGNORECASE)
+        prefix = prefix.strip(" -:：()")
+        if 2 <= len(prefix) <= 80:
+            return prefix
+    return text
+
+
 def _parse_sclass_terms(raw: str | None) -> list[str]:
     parts = re.split(r"[\n,;/|]+", str(raw or ""))
     out: list[str] = []
     seen: set[str] = set()
     for part in parts:
-        term = str(part).strip()
+        term = _normalize_ncs_detail_term(part)
         if not term:
             continue
         key = _norm_sclass_key(term)
@@ -4383,9 +4413,16 @@ def _adjust_generated_questions(
             ncs_code=ncs_code,
             fallback_terms=existing_refs,
         )
-        raw_question = str(item.get("question", "")).strip()
+        raw_question = _sanitize_candidate_document_leaks(
+            item.get("question", ""),
+            subject=subject,
+        )
         item["model_question_raw"] = raw_question
-        raw_followups = _clean_question_items(item.get("follow_ups"), limit=5)
+        raw_followups = [
+            _sanitize_candidate_document_leaks(value, subject=subject)
+            for value in _clean_question_items(item.get("follow_ups"), limit=5)
+        ]
+        raw_followups = [value for value in raw_followups if value]
         if not raw_followups and str(item.get("follow_up", "")).strip():
             raw_followups = _clean_question_items([item.get("follow_up")], limit=1)
         original_model_followups = list(raw_followups)
@@ -4465,6 +4502,10 @@ def _adjust_generated_questions(
         item["question_evidence_id"] = task_frame.get("evidence_id", "")
         item["question_evidence_required"] = bool(focus_evidence)
         normalized_model_question = _normalize_model_task_marker(method, raw_question)
+        normalized_model_question = _sanitize_candidate_document_leaks(
+            normalized_model_question,
+            subject=subject,
+        )
         # Subscription CLI providers receive the JD, notice and exact KSA
         # evidence and are expected to
         # translate them into a real work incident.  Injecting the NCS
@@ -4474,7 +4515,11 @@ def _adjust_generated_questions(
             normalized_model_question = _normalize_model_job_context(
                 method, item, normalized_model_question
             )
-        raw_evaluation_points = _clean_question_items(item.get("evaluation_points"), limit=6)
+        raw_evaluation_points = [
+            _sanitize_candidate_document_leaks(value, subject=subject)
+            for value in _clean_question_items(item.get("evaluation_points"), limit=6)
+        ]
+        raw_evaluation_points = [value for value in raw_evaluation_points if value]
         original_model_evaluation_points = list(raw_evaluation_points)
         candidate_surface_repaired_fields: set[str] = set()
         if is_subscription_cli_candidate:
@@ -6813,6 +6858,38 @@ def _normalize_model_job_context(method: str, q: dict[str, Any], text: str) -> s
     return candidate
 
 
+def _sanitize_candidate_document_leaks(value: Any, *, subject: str = "") -> str:
+    """Remove copied notice/JD boilerplate from candidate-facing text.
+
+    Model output must never expose legal disclaimers, page markers or a whole
+    NCS table row as if it were the job context.  Keep the actual work label
+    and sentence structure intact so this is a bounded repair, not a rewrite.
+    """
+
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return ""
+    label = _normalize_ncs_detail_term(subject) or "해당 직무"
+    leaked_prefix = re.compile(
+        r"공고\s*[·ㆍ./]?\s*직무\s*기술\s*서\s*상?\s*.*?(?:을|를)\s*수행",
+        flags=re.IGNORECASE,
+    )
+    text = leaked_prefix.sub(f"{label} 업무를 수행", text)
+    # If the model stopped before the verb, remove the same copied row up to
+    # the first candidate-facing experience/situation phrase.
+    text = re.sub(
+        r"공고\s*[·ㆍ./]?\s*직무\s*기술\s*서\s*상?\s*[^.。!?]{0,520}?(?=(?:실제\s*상황|경험\s*사례|상황에서|사례를))",
+        f"{label} 업무에서 ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\[NCS[^\]\n]{0,220}(?:\]|…)", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"※[^\n]{0,320}(?:국가유공자|보훈|가점|법률|제\s*\d+\s*조)[^\n]*", " ", text)
+    text = re.sub(r"\s*-\s*\d+\s*-\s*", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" -")
+    return text
+
+
 def _evaluation_points_quality_ok(method: str, evaluation_points: list[str]) -> bool:
     if len(evaluation_points) != 4:
         return False
@@ -7872,8 +7949,12 @@ def _run_runtime_question_quality_orchestration(
         item["question_evidence_required"] = bool(focus_evidence)
 
         surface_repairs: set[str] = set()
-        repaired_question, repaired = _repair_candidate_surface_text(
+        cleaned_question = _sanitize_candidate_document_leaks(
             item.get("question"),
+            subject=subject,
+        )
+        repaired_question, repaired = _repair_candidate_surface_text(
+            cleaned_question,
             focus,
             task_frame["task_object"],
         )
@@ -7882,7 +7963,8 @@ def _run_runtime_question_quality_orchestration(
             surface_repairs.add("question")
         repaired_followups: list[str] = []
         for value in item.get("follow_ups") or []:
-            repaired_value, repaired = _repair_candidate_surface_text(value, focus, task_frame["task_object"])
+            cleaned_value = _sanitize_candidate_document_leaks(value, subject=subject)
+            repaired_value, repaired = _repair_candidate_surface_text(cleaned_value, focus, task_frame["task_object"])
             repaired_followups.append(repaired_value)
             if repaired:
                 surface_repairs.add("follow_ups")
@@ -7891,7 +7973,8 @@ def _run_runtime_question_quality_orchestration(
             item["follow_up"] = repaired_followups[0]
         repaired_points: list[str] = []
         for value in item.get("evaluation_points") or []:
-            repaired_value, repaired = _repair_candidate_surface_text(value, focus, task_frame["task_object"])
+            cleaned_value = _sanitize_candidate_document_leaks(value, subject=subject)
+            repaired_value, repaired = _repair_candidate_surface_text(cleaned_value, focus, task_frame["task_object"])
             repaired_points.append(repaired_value)
             if repaired:
                 surface_repairs.add("evaluation_points")
@@ -11734,6 +11817,18 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
     _reject_hwp_upload("직무기술서 파일", jd_file.filename)
     parsed = _parse_upload_document(data, jd_file.filename or "", "jd_file")
     structured = structure_job_description(parsed, filename=jd_file.filename or "")
+    structured_fields = structured.get("fields") if isinstance(structured.get("fields"), dict) else None
+    if structured_fields is not None:
+        # Kordoc can return an entire numbered table row as one candidate.
+        # Normalize it before the browser renders the review dropdown and
+        # before the signed review session is created.
+        structured_fields["ncs_detail_candidates"] = _parse_sclass_terms(
+            "\n".join(
+                str(value or "").strip()
+                for value in (structured_fields.get("ncs_detail_candidates") or [])
+                if str(value or "").strip()
+            )
+        )
     review_session = _create_review_session(data, structured, jd_file.filename or "")
     _record_audit_event(
         request,
