@@ -40,11 +40,11 @@ NCScope는 공식 NCS 사이트가 아닙니다. NCS 데이터 활용 흐름과 
 
 - 공개 서비스 주소는 **https://ncscope.vercel.app** 입니다.
 - Vercel Production의 암호화된 `OPENROUTER_API_KEY`를 기본으로 사용하므로 방문자가 키를 입력하지 않아도 됩니다. 이 비밀변수는 개발 PC의 `.env`가 아니라 Vercel에 지속 저장되므로 개발 PC가 꺼져 있어도 배포 서비스가 계속 사용합니다.
-- 최초 생성은 서버가 고정한 OpenRouter `stealth/ox-alpha`를 Max 추론으로 최대 8초 시도합니다. 시간 초과 또는 사용할 수 없는 JSON은 서버가 지정한 저비용 `OPENROUTER_RECOVERY_MODEL`로 복구하며, 복구 호출은 남은 요청 예산 안에서 최대 82초입니다.
+- 일반 문항은 서버가 고정한 OpenRouter `stealth/ox-alpha`를 medium 추론으로 최대 8초 시도하고, 발표·토론·인바스켓·창의적 문제해결력 또는 복합 질문 계획은 high 추론으로 최대 15초 시도합니다. 시간 초과 또는 사용할 수 없는 JSON은 서버가 지정한 `OPENROUTER_RECOVERY_MODEL` 또는 공식 KSA 서버 폴백으로 안전하게 전환합니다.
 - 두 외부 모델이 모두 실패하거나 필수 품질 검사를 통과하지 못하면, 이미 조회·검증된 공식 NCS KSA `evidence_id`와 질문 계획이 정확히 일치할 때만 서버가 결정적 1문항을 만들어 `human_review_required`로 반환합니다. 공급자 예외나 키 원문은 포함하지 않습니다.
 - 공개 운영 프로필은 한 요청에 주질문 1개만 허용합니다. 2개 이상 계획은 Kordoc·NCS·모델 호출 전에 HTTP 422 `question_plan_capacity_exceeded`로 거부하고, 추가 문항은 결과 화면의 다른 질문 생성 기능으로 이어서 생성합니다.
 - 면접 형태와 NCS 세분류는 각각 드롭다운에서 하나만 선택합니다. 다중 선택 요청은 모델 호출 전에 HTTP 422로 차단하고, 생성된 문항은 회피 이력에 누적해 같은 선택으로 겹치지 않는 문항을 계속 생성할 수 있습니다.
-- 전체 생성 요청은 Vercel 300초 함수 한도 안에서 285초 공통 예산을 공유합니다. NCS 조회, Max 최초 시도, 복구 모델 및 품질 재생성은 모두 남은 예산으로 제한되며, 마지막 15초는 서버 KSA 폴백과 응답 전송에 남깁니다.
+- 전체 생성 요청은 Vercel 300초 함수 한도 안에서 285초 공통 예산을 공유합니다. NCS 조회, medium/high 추론 시도, 복구 모델 및 품질 재생성은 모두 남은 예산으로 제한되며, 마지막 15초는 서버 KSA 폴백과 응답 전송에 남깁니다.
 - 직무기술서와 공고문은 각각 파싱·검토 단계에서 서명되고 파일 해시와 결합됩니다. 생성 단계는 동일한 파일과 서명된 검토 세션을 확인한 뒤 검증된 markdown을 재사용합니다.
 - 서버 키는 브라우저로 보내지 않습니다. 선택적으로 입력한 개인 키는 현재 요청 본문에만 실으며 브라우저 저장소·파일·DB에 저장하지 않습니다.
 - 배포 및 보안 설정은 [`DEPLOYMENT.md`](DEPLOYMENT.md)를 따릅니다.
@@ -175,7 +175,7 @@ Kordoc 문서 파싱 및 세분류 후보 추출
 - 면접기법별 주질문 형식, 꼬리질문 깊이, 평가포인트, KSA 근거, 직무 맥락 품질 게이트 적용
 - ALIO 실문서 기반 질문 품질 리포트와 모델 원문/템플릿 보정 분리 측정
 - NCS 블라인드 채용 면접과제·평가양식 샘플 프로파일링으로 면접기법별 형식 검증
-- 서버가 관리하는 OpenRouter 키로 질문 생성. 기본은 OpenRouter `stealth/ox-alpha` + Max이며, 별도 개인 키 입력은 선택 사항
+- 서버가 관리하는 OpenRouter 키로 질문 생성. 기본은 OpenRouter `stealth/ox-alpha`이며, 고위험 단계만 high 추론으로 승격하고 별도 개인 키 입력은 선택 사항
 - 로컬 NCS DB 검색 서버 연결 기반의 경량 배포 구조
 - 공식 NCS 사이트 자산을 사용하지 않는 비공식 독자 인터페이스
 
@@ -211,13 +211,13 @@ http://127.0.0.1:8015
 ### 2. 생성 API 연결 확인
 
 공개 배포 주소는 `https://ncscope.vercel.app`입니다. 최초 생성 경로는 OpenRouter의
-`stealth/ox-alpha`이며 추론 강도는 Max로 고정됩니다.
+`stealth/ox-alpha`이며 일반 단계는 medium, 고위험 단계는 high 추론으로 서버가 고정합니다.
 Vercel Production에서는 `OPENROUTER_ALLOW_SERVER_KEY=true`와 암호화된
 `OPENROUTER_API_KEY`를 사용합니다. 화면에 `요청 준비됨`이 표시되면 방문자는 키를
 입력하지 않고 바로 생성할 수 있습니다. 이 키는 Vercel Production 비밀변수이므로
 로컬 PC를 종료해도 사라지지 않습니다.
 
-Ox Alpha Max 최초 시도는 8초로 제한됩니다. 시간 초과 또는 사용할 수 없는 JSON은
+Ox Alpha 일반 최초 시도는 8초, 고위험 high 추론 최초 시도는 15초로 제한됩니다. 시간 초과 또는 사용할 수 없는 JSON은
 사용자가 지정한 provider로 바꾸지 않고, 서버 관리 `OPENROUTER_RECOVERY_MODEL`을
 같은 OpenRouter 연결에서 최대 82초 호출해 복구합니다. NCS 조회와 모든 모델 호출은
 285초 공통 요청 예산의 남은 시간으로 다시 제한됩니다.
@@ -394,7 +394,7 @@ NCScope는 앱과 로컬 NCS DB 검색 서버(NCS_MCP)를 분리해서 배포합
 | Kordoc | PDF/HWP/HWPX/DOCX/TXT/이미지 및 ZIP 내부 지원 문서 파싱 |
 | NCS_MCP | 로컬 NCS DB 검색 서버. 공식 NCS 능력단위·수행준거·KSA 조회 담당 |
 | serving DB | 약 117MB 경량 read-only SQLite DB |
-| OpenRouter Ox Alpha / OpenAI API | 기본은 Ox Alpha + Max. 별도 OpenAI 키를 입력한 경우에만 OpenAI로 전환 |
+| OpenRouter Ox Alpha / OpenAI API | 기본은 Ox Alpha + medium, 고위험 단계는 high. 별도 OpenAI 키를 입력한 경우에만 OpenAI로 전환 |
 
 ```text
 사용자
@@ -495,7 +495,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | `OPENAI_MODEL` | 선택 | `gpt-4o-mini` | 일반 모델 설정 |
 | `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
 | `OPENAI_HTTP_CURL_FALLBACK_ENABLED` | 선택 | `false` | Python HTTP 실패 시 curl fallback 사용. 요청 키 노출 위험 때문에 opt-in |
-| `OPENROUTER_TIMEOUT_SEC` | 선택 | `105` | OpenRouter 최초 호출 상한. Vercel Production은 Max 최초 시도를 `8`초로 제한 |
+| `OPENROUTER_TIMEOUT_SEC` | 선택 | `105` | OpenRouter 일반 최초 호출 상한. Vercel Production은 `8`초 |
 | `OPENROUTER_HIGH_RISK_TIMEOUT_SEC` | 선택 | `20` | 발표·토론·인바스켓·창의적 문제해결력 또는 복합 질문 계획의 high 추론 호출 상한. Vercel Production은 `15`초 |
 | `OPENROUTER_PRIMARY_REASONING_EFFORT` | 선택 | `max` (Vercel `medium`) | 일반 생성의 추론 강도. 요청 수를 늘리지 않고 표준 단계의 지연을 제한 |
 | `OPENROUTER_HIGH_RISK_REASONING_EFFORT` | 선택 | `max` (Vercel `high`) | 발표·토론·인바스켓·창의적 문제해결력 및 복합 질문 계획에만 승격 |

@@ -23,7 +23,7 @@ def test_current_readme_matches_public_generation_contract() -> None:
     assert "회피 이력에 누적" in current
     assert "285초 공통 예산" in current
     assert "최대 8초" in current
-    assert "최대 82초" in current
+    assert "최대 15초" in current
     assert "`OPENROUTER_RECOVERY_MODEL`" in current
     assert "공식 NCS KSA `evidence_id`" in current
     assert "human_review_required" in current
