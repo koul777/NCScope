@@ -135,6 +135,7 @@ from app.services.request_budget import use_request_budget
 from app.services.server_question_fallback import build_server_ksa_fallback_strategy
 from app.services.auto_runner import start_auto_runner
 from app.services.ax_readiness import assess_ax_readiness
+from app.services.alio_ingestion import AlioIngestionError, inspect_alio_url
 from app.services.queue_manager import QueueManager
 from app.services.sclass_pipeline import (
     extract_pdf_text_fallback,
@@ -11758,6 +11759,28 @@ def alio_recommend(
             _ALIO_CACHE[pid] = src
         result_items.append(item)
     return {"count": len(result_items), "items": result_items}
+
+
+@app.post("/api/alio/attachments")
+def alio_attachments(payload: dict[str, Any]) -> dict[str, Any]:
+    """Inspect a public ALIO list/detail URL and return selectable metadata.
+
+    This endpoint deliberately does not download or parse attachments. The
+    caller must select the matching notice and JD files, then send them through
+    the existing upload/review endpoints where the signed human-review gate,
+    upload-size limit, and document parser apply.
+    """
+    raw_url = str(payload.get("url", "")).strip() if isinstance(payload, dict) else ""
+    if not raw_url:
+        raise HTTPException(status_code=422, detail="url is required")
+    try:
+        return inspect_alio_url(raw_url)
+    except AlioIngestionError as exc:
+        status = 504 if exc.code == "upstream_timeout" else 502 if exc.retryable else 422
+        raise HTTPException(
+            status_code=status,
+            detail={"code": exc.code, "message": exc.message, "retryable": exc.retryable},
+        ) from exc
 
 
 @app.get("/api/alio/options")
