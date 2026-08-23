@@ -350,6 +350,19 @@
         </div>
 
         <div id="uploadBlock">
+          <div id="alioSourceBlock" class="option-card" style="margin-top:0;">
+            <label for="alioUrl" style="margin-top:0;">ALIO 공고 URL (선택)</label>
+            <div class="btn-row" style="grid-template-columns:1fr auto;">
+              <input id="alioUrl" type="url" inputmode="url" placeholder="https://job.alio.go.kr/recruit.do 또는 recruitview.do?idx=..." />
+              <button id="btnInspectAlio" type="button" style="background:#475569;">공고·첨부 확인</button>
+            </div>
+            <div id="alioSourceStatus" class="sub" role="status" aria-live="polite" style="margin-top:6px;">ALIO URL을 넣으면 공고와 첨부파일 메타데이터만 확인합니다. 파일은 사람이 선택해 기존 업로드 칸에 탑재합니다.</div>
+            <div id="alioSourceResults" style="display:none; margin-top:8px;">
+              <label for="alioPostingSelect">공고 1개 선택</label>
+              <select id="alioPostingSelect" class="dropdown" style="display:none;"></select>
+              <div id="alioAttachmentList" class="sub" style="display:grid; gap:6px; margin-top:6px;"></div>
+            </div>
+          </div>
           <div id="jdReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
               <label style="margin:0;">Kordoc 자동 추출 검토</label>
@@ -609,6 +622,12 @@
     const noticeFile = document.getElementById('noticeFile');
     const jdUploadState = document.getElementById('jdUploadState');
     const noticeUploadState = document.getElementById('noticeUploadState');
+    const alioUrl = document.getElementById('alioUrl');
+    const btnInspectAlio = document.getElementById('btnInspectAlio');
+    const alioSourceStatus = document.getElementById('alioSourceStatus');
+    const alioSourceResults = document.getElementById('alioSourceResults');
+    const alioPostingSelect = document.getElementById('alioPostingSelect');
+    const alioAttachmentList = document.getElementById('alioAttachmentList');
     const dutyText = document.getElementById('dutyText');
     const qualificationText = document.getElementById('qualificationText');
     const preferenceText = document.getElementById('preferenceText');
@@ -1916,6 +1935,88 @@
         updateWorkflowMenu();
       }
     }
+
+    function renderAlioAttachments(data) {
+      alioSourceResults.style.display = 'block';
+      alioPostingSelect.style.display = 'none';
+      alioAttachmentList.replaceChildren();
+      const attachments = Array.isArray(data?.attachments) ? data.attachments : [];
+      if (!attachments.length) {
+        alioAttachmentList.textContent = '첨부파일을 찾지 못했습니다. 상세 페이지의 첨부 목록을 확인하거나 파일을 직접 선택하세요.';
+        return;
+      }
+      attachments.forEach((item) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:center;padding:7px 9px;border:1px solid #dbe5f0;border-radius:8px;background:#fff;';
+        const label = document.createElement('span');
+        label.textContent = `${item.kind || 'other'} · ${item.name || '첨부파일'}`;
+        const link = document.createElement('a');
+        link.href = item.url || '#';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = '파일 열기';
+        row.append(label, link);
+        alioAttachmentList.append(row);
+      });
+      const hint = document.createElement('div');
+      hint.className = 'sub';
+      hint.textContent = 'notice와 job_description 파일을 각각 내려받아 위의 공고문·직무기술서 업로드 칸에 선택하세요. 자동 전송하지 않습니다.';
+      alioAttachmentList.append(hint);
+    }
+
+    async function inspectAlioUrl(url) {
+      const value = String(url || '').trim();
+      if (!value) throw new Error('ALIO 공고 URL을 입력해 주세요.');
+      const response = await fetch('/api/alio/attachments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: value }),
+      });
+      const text = await response.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { throw new Error(text || 'ALIO 응답을 읽을 수 없습니다.'); }
+      if (!response.ok) {
+        const detail = data?.detail;
+        throw new Error(typeof detail === 'object' ? (detail.message || detail.code || 'ALIO 조회 실패') : (detail || 'ALIO 조회 실패'));
+      }
+      const postings = Array.isArray(data.postings) ? data.postings : [];
+      if (data.source_kind === 'posting_list' && postings.length) {
+        alioSourceResults.style.display = 'block';
+        alioPostingSelect.style.display = 'block';
+        alioPostingSelect.replaceChildren();
+        postings.forEach((posting) => {
+          const option = document.createElement('option');
+          option.value = posting.url || '';
+          option.textContent = `${posting.title || '공고'}${posting.posting_id ? ` (${posting.posting_id})` : ''}`;
+          alioPostingSelect.append(option);
+        });
+        alioPostingSelect.onchange = () => inspectAlioUrl(alioPostingSelect.value).catch((error) => {
+          alioSourceStatus.textContent = `ALIO 상세 조회 실패: ${String(error.message || error)}`;
+        });
+        alioSourceStatus.textContent = '공고 1개를 선택하면 첨부파일 목록을 조회합니다.';
+        alioAttachmentList.replaceChildren();
+        await inspectAlioUrl(alioPostingSelect.value);
+        return data;
+      }
+      renderAlioAttachments(data);
+      alioSourceStatus.textContent = data.status === 'human_review_required'
+        ? '사람 검토 필요 · 첨부파일을 확인한 뒤 두 필수 파일을 직접 업로드하세요.'
+        : 'ALIO 조회가 완료되었습니다.';
+      return data;
+    }
+
+    btnInspectAlio.addEventListener('click', async () => {
+      btnInspectAlio.disabled = true;
+      alioSourceStatus.textContent = 'ALIO 공고·첨부 메타데이터를 확인하는 중...';
+      try {
+        await inspectAlioUrl(alioUrl.value);
+      } catch (error) {
+        alioSourceResults.style.display = 'none';
+        alioSourceStatus.textContent = `ALIO 조회 실패: ${String(error.message || error)}`;
+      } finally {
+        btnInspectAlio.disabled = false;
+      }
+    });
 
     btnConfirmReview.addEventListener('click', async () => {
       if (jdParsing) {

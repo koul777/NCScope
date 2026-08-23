@@ -1,5 +1,17 @@
 # NCScope v1.4.4
 
+## ALIO 공고·첨부 메타데이터 확인
+
+```http
+POST /api/alio/attachments
+```
+
+```json
+{"url":"https://job.alio.go.kr/recruit.do"}
+```
+
+목록 URL은 공고 후보를, `recruitview.do?idx=...` 상세 URL은 공고문·직무기술서 첨부의 allowlist 메타데이터를 반환합니다. 외부 파일은 자동 다운로드하거나 모델에 전송하지 않으며, `status=human_review_required` 상태에서 사람이 같은 채용 건의 두 파일을 선택해 기존 업로드·Kordoc 검토 흐름으로 넘깁니다. HTTPS/ALIO 호스트만 허용하고 페이지 크기·redirect·connect/read timeout을 제한합니다.
+
 ## OpenRouter 개인정보·데이터 처리 안내
 
 NCScope는 서버에서 OpenRouter API를 호출해 질문 초안을 생성합니다. 공개 채용공고문과 비식별화된 NCS 직무기술서처럼 개인정보·민감정보가 없는 자료만 전송하세요. 공고문에 포함될 수 있는 담당자 이름, 전화번호, 이메일, 서명, 지원자 사례와 같은 정보는 업로드 전에 삭제하거나 가리십시오.
