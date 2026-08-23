@@ -3381,7 +3381,45 @@ def _strip_question_material_reference(value: Any) -> str:
     return re.sub(r"\s+\[(?:제공자료|공통자료)\].*$", "", text).strip()
 
 
-def _question_for_method(
+def _freeform_ksa_anchor(
+    focus: Any,
+    focus_type: Any = "",
+    task_frame: dict[str, str] | None = None,
+) -> str:
+    """Turn an internal KSA surface into a short, readable question anchor.
+
+    ``question_focus_surface`` is deliberately verbose because it is also an
+    audit key.  It must not become the candidate-facing sentence.  Fallback
+    questions use only the semantic noun, leaving the provider prompt free to
+    choose its own incident and wording.
+    """
+
+    candidates = [
+        str((task_frame or {}).get("task_object") or "").strip(),
+        str(focus or "").strip(),
+    ]
+    kind = _normalize_ksa_type(focus_type, str(focus or ""))
+    for raw in candidates:
+        anchor = _clean_question_text(raw, max_chars=80)
+        if not anchor:
+            continue
+        anchor = re.sub(
+            r"\s*(?:관련\s*)?(?:실무\s*)?(?:적용·검증\s*절차|수행·검증\s*절차|"
+            r"확인·판단\s*기준|행동\s*기준|확인\s*절차|검증\s*절차)\s*$",
+            "",
+            anchor,
+        ).strip(" ·ㆍ/")
+        if kind == "기술":
+            anchor = re.sub(r"\s*(?:능력|기술|스킬)\s*$", "", anchor).strip()
+        elif kind == "지식":
+            anchor = re.sub(r"\s*지식\s*$", "", anchor).strip()
+        if anchor and len(_ksa_key(anchor)) >= 2:
+            return anchor
+    return "핵심 업무"
+
+
+def _freeform_ksa_question(
+    *,
     method: str,
     subject: str,
     focus: str,
@@ -3392,6 +3430,101 @@ def _question_for_method(
     task_frame: dict[str, str] | None = None,
     job_context_text: str = "",
 ) -> str:
+    """Build a concise KSA-anchored repair without the stock STAR scaffold.
+
+    This path is used only when an OpenRouter candidate fails the editorial
+    gate.  It keeps the evidence anchor and method shape, but does not append
+    a fixed situation/role/document/result checklist to the candidate's text.
+    """
+
+    frame = dict(task_frame or _question_task_frame(
+        focus=focus,
+        focus_type=focus_type,
+        subject=subject,
+        detail=detail,
+        comp_def=comp_def,
+    ))
+    label = str(subject or detail or "해당 직무").strip() or "해당 직무"
+    anchor = _freeform_ksa_anchor(focus, focus_type, frame)
+    variant = max(0, int(variation_index or 0)) % 3
+
+    if method == "경험면접":
+        variants = (
+            f"{label}에서 {anchor}가 필요했던 실제 경험을 하나 들려 주세요. "
+            "그때 본인이 내린 결정과 확인된 결과는 무엇이었나요?",
+            f"{label} 업무 중 {anchor}와 관련해 예상과 다른 결과를 만난 사례가 있나요? "
+            "무엇을 근거로 대응했는지 설명해 주세요.",
+            f"{label}에서 {anchor}를 활용해 문제를 해결했던 일을 말씀해 주세요. "
+            "본인의 역할과 가장 중요한 결과는 무엇이었나요?",
+        )
+        return variants[variant]
+    if method == "상황면접":
+        return (
+            f"{label}에서 {anchor}와 관련해 예상과 다른 정보가 나온 상황입니다. "
+            "무엇을 먼저 확인하고 어떤 조치를 선택하시겠습니까?"
+        )
+    if method == "직무지식면접":
+        return (
+            f"{label}의 {anchor}를 실제 업무에 적용할 때, 먼저 확인할 근거와 "
+            "예외가 생기면 조정할 부분을 설명해 주세요."
+        )
+    if method == "인바스켓면접":
+        return (
+            f"{label}에서 {anchor}와 관련한 요청이 동시에 들어왔습니다. "
+            "무엇을 먼저 판단하고 어떤 조치를 남기시겠습니까?"
+        )
+    if method == "발표면접":
+        return (
+            f"[발표과제] 제공된 직무 자료에서 {anchor}와 관련한 문제 한 가지를 골라, "
+            "핵심 근거와 선택한 대응을 발표해 주세요."
+        )
+    if method == "토론면접":
+        return (
+            f"[토론과제] {label}에서 {anchor}와 관련해 서로 다른 처리안이 필요한 상황입니다. "
+            "각 안의 근거와 위험을 비교한 뒤 공통 실행안을 제시해 주세요."
+        )
+    if method == "창의적 문제해결력면접":
+        return (
+            f"[창의적 문제해결력과제] {label}에서 {anchor}와 관련한 문제가 반복되고 있습니다. "
+            "문제를 새롭게 정의하고 대안과 검증 방법을 제시해 주세요."
+        )
+    return _question_for_method(
+        method=method,
+        subject=subject,
+        focus=focus,
+        detail=detail,
+        comp_def=comp_def,
+        focus_type=focus_type,
+        variation_index=variation_index,
+        task_frame=task_frame,
+        job_context_text=job_context_text,
+    )
+
+
+def _question_for_method(
+    method: str,
+    subject: str,
+    focus: str,
+    detail: str,
+    comp_def: str,
+    focus_type: str = "",
+    variation_index: int = 0,
+    task_frame: dict[str, str] | None = None,
+    job_context_text: str = "",
+    freeform_ksa: bool = False,
+) -> str:
+    if freeform_ksa:
+        return _freeform_ksa_question(
+            method=method,
+            subject=subject,
+            focus=focus,
+            detail=detail,
+            comp_def=comp_def,
+            focus_type=focus_type,
+            variation_index=variation_index,
+            task_frame=task_frame,
+            job_context_text=job_context_text,
+        )
     label = subject or detail or "해당 직무"
     # Carry a short source-derived anchor into deterministic repairs so a
     # provider timeout cannot erase the actual duty from the candidate-facing
@@ -4537,7 +4670,11 @@ def _adjust_generated_questions(
             )
         if repaired:
             candidate_surface_repaired_fields.add("question")
-        if is_subscription_cli_candidate and method == "경험면접":
+        # OpenRouter already receives the KSA semantics and is instructed to
+        # author a natural, single-focus question.  Do not append the legacy
+        # STAR checklist here; doing so was the source of the repeated
+        # "당시 역할·문서·수치·피드백" boilerplate seen by candidates.
+        if is_subscription_cli_candidate and cli_source_base != "openrouter_api" and method == "경험면접":
             normalized_model_question, star_completed = (
                 _complete_experience_question_star(
                     normalized_model_question,
@@ -4563,6 +4700,7 @@ def _adjust_generated_questions(
         raw_followups = repaired_followups_for_surface
         if (
             is_subscription_cli_candidate
+            and cli_source_base != "openrouter_api"
             and method == "경험면접"
             and row_follow_count >= 3
         ):
@@ -4702,6 +4840,7 @@ def _adjust_generated_questions(
             variation_index=idx,
             task_frame=task_frame,
             job_context_text=job_context_text,
+            freeform_ksa=(cli_source_base == "openrouter_api"),
         )
         template_followups = _followups_for_method(
             method=method,

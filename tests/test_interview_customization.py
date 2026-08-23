@@ -579,6 +579,72 @@ def test_openrouter_mechanical_experience_draft_is_replaced_by_source_anchored_t
     assert "인사기획" in item["question"]
 
 
+def test_openrouter_natural_ksa_experience_keeps_model_wording_without_star_appendix() -> None:
+    detail = "인사·조직"
+    factor = "전략적 인적자원관리"
+    plan = _parse_question_plan_json(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "detail": detail,
+                        "enabled": True,
+                        "main_count": 1,
+                        "follow_up_count": 3,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        [detail],
+    )
+    natural_question = (
+        "인사기획에서 전략적 인적자원관리와 관련해 인력 수요와 예산이 어긋났던 경험을 "
+        "말씀해 주세요. 어떤 결정을 내렸고 결과를 어떻게 확인했나요."
+    )
+    out = _adjust_generated_questions(
+        {
+            "interview_questions": [
+                {
+                    "type": "경험면접",
+                    "question_source": "openrouter_api",
+                    "question": natural_question,
+                    "follow_ups": [
+                        "방금 말씀하신 결정에서 가장 중요하게 본 정보는 무엇이었나요?",
+                        "앞서 언급한 결과가 예상과 달랐다면 무엇을 바꾸셨겠습니까?",
+                        "그 경험을 다시 한다면 어떤 점을 다르게 하시겠습니까?",
+                    ],
+                    "evaluation_points": ["상황", "판단", "행동", "결과"],
+                }
+            ]
+        },
+        plan,
+        ["경험면접"],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202020101_23v3",
+                "compeUnitName": "인사기획",
+                "ncsSubdCdnm": detail,
+                "matchedDetailName": detail,
+            }
+        ],
+        ncs_ksa=[
+            {
+                "ncsClCd": "0202020101_23v3",
+                "compeUnitName": "인사기획",
+                "factorName": factor,
+                "ksaTypeName": "지식",
+            }
+        ],
+        job_context_text="[담당업무]인력 수요와 예산을 기획한다.",
+    )
+    item = out["interview_questions"][0]
+    assert item["question_source"] in {"openrouter_api", "template_fallback"}
+    assert "문서·수치·기록·피드백" not in item["question"]
+    assert "당시 맡은 역할과 구체적인 목표" not in item["question"]
+    assert "해당 직무에서 업무를 수행하던" not in item["question"]
+
+
 def test_specific_definition_domain_beats_generic_title_domain() -> None:
     context = _domain_context_pack(
         detail="사무행정",
