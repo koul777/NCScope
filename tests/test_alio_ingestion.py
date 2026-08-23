@@ -54,6 +54,9 @@ def test_validate_alio_url_allowlists_public_list_detail_and_attachment_paths():
     assert _validate_alio_url("https://job.alio.go.kr/download.json?fileNo=88", allow_list=False) == (
         "https://job.alio.go.kr/download.json?fileNo=88"
     )
+    assert _validate_alio_url("https://www.alio.go.kr/download/download.json?fileNo=88", allow_list=False) == (
+        "https://www.alio.go.kr/download/download.json?fileNo=88"
+    )
     for value in (
         "http://job.alio.go.kr/recruit.do",
         "https://example.com/recruit.do",

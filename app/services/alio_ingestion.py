@@ -18,9 +18,18 @@ import httpx
 
 
 ALIO_HOST = "job.alio.go.kr"
+ALIO_DOWNLOAD_HOST = "www.alio.go.kr"
+ALIO_ALLOWED_HOSTS = {ALIO_HOST, ALIO_DOWNLOAD_HOST}
 ALIO_LIST_PATH = "/recruit.do"
 ALIO_DETAIL_PATH = "/recruitview.do"
-ALIO_DOWNLOAD_PATHS = {"/download.json", "/download.do", "/fileDownload.do", "/recruitDownload.do"}
+ALIO_DOWNLOAD_PATHS = {
+    "/download.json",
+    "/download.do",
+    "/fileDownload.do",
+    "/recruitDownload.do",
+    "/download/download.json",
+    "/download/download.do",
+}
 ALIO_MAX_HTML_BYTES = 1 * 1024 * 1024
 ALIO_MAX_POSTINGS = 30
 ALIO_MAX_ATTACHMENTS = 20
@@ -56,7 +65,8 @@ def _validate_alio_url(raw_url: str, *, allow_list: bool = True) -> str:
     if len(value) > 500:
         raise AlioIngestionError("url_too_long", "ALIO URL이 너무 깁니다.")
     parsed = urlsplit(value)
-    if parsed.scheme.lower() != "https" or parsed.hostname != ALIO_HOST:
+    host = str(parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https" or host not in ALIO_ALLOWED_HOSTS:
         raise AlioIngestionError(
             "url_not_allowed",
             "https://job.alio.go.kr의 공고 목록 또는 상세 URL만 사용할 수 있습니다.",
@@ -69,14 +79,14 @@ def _validate_alio_url(raw_url: str, *, allow_list: bool = True) -> str:
     if parsed.username or parsed.password or parsed.fragment:
         raise AlioIngestionError("url_not_allowed", "인증정보·fragment가 포함된 URL은 사용할 수 없습니다.")
     path = parsed.path or "/"
-    if path == ALIO_LIST_PATH and allow_list:
+    if host == ALIO_HOST and path == ALIO_LIST_PATH and allow_list:
         return value
     if path in ALIO_DOWNLOAD_PATHS:
         file_no = parse_qs(parsed.query).get("fileNo", [""])[0]
         if re.fullmatch(r"\d{1,20}", file_no):
-            return f"https://{ALIO_HOST}{path}?fileNo={file_no}"
+            return f"https://{host}{path}?fileNo={file_no}"
         raise AlioIngestionError("attachment_id_required", "ALIO 첨부파일 URL에 유효한 fileNo가 필요합니다.")
-    if path != ALIO_DETAIL_PATH:
+    if host != ALIO_HOST or path != ALIO_DETAIL_PATH:
         raise AlioIngestionError(
             "url_not_allowed",
             "ALIO 공고 목록(/recruit.do) 또는 공고 상세(/recruitview.do?idx=...) URL을 입력하세요.",
