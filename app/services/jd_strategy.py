@@ -15,6 +15,7 @@ import zlib
 import uuid
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from html import unescape
 from urllib.parse import quote
 from collections import Counter
 from difflib import SequenceMatcher
@@ -568,6 +569,67 @@ def _clean_category_value(text: str) -> str:
     t = re.sub(r"\([^)]*\)", "", t)
     t = re.sub(r"\s+", " ", t).strip(" ,:;|-")
     return t
+
+
+def _extract_small_categories_from_html_table(
+    jd_text: str,
+    known_categories: set[str] | list[str],
+) -> list[str]:
+    """Recover the ``소분류`` row from Kordoc's HTML table markdown.
+
+    Kordoc preserves many PDF tables as HTML.  In that representation the
+    classification row is structurally unambiguous, but the generic line
+    scanner sees closing tags (for example ``재무</td></tr>``) as part of a
+    category and may return a malformed seed.  Read only cells following the
+    explicit ``소분류`` header and canonicalize them against the local NCS
+    catalogue.  This is intentionally catalogue-backed so arbitrary text from
+    a duty row cannot become an NCS category.
+    """
+    text = str(jd_text or "")
+    if not text or "<tr" not in text.lower():
+        return []
+
+    by_key = {
+        _sclass_norm_key(name): str(name).strip()
+        for name in (known_categories or [])
+        if _sclass_norm_key(str(name).strip())
+    }
+    if not by_key:
+        return []
+
+    def _cell_text(raw_cell: str) -> str:
+        value = re.sub(r"<br\s*/?>", " ", str(raw_cell or ""), flags=re.IGNORECASE)
+        value = re.sub(r"<[^>]+>", " ", value)
+        value = unescape(value)
+        value = re.sub(r"\s+", " ", value).strip()
+        # Codes in the row are presentation metadata, not part of the label.
+        value = re.sub(r"^\s*\.?\d{1,2}\s*[.)]?\s*", "", value)
+        return _clean_category_value(value)
+
+    recovered: list[str] = []
+    for raw_row in re.findall(r"<tr\b[^>]*>(.*?)</tr>", text, flags=re.IGNORECASE | re.DOTALL):
+        raw_cells = re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", raw_row, flags=re.IGNORECASE | re.DOTALL)
+        if not raw_cells:
+            continue
+        plain_cells = [_cell_text(cell) for cell in raw_cells]
+        label_index = next(
+            (
+                index
+                for index, cell in enumerate(plain_cells)
+                if re.sub(r"\s+", "", cell) == "소분류"
+            ),
+            -1,
+        )
+        if label_index < 0:
+            continue
+        for cell in plain_cells[label_index + 1 :]:
+            key = _sclass_norm_key(cell)
+            canonical = by_key.get(key)
+            if canonical:
+                recovered.append(canonical)
+        if recovered:
+            break
+    return _dedup_keep_order(recovered)
 
 
 def _infer_column_major_counts(total: int, levels: int = 4) -> list[int] | None:
@@ -1623,6 +1685,13 @@ def extract_small_categories_from_jd(jd_text: str) -> list[str]:
     # 1-a) 헤더 위치 기반 추출 (세로형/가로형 레이아웃 직접 처리)
     focus_lines = _collect_classification_lines(src, max_lines=90)
     known_categories = _load_ncs_small_categories()
+
+    # Kordoc's HTML-table output retains the exact 소분류 row even when the
+    # line-oriented text has tags and colspan boundaries mixed into labels.
+    html_structural = _extract_small_categories_from_html_table(src, known_categories)
+    if html_structural:
+        return html_structural[:15]
+
     for idx, line in enumerate(focus_lines):
         if "소분류" not in line:
             continue

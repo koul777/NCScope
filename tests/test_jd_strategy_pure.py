@@ -1465,6 +1465,20 @@ class TestExtractSmallCategoriesFromJD:
         assert "회계" in result
 
 
+    def test_extract_small_categories_from_kordoc_html_table_row(self):
+        """Kordoc HTML table cells must not leak closing tags into NCS seeds."""
+        text = """
+        <table>
+        <tr><td>분류체계</td><td>대분류</td><td>중분류</td></tr>
+        <tr><td>소분류</td><td colspan="2">01.프로젝트관리</td><td colspan="2">01.경영기획</td><td>01.총무</td><td>02.인사∙<br>조직</td><td>03.일반사무</td><td>.01. 재무</td></tr>
+        <tr><td>세분류</td><td>01.<br>프로젝트관리</td></tr>
+        </table>
+        """
+        result = extract_small_categories_from_jd(text)
+        assert result == ["프로젝트관리", "경영기획", "총무", "인사·조직", "일반사무", "재무"]
+        assert all("</td>" not in value for value in result)
+
+
 class TestBuildNoticeContextFromJD:
     """Test notice context building."""
 
