@@ -32,6 +32,7 @@ from app.services.provider_config import (
     OPENROUTER_PROVIDER,
     normalize_generation_provider,
     openrouter_recovery_model,
+    openrouter_reasoning_effort,
     prepare_chat_payload,
     provider_candidate_concurrency,
     provider_model,
@@ -5718,15 +5719,17 @@ def build_strategy_with_openai(
         ),
     }
     if generation_provider == OPENROUTER_PROVIDER:
-        configured_openrouter_effort = str(
-            os.getenv("OPENROUTER_PRIMARY_REASONING_EFFORT") or "max"
-        ).strip().casefold()
-        if configured_openrouter_effort not in {"low", "medium", "high", "xhigh", "max"}:
-            configured_openrouter_effort = "max"
-        primary_reasoning_effort = configured_openrouter_effort
-        payload["reasoning_effort"] = configured_openrouter_effort
+        primary_reasoning_effort, primary_reasoning_reason = openrouter_reasoning_effort(
+            interview_methods=method_names,
+            target_count=target_count,
+            follow_up_count=follow_up_count,
+            stage="primary",
+        )
+        payload["reasoning_effort"] = primary_reasoning_effort
+        payload["_openrouter_internal_reasoning_effort"] = primary_reasoning_effort
         payload.pop("temperature", None)
     else:
+        primary_reasoning_reason = "model_compatible_quality_policy"
         primary_reasoning_effort = apply_quality_reasoning(
             payload,
             model=primary_model,
@@ -6104,21 +6107,30 @@ def build_strategy_with_openai(
             ),
         }
         if generation_provider == OPENROUTER_PROVIDER:
-            retry_reasoning_effort = str(
-                os.getenv("OPENROUTER_INVALID_OUTPUT_RETRY_REASONING_EFFORT")
-                or os.getenv("OPENROUTER_FALLBACK_REASONING_EFFORT")
-                or "medium"
-            ).strip().casefold()
-            if retry_reasoning_effort not in {"low", "medium", "high", "xhigh"}:
-                retry_reasoning_effort = "medium"
+            retry_reasoning_effort, retry_reasoning_reason = openrouter_reasoning_effort(
+                interview_methods=method_names,
+                target_count=retry_target_count,
+                follow_up_count=follow_up_count,
+                stage="quality_retry",
+            )
             slim_payload["reasoning_effort"] = retry_reasoning_effort
             slim_payload["_openrouter_internal_recovery_effort"] = (
                 retry_reasoning_effort
             )
-            if openrouter_recovery_model():
+            slim_payload["_openrouter_internal_reasoning_effort"] = retry_reasoning_effort
+            # A quality retry is the deliberate high-reasoning rescue path.
+            # Keep the Ox Alpha reasoning request for that path instead of
+            # silently replacing it with the provider's native-default
+            # recovery model, which would make the advertised effort false.
+            if openrouter_recovery_model() and retry_reasoning_effort not in {
+                "high",
+                "xhigh",
+                "max",
+            }:
                 slim_payload["_openrouter_internal_recovery_model"] = "configured"
             slim_payload.pop("temperature", None)
         else:
+            retry_reasoning_reason = "model_compatible_quality_policy"
             retry_reasoning_effort = apply_quality_reasoning(
                 slim_payload,
                 model=retry_model,
@@ -6182,6 +6194,12 @@ def build_strategy_with_openai(
     obj["generation_provider"] = generation_provider
     obj["provider_reasoning_effort"] = (
         retry_reasoning_effort if recovered_with_slim_retry else primary_reasoning_effort
+    )
+    obj["provider_reasoning_stage"] = (
+        "quality_retry" if recovered_with_slim_retry else "primary"
+    )
+    obj["provider_reasoning_reason"] = (
+        retry_reasoning_reason if recovered_with_slim_retry else primary_reasoning_reason
     )
     obj["provider_candidate_variant_count"] = candidate_variants
     candidate_selection = obj.get("question_candidate_selection")

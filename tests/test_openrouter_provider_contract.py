@@ -14,11 +14,67 @@ from app.services.provider_config import (
     OPENROUTER_DEFAULT_BASE_URL,
     OPENROUTER_DEFAULT_MODEL,
     detect_generation_provider_from_key,
+    openrouter_reasoning_effort,
     prepare_chat_payload,
     provider_base_url,
     resolve_generation_credential,
     resolve_generation_model,
 )
+
+
+def test_openrouter_reasoning_policy_promotes_complex_methods_without_changing_request_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_REASONING_EFFORT", "high")
+    effort, reason = openrouter_reasoning_effort(
+        interview_methods=["발표면접"],
+        target_count=1,
+        follow_up_count=3,
+        stage="primary",
+    )
+
+    assert effort == "high"
+    assert reason == "high_risk_interview_method"
+
+
+def test_openrouter_reasoning_policy_promotes_quality_retry_and_keeps_standard_medium(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    standard, standard_reason = openrouter_reasoning_effort(
+        interview_methods=["경험면접"],
+        target_count=1,
+        follow_up_count=3,
+        stage="primary",
+    )
+    retry, retry_reason = openrouter_reasoning_effort(
+        interview_methods=["경험면접"],
+        target_count=1,
+        follow_up_count=3,
+        stage="quality_retry",
+    )
+
+    assert (standard, standard_reason) == ("medium", "standard_generation")
+    assert (retry, retry_reason) == ("high", "quality_retry")
+
+
+def test_openrouter_internal_reasoning_effort_overrides_primary_deployment_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    prepared = prepare_chat_payload(
+        {
+            "model": OPENROUTER_DEFAULT_MODEL,
+            "messages": [],
+            "reasoning_effort": "high",
+            "_openrouter_internal_reasoning_effort": "high",
+        },
+        "openrouter_api",
+    )
+
+    assert prepared["reasoning_effort"] == "high"
+    assert "_openrouter_internal_reasoning_effort" not in prepared
 
 
 def _candidate(slot: int, variant: int) -> dict:
@@ -532,6 +588,103 @@ def test_openrouter_strategy_uses_three_parallel_single_choice_requests(
         row["question_source"] == "openrouter_api"
         for row in result["interview_questions"]
     )
+
+
+def test_openrouter_strategy_promotes_presentation_to_high_without_extra_candidate_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENAI_STRATEGY_CANDIDATE_MULTIPLIER", "1")
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        content = {
+            "interview_questions": [_candidate(slot=0, variant=1)],
+            "ncs_link": [],
+        }
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ]
+        }
+
+    monkeypatch.setattr(jd_strategy, "post_chat_completions_with_retries", fake_chat)
+    result = jd_strategy.build_strategy_with_openai(
+        jd_text="발표 자료 분석",
+        notice_text="공공기관 채용",
+        strengths="",
+        region="",
+        ncs_matches=[],
+        ncs_ksa=[],
+        api_key_override="sk-or-v1-test",
+        generation_provider="openrouter",
+        target_count_override=1,
+        interview_methods=["발표면접"],
+        max_model_requests=1,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["payload"]["reasoning_effort"] == "high"
+    assert result["provider_reasoning_effort"] == "high"
+    assert result["provider_reasoning_stage"] == "primary"
+    assert result["provider_reasoning_reason"] == "high_risk_interview_method"
+
+
+def test_openrouter_quality_retry_uses_high_profile_only_after_primary_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENROUTER_QUALITY_RETRY_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENROUTER_INVALID_OUTPUT_RETRY_TIMEOUT_SEC", "15")
+    monkeypatch.setenv("OPENROUTER_RECOVERY_MODEL", "")
+    monkeypatch.setenv("OPENAI_STRATEGY_CANDIDATE_MULTIPLIER", "1")
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": '{"interview_questions": ['},
+                    }
+                ]
+            }
+        content = {
+            "interview_questions": [_candidate(slot=0, variant=2)],
+            "ncs_link": [],
+        }
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ]
+        }
+
+    monkeypatch.setattr(jd_strategy, "post_chat_completions_with_retries", fake_chat)
+    result = jd_strategy.build_strategy_with_openai(
+        jd_text="자료 오류",
+        notice_text="공공기관 채용",
+        strengths="",
+        region="",
+        ncs_matches=[],
+        ncs_ksa=[],
+        api_key_override="sk-or-v1-test",
+        generation_provider="openrouter",
+        target_count_override=1,
+        interview_methods=["경험면접"],
+        max_model_requests=2,
+    )
+
+    assert [call["payload"]["reasoning_effort"] for call in calls] == [
+        "medium",
+        "high",
+    ]
+    assert result["provider_reasoning_effort"] == "high"
+    assert result["provider_reasoning_stage"] == "quality_retry"
+    assert result["provider_reasoning_reason"] == "quality_retry"
 
 
 def test_openrouter_invalid_max_output_uses_one_bounded_medium_correction(

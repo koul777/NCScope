@@ -14,6 +14,17 @@ OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_DEFAULT_MODEL = "stealth/ox-alpha"
 OPENROUTER_FREE_RECOVERY_MODEL = "openai/gpt-oss-20b"
+_OPENROUTER_REASONING_EFFORTS = frozenset(
+    {"low", "medium", "high", "xhigh", "max"}
+)
+_OPENROUTER_HIGH_REASONING_METHODS = frozenset(
+    {
+        "발표면접",
+        "토론면접",
+        "인바스켓면접",
+        "창의적 문제해결력면접",
+    }
+)
 
 _PROVIDER_ALIASES = {
     "openai": OPENAI_PROVIDER,
@@ -265,6 +276,76 @@ def openrouter_recovery_model() -> str:
     return model
 
 
+def openrouter_reasoning_effort(
+    *,
+    interview_methods: Any = None,
+    target_count: Any = 1,
+    follow_up_count: Any = 3,
+    stage: str = "primary",
+) -> tuple[str, str]:
+    """Resolve a bounded reasoning profile for the current generation stage.
+
+    Ordinary one-question generation stays at the deployment's configured
+    effort.  Production sets that profile to medium. Presentation, debate, in-basket and creative problem-solving
+    questions require more cross-constraint reasoning, so they are promoted to
+    the server-owned high-risk effort.  A quality retry is also high-risk by
+    definition because it is only spent after a failed quality gate.  The
+    policy changes effort, not request count, and remains overrideable through
+    dedicated server environment variables.
+    """
+
+    methods = {
+        str(value or "").strip()
+        for value in (interview_methods or [])
+        if str(value or "").strip()
+    }
+    try:
+        count = max(1, int(target_count or 1))
+    except (TypeError, ValueError):
+        count = 1
+    try:
+        followups = max(0, int(follow_up_count or 0))
+    except (TypeError, ValueError):
+        followups = 0
+
+    normalized_stage = str(stage or "primary").strip().casefold()
+    high_risk = bool(methods & _OPENROUTER_HIGH_REASONING_METHODS)
+    # Multi-slot plans with deep follow-ups are materially harder even when
+    # the selected method itself is not one of the high-risk formats.
+    if count >= 3 and followups >= 4:
+        high_risk = True
+
+    if normalized_stage in {"quality_retry", "quality_recheck", "retry"}:
+        env_name = "OPENROUTER_QUALITY_RETRY_REASONING_EFFORT"
+        default = "high"
+        reason = "quality_retry"
+    elif high_risk:
+        env_name = "OPENROUTER_HIGH_RISK_REASONING_EFFORT"
+        # Existing local runs defaulted Ox Alpha to Max. Production pins this
+        # profile to high in vercel.json so the upgrade is bounded there.
+        default = "max"
+        reason = "high_risk_interview_method" if methods & _OPENROUTER_HIGH_REASONING_METHODS else "complex_question_plan"
+    else:
+        env_name = "OPENROUTER_PRIMARY_REASONING_EFFORT"
+        # Keep the existing local quality-first default. Production explicitly
+        # sets this variable to ``medium`` in vercel.json to bound latency.
+        default = "max"
+        reason = "standard_generation"
+
+    if normalized_stage in {"quality_retry", "quality_recheck", "retry"}:
+        configured_raw = os.getenv(env_name)
+        if configured_raw is None:
+            configured_raw = os.getenv("OPENROUTER_INVALID_OUTPUT_RETRY_REASONING_EFFORT")
+        if configured_raw is None:
+            configured_raw = os.getenv("OPENROUTER_FALLBACK_REASONING_EFFORT")
+        configured = str(configured_raw or default).strip().casefold()
+    else:
+        configured = str(os.getenv(env_name, default) or default).strip().casefold()
+    if configured not in _OPENROUTER_REASONING_EFFORTS:
+        configured = default
+    return configured, reason
+
+
 def provider_base_url(provider: Any) -> str:
     normalized = normalize_generation_provider(provider)
     if normalized == OPENROUTER_PROVIDER:
@@ -317,6 +398,9 @@ def prepare_chat_payload(payload: dict[str, Any], provider: Any) -> dict[str, An
     internal_recovery_model = str(
         prepared.pop("_openrouter_internal_recovery_model", "") or ""
     ).strip()
+    internal_reasoning_effort = str(
+        prepared.pop("_openrouter_internal_reasoning_effort", "") or ""
+    ).strip().casefold()
     recovery_model = (
         openrouter_recovery_model()
         if internal_recovery_model == "configured"
@@ -344,8 +428,10 @@ def prepare_chat_payload(payload: dict[str, Any], provider: Any) -> dict[str, An
         prepared["reasoning_effort"] = (
             recovery_effort
             if recovery_effort in {"low", "medium", "high", "xhigh"}
+            else internal_reasoning_effort
+            if internal_reasoning_effort in _OPENROUTER_REASONING_EFFORTS
             else configured_effort
-            if configured_effort in {"low", "medium", "high", "xhigh"}
+            if configured_effort in _OPENROUTER_REASONING_EFFORTS
             else "max"
         )
     for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):

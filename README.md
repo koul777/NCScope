@@ -496,6 +496,9 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8015
 | `OPENAI_STRATEGY_MODEL` | 선택 | `gpt-4o-mini` | 면접 질문 생성 모델 |
 | `OPENAI_HTTP_CURL_FALLBACK_ENABLED` | 선택 | `false` | Python HTTP 실패 시 curl fallback 사용. 요청 키 노출 위험 때문에 opt-in |
 | `OPENROUTER_TIMEOUT_SEC` | 선택 | `105` | OpenRouter 최초 호출 상한. Vercel Production은 Max 최초 시도를 `8`초로 제한 |
+| `OPENROUTER_PRIMARY_REASONING_EFFORT` | 선택 | `max` (Vercel `medium`) | 일반 생성의 추론 강도. 요청 수를 늘리지 않고 표준 단계의 지연을 제한 |
+| `OPENROUTER_HIGH_RISK_REASONING_EFFORT` | 선택 | `max` (Vercel `high`) | 발표·토론·인바스켓·창의적 문제해결력 및 복합 질문 계획에만 승격 |
+| `OPENROUTER_QUALITY_RETRY_REASONING_EFFORT` | 선택 | `high` | 품질 게이트 실패 후의 단일 재생성 단계에만 적용 |
 | `OPENROUTER_RECOVERY_MODEL` | 선택 | 없음 | OpenRouter 시간 초과·형식 복구에 사용할 서버 관리 모델 ID |
 | `OPENROUTER_FALLBACK_TIMEOUT_SEC` | 선택 | 최초 호출 상한 | 시간 초과 복구 호출 상한. Vercel Production은 `15`초 |
 | `GENERATION_REQUEST_BUDGET_SEC` | 선택 | `285` | NCS·모델 호출이 공유하는 전체 요청 예산. Vercel `maxDuration=300`보다 15초 짧게 고정 |
@@ -515,12 +518,21 @@ KSA 조회는 로컬 NCS DB 검색 서버(NCS_MCP) 연결을 기준으로 동작
 
 ```text
 OPENROUTER_PRIMARY_REASONING_EFFORT=medium
+OPENROUTER_HIGH_RISK_REASONING_EFFORT=high
+OPENROUTER_QUALITY_RETRY_REASONING_EFFORT=high
 OPENROUTER_TIMEOUT_SEC=8
 OPENROUTER_RECOVERY_MODEL=openai/gpt-oss-20b
 OPENROUTER_FALLBACK_TIMEOUT_SEC=15
 GENERATION_REQUEST_BUDGET_SEC=285
 GENERATION_MAX_MAIN_QUESTIONS=5
 ```
+
+추론 강도는 모든 요청을 고비용으로 올리지 않습니다. 경험·상황면접의 일반적인
+단일 문항은 `OPENROUTER_PRIMARY_REASONING_EFFORT`를 사용하고, 발표·토론·인바스켓·
+창의적 문제해결력면접 또는 복합 질문 계획은 `OPENROUTER_HIGH_RISK_REASONING_EFFORT`로
+승격합니다. 품질 게이트에서 실패한 문항을 재생성할 때만
+`OPENROUTER_QUALITY_RETRY_REASONING_EFFORT`를 사용합니다. 승격은 추가 후보 요청을
+만들지 않으며, 품질 재생성도 기존의 한정된 재시도 예산 안에서만 수행됩니다.
 
 ## API 요약
 
@@ -810,3 +822,6 @@ NCScope의 직무기술서·공고문 파싱 기능은 [Kordoc](https://github.c
 - 사용 목적: PDF/HWP/HWPX/DOCX/TXT/이미지 문서에서 본문·표·메타데이터를 추출해 검토 후보 생성
 - 검토 원칙: Kordoc 추출 결과는 자동 확정값이 아니며, 세분류와 공고문 핵심 텍스트는 사람이 검토·확정해야 함
 - 라이선스: Kordoc은 별도 MIT 라이선스 프로젝트이며, 자세한 내용은 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)를 확인
+### Reasoning orchestration policy (production)
+
+The server keeps ordinary one-question generation at `medium` to control latency, while high-risk interview methods and quality-gate retries use the server-owned `high` reasoning profile. The active profile is exposed by `GET /api/generation-provider/status` as `reasoning_profiles`; browser requests cannot lower or override it.
