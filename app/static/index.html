@@ -20,12 +20,13 @@
       --shadow:0 18px 48px rgba(18, 34, 56, .11);
     }
     * { box-sizing:border-box; }
-    body { margin:0; min-height:100vh; overflow-x:hidden; overflow-y:auto; background:
+    html { height:100%; }
+    body { margin:0; min-height:100%; height:100%; overflow-x:hidden; overflow-y:hidden; background:
       radial-gradient(circle at 8% 5%, rgba(14,165,163,.12), transparent 28%),
       radial-gradient(circle at 92% 8%, rgba(52,71,184,.13), transparent 30%),
       linear-gradient(180deg,#fbfcff 0%, var(--bg) 58%, #ebf1f8 100%);
       color:var(--ink); font-family:"Segoe UI","Noto Sans KR",sans-serif; letter-spacing:-.02em; }
-    .wrap { width:min(1440px, 98vw); min-height:100vh; margin:0 auto; padding:10px 14px 12px; display:grid; grid-template-rows:auto auto; gap:12px; }
+    .wrap { width:min(1440px, 98vw); height:100dvh; min-height:0; margin:0 auto; padding:10px 14px 12px; display:grid; grid-template-rows:auto minmax(0,1fr); gap:12px; }
     .hero { position:relative; overflow:hidden; background:linear-gradient(124deg,var(--navy),#243a8f 52%,#0f8f8d); color:#fff; border-radius:20px; padding:0; box-shadow:var(--shadow); }
     .hero:before { content:""; position:absolute; left:-90px; bottom:-160px; width:320px; height:320px; border-radius:50%; background:rgba(245,158,11,.16); }
     .hero:after { content:""; position:absolute; right:-60px; top:-90px; width:330px; height:330px; border-radius:50%; background:rgba(255,255,255,.12); }
@@ -37,13 +38,13 @@
     .hero-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; min-width:310px; }
     .badge { border:1px solid rgba(255,255,255,.32); background:rgba(255,255,255,.13); border-radius:999px; padding:7px 11px; font-size:12px; font-weight:800; backdrop-filter:blur(4px); }
     .build-tag { margin-top:7px; font-size:12px; opacity:.78; }
-     .grid { display:grid; grid-template-columns:minmax(360px,410px) 1fr; gap:12px; align-items:start; }
+     .grid { display:grid; grid-template-columns:minmax(360px,410px) minmax(0,1fr); gap:12px; min-height:0; height:100%; align-items:stretch; }
      .card { background:rgba(255,255,255,.96); border:1px solid rgba(198,213,233,.9); border-radius:18px; padding:16px; overflow:visible; box-shadow:var(--shadow); }
-     .input-card { height:clamp(540px, calc(100vh - 180px), 900px); display:flex; flex-direction:column; overflow:hidden; }
-     .input-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; overflow-x:hidden; padding:0 8px 8px 0; scrollbar-gutter:stable; }
-     .input-scroll::-webkit-scrollbar { width:10px; }
-     .input-scroll::-webkit-scrollbar-track { background:#eef4fb; border-radius:999px; }
-     .input-scroll::-webkit-scrollbar-thumb { background:#b5c9e2; border:2px solid #eef4fb; border-radius:999px; }
+     .input-card, .result-card { min-height:0; height:auto; display:flex; flex-direction:column; overflow:hidden; }
+     .input-scroll, .result-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; overflow-x:hidden; padding:0 8px 8px 0; scrollbar-gutter:stable; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:#b5c9e2 #eef4fb; }
+     .input-scroll::-webkit-scrollbar, .result-scroll::-webkit-scrollbar { width:10px; }
+     .input-scroll::-webkit-scrollbar-track, .result-scroll::-webkit-scrollbar-track { background:#eef4fb; border-radius:999px; }
+     .input-scroll::-webkit-scrollbar-thumb, .result-scroll::-webkit-scrollbar-thumb { background:#b5c9e2; border:2px solid #eef4fb; border-radius:999px; }
     .title { display:flex; align-items:center; gap:8px; margin:0 0 14px; font-size:18px; font-weight:900; }
     .title .step { display:inline-grid; place-items:center; width:28px; height:28px; border-radius:9px; color:#fff; background:linear-gradient(135deg,var(--primary),var(--primary-2)); font-size:14px; }
     label { display:block; margin:12px 0 6px; font-size:13px; font-weight:800; color:#162b4d; }
@@ -158,10 +159,9 @@
     .qnav-ind { font-size:13px; color:var(--muted); }
     .question-text-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .question-text-export { width:100%; min-height:190px; white-space:pre-wrap; resize:vertical; font-size:12px; font-family:Consolas, "Courier New", monospace; background:#0f1722; color:#d6e4f6; border-color:#1f2a3a; }
-     /* 결과 카드는 문서 전체 스크롤을 사용하고, 입력 카드는 .input-scroll에서만 내부 스크롤합니다. */
-    .result-scroll { max-height:none; overflow:visible; padding-right:0; }
+     /* 데스크톱에서는 상단 헤더 아래 높이를 좌우 카드가 나눠 쓰고, 각 패널만 독립 스크롤합니다. */
     .hidden { display:none !important; }
-     @media (max-width:980px){ .wrap { min-height:0; } .grid { grid-template-columns:1fr; } .input-card { height:auto; max-height:none; overflow:visible; } .input-scroll { overflow:visible; padding-right:0; } .hero-main { align-items:flex-start; flex-direction:column; } .hero-badges { justify-content:flex-start; min-width:0; } }
+     @media (max-width:980px){ body { height:auto; min-height:100%; overflow-y:auto; } .wrap { height:auto; min-height:100dvh; } .grid { grid-template-columns:1fr; height:auto; min-height:0; } .input-card, .result-card { height:auto; max-height:none; overflow:visible; } .input-scroll, .result-scroll { overflow:visible; padding-right:0; } .hero-main { align-items:flex-start; flex-direction:column; } .hero-badges { justify-content:flex-start; min-width:0; } }
     @media (max-width:560px){ .provider-key-row { grid-template-columns:repeat(3,minmax(0,1fr)); } .provider-key-row input { grid-column:1 / -1; } .provider-key-action { width:100%; min-width:0; } }
 
     /* legacy small-category helper */
@@ -493,7 +493,7 @@
 
       </section>
 
-      <section class="card">
+      <section class="card result-card">
         <h2 class="title"><span class="step">2</span>결과</h2>
         <div class="result-scroll">
           <div id="errorBox" class="pill warn" style="display:none; margin-bottom:8px;" role="alert" tabindex="-1"></div>
