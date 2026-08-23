@@ -109,6 +109,31 @@ def _recover_split_sclass_terms(
     return _dedup_keep_order(recovered)
 
 
+def _has_explicit_sclass_evidence(candidate: dict[str, Any]) -> bool:
+    """Return whether a detector candidate came from an NCS 소분류 anchor.
+
+    The detector also performs a reverse dictionary scan over the entire JD.
+    That scan is useful for suggestions, but it must not promote ordinary
+    prose (for example ``회계`` in a middle-category or duty sentence) into an
+    automatically verified 소분류.  Only anchor/table evidence is strong
+    enough for the structural extraction path; otherwise the candidate stays
+    review-only.
+    """
+    evidence = candidate.get("evidence") if isinstance(candidate, dict) else None
+    if not isinstance(evidence, list):
+        return False
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        method = str(item.get("method", "")).strip().lower()
+        snippet = str(item.get("snippet", ""))
+        if method.startswith("anchor_"):
+            return True
+        if "소분류" in snippet or "ncs소분류" in _compact(snippet):
+            return True
+    return False
+
+
 def _clamp_sclass_limit(value: int | str | None, default: int = 4) -> int:
     try:
         v = int(str(value).strip())
@@ -694,7 +719,14 @@ def extract_sclass_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[
     det_scope = extract_small_category(scope_lines, [tbl for _, tbl in scope_tables], ncs_cats)
     for c in det_scope.get("topk", []):
         lbl = str((c or {}).get("label", "")).strip()
-        if lbl and float((c or {}).get("score", 0) or 0) >= 4:
+        # Reverse-dictionary hits over ordinary duty/KSA prose are suggestions,
+        # not verified 소분류.  Promote only candidates with an explicit
+        # 소분류 anchor/table trace to prevent middle-category leakage.
+        if (
+            lbl
+            and float((c or {}).get("score", 0) or 0) >= 4
+            and _has_explicit_sclass_evidence(c)
+        ):
             candidate_terms.append(lbl)
     candidate_terms.extend(_recover_split_sclass_terms(typed_candidates, ncs_cats))
 
@@ -803,7 +835,11 @@ def extract_sclass_from_text(text: str, filename: str = "") -> dict[str, Any]:
     det_scope = extract_small_category(scope_lines, [], ncs_cats)
     for c in det_scope.get("topk", []):
         lbl = str((c or {}).get("label", "")).strip()
-        if lbl and float((c or {}).get("score", 0) or 0) >= 4:
+        if (
+            lbl
+            and float((c or {}).get("score", 0) or 0) >= 4
+            and _has_explicit_sclass_evidence(c)
+        ):
             candidate_terms.append(lbl)
     candidate_terms.extend(_recover_split_sclass_terms(typed_candidates, ncs_cats))
 
