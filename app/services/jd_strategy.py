@@ -2713,7 +2713,7 @@ def _build_ncs_code_template_fallback_question(
                 "결과에 대한 책임을 확인하고 재발을 막은 뒤",
             )[index % 5]
         question = (
-            f"{candidate_context}을 수행하던 실제 상황에서 본인이 겪은 경험 사례 하나를 골라 {experience_angle} {candidate_surface_focus}에 따라 어떤 판단과 행동을 했는지 말씀해 주세요. "
+            f"{candidate_context} 업무를 수행하던 실제 상황에서 본인이 겪은 경험 사례 하나를 골라 {experience_angle} {candidate_surface_focus}에 따라 어떤 판단과 행동을 했는지 말씀해 주세요. "
             "그 결과를 문서·수치·기록·피드백으로 어떻게 확인했으며 이후 무엇을 개선했는지도 설명해 주세요."
         )
         follow_ups = [

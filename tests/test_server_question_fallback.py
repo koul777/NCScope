@@ -124,6 +124,19 @@ def test_provider_free_fallback_does_not_copy_recruitment_notice_into_candidate_
     assert "공공기관 사무행정 담당자를 채용한다" not in visible
 
 
+def test_provider_free_experience_question_uses_natural_object_phrase() -> None:
+    question_plan, ncs_matches, ncs_ksa = _fixtures()
+    result = server_fallback.build_server_ksa_fallback_strategy(
+        question_plan=question_plan,
+        interview_methods=["경험면접"],
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+    question = result["interview_questions"][0]["question"]
+    assert "업무를 수행하던" in question
+    assert "관리을" not in question
+
+
 def test_presentation_fallback_surfaces_packet_main_task_in_question():
     question = _build_ncs_code_template_fallback_question(
         unit={
