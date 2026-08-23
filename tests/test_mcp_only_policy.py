@@ -267,6 +267,22 @@ def test_parse_review_accepts_zip_with_supported_jd_image(mocker):
     parse.assert_called_once()
 
 
+def test_parse_review_reports_image_conversion_requirement_when_ocr_fails(mocker):
+    mocker.patch(
+        "app.main.parse_with_kordoc",
+        side_effect=main.KordocParseError("image OCR failed"),
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("job-description.jpg", b"fake-image", "image/jpeg")},
+        )
+
+    assert resp.status_code == 422
+    assert "PDF로 변환" in resp.json()["detail"]
+
+
 def test_parse_review_rejects_encrypted_zip_as_422():
     data = _mark_zip_encrypted(_zip_bytes({"job_description.txt": JD_TEXT}))
 

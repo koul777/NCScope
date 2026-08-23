@@ -5602,6 +5602,14 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
                     "metadata": {"filename": name, "fallback": "pdf-text"},
                     "warnings": ["Kordoc parse failed; used PDF text fallback."],
                 }
+        if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{label} 이미지에서 텍스트를 읽지 못했습니다. "
+                    "세분류 검증을 위해 PDF로 변환해 다시 탑재해 주세요."
+                ),
+            ) from exc
         raise HTTPException(
             status_code=422,
             detail=f"{label} could not be parsed by Kordoc",
