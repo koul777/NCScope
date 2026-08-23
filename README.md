@@ -219,7 +219,7 @@ Vercel Production에서는 `OPENROUTER_ALLOW_SERVER_KEY=true`와 암호화된
 
 Ox Alpha 일반 최초 시도는 8초, 고위험 high 추론 최초 시도는 15초로 제한됩니다. 시간 초과 또는 사용할 수 없는 JSON은
 사용자가 지정한 provider로 바꾸지 않고, 서버 관리 `OPENROUTER_RECOVERY_MODEL`을
-같은 OpenRouter 연결에서 최대 82초 호출해 복구합니다. NCS 조회와 모든 모델 호출은
+같은 OpenRouter 연결에서 최대 15초 호출해 복구합니다. NCS 조회와 모든 모델 호출은
 285초 공통 요청 예산의 남은 시간으로 다시 제한됩니다.
 두 모델이 모두 실패하거나 결과가 필수 품질 경계를 통과하지 못해도 공식 KSA 근거가
 확보되어 있으면 서버가 해당 `evidence_id`에 잠긴 결정적 문항을 반환합니다. 이 결과는
