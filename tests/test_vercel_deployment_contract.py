@@ -46,6 +46,8 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["GENERATION_REQUEST_BUDGET_SEC"] == "285"
     assert environment["GENERATION_MAX_MAIN_QUESTIONS"] == "5"
     assert environment["OPENROUTER_PRIMARY_REASONING_EFFORT"] == "medium"
+    assert environment["OPENROUTER_HIGH_RISK_REASONING_EFFORT"] in {"high", "xhigh", "max"}
+    assert environment["OPENROUTER_QUALITY_RETRY_REASONING_EFFORT"] in {"high", "xhigh", "max"}
     assert environment["OPENROUTER_INVALID_OUTPUT_RETRY_REASONING_EFFORT"] == "medium"
     assert environment["OPENROUTER_INVALID_OUTPUT_RETRY_TIMEOUT_SEC"] == "15"
     assert not any("api_key" in key.casefold() for key in environment)

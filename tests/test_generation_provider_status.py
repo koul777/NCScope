@@ -69,6 +69,9 @@ def test_status_advertises_configured_openrouter_server_environment_without_echo
     server_key = "sk-or-v1-server-key-must-not-be-echoed"
     monkeypatch.setenv("OPENROUTER_API_KEY", server_key)
     monkeypatch.setenv("OPENROUTER_ALLOW_SERVER_KEY", "true")
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENROUTER_QUALITY_RETRY_REASONING_EFFORT", "high")
 
     with TestClient(main.app) as client:
         response = client.get("/api/generation-provider/status?provider=openrouter")
@@ -85,6 +88,11 @@ def test_status_advertises_configured_openrouter_server_environment_without_echo
     assert payload["authenticated"] is False
     assert payload["server_key_state"] == "configured"
     assert payload["server_key_enabled"] is True
+    assert payload["reasoning_profiles"] == {
+        "standard": "medium",
+        "high_risk": "high",
+        "quality_retry": "high",
+    }
     assert payload["generation_limits"] == {
         "max_main_questions_per_request": 5,
         "max_follow_up_questions_per_main": 5,

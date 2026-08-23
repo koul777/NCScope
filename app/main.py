@@ -83,6 +83,7 @@ from app.services.provider_config import (
     generation_provider_config,
     normalize_generation_provider,
     openrouter_recovery_model,
+    openrouter_reasoning_effort,
     resolve_generation_credential,
     resolve_generation_model,
     request_key_error_code,
@@ -8732,6 +8733,29 @@ def _generation_provider_descriptor(provider: str = "") -> dict[str, Any]:
             descriptor["server_key_state"] = server_key_state
             descriptor["recovery_model"] = recovery_model
             descriptor["recovery_enabled"] = bool(recovery_model)
+            standard_effort, _ = openrouter_reasoning_effort(
+                interview_methods=[],
+                target_count=1,
+                follow_up_count=3,
+                stage="primary",
+            )
+            high_risk_effort, _ = openrouter_reasoning_effort(
+                interview_methods=["발표면접"],
+                target_count=1,
+                follow_up_count=3,
+                stage="primary",
+            )
+            quality_retry_effort, _ = openrouter_reasoning_effort(
+                interview_methods=[],
+                target_count=1,
+                follow_up_count=3,
+                stage="quality_retry",
+            )
+            descriptor["reasoning_profiles"] = {
+                "standard": standard_effort,
+                "high_risk": high_risk_effort,
+                "quality_retry": quality_retry_effort,
+            }
             if server_key_state == "configured":
                 descriptor.update(
                     {
