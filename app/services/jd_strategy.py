@@ -2475,17 +2475,14 @@ def _build_ncs_code_template_fallback_question(
         str(case_slot_signature or "").strip() or fallback_slot_id
     )
 
-    job_excerpt = _job_context_excerpt(
-        job_context_text,
-        anchors=[detail, label, *pool[:3]],
-        limit=220,
-    )
-    candidate_context = job_excerpt or context_label
-    # Keep source-derived context compact and candidate-readable. The full
-    # notice/JD remains available in the request trace; this excerpt ensures
-    # provider-free recovery questions still name the actual advertised work.
-    if job_excerpt:
-        candidate_context = f"공고·직무기술서상 {job_excerpt}"
+    # The full notice/JD is retained in the request trace and review payload,
+    # but it must never be copied into candidate-facing fallback text.  OCR and
+    # provider failures can turn a recruitment sentence into a bogus context
+    # such as ``공고·직무기술서상 ... 채용한다.에서``.  The validated NCS unit
+    # label is already job-specific and is safe to compose into a question.
+    # Keep source-derived excerpts out of this renderer entirely; model-backed
+    # paths receive the full context separately and pass the common leak guard.
+    candidate_context = context_label
 
     if method == "상황면접":
         scenario_variants = (

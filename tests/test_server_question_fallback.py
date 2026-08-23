@@ -99,6 +99,31 @@ def test_provider_free_fallback_keeps_all_interview_methods_distinct() -> None:
         assert len(set(questions)) == 5, method
 
 
+def test_provider_free_fallback_does_not_copy_recruitment_notice_into_candidate_text() -> None:
+    question_plan, ncs_matches, ncs_ksa = _fixtures()
+    result = server_fallback.build_server_ksa_fallback_strategy(
+        question_plan=question_plan,
+        interview_methods=["상황면접"],
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+        job_context_text=(
+            "[담당업무]공공기관 사무행정 담당자를 채용한다.\n"
+            "[직무기술서]공고문과 업무 자료를 확인하고 문서·보고서를 작성한다."
+        ),
+    )
+    visible = " ".join(
+        str(value or "")
+        for question in result["interview_questions"]
+        for value in (
+            question.get("question"),
+            *(question.get("follow_ups") or []),
+            *(question.get("evaluation_points") or []),
+        )
+    )
+    assert "공고·직무기술서상" not in visible
+    assert "공공기관 사무행정 담당자를 채용한다" not in visible
+
+
 def test_presentation_fallback_surfaces_packet_main_task_in_question():
     question = _build_ncs_code_template_fallback_question(
         unit={
