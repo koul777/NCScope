@@ -95,6 +95,31 @@ def test_attitude_support_intention_becomes_a_readable_support_behavior() -> Non
     assert not has_dangling_surface(surface)
 
 
+def test_malformed_decision_attitude_falls_back_to_ncs_element() -> None:
+    surface, source = public_task_object(
+        factor_name="대안을 선택가능한 결정적 행동",
+        ksa_type="태도",
+        element_name="대안 선택하기",
+        competency_name="전직지원",
+    )
+
+    assert surface == "대안 선택 수행 시 행동 기준"
+    assert source == "element_name"
+    assert "선택가능" not in surface
+    assert "결정적 행동" not in surface
+
+
+def test_strategic_hr_knowledge_surface_is_nominalized() -> None:
+    surface, source = public_task_object(
+        factor_name="전략적인 인적자원관리",
+        ksa_type="지식",
+        competency_name="인사기획",
+    )
+
+    assert surface == "전략적 인적자원관리 확인·판단 기준"
+    assert source == "factor_repair"
+
+
 def test_surface_issue_codes_rejects_action_plus_generic_performance_glue() -> None:
     issues = surface_issue_codes(
         _row("프로젝트 관리 영역들 간의 관계를 조율하는 능력", "기술"),

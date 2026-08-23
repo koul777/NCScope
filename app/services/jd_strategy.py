@@ -2624,14 +2624,17 @@ def _build_ncs_code_template_fallback_question(
         str(case_slot_signature or "").strip() or fallback_slot_id
     )
 
-    # The full notice/JD and official NCS labels are retained in the request
-    # trace and review payload, but neither belongs in candidate-facing
-    # fallback text. OCR/provider failures can turn recruitment boilerplate or
-    # a taxonomy label into a prompt that reads like an instruction. Model-
-    # backed paths receive validated job context through their own leak guard;
-    # the deterministic fallback stays generic and visibly degraded while the
-    # trace panel keeps the exact unit.
-    candidate_context = "해당 직무"
+    # Keep the deterministic fallback anchored to the selected NCS competency
+    # instead of hiding every question behind ``해당 직무``. The unit label is
+    # short, already human-reviewed, and gives the candidate an observable
+    # work context when the provider path is unavailable.
+    candidate_context = context_label
+    if (
+        not candidate_context
+        or len(candidate_context) > 80
+        or candidate_context.startswith("NCS-")
+    ):
+        candidate_context = "해당 직무"
 
     if method == "상황면접":
         scenario_variants = (
@@ -2861,8 +2864,43 @@ def _build_ncs_code_template_fallback_question(
                 "협업 부서와 이해 충돌 속에서 보고 순서를 조정한 뒤",
                 "결과에 대한 책임을 확인하고 재발을 막은 뒤",
             )[index % 5]
+        def _object_particle(value: str) -> str:
+            last_char = value[-1:] if value else ""
+            has_batchim = bool(
+                last_char
+                and 0xAC00 <= ord(last_char) <= 0xD7A3
+                and ((ord(last_char) - 0xAC00) % 28) != 0
+            )
+            return "을" if has_batchim else "를"
+
+        if ksa_kind == "지식":
+            experience_prompt = (
+                f"{candidate_context}에서 {surface_focus}{_object_particle(surface_focus)} 적용했던 실제 상황 하나를 골라 "
+                f"{experience_angle} 어떤 기준으로 판단했는지 말씀해 주세요."
+            )
+        elif ksa_kind == "기술":
+            experience_prompt = (
+                f"{candidate_context}에서 {surface_focus}{_object_particle(surface_focus)} 수행했던 실제 상황 하나를 골라 "
+                f"{experience_angle} 어떤 순서로 조치하고 결과를 확인했는지 말씀해 주세요."
+            )
+        elif ksa_kind == "태도":
+            attitude_focus = re.sub(
+                r"\s*(?:수행\s*시\s*)?행동\s*기준\s*$",
+                "",
+                candidate_surface_focus,
+            ).strip()
+            object_marker = _object_particle(attitude_focus)
+            experience_prompt = (
+                f"{candidate_context}에서 {attitude_focus}{object_marker} 보여준 실제 상황 하나를 골라 "
+                f"{experience_angle} 어떤 행동을 직접 선택했는지 말씀해 주세요."
+            )
+        else:
+            experience_prompt = (
+                f"{candidate_context}에서 업무를 수행하던 실제 상황 하나를 골라 "
+                f"{experience_angle} {candidate_surface_focus}에 따라 어떤 판단과 행동을 했는지 말씀해 주세요."
+            )
         question = (
-            f"{candidate_context}에서 업무를 수행하던 실제 상황 하나를 골라 {experience_angle} {candidate_surface_focus}에 따라 어떤 판단과 행동을 했는지 말씀해 주세요. "
+            f"{experience_prompt} "
             "그 결과를 문서·수치·기록·피드백으로 어떻게 확인했으며 이후 무엇을 개선했는지도 설명해 주세요."
         )
         follow_ups = [

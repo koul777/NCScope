@@ -258,6 +258,10 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             "",
             candidate,
         ).strip()
+        # Some extracted rows already contain the public suffix. Remove it
+        # before rebuilding the surface so ``행동 기준 행동 기준`` cannot be
+        # produced.
+        candidate = re.sub(r"\s*행동\s*기준\s*$", "", candidate).strip()
         # NCS rows sometimes end with a purpose clause such as
         # ``입사예정자의 조직적응을 적극적으로 도와주고자 하는 태도``.
         # After removing ``태도`` the remaining ``...도와주고자`` must be
@@ -268,6 +272,11 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             candidate,
         ).strip()
         candidate = _nominalize_attitude_clause(candidate)
+        # ``선택가능한 결정적 행동`` is an incomplete/non-operational source
+        # fragment, not a measurable task. Let the caller fall back to the
+        # NCS element or competency name instead of exposing it verbatim.
+        if re.search(r"선택\s*가능|결정적\s*$|결정적\s+행동", candidate):
+            return ""
         if _DANGLING_END_RE.search(candidate):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
         candidate = re.sub(
@@ -308,6 +317,7 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         if _DANGLING_END_RE.search(candidate):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
         knowledge_base = _nominalize_capability_clause(candidate)
+        knowledge_base = re.sub(r"전략적인", "전략적", knowledge_base).strip()
         knowledge_base = re.sub(r"\s+관련\s+", " ", knowledge_base).strip()
         knowledge_base = re.sub(r"\s*(?:개념|원리|이론)\s*$", "", knowledge_base).strip()
         knowledge_base = re.sub(r"\s*종류\s*$", " 유형 구분", knowledge_base).strip()
