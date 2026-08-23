@@ -11998,6 +11998,7 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                         if str(value or "").strip()
                     )
                 )
+                detail_table_found = bool(structural_result.get("detail_table_found"))
                 recovered_candidates = _parse_sclass_terms(
                     "\n".join(
                         str(value or "").strip()
@@ -12005,7 +12006,11 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                         if str(value or "").strip()
                     )
                 )
-                if detail_candidates:
+                # An explicit 세분류 column is authoritative, including when
+                # its value is "해당사항 없음". Do not fall back to the
+                # neighbouring 소분류 (for example 법무/인사·조직) in that
+                # case; an empty list correctly signals human review.
+                if detail_table_found or detail_candidates:
                     recovered_candidates = detail_candidates
                 if recovered_candidates:
                     structured_fields["ncs_detail_candidates"] = recovered_candidates
@@ -12044,6 +12049,10 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                             }
                             for candidate in recovered_candidates
                         ]
+                elif detail_table_found:
+                    structured_fields["ncs_detail_candidates"] = []
+                    structured_fields["ncs_detail_source"] = "pdf_table_detail_empty"
+                    structured_fields["ncs_detail_candidate_evidence"] = []
                     structured_fields["ncs_detail_absence_reason"] = ""
                     structured_fields["ncs_detail_absence_state"] = ""
                     structured_fields["ncs_detail_absence_evidence"] = ""

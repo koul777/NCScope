@@ -193,3 +193,26 @@ def test_pdf_detail_table_does_not_promote_no_mapping_placeholder():
     ]
 
     assert _extract_detail_candidates_from_tables(tables) == []
+
+
+def test_pdf_detail_table_collects_detail_rows_across_role_tables():
+    tables = [
+        (
+            1,
+            [
+                ["분류체계", "대분류", "중분류", "소분류", "세분류"],
+                ["", "05.법률", "01.법률", "01.법무", "해당사항 없음"],
+            ],
+        ),
+        (
+            2,
+            [
+                ["분류체계", "대분류", "중분류", "소분류", "세분류"],
+                ["", "02.경영·회계·사무", "02.총무·인사", "02.인사·조직", "01.노무관리"],
+            ],
+        ),
+    ]
+
+    rows = _extract_detail_candidates_from_tables(tables)
+
+    assert [row["label"] for row in rows] == ["노무관리"]

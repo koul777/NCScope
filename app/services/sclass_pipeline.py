@@ -605,9 +605,9 @@ def _extract_detail_candidates_from_tables(
         "필요자격",
         "참고사이트",
     }
+    all_collected: list[dict[str, Any]] = []
     for page_no, table in scope_tables:
         active_detail_index: int | None = None
-        collected: list[dict[str, Any]] = []
         for row in table[:16]:
             if not row:
                 continue
@@ -644,7 +644,7 @@ def _extract_detail_candidates_from_tables(
                 continue
             for cell in value_cells:
                 for label in _clean_pdf_detail_cell(cell):
-                    collected.append(
+                    all_collected.append(
                         {
                             "label": label,
                             "page": int(page_no),
@@ -652,29 +652,43 @@ def _extract_detail_candidates_from_tables(
                             "raw": label,
                         }
                     )
-        if collected:
-            seen: set[str] = set()
-            unique: list[dict[str, Any]] = []
-            for item in collected:
-                key = re.sub(r"\s+", "", str(item["label"])).casefold()
-                if key in seen:
-                    continue
-                seen.add(key)
-                unique.append(item)
-            return unique
-    return []
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for item in all_collected:
+        key = re.sub(r"\s+", "", str(item["label"])).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _has_detail_table_header(
+    tables: list[tuple[int, list[list[str]]]],
+) -> bool:
+    """Return whether a PDF table explicitly exposes a 세분류 column."""
+    for _page_no, table in tables:
+        for row in table:
+            if any(
+                re.sub(r"\s+", "", str(cell or "")) == "세분류"
+                for cell in (row or [])
+            ):
+                return True
+    return False
 
 
 def extract_detail_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[str, Any]:
     """Return human-reviewable NCS 세분류 candidates from a PDF table."""
     _ = filename
     parsed = _extract_pdf_content(pdf_bytes, max_pages=6)
-    details = _extract_detail_candidates_from_tables(parsed["scope_tables"])
+    details = _extract_detail_candidates_from_tables(parsed["all_tables"])
+    detail_table_found = _has_detail_table_header(parsed["all_tables"])
     return {
         "matched": [str(item["label"]) for item in details],
         "detail_candidates": [str(item["label"]) for item in details],
         "detail_candidate_evidence": details,
         "source": "pdf_table_detail" if details else "",
+        "detail_table_found": detail_table_found,
     }
 
 
@@ -833,7 +847,11 @@ def extract_sclass_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[
     all_tables = parsed["all_tables"]
     scope_lines = [str(r.get("line", "")) for r in scope_rows]
     scope_text = "\n".join(scope_lines)
-    detail_table_rows = _extract_detail_candidates_from_tables(scope_tables)
+    # Classification tables can be split across pages (and a single PDF may
+    # contain separate role tables). Inspect every extracted table instead of
+    # only the first scope window so later roles are not silently dropped.
+    detail_table_rows = _extract_detail_candidates_from_tables(all_tables)
+    detail_table_found = _has_detail_table_header(all_tables)
 
     typed_candidates = _collect_scope_candidates(scope_rows, scope_tables)
     candidate_terms = [
@@ -945,6 +963,7 @@ def extract_sclass_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[
         "detail_candidates": [str(item.get("label", "")) for item in detail_table_rows],
         "detail_candidate_evidence": detail_table_rows,
         "detail_source": "pdf_table_detail" if detail_table_rows else "",
+        "detail_table_found": detail_table_found,
         "matched_detail": matched_detail,
         "unmatched_detail": unmatched_detail,
         "rejected": rejected,
