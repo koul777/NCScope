@@ -138,6 +138,41 @@ class Settings:
     def openai_key_source(self, request_key: str = "") -> str:
         return "request" if str(request_key or "").strip() else "missing"
 
+    def resolve_openrouter_key(self, request_key: str = "") -> str:
+        """Resolve an optional request override, then the opted-in server key."""
+
+        request_value = str(request_key or "").strip()
+        if request_value:
+            return request_value
+        if self.openrouter_server_key_state() == "configured":
+            return os.getenv("OPENROUTER_API_KEY", "").strip()
+        return ""
+
+    def openrouter_key_source(self, request_key: str = "") -> str:
+        if str(request_key or "").strip():
+            return "request"
+        return "server_env" if self.openrouter_server_key_state() == "configured" else "missing"
+
+    def openrouter_server_key_enabled(self) -> bool:
+        return os.getenv("OPENROUTER_ALLOW_SERVER_KEY", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+        }
+
+    def openrouter_server_key_state(self) -> str:
+        """Return a non-secret deployment state for the shared OpenRouter key."""
+
+        if not self.openrouter_server_key_enabled():
+            return "disabled"
+        value = os.getenv("OPENROUTER_API_KEY", "").strip()
+        if not value:
+            return "missing"
+        if not value.startswith("sk-or-"):
+            return "invalid"
+        return "configured"
+
     def admin_token(self) -> str:
         return os.getenv("ADMIN_TOKEN", "").strip()
 

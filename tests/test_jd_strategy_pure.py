@@ -901,6 +901,61 @@ def test_openai_short_primary_and_short_slim_are_explicit_model_failure(
     assert result["interview_questions"] == []
 
 
+def test_openai_overfull_primary_is_trimmed_without_retry(monkeypatch) -> None:
+    calls = 0
+    monkeypatch.delenv("OPENAI_FORCE_FALLBACK", raising=False)
+    monkeypatch.setattr(
+        type(jd_strategy.settings),
+        "resolve_openai_key",
+        lambda _self, _override: "request-key",
+    )
+    monkeypatch.setattr(
+        jd_strategy,
+        "_check_openai_connectivity",
+        lambda **_: (True, ""),
+    )
+
+    def overfull_response(**_kwargs):
+        nonlocal calls
+        calls += 1
+        content = {
+            "interview_questions": [
+                {"question": f"Model-authored question {index}"}
+                for index in range(1, 4)
+            ]
+        }
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ]
+        }
+
+    monkeypatch.setattr(
+        jd_strategy,
+        "post_chat_completions_with_retries",
+        overfull_response,
+    )
+
+    result = jd_strategy.build_strategy_with_openai(
+        jd_text="Job description",
+        notice_text="Public institution hiring notice",
+        strengths="",
+        region="",
+        ncs_matches=[],
+        ncs_ksa=[],
+        target_count_override=2,
+        api_key_override="request-key",
+    )
+
+    assert calls == 1
+    assert len(result["interview_questions"]) == 2
+    assert result["provider_generation_request_count"] == 1
+    assert result["provider_generation_notes"] == [
+        "model_question_count_trimmed:3->2"
+    ]
+    assert "error" not in result
+
+
 def test_openai_provider_keeps_complete_similar_rows_for_slot_level_quality_retry(
     monkeypatch,
 ) -> None:

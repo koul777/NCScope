@@ -20,12 +20,12 @@
       --shadow:0 18px 48px rgba(18, 34, 56, .11);
     }
     * { box-sizing:border-box; }
-    body { margin:0; height:100vh; overflow:hidden; background:
+    body { margin:0; min-height:100vh; overflow-x:hidden; overflow-y:auto; background:
       radial-gradient(circle at 8% 5%, rgba(14,165,163,.12), transparent 28%),
       radial-gradient(circle at 92% 8%, rgba(52,71,184,.13), transparent 30%),
       linear-gradient(180deg,#fbfcff 0%, var(--bg) 58%, #ebf1f8 100%);
       color:var(--ink); font-family:"Segoe UI","Noto Sans KR",sans-serif; letter-spacing:-.02em; }
-    .wrap { width:min(1440px, 98vw); height:100vh; margin:0 auto; padding:10px 14px 12px; display:grid; grid-template-rows:auto 1fr; gap:12px; }
+    .wrap { width:min(1440px, 98vw); min-height:100vh; margin:0 auto; padding:10px 14px 12px; display:grid; grid-template-rows:auto auto; gap:12px; }
     .hero { position:relative; overflow:hidden; background:linear-gradient(124deg,var(--navy),#243a8f 52%,#0f8f8d); color:#fff; border-radius:20px; padding:0; box-shadow:var(--shadow); }
     .hero:before { content:""; position:absolute; left:-90px; bottom:-160px; width:320px; height:320px; border-radius:50%; background:rgba(245,158,11,.16); }
     .hero:after { content:""; position:absolute; right:-60px; top:-90px; width:330px; height:330px; border-radius:50%; background:rgba(255,255,255,.12); }
@@ -37,8 +37,13 @@
     .hero-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; min-width:310px; }
     .badge { border:1px solid rgba(255,255,255,.32); background:rgba(255,255,255,.13); border-radius:999px; padding:7px 11px; font-size:12px; font-weight:800; backdrop-filter:blur(4px); }
     .build-tag { margin-top:7px; font-size:12px; opacity:.78; }
-    .grid { display:grid; grid-template-columns:minmax(360px,410px) 1fr; gap:12px; min-height:0; }
-    .card { background:rgba(255,255,255,.96); border:1px solid rgba(198,213,233,.9); border-radius:18px; padding:16px; min-height:0; overflow:auto; box-shadow:var(--shadow); }
+     .grid { display:grid; grid-template-columns:minmax(360px,410px) 1fr; gap:12px; align-items:start; }
+     .card { background:rgba(255,255,255,.96); border:1px solid rgba(198,213,233,.9); border-radius:18px; padding:16px; overflow:visible; box-shadow:var(--shadow); }
+     .input-card { height:clamp(540px, calc(100vh - 180px), 900px); display:flex; flex-direction:column; overflow:hidden; }
+     .input-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; overflow-x:hidden; padding:0 8px 8px 0; scrollbar-gutter:stable; }
+     .input-scroll::-webkit-scrollbar { width:10px; }
+     .input-scroll::-webkit-scrollbar-track { background:#eef4fb; border-radius:999px; }
+     .input-scroll::-webkit-scrollbar-thumb { background:#b5c9e2; border:2px solid #eef4fb; border-radius:999px; }
     .title { display:flex; align-items:center; gap:8px; margin:0 0 14px; font-size:18px; font-weight:900; }
     .title .step { display:inline-grid; place-items:center; width:28px; height:28px; border-radius:9px; color:#fff; background:linear-gradient(135deg,var(--primary),var(--primary-2)); font-size:14px; }
     label { display:block; margin:12px 0 6px; font-size:13px; font-weight:800; color:#162b4d; }
@@ -76,12 +81,20 @@
     .provider-status-pill.good { border-color:#bce7cd; background:#f0fcf5; color:var(--good); }
     .provider-status-pill.warn { border-color:#f6dea3; background:#fff9ea; color:var(--warn); }
     .provider-message { margin:8px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
+    .provider-model-note { display:flex; align-items:center; gap:7px; margin-top:8px; padding:8px 10px; border:1px solid #cfe1f5; border-radius:10px; background:#fff; color:#17345c; font-size:12px; font-weight:850; line-height:1.4; }
+    .provider-model-note::before { content:"AI"; display:inline-grid; place-items:center; flex:none; width:25px; height:25px; border-radius:8px; background:#e8f3ff; color:#255a99; font-size:10px; font-weight:950; }
     .provider-key-note { margin-top:8px; color:#17345c; font-size:12px; font-weight:900; }
     .provider-key-field { margin-top:10px; }
     .provider-key-field label { margin:0 0 6px; }
-    .provider-key-row { display:grid; grid-template-columns:1fr auto; gap:7px; align-items:center; }
+    .provider-key-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; gap:7px; align-items:center; }
     .provider-key-row input { min-width:0; }
-    .provider-key-clear { width:auto; min-width:58px; margin:0; padding:10px 11px; border:1px solid #cbdcf0; background:#fff; color:#24446c; box-shadow:none; }
+    .provider-key-action { width:auto; min-width:58px; margin:0; padding:10px 11px; border:1px solid #cbdcf0; background:#fff; color:#24446c; box-shadow:none; }
+    .provider-key-action:focus-visible, .provider-refresh:focus-visible { outline:3px solid rgba(47,143,219,.28); outline-offset:2px; }
+    .provider-key-onboarding { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:8px; padding:9px 10px; border:1px solid #cfe1f5; border-radius:10px; background:#f8fbff; color:#415a77; font-size:11.5px; line-height:1.45; }
+    .provider-key-onboarding strong { color:#17345c; }
+    .provider-key-onboarding a { flex:none; border:1px solid #9fc6e8; border-radius:9px; padding:6px 9px; background:#fff; color:#1f5f99; font-weight:900; text-decoration:none; white-space:nowrap; }
+    .provider-key-onboarding a:hover { background:#edf7ff; }
+    .provider-key-onboarding a:focus-visible { outline:3px solid rgba(47,143,219,.28); outline-offset:2px; }
     .provider-security-warning { margin-top:8px; padding:8px 10px; border:1px solid #f3cf8c; border-radius:10px; background:#fff8e8; color:#7a4b08; font-size:11.5px; line-height:1.45; }
     .provider-security-warning strong { display:block; margin-bottom:2px; }
     .provider-error { margin-top:8px; color:#b42318; font-size:12px; line-height:1.4; }
@@ -89,6 +102,19 @@
     .guardrail-box { margin:10px 0 12px; padding:12px 13px; border:1px solid #d9e7f5; border-radius:16px; background:linear-gradient(180deg,#fff,#f7fbff); }
     .guardrail-box strong { display:block; margin-bottom:5px; font-size:13px; color:#17345c; }
     .guardrail-box span { display:block; color:var(--muted); font-size:12px; line-height:1.45; }
+    .upload-requirements { margin:12px 0; padding:13px; border:2px solid #7eb8e8; border-radius:16px; background:linear-gradient(145deg,#eef8ff,#f8fcff 58%,#f0fbf7); }
+    .upload-requirements-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:9px; }
+    .upload-requirements-head strong { display:block; color:#153b68; font-size:14px; line-height:1.35; }
+    .upload-requirements-head span { display:block; margin-top:3px; color:#4f6580; font-size:12px; line-height:1.4; }
+    .required-badge { flex:none; margin:0 !important; padding:5px 8px; border-radius:999px; background:#173b68; color:#fff !important; font-size:10.5px !important; font-weight:900; }
+    .required-documents { display:grid; gap:8px; }
+    .required-document { padding:10px; border:1px solid #c9dff2; border-radius:12px; background:rgba(255,255,255,.9); }
+    .required-document label { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 5px; }
+    .required-document label span:first-child { color:#17345c; font-size:13px; font-weight:900; }
+    .required-document .document-purpose { margin:0 0 8px; color:var(--muted); font-size:11.5px; line-height:1.4; }
+    .document-state { flex:none; border:1px solid #f0cf91; border-radius:999px; padding:3px 7px; background:#fff8e8; color:#8a570c; font-size:10.5px; font-weight:900; white-space:nowrap; }
+    .document-state.ready { border-color:#a7dfbf; background:#f0fcf5; color:var(--good); }
+    .upload-requirements-note { margin-top:9px; padding:8px 10px; border-left:3px solid #e28413; border-radius:7px; background:#fff9ec; color:#74450a; font-size:11.5px; font-weight:800; line-height:1.45; }
     .review-panel { margin-top:14px; padding:14px; border:1px solid #cbdcf0; border-radius:16px; background:linear-gradient(180deg,#fbfdff,#f3f8ff); }
     .review-panel-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:6px; }
     .review-panel-head label { margin:0; }
@@ -127,14 +153,21 @@
     .quality-summary { display:flex; flex-wrap:wrap; gap:7px; margin:0 0 10px; }
     .quality-summary .pill { margin:0; }
     .quality-notice { flex-basis:100%; border-left:3px solid var(--primary-2); padding:7px 10px; color:var(--muted); background:#f4fbfb; border-radius:6px; font-size:12px; line-height:1.45; }
+     .presentation-material-result { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 10px; padding:10px 12px; border:1px solid #b9ddec; border-radius:12px; background:#f2fbff; }
+     .presentation-material-result strong { display:block; color:#17345c; font-size:13px; }
+     .presentation-material-result .sub { margin-top:3px; }
+     .presentation-material-prompt { margin-top:8px; padding:9px 10px; border-left:3px solid #0f766e; border-radius:7px; background:#fff; color:#17345c; font-size:12.5px; line-height:1.55; }
+     .presentation-material-download { width:auto; flex:none; margin:0; padding:8px 11px; border-radius:8px; background:#0f766e; box-shadow:none; white-space:nowrap; }
     .qnav { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .qnav-btn { width:auto; margin:0; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--ink); font-weight:700; }
     .qnav-ind { font-size:13px; color:var(--muted); }
     .question-text-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .question-text-export { width:100%; min-height:190px; white-space:pre-wrap; resize:vertical; font-size:12px; font-family:Consolas, "Courier New", monospace; background:#0f1722; color:#d6e4f6; border-color:#1f2a3a; }
-    .result-scroll { max-height:calc(100vh - 210px); overflow:auto; padding-right:4px; }
+     /* 결과 카드는 문서 전체 스크롤을 사용하고, 입력 카드는 .input-scroll에서만 내부 스크롤합니다. */
+    .result-scroll { max-height:none; overflow:visible; padding-right:0; }
     .hidden { display:none !important; }
-    @media (max-width:980px){ body { overflow:auto; height:auto; } .wrap { height:auto; } .grid { grid-template-columns:1fr; } .hero-main { align-items:flex-start; flex-direction:column; } .hero-badges { justify-content:flex-start; min-width:0; } .result-scroll { max-height:none; } }
+     @media (max-width:980px){ .wrap { min-height:0; } .grid { grid-template-columns:1fr; } .input-card { height:auto; max-height:none; overflow:visible; } .input-scroll { overflow:visible; padding-right:0; } .hero-main { align-items:flex-start; flex-direction:column; } .hero-badges { justify-content:flex-start; min-width:0; } }
+    @media (max-width:560px){ .provider-key-row { grid-template-columns:repeat(3,minmax(0,1fr)); } .provider-key-row input { grid-column:1 / -1; } .provider-key-action { width:100%; min-width:0; } }
 
     /* legacy small-category helper */
     .sclass-block { margin-top:10px; }
@@ -198,7 +231,7 @@
       <div class="hero-main">
         <div>
           <h1>NCScope</h1>
-          <p>직무기술서에서 세분류 후보를 추출하고, 공고문 담당업무·평가항목을 보완한 뒤 KSA 근거 구조화면접 초안을 생성합니다.</p>
+          <p>공공기관 채용공고문과 해당 NCS 기반 직무기술서를 함께 탑재해, 공고 맥락과 KSA 근거를 잇는 구조화면접 초안을 생성합니다.</p>
           <div class="build-tag">Original interface · Kordoc parsing · Human Review · Local NCS DB evidence</div>
         </div>
         <div class="hero-badges">
@@ -211,8 +244,10 @@
     </section>
 
     <div class="grid">
-      <section class="card">
+      <section class="card input-card">
         <h2 class="title"><span class="step">1</span>입력</h2>
+
+        <div class="input-scroll">
 
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
           <label for="inputMode" style="margin:0; white-space:nowrap; font-size:13px; font-weight:700;">입력 방식</label>
@@ -222,54 +257,91 @@
           </select>
         </div>
 
+        <section id="uploadRequirementsCard" class="upload-requirements" aria-labelledby="uploadRequirementsTitle">
+          <div class="upload-requirements-head">
+            <div>
+              <strong id="uploadRequirementsTitle">먼저, 같은 채용 건의 필수 자료 2종을 탑재하세요</strong>
+              <span>아래 두 자료를 모두 준비하면 별도 안내문 없이 바로 시작할 수 있습니다.</span>
+            </div>
+            <span class="required-badge">2종 모두 필수</span>
+          </div>
+          <div class="required-documents">
+            <div class="required-document">
+              <label for="noticeFile">
+                <span>1. 공공기관 채용공고문</span>
+                <span id="noticeUploadState" class="document-state" role="status">선택 필요</span>
+              </label>
+              <p id="noticeFileHelp" class="document-purpose">담당업무·지원자격·우대사항·면접 평가항목을 질문 맥락에 반영합니다.</p>
+              <input id="noticeFile" type="file" accept=".pdf,.docx,.txt,.zip" required aria-describedby="noticeFileHelp uploadRequirementsNote" />
+            </div>
+            <div class="required-document">
+              <label for="jdFile">
+                <span>2. 해당 공고의 NCS 기반 직무기술서</span>
+                <span id="jdUploadState" class="document-state" role="status">선택 필요</span>
+              </label>
+              <p id="jdFileHelp" class="document-purpose">NCS 세분류와 KSA 근거를 확인해 구조화면접 질문의 평가 기준을 만듭니다.</p>
+              <input id="jdFile" type="file" accept=".pdf,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt" required aria-describedby="jdFileHelp uploadRequirementsNote" />
+            </div>
+          </div>
+          <div id="uploadRequirementsNote" class="upload-requirements-note">공고문과 직무기술서는 서로 같은 채용 직무의 자료여야 합니다. 둘 중 하나라도 없으면 파일 업로드 방식의 질문 생성을 진행할 수 없습니다. HWP/HWPX는 PDF로 변환해 탑재하세요.</div>
+        </section>
+
         <section id="generationProviderCard" class="provider-card" aria-labelledby="generationProviderName" aria-describedby="generationProviderMessage" aria-busy="true">
           <div class="provider-card-head">
             <div class="provider-card-title">
-              <span>요청 단위 API</span>
-              <strong id="generationProviderName">OpenAI API · 요청 단위 키</strong>
+              <span>질문 생성 API</span>
+              <strong id="generationProviderName">OpenRouter · Ox Alpha</strong>
             </div>
             <span id="generationProviderBadge" class="provider-status-pill" role="status" aria-live="polite">확인 중</span>
           </div>
-          <p id="generationProviderMessage" class="provider-message">OpenAI API 요청 방식과 키 입력 상태를 확인하고 있습니다.</p>
+          <p id="generationProviderMessage" class="provider-message">Vercel 서버의 OpenRouter 키 연결 상태를 확인하고 있습니다.</p>
+          <div id="generationProviderModelNote" class="provider-model-note" role="status" aria-live="polite">OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구</div>
           <div class="provider-key-field">
-            <label for="openaiApiKey">OpenAI API 키</label>
+            <label id="generationApiKeyLabel" for="generationApiKey">개인 API 키 (선택)</label>
             <div class="provider-key-row">
               <input
-                id="openaiApiKey"
+                id="generationApiKey"
                 type="password"
                 autocomplete="off"
                 autocapitalize="none"
                 spellcheck="false"
                 data-lpignore="true"
                 data-1p-ignore="true"
-                placeholder="요청에 사용할 API 키를 입력하세요"
-                aria-describedby="generationProviderKeyNote apiKeySecurityWarning"
+                placeholder="입력하지 않아도 됩니다 · 개인 키로 바꾸려면 입력"
+                aria-describedby="openRouterKeyHelp generationProviderKeyNote apiKeySecurityWarning generationProviderError"
+                aria-errormessage="generationProviderError"
               />
-              <button id="btnClearOpenAiApiKey" class="provider-key-clear" type="button">지우기</button>
+              <button id="btnToggleApiKey" class="provider-key-action" type="button" aria-controls="generationApiKey" aria-pressed="false" aria-label="API 키 표시">표시</button>
+              <button id="btnPasteApiKey" class="provider-key-action" type="button" aria-controls="generationApiKey">붙여넣기</button>
+              <button id="btnClearApiKey" class="provider-key-action" type="button" aria-controls="generationApiKey">지우기</button>
             </div>
           </div>
-          <div id="generationProviderKeyNote" class="provider-key-note">키는 현재 페이지 탭 메모리에만 유지되며 새로고침하거나 탭을 닫으면 사라집니다.</div>
+          <div id="openRouterKeyHelp" class="provider-key-onboarding" role="note">
+            <span><strong>서버 키를 기본으로 사용합니다.</strong> 개인 키로 바꾸려는 경우에만 <code>sk-or-…</code> 형태의 키를 입력하세요.</span>
+            <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener noreferrer">OpenRouter 키 발급 ↗</a>
+          </div>
+          <div id="generationProviderKeyNote" class="provider-key-note">Vercel Production 서버 키가 연결되면 브라우저에 키를 입력하지 않아도 됩니다.</div>
           <div id="apiKeySecurityWarning" class="provider-security-warning" role="note">
             <strong>보안 경고</strong>
-            키는 생성 요청 본문으로 이 서버를 거칩니다. HTTPS 연결에서만 입력하세요. 브라우저 확장·개발자 도구에서 보일 수 있습니다. 공용 PC·공용 브라우저에서는 API 키를 입력하지 말고, 사용 후 반드시 탭을 닫으세요.
+            키는 자동 감지한 공급자의 생성 요청에만 포함되어 이 서버를 거칩니다. HTTPS에서만 입력하세요. 브라우저 저장소·쿠키에는 저장하지 않으며, 공용 PC에서는 사용하지 마세요.
           </div>
-          <div id="generationProviderError" class="provider-error" role="alert" hidden></div>
+          <div id="generationProviderError" class="provider-error" role="alert" tabindex="-1" hidden></div>
 
           <button id="btnRefreshGenerationProvider" class="provider-refresh" type="button" aria-controls="generationProviderCard">API 방식 새로고침</button>
         </section>
 
         <div class="workflow-menu" aria-label="검토 단계">
           <div id="flowApi" class="flow-step active">
-            <strong>1. OpenAI API 키</strong>
-            <span>요청 단위 키 입력 상태 확인 중</span>
+            <strong>1. AI API 키</strong>
+            <span>사용자 OpenRouter 키 입력 대기</span>
           </div>
           <div id="flowJd" class="flow-step">
-            <strong>2. 직무기술서 세분류</strong>
-            <span>Kordoc 추출값을 사람이 확정</span>
+            <strong>2. NCS 직무기술서</strong>
+            <span>필수 업로드 후 세분류를 사람이 확정</span>
           </div>
           <div id="flowNotice" class="flow-step">
-            <strong>3. 공고문 핵심텍스트</strong>
-            <span>부족한 담당업무·자격·우대·평가항목 보완</span>
+            <strong>3. 공공기관 공고문</strong>
+            <span>필수 업로드 후 핵심텍스트를 검토·적용</span>
           </div>
           <div id="flowGenerate" class="flow-step">
             <strong>4. 질문 생성</strong>
@@ -283,40 +355,40 @@
         </div>
 
         <div id="uploadBlock">
-          <label for="jdFile">직무기술서 파일 (필수)</label>
-          <div class="sub" style="margin:-2px 0 6px;">PDF/DOCX/TXT/이미지 또는 지원 문서를 담은 ZIP</div>
-          <input id="jdFile" type="file" accept=".pdf,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt" />
-
           <div id="jdReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
               <label style="margin:0;">Kordoc 자동 추출 검토</label>
               <span id="jdReviewStatus" class="sub">파일을 분석합니다...</span>
             </div>
-            <p class="sub" style="margin:6px 0 10px;">자동 추출값을 확인·수정한 뒤 확정해야 로컬 NCS DB 조회와 면접 질문 생성을 진행합니다.</p>
+            <p class="sub" style="margin:6px 0 10px;">자동 추출값을 확인한 뒤 확정해야 로컬 NCS DB 조회와 면접 질문 생성을 진행합니다.</p>
             <label for="reviewDuties">수행업무</label>
             <textarea id="reviewDuties" rows="4" placeholder="Kordoc이 추출한 수행업무"></textarea>
             <label for="reviewQualifications">지원자격</label>
             <textarea id="reviewQualifications" rows="3" placeholder="Kordoc이 추출한 지원자격"></textarea>
             <label for="reviewPreferences">우대사항</label>
             <textarea id="reviewPreferences" rows="2" placeholder="Kordoc이 추출한 우대사항"></textarea>
-            <label for="reviewNcsDetail">확정할 세분류</label>
-            <textarea id="reviewNcsDetail" rows="2" placeholder="예: 경영기획"></textarea>
+            <label for="reviewNcsDetail">확정할 세분류 1개</label>
+            <select id="reviewNcsDetail" class="dropdown" aria-describedby="reviewNcsDetailHelp">
+              <option value="">세분류 후보를 기다리는 중...</option>
+            </select>
+            <div id="reviewNcsDetailHelp" class="sub" style="margin-top:4px;">Kordoc 후보 중 1개를 선택합니다. 후보가 없으면 재분석 또는 다른 파일 확인이 필요합니다.</div>
             <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
           </div>
 
           <div id="questionOptionBlock" class="option-card">
             <label style="margin-top:0;">질문 생성 커스터마이징</label>
-            <p class="sub" style="margin:4px 0 8px;">면접에서 볼 세분류, 주질문 수, 꼬리질문 수를 지정합니다.</p>
+            <p class="sub" style="margin:4px 0 8px;">한 번에 세분류 1개, 면접 형태 1개, 주질문 최대 5개를 실행합니다. 추가 문항은 생성 후 ‘다른 질문 생성’으로 이어서 만들 수 있습니다.</p>
             <div class="default-plan-grid">
               <div>
                 <label for="defaultMainCount">기본 주질문 수</label>
-                <input id="defaultMainCount" type="number" min="1" max="10" value="3" />
+                <input id="defaultMainCount" type="number" min="1" max="5" value="1" />
               </div>
               <div>
                 <label for="defaultFollowCount">주질문당 기본 꼬리질문 수</label>
                 <input id="defaultFollowCount" type="number" min="3" max="5" value="3" />
               </div>
             </div>
+            <div id="questionPlanCapacity" class="sub" role="status" aria-live="polite" style="margin:8px 0; padding:8px 10px; border:1px solid #cfe1f5; border-radius:9px; background:#f8fbff;">주질문 합계 0/5 · 추가 문항은 생성 후 ‘다른 질문 생성’으로 이어서 만들 수 있습니다.</div>
             <div style="margin-top:10px; padding:10px; border:1px dashed #c7d8ee; border-radius:10px; background:#fbfdff;">
               <label style="margin-top:0;">
                 <input id="showAllGeneratedQuestions" type="checkbox" checked />
@@ -332,33 +404,42 @@
                 placeholder="공백이면 기본값 사용"
               />
             </div>
-            <div id="questionPlanEmpty" class="sub" style="margin:8px 0;">직무기술서에서 세분류가 추출되거나 직접 입력되면, 여기에서 어떤 세분류의 면접질문을 생성할지 선택할 수 있습니다.</div>
+            <div id="questionPlanEmpty" class="sub" style="margin:8px 0;">직무기술서에서 세분류 후보가 추출되면, 여기에서 질문을 생성할 세분류 1개를 확인할 수 있습니다.</div>
             <label id="questionPlanLabel" style="display:none; margin-top:10px;">질문 대상 세분류 선택</label>
             <div id="questionPlanHead" class="plan-head" style="display:none;">
               <span></span><span>세분류</span><span>주질문</span><span>꼬리</span>
             </div>
             <div id="questionPlanRows"></div>
 
-            <label style="margin-top:12px;">면접 기법</label>
-            <div class="method-grid">
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="경험면접" checked /> 경험(행동)면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="상황면접" checked /> 상황면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="발표면접" checked /> 발표면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="토론면접" checked /> 토론면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="인바스켓면접" checked /> 인바스켓면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="직무지식면접" checked /> 직무지식면접</label>
-              <label class="method-item"><input type="checkbox" name="interviewMethod" value="창의적 문제해결력면접" checked /> 창의적 문제해결력면접</label>
+            <label for="interviewMethodSelect" style="margin-top:12px;">면접 형태 1개</label>
+            <select id="interviewMethodSelect" class="dropdown" aria-describedby="interviewMethodHelp">
+              <option value="경험면접" selected>경험(행동)면접</option>
+              <option value="상황면접">상황면접</option>
+              <option value="발표면접">발표면접</option>
+              <option value="토론면접">토론면접</option>
+              <option value="인바스켓면접">인바스켓면접</option>
+              <option value="직무지식면접">직무지식면접</option>
+              <option value="창의적 문제해결력면접">창의적 문제해결력면접</option>
+            </select>
+            <div id="interviewMethodHelp" class="sub" style="margin-top:4px;">이번 실행에서 사용할 면접 형태 1개만 선택합니다.</div>
+
+            <div id="presentationMaterialBlock" class="presentation-material-block" style="display:none; margin-top:12px; padding:10px; border:1px solid #cfe1f5; border-radius:10px; background:#f8fbff;">
+              <label style="margin-top:0;">발표자료 자동 구성</label>
+              <div class="sub" style="margin:4px 0 8px;">발표면접을 선택하면 서버가 공고문·직무기술서·NCS KSA를 바탕으로 발표 과제 자료를 자동 구성합니다. 생성 후 결과에서 파일로 내려받을 수 있습니다.</div>
+              <label for="presentationMaterialText" style="margin-top:8px;">추가 보완자료 (선택)</label>
+              <textarea id="presentationMaterialText" rows="3" maxlength="6000" placeholder="기관이 제공한 추가 현황·표·제약이 있으면 입력하세요."></textarea>
+              <label for="presentationMaterialFile" style="margin-top:8px;">보완자료 파일 (선택)</label>
+              <input id="presentationMaterialFile" type="file" accept=".pdf,.docx,.txt,.zip,.png,.jpg,.jpeg,.webp" aria-describedby="presentationMaterialHelp" />
+              <div id="presentationMaterialHelp" class="sub" style="margin-top:4px;">PDF·DOCX·TXT·ZIP·이미지 파일을 지원합니다. HWP/HWPX는 PDF로 변환하세요.</div>
+              <div id="presentationMaterialState" class="sub" role="status" aria-live="polite">자동 생성 자료에 필요한 경우에만 보완자료를 추가합니다.</div>
             </div>
           </div>
 
           <div id="runActionBlock">
-            <button id="btnRun" type="button">직무기술서 선택 후 면접 질문 생성</button>
-            <div id="runHint" class="sub">직무기술서를 선택하고 Kordoc 추출 결과를 검토·확정하면 로컬 NCS DB KSA 기반 질문 생성을 실행합니다.</div>
+            <button id="btnRun" type="button" disabled>필수 자료 2종 선택 후 면접 질문 생성</button>
+            <div id="runHint" class="sub">공공기관 채용공고문과 해당 NCS 기반 직무기술서를 모두 탑재하고 추출 결과를 검토·확정해 주세요.</div>
           </div>
 
-          <label for="noticeFile">공고문 파일 (선택)</label>
-          <div class="sub" style="margin:-2px 0 6px;">PDF/DOCX/TXT 또는 지원 문서를 담은 ZIP</div>
-          <input id="noticeFile" type="file" accept=".pdf,.docx,.txt,.zip" />
           <div id="noticeReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
               <label style="margin:0;">공고문 핵심 텍스트 검토</label>
@@ -418,9 +499,12 @@
             <button id="btnRefreshNcs" type="button" style="background:#475569;">목록 새로고침</button>
           </div>
 
-          <label for="ncsSelect">NCS 코드 선택 (다중 선택)</label>
-          <select id="ncsSelect" multiple></select>
-          <div class="sub" id="selectedCount">선택된 NCS 코드: 0</div>
+          <label for="ncsSelect">NCS 세분류·능력단위 1개 선택</label>
+          <select id="ncsSelect" class="dropdown">
+            <option value="">검색 결과에서 1개를 선택하세요</option>
+          </select>
+          <div class="sub" id="selectedCount">선택된 NCS 코드: 없음</div>
+        </div>
         </div>
 
       </section>
@@ -428,19 +512,23 @@
       <section class="card">
         <h2 class="title"><span class="step">2</span>결과</h2>
         <div class="result-scroll">
-          <div id="errorBox" class="pill warn" style="display:none; margin-bottom:8px;"></div>
+          <div id="errorBox" class="pill warn" style="display:none; margin-bottom:8px;" role="alert" tabindex="-1"></div>
 
-          <div id="progressWrap" class="progress-wrap">
+          <div id="progressWrap" class="progress-wrap" role="status" aria-live="polite" aria-atomic="true">
             <div class="progress-top">
               <strong id="progressStage">요청 준비 중...</strong>
               <span id="progressTime">0.0s</span>
             </div>
-            <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+            <div id="generationProgressBar" class="progress-bar" role="progressbar" aria-labelledby="progressStage" aria-describedby="progressNote" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progressFill" class="progress-fill"></div></div>
             <div id="progressNote" class="progress-note">생성 중입니다. 페이지를 닫지 마세요.</div>
           </div>
 
           <div id="meta" class="meta"></div>
-          <div id="qualitySummary" class="quality-summary" style="display:none;"></div>
+           <div id="qualitySummary" class="quality-summary" style="display:none;"></div>
+           <div id="presentationMaterialResult" class="presentation-material-result" style="display:none;" aria-live="polite">
+             <div style="min-width:0; flex:1;"><strong id="presentationMaterialResultTitle">발표자료가 준비되었습니다.</strong><div id="presentationMaterialResultMeta" class="sub">공고문·직무기술서·NCS KSA 기반 · 사람 검토 필요</div><div id="presentationMaterialResultPrompt" class="presentation-material-prompt" style="display:none;"></div></div>
+             <button id="btnDownloadPresentationMaterial" class="presentation-material-download" type="button">발표자료 Word 다운로드</button>
+           </div>
 
           <div class="section">
             <h3>파이프라인 진단</h3>
@@ -508,15 +596,22 @@
     const progressWrap = document.getElementById('progressWrap');
     const progressStage = document.getElementById('progressStage');
     const progressTime = document.getElementById('progressTime');
+    const generationProgressBar = document.getElementById('generationProgressBar');
     const progressFill = document.getElementById('progressFill');
     const progressNote = document.getElementById('progressNote');
     const qualitySummary = document.getElementById('qualitySummary');
+    const presentationMaterialResult = document.getElementById('presentationMaterialResult');
+    const presentationMaterialResultTitle = document.getElementById('presentationMaterialResultTitle');
+    const presentationMaterialResultMeta = document.getElementById('presentationMaterialResultMeta');
+    const presentationMaterialResultPrompt = document.getElementById('presentationMaterialResultPrompt');
+    const btnDownloadPresentationMaterial = document.getElementById('btnDownloadPresentationMaterial');
     const btnPrevQ = document.getElementById('btnPrevQ');
     const btnNextQ = document.getElementById('btnNextQ');
     const qIndicator = document.getElementById('qIndicator');
     const btnCopyGeneratedQuestionsText = document.getElementById('btnCopyGeneratedQuestionsText');
     const generatedQuestionsText = document.getElementById('generatedQuestionsText');
     const inputMode = document.getElementById('inputMode');
+    const uploadRequirementsCard = document.getElementById('uploadRequirementsCard');
     const uploadBlock = document.getElementById('uploadBlock');
     const manualBlock = document.getElementById('manualBlock');
     const questionOptionBlock = document.getElementById('questionOptionBlock');
@@ -528,16 +623,24 @@
     const generationProviderKeyNote = document.getElementById('generationProviderKeyNote');
     const generationProviderError = document.getElementById('generationProviderError');
     const btnRefreshGenerationProvider = document.getElementById('btnRefreshGenerationProvider');
-    const openaiApiKey = document.getElementById('openaiApiKey');
-    const btnClearOpenAiApiKey = document.getElementById('btnClearOpenAiApiKey');
+    const generationProviderModelNote = document.getElementById('generationProviderModelNote');
+    const generationApiKeyLabel = document.getElementById('generationApiKeyLabel');
+    const generationApiKey = document.getElementById('generationApiKey');
+    const btnToggleApiKey = document.getElementById('btnToggleApiKey');
+    const btnPasteApiKey = document.getElementById('btnPasteApiKey');
+    const btnClearApiKey = document.getElementById('btnClearApiKey');
     const apiKeySecurityWarning = document.getElementById('apiKeySecurityWarning');
     const jdFile = document.getElementById('jdFile');
     const noticeFile = document.getElementById('noticeFile');
+    const jdUploadState = document.getElementById('jdUploadState');
+    const noticeUploadState = document.getElementById('noticeUploadState');
     const dutyText = document.getElementById('dutyText');
     const qualificationText = document.getElementById('qualificationText');
     const preferenceText = document.getElementById('preferenceText');
     const evalText = document.getElementById('evalText');
     const evalTextManual = document.getElementById('evalTextManual');
+    const noticeText = document.getElementById('noticeText');
+    const strengthsInput = document.getElementById('strengths');
     const jdReviewBlock = document.getElementById('jdReviewBlock');
     const jdReviewStatus = document.getElementById('jdReviewStatus');
     const reviewDuties = document.getElementById('reviewDuties');
@@ -557,6 +660,12 @@
     const questionPlanRows = document.getElementById('questionPlanRows');
     const defaultMainCount = document.getElementById('defaultMainCount');
     const defaultFollowCount = document.getElementById('defaultFollowCount');
+    const questionPlanCapacity = document.getElementById('questionPlanCapacity');
+    const interviewMethodSelect = document.getElementById('interviewMethodSelect');
+    const presentationMaterialBlock = document.getElementById('presentationMaterialBlock');
+    const presentationMaterialText = document.getElementById('presentationMaterialText');
+    const presentationMaterialFile = document.getElementById('presentationMaterialFile');
+    const presentationMaterialState = document.getElementById('presentationMaterialState');
     const showAllGeneratedQuestions = document.getElementById('showAllGeneratedQuestions');
     const generatedQuestionsMaxItems = document.getElementById('generatedQuestionsMaxItems');
     const flowApi = document.getElementById('flowApi');
@@ -571,6 +680,7 @@
     let progressIdx = 0;
     let progressStepsActive = null;
     let progressSlowState = null;
+    let progressSlowAfterSeconds = 20;
     let currentQuestions = [];
     let questionHistory = [];
     let questionHistoryContext = '';
@@ -580,10 +690,39 @@
     let questionGenerationInFlight = false;
     let currentQPage = 0;
     let currentQualityControl = null;
+    let currentPresentationMaterialPacket = null;
     let generationProviderStatus = null;
     let generationProviderLoading = false;
     let generationProviderLoadError = '';
     let generationProviderRequestId = 0;
+    let generationProviderDetectionTimer = 0;
+    let lastDetectedGenerationProvider = '';
+    const MAX_SINGLE_UPLOAD_FILE_BYTES = 4 * 1024 * 1024;
+    const MAX_COMBINED_GENERATION_UPLOAD_BYTES = 3 * 1024 * 1024;
+    const MAX_PRESENTATION_MATERIAL_TEXT_CHARS = 6000;
+    const MAX_PRESENTATION_MATERIAL_FILE_BYTES = 2 * 1024 * 1024;
+    const MAX_REVIEW_NCS_DETAIL_CHARS = 2000;
+    const MAX_NOTICE_TEXT_CHARS = 12000;
+    const MAX_STRENGTHS_CHARS = 2000;
+    const UPLOAD_TEXT_FIELD_LIMITS = Object.freeze({
+      dutyText: 3000,
+      qualificationText: 2400,
+      preferenceText: 2400,
+      evalText: 2400,
+      evalTextManual: 2400,
+      presentationMaterialText: MAX_PRESENTATION_MATERIAL_TEXT_CHARS,
+    });
+    const SUPPORTED_INTERVIEW_METHODS = Object.freeze([
+      '경험면접',
+      '상황면접',
+      '발표면접',
+      '토론면접',
+      '인바스켓면접',
+      '직무지식면접',
+      '창의적 문제해결력면접',
+    ]);
+    const DEFAULT_GENERATION_MAX_MAIN_QUESTIONS = 5;
+    const MAX_QUESTION_HISTORY_ITEMS = 50;
     const QUESTION_PAGE_SIZE = 5;
     let questionListMode = 'preview';
     let questionTextCopyTimer = 0;
@@ -611,11 +750,11 @@
         seen.add(key);
         merged.push(text);
       });
-      questionHistory = merged.slice(-500);
+      questionHistory = merged.slice(-MAX_QUESTION_HISTORY_ITEMS);
     }
 
     function currentQuestionTexts() {
-      return questionHistory.slice(-500);
+      return questionHistory.slice(-MAX_QUESTION_HISTORY_ITEMS);
     }
 
     async function readApiResponse(response) {
@@ -653,9 +792,9 @@
         runHint.textContent = '검토 저장이 끝난 뒤 새 문항을 생성해야 피드백이 다음 생성에 반영됩니다.';
         return;
       }
-      if (jdParsing) {
+      if (jdParsing || noticeParsing) {
         btn.disabled = true;
-        btn.textContent = '직무기술서 분석 중...';
+        btn.textContent = jdParsing ? '직무기술서 분석 중...' : '공고문 분석 중...';
         return;
       }
       btn.disabled = false;
@@ -679,18 +818,114 @@
     let allNcsCats = [];   // 자동완성용 전체 NCS 소분류 목록
     let extractedSclassBase = []; // 파일에서 처음 추출된 소분류(삭제 계산 기준)
     let jdReviewPayload = null;
+    let noticeReviewPayload = null;
     let reviewConfirmed = false;
     let noticeReviewConfirmed = false;
     let jdParsing = false;
     let noticeParsing = false;
 
     const blockedUploadExtensions = new Set(['.hwp', '.hwpx']);
+    function formatBinaryMiB(bytes) {
+      return `${(Number(bytes || 0) / (1024 * 1024)).toFixed(1)}MiB`;
+    }
+
     function isBlockedUploadFile(file) {
       const name = String((file && file.name) || '').toLowerCase();
       const dot = name.lastIndexOf('.');
       if (dot === -1) return false;
       return blockedUploadExtensions.has(name.slice(dot));
     }
+
+    function uploadPayloadBoundaryState(nextField = '', nextFile = null) {
+      const jd = nextField === 'jd' ? nextFile : (jdFile.files && jdFile.files[0]);
+      const notice = nextField === 'notice' ? nextFile : (noticeFile.files && noticeFile.files[0]);
+      const presentation = nextField === 'presentation'
+        ? nextFile
+        : (presentationMaterialFile?.files && presentationMaterialFile.files[0]);
+      const presentationSelected = String(interviewMethodSelect?.value || '').trim() === '발표면접';
+      const files = [
+        ['직무기술서 파일', jd, jdFile],
+        ['공고문 파일', notice, noticeFile],
+      ];
+      if (presentationSelected) files.push(['발표 자료 파일', presentation, presentationMaterialFile]);
+      for (const [label, file, target] of files) {
+        if (file && Number(file.size || 0) > MAX_SINGLE_UPLOAD_FILE_BYTES) {
+          return {
+            kind: 'file_size',
+            button: '파일 4MiB 이하로 조정',
+            message: `${label}은(는) ${formatBinaryMiB(MAX_SINGLE_UPLOAD_FILE_BYTES)} 이하만 업로드할 수 있습니다. 현재 ${formatBinaryMiB(file.size)}입니다.`,
+            target,
+          };
+        }
+      }
+      if (jd && notice) {
+        const combinedSize = Number(jd.size || 0) + Number(notice.size || 0)
+          + (presentationSelected && presentation ? Number(presentation.size || 0) : 0);
+        if (combinedSize > MAX_COMBINED_GENERATION_UPLOAD_BYTES) {
+          return {
+            kind: 'combined_upload_size',
+            button: '파일 2종 합산 용량 줄이기',
+            message: presentationSelected
+              ? `생성 요청에 전송되는 파일 합산은 ${formatBinaryMiB(MAX_COMBINED_GENERATION_UPLOAD_BYTES)} 이하로 맞춰 주세요. 현재 ${formatBinaryMiB(combinedSize)}입니다.`
+              : `생성 요청은 직무기술서·공고문 PDF와 검토 JSON을 함께 전송하므로 두 파일 합산은 ${formatBinaryMiB(MAX_COMBINED_GENERATION_UPLOAD_BYTES)} 이하로 맞춰 주세요. 현재 ${formatBinaryMiB(combinedSize)}입니다.`,
+            target: nextField === 'notice'
+              ? noticeFile
+              : (nextField === 'presentation' ? presentationMaterialFile : jdFile),
+          };
+        }
+      }
+      return null;
+    }
+
+    function textBoundaryIssue(mode = inputMode.value || 'upload') {
+      const candidates = mode === 'manual'
+        ? [
+          ['직접입력 공고문 텍스트', noticeText, MAX_NOTICE_TEXT_CHARS],
+          ['직접입력 평가항목 텍스트', evalTextManual, UPLOAD_TEXT_FIELD_LIMITS.evalTextManual],
+          ['발표 자료 텍스트', presentationMaterialText, UPLOAD_TEXT_FIELD_LIMITS.presentationMaterialText],
+          ['강점 텍스트', strengthsInput, MAX_STRENGTHS_CHARS],
+        ]
+        : [
+          ['확정 세분류', reviewNcsDetail, MAX_REVIEW_NCS_DETAIL_CHARS],
+          ['담당업무 텍스트', dutyText, UPLOAD_TEXT_FIELD_LIMITS.dutyText],
+          ['지원자격 텍스트', qualificationText, UPLOAD_TEXT_FIELD_LIMITS.qualificationText],
+          ['우대사항 텍스트', preferenceText, UPLOAD_TEXT_FIELD_LIMITS.preferenceText],
+          ['면접 평가항목 텍스트', evalText, UPLOAD_TEXT_FIELD_LIMITS.evalText],
+          ['발표 자료 텍스트', presentationMaterialText, UPLOAD_TEXT_FIELD_LIMITS.presentationMaterialText],
+          ['강점 텍스트', strengthsInput, MAX_STRENGTHS_CHARS],
+        ];
+      for (const [label, element, limit] of candidates) {
+        if (!element) continue;
+        const length = String(element.value || '').trim().length;
+        if (length > limit) {
+          return {
+            kind: 'text_too_large',
+            button: `${label} 줄이기`,
+            message: `${label}은(는) ${limit.toLocaleString('ko-KR')}자 이하로 입력해 주세요. 현재 ${length.toLocaleString('ko-KR')}자입니다.`,
+            target: element,
+          };
+        }
+      }
+      return null;
+    }
+
+    function clientInputBoundaryIssue(mode = inputMode.value || 'upload') {
+      const currentMode = mode || 'upload';
+      return (currentMode === 'upload' ? uploadPayloadBoundaryState() : null)
+        || textBoundaryIssue(currentMode);
+    }
+
+    function showClientBoundaryError(issue) {
+      if (!issue) return;
+      errorBox.style.display = 'block';
+      errorBox.textContent = issue.message;
+      errorBox.focus();
+      raw.textContent = issue.message;
+      if (issue.target && typeof issue.target.focus === 'function') {
+        issue.target.focus({ preventScroll: true });
+      }
+    }
+
     function setUploadFormatError(fileLabel) {
       const msg = `${fileLabel}은(는) HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.`;
       errorBox.style.display = 'block';
@@ -714,26 +949,78 @@
       return out;
     }
 
-    const INSTITUTION_GENERATION_PROVIDER = 'openai_api';
+    const GENERATION_PROVIDER_CONFIGS = Object.freeze({
+      openai_api: Object.freeze({
+        label: 'OpenAI API · 요청 단위 키',
+        shortLabel: 'OpenAI API',
+        modelNote: 'OpenAI · GPT-5.6 Sol · Max 추론',
+      }),
+      openrouter_api: Object.freeze({
+        label: 'OpenRouter · 요청 단위 키',
+        shortLabel: 'OpenRouter',
+        modelNote: 'OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구',
+      }),
+    });
+    const AUTO_PROVIDER_CONFIG = Object.freeze({
+      label: 'OpenRouter · Ox Alpha',
+      shortLabel: 'OpenRouter',
+      modelNote: 'OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구',
+    });
     const GENERATION_PROVIDER_LABELS = {
-      openai_api: 'OpenAI API · 요청 단위 키',
+      openai_api: GENERATION_PROVIDER_CONFIGS.openai_api.label,
+      openrouter_api: GENERATION_PROVIDER_CONFIGS.openrouter_api.label,
       model: 'OpenAI API 모델',
       codex_cli: 'Codex',
       claude_code: 'Claude Code',
     };
 
-    function generationProviderLabel(provider=INSTITUTION_GENERATION_PROVIDER) {
+    function currentGenerationApiKey() {
+      return String(generationApiKey.value || '').trim();
+    }
+
+    function detectedGenerationProvider(apiKey=currentGenerationApiKey()) {
+      const key = String(apiKey || '').trim();
+      if (key.startsWith('sk-or-')) return 'openrouter_api';
+      if (key.startsWith('sk-')) return 'openai_api';
+      return '';
+    }
+
+    function generationProviderConfig(provider=detectedGenerationProvider()) {
+      return GENERATION_PROVIDER_CONFIGS[provider] || AUTO_PROVIDER_CONFIG;
+    }
+
+    function generationProviderLabel(provider=detectedGenerationProvider()) {
       return String(
         generationProviderStatus?.provider === provider
           ? (generationProviderStatus.provider_label || GENERATION_PROVIDER_LABELS[provider])
-          : (GENERATION_PROVIDER_LABELS[provider] || provider || 'OpenAI API')
+          : (GENERATION_PROVIDER_LABELS[provider] || provider || '질문 생성 API')
       );
     }
 
-    function requestScopedApiStatusValid(status=generationProviderStatus) {
+    function serverEnvApiStatusValid(status=generationProviderStatus, provider='openrouter_api') {
       return Boolean(
         status
-        && status.provider === INSTITUTION_GENERATION_PROVIDER
+        && provider === 'openrouter_api'
+        && status.provider === provider
+        && status.status === 'configured'
+        && status.available === true
+        && status.authenticated === false
+        && status.credential_configured === true
+        && status.auth_mode === 'server_env_api_key'
+        && status.credential_managed_by === 'server_env'
+        && status.requires_request_api_key === false
+        && status.local_only === false
+      );
+    }
+
+    function requestScopedApiStatusValid(status=generationProviderStatus, provider=detectedGenerationProvider()) {
+      const effectiveProvider = provider || (
+        status?.provider === 'openrouter_api' ? 'openrouter_api' : ''
+      );
+      const requestScoped = Boolean(
+        status
+        && Boolean(effectiveProvider)
+        && status.provider === effectiveProvider
         && status.status === 'key_required'
         && status.available === true
         && status.authenticated === false
@@ -743,69 +1030,118 @@
         && status.requires_request_api_key === true
         && status.local_only === false
       );
+      return requestScoped || serverEnvApiStatusValid(status, effectiveProvider);
     }
 
-    function currentOpenAiApiKey() {
-      return String(openaiApiKey.value || '').trim();
+    function generationCredentialPayload(apiKey) {
+      return apiKey ? { generation_api_key: apiKey } : {};
     }
 
     function apiKeyTransportIsSecure() {
       return window.isSecureContext === true;
     }
 
+    function updateGenerationProviderCopy() {
+      const serverConfigured = serverEnvApiStatusValid();
+      const provider = detectedGenerationProvider() || (serverConfigured ? 'openrouter_api' : '');
+      const config = generationProviderConfig(provider);
+      generationProviderModelNote.textContent = config.modelNote;
+      generationApiKeyLabel.textContent = serverConfigured ? '개인 API 키 (선택)' : 'AI API 키';
+      generationApiKey.setAttribute('aria-label', serverConfigured ? '개인 API 키 (선택)' : 'AI API 키');
+      generationApiKey.placeholder = apiKeyTransportIsSecure()
+        ? (serverConfigured
+          ? '입력하지 않아도 됩니다 · 개인 키로 바꾸려면 입력'
+          : 'OpenRouter sk-or-… (OpenAI sk-…도 지원)')
+        : 'HTTPS 연결이 필요합니다';
+      generationProviderKeyNote.textContent = serverConfigured
+        ? 'Vercel Production 서버 키로 연결되어 브라우저에 키를 입력하지 않아도 됩니다.'
+        : (provider
+          ? `${config.shortLabel}로 자동 감지했습니다. 입력 키는 브라우저에 저장되지 않습니다.`
+          : '개인 키를 입력한 경우에만 현재 요청에 사용되며 브라우저에 저장되지 않습니다.');
+    }
+
     function applyApiKeyTransportGuard() {
       const secure = apiKeyTransportIsSecure();
-      openaiApiKey.disabled = !secure;
+      generationApiKey.disabled = !secure;
+      btnToggleApiKey.disabled = !secure;
+      btnPasteApiKey.disabled = !secure;
+      btnClearApiKey.disabled = !secure;
       apiKeySecurityWarning.setAttribute('role', secure ? 'note' : 'alert');
-      if (!secure) {
-        openaiApiKey.placeholder = 'HTTPS 연결이 필요합니다';
-      }
+      updateGenerationProviderCopy();
+    }
+
+    function setApiKeyVisibility(visible) {
+      generationApiKey.type = visible ? 'text' : 'password';
+      btnToggleApiKey.textContent = visible ? '숨기기' : '표시';
+      btnToggleApiKey.setAttribute('aria-pressed', visible ? 'true' : 'false');
+      btnToggleApiKey.setAttribute('aria-label', visible ? 'API 키 숨기기' : 'API 키 표시');
     }
 
     function requestScopedApiReady(status=generationProviderStatus) {
-      return apiKeyTransportIsSecure()
-        && requestScopedApiStatusValid(status)
-        && Boolean(currentOpenAiApiKey());
+      if (serverEnvApiStatusValid(status)) return true;
+      if (!apiKeyTransportIsSecure()) return false;
+      return requestScopedApiStatusValid(status) && Boolean(currentGenerationApiKey());
     }
 
     function generationProviderBlockReason() {
-      if (!apiKeyTransportIsSecure()) {
+      const apiKey = currentGenerationApiKey();
+      const serverConfigured = serverEnvApiStatusValid();
+      const detectedProvider = detectedGenerationProvider(apiKey) || (serverConfigured ? 'openrouter_api' : '');
+      const config = generationProviderConfig(detectedProvider);
+      if (apiKey && !apiKeyTransportIsSecure()) {
         return {
+          kind: 'transport',
           button: 'HTTPS 연결 후 생성',
           message: 'API 키 보호를 위해 HTTPS 연결에서만 질문 생성을 사용할 수 있습니다.',
         };
       }
       if (generationProviderLoading) {
         return {
-          button: 'OpenAI API 확인 중...',
-          message: 'OpenAI API 요청 방식 확인이 끝날 때까지 기다려 주세요.',
+          kind: 'loading',
+          button: `${config.shortLabel} 확인 중...`,
+          message: `${config.shortLabel} 요청 방식 확인이 끝날 때까지 기다려 주세요.`,
         };
       }
       if (generationProviderLoadError || !generationProviderStatus) {
         return {
-          button: 'OpenAI API 상태 확인 필요',
-          message: 'OpenAI API 상태를 새로고침한 뒤 다시 시도해 주세요.',
+          kind: 'status',
+          button: `${config.shortLabel} 상태 확인 필요`,
+          message: `${config.shortLabel} 상태를 새로고침한 뒤 다시 시도해 주세요.`,
         };
       }
-      if (generationProviderStatus.provider !== INSTITUTION_GENERATION_PROVIDER) {
+      if (!apiKey && !serverConfigured) {
+        const serverModeExpected = generationProviderStatus?.provider === 'openrouter_api'
+          && generationProviderStatus?.server_key_enabled === true;
         return {
-          button: 'OpenAI API 설정 확인 필요',
-          message: '서버가 OpenAI API가 아닌 생성 엔진 상태를 반환했습니다. 관리자에게 설정 확인을 요청해 주세요.',
+          kind: serverModeExpected ? 'status' : 'key',
+          button: serverModeExpected ? '서버 키 설정 확인' : 'API 키 입력 후 생성',
+          message: serverModeExpected
+            ? String(generationProviderStatus?.message || 'Vercel Production 서버 키 설정을 확인해 주세요.')
+            : 'OpenRouter API 키(sk-or-…)를 입력하거나 서버 키 연결을 확인해 주세요.',
+        };
+      }
+      if (!detectedProvider) {
+        return {
+          kind: 'key',
+          button: 'API 키 형식 확인',
+          message: 'OpenAI sk-… 또는 OpenRouter sk-or-… 형식의 API 키인지 확인해 주세요.',
+        };
+      }
+      if (generationProviderStatus.provider !== detectedProvider) {
+        return {
+          kind: 'status',
+          button: `${config.shortLabel} 설정 확인 필요`,
+          message: `서버가 선택한 ${config.shortLabel}와 다른 생성 엔진 상태를 반환했습니다.`,
         };
       }
       if (!requestScopedApiStatusValid()) {
         return {
-          button: 'OpenAI API 상태 확인 후 생성',
+          kind: 'status',
+          button: `${config.shortLabel} 상태 확인 후 생성`,
           message: String(
             generationProviderStatus.message
-            || '서버의 요청 단위 OpenAI API 설정을 확인해 주세요.'
+            || `서버의 요청 단위 ${config.shortLabel} 설정을 확인해 주세요.`
           ),
-        };
-      }
-      if (!currentOpenAiApiKey()) {
-        return {
-          button: 'OpenAI API 키 입력 후 생성',
-          message: '현재 요청에 사용할 OpenAI API 키를 입력해 주세요. 키는 이 탭에만 유지됩니다.',
         };
       }
       return null;
@@ -818,30 +1154,54 @@
     }
 
     function renderGenerationProviderStatus() {
+      const serverConfigured = serverEnvApiStatusValid();
+      const detectedProvider = detectedGenerationProvider() || (serverConfigured ? 'openrouter_api' : '');
       const provider = String(generationProviderStatus?.provider || '');
       const providerState = String(generationProviderStatus?.status || '');
+      const config = generationProviderConfig(detectedProvider || 'openrouter_api');
 
-      generationProviderCard.setAttribute('aria-busy', generationProviderLoading ? 'true' : 'false');
+      updateGenerationProviderCopy();
+      generationProviderCard.setAttribute('aria-busy', (generationProviderLoading || questionGenerationInFlight) ? 'true' : 'false');
       btnRefreshGenerationProvider.disabled = generationProviderLoading;
       btnRefreshGenerationProvider.textContent = generationProviderLoading
-        ? 'API 방식 확인 중...'
-        : 'API 방식 새로고침';
+        ? `${config.shortLabel} 확인 중...`
+        : `${config.shortLabel} 상태 새로고침`;
       generationProviderError.hidden = true;
       generationProviderError.textContent = '';
-      generationProviderKeyNote.textContent = '키는 현재 페이지 탭 메모리에만 유지되며 새로고침하거나 탭을 닫으면 사라집니다.';
 
       if (generationProviderLoading) {
-        generationProviderName.textContent = GENERATION_PROVIDER_LABELS[INSTITUTION_GENERATION_PROVIDER];
-        generationProviderMessage.textContent = 'OpenAI API 요청 방식과 키 입력 상태를 확인하고 있습니다.';
+        generationProviderName.textContent = config.label;
+        generationProviderMessage.textContent = `${config.shortLabel} 서버 키 연결 상태를 확인하고 있습니다.`;
         setGenerationProviderBadge('확인 중');
         updateWorkflowMenu();
         syncGenerationButtonState();
         return;
       }
 
+      if (!detectedProvider) {
+        if (currentGenerationApiKey()) {
+          generationApiKey.setAttribute('aria-invalid', 'true');
+        }
+        generationProviderName.textContent = AUTO_PROVIDER_CONFIG.label;
+        const serverModeExpected = generationProviderStatus?.provider === 'openrouter_api'
+          && generationProviderStatus?.server_key_enabled === true;
+        generationProviderMessage.textContent = currentGenerationApiKey()
+          ? 'API 키 형식을 인식하지 못했습니다. 접두어를 확인해 주세요.'
+          : (serverModeExpected
+            ? String(generationProviderStatus?.message || 'Vercel Production 서버 키 설정을 확인해 주세요.')
+            : '서버 키가 없으면 개인 키 하나를 입력해 공급자와 모델을 자동 감지할 수 있습니다.');
+        setGenerationProviderBadge(
+          currentGenerationApiKey() ? '형식 확인' : (serverModeExpected ? '서버 설정 필요' : '키 입력 필요'),
+          'warn'
+        );
+        updateWorkflowMenu();
+        syncGenerationButtonState();
+        return;
+      }
+
       if (generationProviderLoadError) {
-        generationProviderName.textContent = GENERATION_PROVIDER_LABELS[INSTITUTION_GENERATION_PROVIDER];
-        generationProviderMessage.textContent = 'OpenAI API 상태를 확인할 수 없습니다. 서버 연결을 확인한 뒤 다시 시도해 주세요.';
+        generationProviderName.textContent = config.label;
+        generationProviderMessage.textContent = `${config.shortLabel} 상태를 확인할 수 없습니다. 서버 연결을 확인한 뒤 다시 시도해 주세요.`;
         generationProviderError.textContent = generationProviderLoadError;
         generationProviderError.hidden = false;
         setGenerationProviderBadge('확인 필요', 'warn');
@@ -855,20 +1215,25 @@
         generationProviderStatus?.message || '생성 엔진 상태 정보가 없습니다.'
       );
 
-      if (provider === INSTITUTION_GENERATION_PROVIDER) {
-        if (requestScopedApiReady()) {
-          generationProviderMessage.textContent = '요청 단위 키가 입력되었습니다. 생성 요청을 보낼 준비가 되었습니다.';
+      if (provider === detectedProvider) {
+        if (serverConfigured && !currentGenerationApiKey()) {
+          generationProviderMessage.textContent = 'Vercel 환경변수의 OpenRouter API 키로 Ox Alpha를 사용합니다. 브라우저 키 입력 없이 생성할 수 있습니다.';
+          setGenerationProviderBadge('요청 준비됨', 'good');
+        } else if (requestScopedApiReady()) {
+          generationProviderMessage.textContent = detectedProvider === 'openrouter_api'
+            ? 'OpenRouter · Ox Alpha로 자동 감지했습니다. 생성은 보통 수십 초, 혼잡 시 몇 분 걸릴 수 있습니다.'
+            : 'OpenAI 키로 자동 감지했습니다. 생성 요청을 보낼 준비가 되었습니다.';
           setGenerationProviderBadge('요청 준비됨', 'good');
         } else if (requestScopedApiStatusValid()) {
-          generationProviderMessage.textContent = '생성할 때마다 사용할 OpenAI API 키를 입력해야 합니다.';
-          setGenerationProviderBadge('키 입력 필요', 'warn');
+          generationProviderMessage.textContent = `${config.modelNote}으로 자동 감지했습니다. 생성 요청을 보낼 준비가 되었습니다.`;
+          setGenerationProviderBadge('요청 준비됨', 'good');
         } else if (providerState === 'unavailable') {
           setGenerationProviderBadge('API 사용 불가', 'warn');
         } else {
           setGenerationProviderBadge('상태 확인 필요', 'warn');
         }
       } else {
-        generationProviderError.textContent = '서버가 OpenAI API가 아닌 생성 엔진 상태를 반환했습니다.';
+        generationProviderError.textContent = `서버가 선택한 ${config.shortLabel}와 다른 생성 엔진 상태를 반환했습니다.`;
         generationProviderError.hidden = false;
         setGenerationProviderBadge('설정 오류', 'warn');
       }
@@ -877,7 +1242,8 @@
     }
 
     async function loadGenerationProviderStatus() {
-      const requestedProvider = INSTITUTION_GENERATION_PROVIDER;
+      const requestedProvider = detectedGenerationProvider() || 'openrouter_api';
+      const config = generationProviderConfig(requestedProvider);
       const requestId = ++generationProviderRequestId;
       generationProviderLoading = true;
       generationProviderStatus = null;
@@ -887,7 +1253,7 @@
       let nextError = '';
       try {
         const response = await fetch(
-          '/api/generation-provider/status?provider=openai_api',
+          `/api/generation-provider/status?provider=${encodeURIComponent(requestedProvider)}`,
           {
           headers: { Accept: 'application/json' },
           cache: 'no-store',
@@ -901,7 +1267,7 @@
           throw new Error('생성 엔진 상태 응답 형식이 올바르지 않습니다.');
         }
         if (payload.provider !== requestedProvider) {
-          throw new Error('서버가 OpenAI API가 아닌 생성 엔진 상태를 반환했습니다.');
+          throw new Error(`서버가 선택한 ${config.shortLabel}와 다른 생성 엔진 상태를 반환했습니다.`);
         }
         nextStatus = payload;
       } catch (error) {
@@ -914,13 +1280,73 @@
       renderGenerationProviderStatus();
     }
 
-    function currentReviewedDetails() {
-      return dedupSclassLabels(
-        (reviewNcsDetail.value || '')
-          .split(/[\n,;/|]+/)
-          .map(x => x.trim())
-          .filter(Boolean)
+    function scheduleGenerationProviderDetection(immediate=false) {
+      const detectedProvider = detectedGenerationProvider();
+      const probeProvider = detectedProvider || 'openrouter_api';
+      const providerChanged = probeProvider !== lastDetectedGenerationProvider;
+      if (generationProviderDetectionTimer) clearTimeout(generationProviderDetectionTimer);
+      generationProviderDetectionTimer = 0;
+      generationApiKey.removeAttribute('aria-invalid');
+      if (!providerChanged) {
+        renderGenerationProviderStatus();
+        return;
+      }
+      lastDetectedGenerationProvider = probeProvider;
+      generationProviderRequestId += 1;
+      generationProviderStatus = null;
+      generationProviderLoadError = '';
+      generationProviderLoading = Boolean(probeProvider);
+      renderGenerationProviderStatus();
+      generationProviderDetectionTimer = setTimeout(
+        loadGenerationProviderStatus,
+        immediate ? 0 : 250
       );
+    }
+
+    function focusApiKeyError(message) {
+      generationApiKey.setAttribute('aria-invalid', 'true');
+      generationProviderError.textContent = String(message || 'AI API 키를 확인해 주세요.');
+      generationProviderError.hidden = false;
+      generationProviderCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      generationApiKey.focus({ preventScroll: true });
+    }
+
+    function currentReviewedDetails() {
+      const detail = String(reviewNcsDetail.value || '').trim();
+      return detail ? [detail] : [];
+    }
+
+    function presentationMethodSelected() {
+      return String(interviewMethodSelect?.value || '').trim() === '발표면접';
+    }
+
+    function syncPresentationMaterialVisibility() {
+      const enabled = presentationMethodSelected();
+      if (presentationMaterialBlock) presentationMaterialBlock.style.display = enabled ? 'block' : 'none';
+      if (presentationMaterialState) {
+        const textLength = String(presentationMaterialText?.value || '').trim().length;
+        const fileName = String(presentationMaterialFile?.files?.[0]?.name || '').trim();
+        presentationMaterialState.textContent = enabled
+          ? (textLength || fileName
+            ? `자동 생성 자료에 보완자료 추가 대기 · 텍스트 ${textLength.toLocaleString('ko-KR')}자${fileName ? ` · 파일 ${fileName}` : ''}`
+            : '공고문·직무기술서·NCS KSA로 발표자료를 자동 구성합니다.')
+          : '발표면접을 선택할 때만 발표자료 자동 구성을 준비합니다.';
+      }
+      refreshRunButtonState();
+    }
+
+    function refreshRequiredDocumentStatus() {
+      const jd = jdFile.files && jdFile.files[0];
+      const notice = noticeFile.files && noticeFile.files[0];
+      [
+        [jdUploadState, jd],
+        [noticeUploadState, notice],
+      ].forEach(([status, file]) => {
+        if (!status) return;
+        status.classList.toggle('ready', Boolean(file));
+        status.textContent = file ? '선택 완료' : '선택 필요';
+        status.title = file ? file.name : '';
+      });
     }
 
     function currentManualPlanDetails() {
@@ -937,6 +1363,48 @@
         : currentReviewedDetails();
     }
 
+    function generationMaxMainQuestions() {
+      const configured = Number(
+        generationProviderStatus?.generation_limits?.max_main_questions_per_request
+      );
+      return Number.isInteger(configured) && configured > 0 && configured <= 20
+        ? configured
+        : DEFAULT_GENERATION_MAX_MAIN_QUESTIONS;
+    }
+
+    function questionPlanCapacityState() {
+      const items = collectQuestionPlan();
+      const requested = items.reduce((total, item) => (
+        item && item.enabled
+          ? total + Math.max(0, Number(item.main_count) || 0)
+          : total
+      ), 0);
+      const maximum = generationMaxMainQuestions();
+      return { requested, maximum, exceeded: requested > maximum };
+    }
+
+    function renderQuestionPlanCapacity() {
+      const state = questionPlanCapacityState();
+      if (!questionPlanCapacity) return state;
+      questionPlanCapacity.textContent = state.exceeded
+        ? `주질문 합계 ${state.requested}/${state.maximum} · 한 번에 ${state.maximum}개 이하로 줄여 주세요.`
+        : `주질문 합계 ${state.requested}/${state.maximum} · 추가 문항은 생성 후 ‘다른 질문 생성’으로 이어서 만들 수 있습니다.`;
+      questionPlanCapacity.style.borderColor = state.exceeded ? '#f0b8b2' : '#cfe1f5';
+      questionPlanCapacity.style.background = state.exceeded ? '#fff3f2' : '#f8fbff';
+      questionPlanCapacity.style.color = state.exceeded ? '#b42318' : '';
+      return state;
+    }
+
+    function generationCapacityBlockReason() {
+      const state = renderQuestionPlanCapacity();
+      if (!state.exceeded) return null;
+      return {
+        kind: 'capacity',
+        button: `주질문을 ${state.maximum}개 이하로 조정`,
+        message: `AI 안정성을 위해 한 번에 주질문 ${state.maximum}개까지만 생성할 수 있습니다. 현재 합계는 ${state.requested}개입니다.`,
+      };
+    }
+
     function renderQuestionPlanRows() {
       const details = currentQuestionPlanDetails();
       const previous = new Map(
@@ -949,16 +1417,17 @@
           },
         ])
       );
-      const defaultMain = Math.max(1, Math.min(10, Number(defaultMainCount?.value || 3)));
+      const defaultMain = Math.max(1, Math.min(generationMaxMainQuestions(), Number(defaultMainCount?.value || 1)));
       const defaultFollow = Math.max(3, Math.min(5, Number(defaultFollowCount?.value || 3)));
       questionPlanRows.innerHTML = '';
       if (!details.length) {
         questionPlanEmpty.style.display = 'block';
         questionPlanEmpty.textContent = (inputMode.value || 'upload') === 'manual'
           ? 'NCS 코드를 선택하면, 여기에서 어떤 세분류/능력단위의 면접질문을 생성할지 선택할 수 있습니다.'
-          : '직무기술서에서 세분류가 추출되거나 직접 입력되면, 여기에서 어떤 세분류의 면접질문을 생성할지 선택할 수 있습니다.';
+          : '직무기술서에서 세분류 후보가 추출되면, 여기에서 질문을 생성할 세분류 1개를 확인할 수 있습니다.';
         questionPlanLabel.style.display = 'none';
         questionPlanHead.style.display = 'none';
+        renderQuestionPlanCapacity();
         return;
       }
       questionPlanEmpty.style.display = 'none';
@@ -985,7 +1454,7 @@
         const main = document.createElement('input');
         main.type = 'number';
         main.min = '0';
-        main.max = '10';
+        main.max = String(generationMaxMainQuestions());
         main.value = String(saved ? saved.main_count : defaultMain);
         main.className = 'plan-main';
         row.appendChild(main);
@@ -1000,20 +1469,21 @@
 
         questionPlanRows.appendChild(row);
       });
+      renderQuestionPlanCapacity();
     }
 
     function collectQuestionPlan() {
       const rows = Array.from(questionPlanRows.querySelectorAll('.detail-plan-row'));
-      const defaultMain = Math.max(1, Math.min(10, Number(defaultMainCount?.value || 3)));
+      const defaultMain = Math.max(1, Math.min(generationMaxMainQuestions(), Number(defaultMainCount?.value || 1)));
       const defaultFollow = Math.max(3, Math.min(5, Number(defaultFollowCount?.value || 3)));
       const items = rows.map(row => ({
         detail: row.dataset.detail || '',
         enabled: !!row.querySelector('.plan-enabled')?.checked,
-        main_count: Math.max(0, Math.min(10, Number(row.querySelector('.plan-main')?.value || defaultMain))),
+        main_count: Math.max(0, Math.min(generationMaxMainQuestions(), Number(row.querySelector('.plan-main')?.value || defaultMain))),
         follow_up_count: Math.max(3, Math.min(5, Number(row.querySelector('.plan-follow')?.value || defaultFollow))),
       })).filter(x => x.detail);
       if (!items.length) {
-        return currentReviewedDetails().map(detail => ({
+        return currentQuestionPlanDetails().map(detail => ({
           detail,
           enabled: true,
           main_count: defaultMain,
@@ -1024,10 +1494,8 @@
     }
 
     function collectInterviewMethods() {
-      const checked = Array.from(document.querySelectorAll('input[name="interviewMethod"]:checked'))
-        .map(x => x.value)
-        .filter(Boolean);
-      return checked.length ? checked : ['경험면접', '상황면접', '발표면접', '토론면접', '인바스켓면접', '직무지식면접', '창의적 문제해결력면접'];
+      const selected = String(interviewMethodSelect?.value || '').trim();
+      return [SUPPORTED_INTERVIEW_METHODS.includes(selected) ? selected : SUPPORTED_INTERVIEW_METHODS[0]];
     }
 
     function refreshRunButtonState() {
@@ -1041,24 +1509,64 @@
         runHint.textContent = providerBlock.message;
         return;
       }
-      if (!isUpload) {
-        btn.textContent = '면접 질문 생성';
-        runHint.textContent = '직접 입력한 공고문 텍스트와 선택한 NCS 코드로 질문을 생성합니다.';
+      const inputBoundary = clientInputBoundaryIssue();
+      if (inputBoundary) {
+        btn.disabled = true;
+        btn.textContent = inputBoundary.button;
+        runHint.textContent = inputBoundary.message;
         return;
       }
-      const hasFile = !!(jdFile.files && jdFile.files[0]);
-      if (!hasFile) {
-        btn.textContent = '직무기술서 선택 후 면접 질문 생성';
-        runHint.textContent = '직무기술서 파일을 먼저 선택하세요. 선택하면 Kordoc 자동 추출 검토 단계가 열립니다.';
+      const capacityBlock = generationCapacityBlockReason();
+      if (capacityBlock) {
+        btn.disabled = true;
+        btn.textContent = capacityBlock.button;
+        runHint.textContent = capacityBlock.message;
+        return;
+      }
+      const requestedMainCount = Math.max(1, questionPlanCapacityState().requested || 1);
+      if (!isUpload) {
+        btn.disabled = false;
+        btn.textContent = currentQuestions.length
+          ? '같은 조건으로 다른 질문 1개 생성'
+          : `면접 질문 ${requestedMainCount}개 생성`;
+        runHint.textContent = currentQuestions.length
+          ? '현재 문항을 회피 이력에 포함해 겹치지 않는 다음 문항을 생성합니다.'
+          : '직접 입력한 공고문 텍스트와 선택한 NCS 코드 1개로 질문을 생성합니다.';
+        return;
+      }
+      const hasJdFile = !!(jdFile.files && jdFile.files[0]);
+      const hasNoticeFile = !!(noticeFile.files && noticeFile.files[0]);
+      if (!hasJdFile || !hasNoticeFile) {
+        btn.disabled = true;
+        btn.textContent = '필수 자료 2종 선택 후 면접 질문 생성';
+        if (!hasJdFile && !hasNoticeFile) {
+          runHint.textContent = '공공기관 채용공고문과 해당 NCS 기반 직무기술서를 모두 탑재해 주세요.';
+        } else if (!hasNoticeFile) {
+          runHint.textContent = '공공기관 채용공고문 파일이 필요합니다. 직무기술서와 같은 채용 건의 공고문을 탑재해 주세요.';
+        } else {
+          runHint.textContent = '해당 공고의 NCS 기반 직무기술서 파일이 필요합니다.';
+        }
         return;
       }
       if (!reviewConfirmed) {
+        btn.disabled = true;
         btn.textContent = '검토 확정 후 면접 질문 생성';
-        runHint.textContent = '수행업무·지원자격·우대사항·세분류를 확인하고 「추출 결과 검토·확정」을 누르면 실행할 수 있습니다.';
+        runHint.textContent = 'NCS 직무기술서의 수행업무·세분류를 확인하고 「추출 결과 검토·확정」을 눌러 주세요.';
         return;
       }
-      btn.textContent = '로컬 NCS DB KSA 기반 면접 질문 생성';
-      runHint.textContent = '실행 가능: 확정 세분류, 질문 수, 면접기법 설정을 반영해 면접 질문을 생성합니다.';
+      if (!noticeReviewConfirmed) {
+        btn.disabled = true;
+        btn.textContent = '공고문 검토·적용 후 면접 질문 생성';
+        runHint.textContent = '공고문에서 추출한 담당업무·자격·우대·평가항목을 확인하고 「공고문·보완 텍스트 검토·적용」을 눌러 주세요.';
+        return;
+      }
+      btn.disabled = false;
+      btn.textContent = currentQuestions.length
+        ? '같은 조건으로 다른 질문 1개 생성'
+        : `NCS KSA 기반 면접 질문 ${requestedMainCount}개 생성`;
+      runHint.textContent = currentQuestions.length
+        ? '현재 문항을 회피 이력에 포함해 같은 세분류·면접 형태의 다음 문항을 생성합니다.'
+        : '실행 가능: 공고문 맥락, 확정 NCS 세분류 1개, 면접 형태 1개를 반영해 생성합니다.';
     }
 
     function setFlowStep(el, state, detail) {
@@ -1070,11 +1578,14 @@
     }
 
     function updateWorkflowMenu() {
+      const serverConfigured = serverEnvApiStatusValid();
+      const detectedProvider = detectedGenerationProvider() || (serverConfigured ? 'openrouter_api' : '');
+      const providerConfig = generationProviderConfig(detectedProvider || 'openrouter_api');
       if (generationProviderLoading) {
-        setFlowStep(flowApi, 'active', 'OpenAI API 요청 방식 확인 중');
+        setFlowStep(flowApi, 'active', `${providerConfig.shortLabel} 요청 방식 확인 중`);
       } else if (generationProviderLoadError) {
-        setFlowStep(flowApi, 'active', 'OpenAI API 상태 확인 실패');
-      } else if (generationProviderStatus?.provider === INSTITUTION_GENERATION_PROVIDER) {
+        setFlowStep(flowApi, 'active', `${providerConfig.shortLabel} 상태 확인 실패`);
+      } else if (detectedProvider && generationProviderStatus?.provider === detectedProvider) {
         const ready = requestScopedApiReady();
         const contractValid = requestScopedApiStatusValid();
         const label = generationProviderLabel(generationProviderStatus.provider);
@@ -1086,29 +1597,36 @@
           ready ? 'done' : 'active',
           providerDetail
         );
+      } else if (!detectedProvider) {
+        const serverModeExpected = generationProviderStatus?.provider === 'openrouter_api'
+          && generationProviderStatus?.server_key_enabled === true;
+        setFlowStep(
+          flowApi,
+          'active',
+          currentGenerationApiKey()
+            ? 'API 키 형식 확인 필요'
+            : (serverModeExpected ? 'Vercel 서버 키 설정 필요' : 'AI API 키 입력 대기')
+        );
       } else {
-        setFlowStep(flowApi, 'active', 'OpenAI API 설정 확인 필요');
+        setFlowStep(flowApi, 'active', `${providerConfig.shortLabel} 설정 확인 필요`);
       }
-      const hasNoticeText = Boolean(
-        (dutyText.value || '').trim()
-        || (qualificationText.value || '').trim()
-        || (preferenceText.value || '').trim()
-        || (evalText.value || '').trim()
-      );
+      const hasJdFile = Boolean(jdFile.files && jdFile.files[0]);
+      const hasNoticeFile = Boolean(noticeFile.files && noticeFile.files[0]);
       setFlowStep(
         flowJd,
         reviewConfirmed ? 'done' : (jdReviewPayload ? 'active' : ''),
-        reviewConfirmed ? '세분류 확정 완료' : (jdReviewPayload ? '세분류 검토 필요' : '직무기술서 업로드 대기')
+        reviewConfirmed ? '세분류 확정 완료' : (jdReviewPayload ? '세분류 검토 필요' : (hasJdFile ? '직무기술서 분석 대기' : 'NCS 직무기술서 필수'))
       );
       setFlowStep(
         flowNotice,
-        noticeReviewConfirmed ? 'done' : (hasNoticeText ? 'active' : ''),
-        noticeReviewConfirmed ? '공고문 핵심텍스트 적용됨' : (hasNoticeText ? '공고문 핵심텍스트 검토 필요' : '공고문은 선택 보완 항목')
+        noticeReviewConfirmed ? 'done' : (hasNoticeFile ? 'active' : ''),
+        noticeReviewConfirmed ? '공고문 핵심텍스트 적용됨' : (hasNoticeFile ? '공고문 핵심텍스트 검토 필요' : '공공기관 공고문 필수')
       );
+      const generationReady = hasJdFile && hasNoticeFile && reviewConfirmed && noticeReviewConfirmed;
       setFlowStep(
         flowGenerate,
-        reviewConfirmed ? 'active' : '',
-        reviewConfirmed ? '생성 가능' : '세분류 확정 후 가능'
+        generationReady ? 'active' : '',
+        generationReady ? '생성 가능' : '필수 자료 2종 검토 후 가능'
       );
     }
 
@@ -1199,6 +1717,30 @@
       el.value = `${current}\n${text}`;
     }
 
+    function setReviewedNcsDetailOptions(candidates, selectedValue = '') {
+      if (!reviewNcsDetail) return [];
+      const uniqueCandidates = dedupSclassLabels(Array.isArray(candidates) ? candidates : []);
+      const nextValue = uniqueCandidates.includes(selectedValue)
+        ? selectedValue
+        : (uniqueCandidates[0] || '');
+      reviewNcsDetail.innerHTML = '';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = uniqueCandidates.length ? '세분류 후보를 선택하세요' : '세분류 후보 없음';
+      reviewNcsDetail.appendChild(placeholder);
+      uniqueCandidates.forEach((candidate) => {
+        const option = document.createElement('option');
+        option.value = candidate;
+        option.textContent = candidate;
+        reviewNcsDetail.appendChild(option);
+      });
+      reviewNcsDetail.value = nextValue;
+      if (!reviewNcsDetail.value) {
+        reviewNcsDetail.selectedIndex = 0;
+      }
+      return uniqueCandidates;
+    }
+
     function noticeConfirmButtons() {
       return [btnConfirmNoticeReview, btnConfirmNoticeReviewBottom].filter(Boolean);
     }
@@ -1229,12 +1771,27 @@
       if (noticeReviewStatus && hasNoticeSupplementText()) {
         noticeReviewStatus.textContent = '공고문 핵심텍스트 검토 필요';
       }
+      refreshRunButtonState();
       updateWorkflowMenu();
     }
 
     function applyNoticeReview() {
       if (noticeParsing) {
         noticeReviewStatus.textContent = '공고문 분석 중입니다. 완료될 때까지 기다려 주세요.';
+        return;
+      }
+      const boundaryIssue = textBoundaryIssue();
+      if (boundaryIssue) {
+        noticeReviewStatus.textContent = boundaryIssue.message;
+        showClientBoundaryError(boundaryIssue);
+        refreshRunButtonState();
+        return;
+      }
+      const notice = noticeFile.files && noticeFile.files[0];
+      if (!notice) {
+        noticeReviewStatus.textContent = '공공기관 채용공고문 파일을 먼저 탑재해 주세요.';
+        noticeFile.focus();
+        refreshRunButtonState();
         return;
       }
       if (!hasNoticeSupplementText()) {
@@ -1247,18 +1804,32 @@
           mergeTextareaValue(preferenceText, jdPreferences);
           noticeReviewStatus.textContent = '공고문 추출값이 없어 직무기술서의 업무·자격·우대사항을 보완 텍스트로 적용했습니다.';
         } else {
-          noticeReviewStatus.textContent = '추출된 공고문 핵심 텍스트가 없습니다. 공고문 단계는 생략됩니다.';
+          noticeReviewStatus.textContent = '추출된 핵심 텍스트가 없어 업로드한 공고문 원문만 적용했습니다.';
         }
       } else {
         noticeReviewStatus.textContent = '적용됨 · 질문 생성에 포함';
+      }
+      if (noticeReviewPayload) {
+        noticeReviewPayload = {
+          ...noticeReviewPayload,
+          review_confirmed: true,
+          fields: {
+            ...(noticeReviewPayload.fields || {}),
+            duty_text: (dutyText.value || '').trim(),
+            qualification_text: (qualificationText.value || '').trim(),
+            preference_text: (preferenceText.value || '').trim(),
+            evaluation_text: (evalText.value || '').trim(),
+          },
+        };
       }
       noticeReviewConfirmed = true;
       setNoticeConfirmButtons('공고문·보완 텍스트 적용 완료', '#15803d');
       if (noticeApplyHint) {
         noticeApplyHint.textContent = hasNoticeSupplementText()
           ? '적용 완료: 담당업무·지원자격·우대사항·평가항목 보완 텍스트가 질문 생성 요청에 포함됩니다.'
-          : '적용 완료: 공고문 보완 텍스트 없이 직무기술서 기준으로 질문을 생성합니다.';
+          : '적용 완료: 업로드한 공고문 원문과 NCS 직무기술서를 기준으로 질문을 생성합니다.';
       }
+      refreshRunButtonState();
       updateWorkflowMenu();
     }
 
@@ -1274,6 +1845,7 @@
       btn.disabled = true;
       btn.textContent = '직무기술서 분석 중...';
       runHint.textContent = 'Kordoc이 직무기술서에서 세분류 후보와 검토 텍스트를 추출하고 있습니다.';
+      setReviewedNcsDetailOptions([]);
       errorBox.style.display = 'none';
       raw.textContent = `직무기술서 파싱 시작: ${file.name}`;
       startProgress(PARSE_PROGRESS_STEPS, {
@@ -1292,17 +1864,17 @@
         reviewDuties.value = (fields.duties || []).join('\n');
         reviewQualifications.value = (fields.qualifications || []).join('\n');
         reviewPreferences.value = (fields.preferences || []).join('\n');
-        reviewNcsDetail.value = (fields.ncs_detail_candidates || []).join('\n');
+        const reviewedCandidates = setReviewedNcsDetailOptions(fields.ncs_detail_candidates || []);
         mergeTextareaValue(dutyText, (fields.duties || []).join('\n'));
         mergeTextareaValue(qualificationText, (fields.qualifications || []).join('\n'));
         mergeTextareaValue(preferenceText, (fields.preferences || []).join('\n'));
         markNoticeReviewDirty('직무기술서에서 가져온 보완 텍스트가 있습니다. 질문 생성에 포함하려면 아래 적용 버튼을 누르세요.');
         jdReviewPayload = data;
         renderQuestionPlanRows();
-        const detailCount = (fields.ncs_detail_candidates || []).length;
+        const detailCount = reviewedCandidates.length;
         jdReviewStatus.textContent = detailCount
           ? `검토 필요 · 세분류 후보 ${detailCount}개`
-          : '검토 필요 · 세분류를 직접 입력하세요';
+          : '검토 필요 · 세분류 후보가 없어 확정할 수 없습니다';
         btnConfirmReview.disabled = false;
         btnConfirmReview.textContent = '추출 결과 검토·확정';
         btnConfirmReview.style.background = '#0f766e';
@@ -1319,6 +1891,7 @@
         updateWorkflowMenu();
       } catch (e) {
         const msg = String(e.message || e);
+        setReviewedNcsDetailOptions([]);
         jdReviewStatus.textContent = '자동 파싱 실패 · 파일/확장자 또는 Kordoc 설치를 확인하세요';
         errorBox.style.display = 'block';
         errorBox.textContent = `직무기술서 파싱 오류: ${msg}`;
@@ -1342,7 +1915,9 @@
       noticeReviewBlock.style.display = 'block';
       noticeReviewStatus.textContent = '공고문 분석 중...';
       noticeReviewConfirmed = false;
+      noticeReviewPayload = null;
       noticeParsing = true;
+      syncGenerationButtonState();
       setNoticeConfirmButtons('공고문 분석 중...', '#64748b', true);
       if (noticeApplyHint) noticeApplyHint.textContent = '공고문에서 보완 텍스트 후보를 추출하고 있습니다.';
       errorBox.style.display = 'none';
@@ -1359,6 +1934,7 @@
         const text = await res.text();
         if (!res.ok) throw new Error(readableApiError(text));
         const data = JSON.parse(text);
+        noticeReviewPayload = data;
         const fields = data.fields || {};
         mergeTextareaValue(dutyText, fields.duty_text);
         mergeTextareaValue(qualificationText, fields.qualification_text);
@@ -1366,7 +1942,7 @@
         mergeTextareaValue(evalText, fields.evaluation_text);
         noticeReviewStatus.textContent = (fields.duty_text || fields.qualification_text || fields.preference_text || fields.evaluation_text)
           ? '검토 필요'
-          : '추출 후보 없음 · 직접 입력 또는 생략 가능';
+          : '추출 후보 없음 · 공고문 원문과 직접 입력 내용을 확인하세요';
         setNoticeConfirmButtons('공고문·보완 텍스트 검토·적용', '#005bac');
         if (noticeApplyHint) {
           noticeApplyHint.textContent = '추출된 공고문 텍스트를 확인·수정한 뒤 적용 버튼을 눌러야 질문 생성에 포함됩니다.';
@@ -1378,25 +1954,28 @@
           qualification_text_chars: (fields.qualification_text || '').length,
           preference_text_chars: (fields.preference_text || '').length,
           evaluation_text_chars: (fields.evaluation_text || '').length,
+          review_session_id: data.review_session_id || '',
         }, null, 2);
         stopProgress('파싱 완료', '공고문 핵심 텍스트를 확인하고 필요하면 수정하세요.');
       } catch (e) {
+        noticeReviewPayload = null;
         const msg = String(e.message || e);
         noticeReviewStatus.textContent = '자동 추출 실패 · 직접 입력 가능';
         errorBox.style.display = 'block';
         errorBox.textContent = `공고문 파싱 오류: ${msg}`;
         raw.textContent = `공고문 파싱 오류: ${msg}`;
-        stopProgress('파싱 실패', '공고문은 선택 항목입니다. 직접 입력하거나 생략할 수 있습니다.');
+        stopProgress('파싱 실패', '공고문 파일을 다시 선택하거나 핵심 텍스트를 직접 입력해 주세요.');
         console.warn('공고문 검토 파싱 실패:', e);
       } finally {
         noticeParsing = false;
         setNoticeConfirmButtons(
-          hasNoticeSupplementText() ? '공고문·보완 텍스트 검토·적용' : '공고문 단계 생략',
-          hasNoticeSupplementText() ? '#005bac' : '#475569'
+          hasNoticeSupplementText() ? '공고문·보완 텍스트 검토·적용' : '공고문 원문 확인·적용',
+          '#005bac'
         );
         if (!((dutyText.value || '').trim() || (qualificationText.value || '').trim() || (preferenceText.value || '').trim() || (evalText.value || '').trim())) {
-          if (noticeApplyHint) noticeApplyHint.textContent = '공고문에서 추출된 보완 텍스트가 없습니다. 필요하면 직접 입력 후 적용하세요.';
+          if (noticeApplyHint) noticeApplyHint.textContent = '추출된 핵심 텍스트가 없습니다. 업로드한 공고문 원문을 확인하고 필요하면 직접 입력한 뒤 적용하세요.';
         }
+        syncGenerationButtonState();
         updateWorkflowMenu();
       }
     }
@@ -1420,8 +1999,14 @@
       jdReviewPayload.fields.duties = reviewDuties.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       jdReviewPayload.fields.qualifications = reviewQualifications.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       jdReviewPayload.fields.preferences = reviewPreferences.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
-      jdReviewPayload.fields.ncs_detail_candidates = reviewNcsDetail.value.split(/[\n,;/|]+/).map(x => x.trim()).filter(Boolean);
+      jdReviewPayload.fields.ncs_detail_candidates = currentReviewedDetails();
       renderQuestionPlanRows();
+      const boundaryIssue = textBoundaryIssue();
+      if (boundaryIssue) {
+        jdReviewStatus.textContent = boundaryIssue.message;
+        showClientBoundaryError(boundaryIssue);
+        return;
+      }
       if (!jdReviewPayload.fields.ncs_detail_candidates.length) {
         jdReviewStatus.textContent = '세분류를 1개 이상 확인해야 합니다.';
         reviewNcsDetail.focus();
@@ -1442,10 +2027,20 @@
     // 파일 선택 시 자동 추출
     document.getElementById('jdFile').addEventListener('change', e => {
       const file = e.target.files[0];
+      refreshRequiredDocumentStatus();
       if (file) {
         if (isBlockedUploadFile(file)) {
           setUploadFormatError('직무기술서 파일');
           e.target.value = '';
+          refreshRequiredDocumentStatus();
+          return;
+        }
+        const uploadBoundary = uploadPayloadBoundaryState('jd', file);
+        if (uploadBoundary) {
+          showClientBoundaryError(uploadBoundary);
+          e.target.value = '';
+          refreshRequiredDocumentStatus();
+          syncGenerationButtonState();
           return;
         }
         sclassBlock.style.display = 'none';
@@ -1455,52 +2050,117 @@
         jdReviewBlock.style.display = 'none';
         sclassItems = [];
         extractedSclassBase = [];
+        setReviewedNcsDetailOptions([]);
         jdReviewPayload = null;
         reviewConfirmed = false;
-        refreshRunButtonState();
+        syncGenerationButtonState();
         updateWorkflowMenu();
       }
     });
 
     noticeFile.addEventListener('change', e => {
       const file = e.target.files[0];
+      refreshRequiredDocumentStatus();
       if (file) {
         if (isBlockedUploadFile(file)) {
           setUploadFormatError('공고문 파일');
+          noticeReviewPayload = null;
           e.target.value = '';
+          refreshRequiredDocumentStatus();
+          return;
+        }
+        const uploadBoundary = uploadPayloadBoundaryState('notice', file);
+        if (uploadBoundary) {
+          showClientBoundaryError(uploadBoundary);
+          noticeReviewPayload = null;
+          e.target.value = '';
+          refreshRequiredDocumentStatus();
+          syncGenerationButtonState();
           return;
         }
         parseNoticeForReview(file);
       } else {
         noticeReviewBlock.style.display = 'none';
+        noticeReviewPayload = null;
         noticeReviewConfirmed = false;
+        syncGenerationButtonState();
         updateWorkflowMenu();
       }
     });
 
     btnRefreshGenerationProvider.addEventListener('click', loadGenerationProviderStatus);
-    openaiApiKey.addEventListener('input', () => {
-      renderGenerationProviderStatus();
+    generationApiKey.addEventListener('input', () => {
+      scheduleGenerationProviderDetection();
     });
-    btnClearOpenAiApiKey.addEventListener('click', () => {
-      openaiApiKey.value = '';
-      openaiApiKey.focus();
-      renderGenerationProviderStatus();
+    btnToggleApiKey.addEventListener('click', () => {
+      setApiKeyVisibility(generationApiKey.type === 'password');
+      generationApiKey.focus();
+    });
+    btnPasteApiKey.addEventListener('click', async () => {
+      try {
+        if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+          throw new Error('이 브라우저에서는 자동 붙여넣기를 지원하지 않습니다.');
+        }
+        const pasted = String(await navigator.clipboard.readText()).trim();
+        if (!pasted) throw new Error('클립보드에 붙여넣을 키가 없습니다.');
+        generationApiKey.value = pasted;
+        setApiKeyVisibility(false);
+        scheduleGenerationProviderDetection(true);
+        generationApiKey.focus();
+      } catch (error) {
+        focusApiKeyError(`${String(error?.message || error)} 입력란에서 Ctrl+V를 사용해 주세요.`);
+      }
+    });
+    btnClearApiKey.addEventListener('click', () => {
+      generationApiKey.value = '';
+      setApiKeyVisibility(false);
+      scheduleGenerationProviderDetection(true);
+      generationApiKey.focus();
     });
     window.addEventListener('pagehide', () => {
-      openaiApiKey.value = '';
+      generationApiKey.value = '';
+      setApiKeyVisibility(false);
     });
-    reviewNcsDetail.addEventListener('input', () => {
+    reviewNcsDetail.addEventListener('change', () => {
       reviewConfirmed = false;
       renderQuestionPlanRows();
       refreshRunButtonState();
       updateWorkflowMenu();
     });
+    interviewMethodSelect?.addEventListener('change', () => {
+      syncPresentationMaterialVisibility();
+      refreshRunButtonState();
+      updateWorkflowMenu();
+    });
+    presentationMaterialText?.addEventListener('input', () => {
+      syncPresentationMaterialVisibility();
+      refreshRunButtonState();
+    });
+    presentationMaterialFile?.addEventListener('change', (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (file && isBlockedUploadFile(file)) {
+        setUploadFormatError('발표 자료 파일');
+        event.target.value = '';
+        syncPresentationMaterialVisibility();
+        return;
+      }
+      if (file) {
+        const uploadBoundary = uploadPayloadBoundaryState('presentation', file);
+        if (uploadBoundary) {
+          showClientBoundaryError(uploadBoundary);
+          event.target.value = '';
+        }
+      }
+      syncPresentationMaterialVisibility();
+    });
     defaultMainCount.addEventListener('input', () => {
-      const next = Math.max(1, Math.min(10, Number(defaultMainCount.value || 3)));
+      const next = Math.max(1, Math.min(generationMaxMainQuestions(), Number(defaultMainCount.value || 1)));
+      defaultMainCount.value = String(next);
       questionPlanRows.querySelectorAll('.plan-main').forEach((input) => {
         if (!input.dataset.touched) input.value = String(next);
       });
+      renderQuestionPlanCapacity();
+      refreshRunButtonState();
     });
     defaultFollowCount.addEventListener('input', () => {
       const next = Math.max(3, Math.min(5, Number(defaultFollowCount.value || 3)));
@@ -1530,6 +2190,16 @@
     questionPlanRows.addEventListener('input', (event) => {
       if (event.target && event.target.matches && event.target.matches('.plan-main, .plan-follow')) {
         event.target.dataset.touched = '1';
+      }
+      if (event.target && event.target.matches && event.target.matches('.plan-enabled, .plan-main')) {
+        renderQuestionPlanCapacity();
+        refreshRunButtonState();
+      }
+    });
+    questionPlanRows.addEventListener('change', (event) => {
+      if (event.target && event.target.matches && event.target.matches('.plan-enabled, .plan-main')) {
+        renderQuestionPlanCapacity();
+        refreshRunButtonState();
       }
     });
     dutyText.addEventListener('input', () => markNoticeReviewDirty());
@@ -1687,6 +2357,13 @@
       { t: 6.0, label: '결과 정리', pct: 90, note: '화면 표시용으로 결과를 정리합니다.' },
     ];
 
+    const OPENROUTER_PROGRESS_STEPS = [
+      { t: 0, label: '입력값 검증', pct: 10, note: '텍스트, NCS 코드, 요청 키를 확인합니다.' },
+      { t: 4, label: 'NCS/KSA 근거 구성', pct: 32, note: '질문에 사용할 공식 NCS/KSA 근거를 구성합니다.' },
+      { t: 15, label: 'Ox Alpha 질문 후보 생성', pct: 62, note: 'Max 추론을 우선 사용하고 지연·형식 실패 시 저비용 모델, 필요 시 공식 KSA 서버 문항으로 자동복구합니다.' },
+      { t: 45, label: '중복 제거·품질 선별', pct: 84, note: '의미 중복을 제거하고 품질·다양성 기준으로 최종 문항을 고릅니다.' },
+    ];
+
     const PARSE_PROGRESS_STEPS = [
       { t: 0, label: '파일 업로드 준비', pct: 10, note: '선택한 직무기술서를 서버로 전달합니다.' },
       { t: 0.8, label: 'Kordoc 문서 파싱', pct: 34, note: '본문, 표, 메타데이터를 추출하고 있습니다.' },
@@ -1700,17 +2377,47 @@
       { t: 2.4, label: '핵심 텍스트 정리', pct: 78, note: '검토 화면에 넣을 텍스트를 정리합니다.' },
     ];
 
+    function generationProgressProfile(provider) {
+      if (provider === 'openrouter_api') {
+        return {
+          steps: OPENROUTER_PROGRESS_STEPS,
+          slowState: {
+            afterSeconds: 60,
+            label: 'Ox Alpha 응답 대기 중',
+            note: '혼잡하면 몇 분 걸릴 수 있습니다. 중복 제출하지 말고 현재 탭을 유지해 주세요.',
+          },
+        };
+      }
+      return {
+        steps: PROGRESS_STEPS,
+        slowState: {
+          afterSeconds: 30,
+          label: 'OpenAI 응답 대기 중',
+          note: 'Max 추론과 후보 선별을 진행 중입니다. 중복 제출하지 말고 잠시 기다려 주세요.',
+        },
+      };
+    }
+
+    function setGenerationProgress(percent) {
+      const normalized = Math.max(0, Math.min(100, Number(percent) || 0));
+      progressFill.style.width = `${normalized}%`;
+      generationProgressBar.setAttribute('aria-valuenow', String(normalized));
+      generationProgressBar.setAttribute('aria-valuetext', `${progressStage.textContent} ${normalized}%`);
+    }
+
     function startProgress(steps = PROGRESS_STEPS, slowState = null) {
       progressStepsActive = Array.isArray(steps) && steps.length ? steps : PROGRESS_STEPS;
       progressSlowState = slowState || {
         label: '외부 API/모델 응답 대기',
         note: '외부 API/모델 지연으로 응답이 늦어지고 있습니다.',
       };
+      progressSlowAfterSeconds = Math.max(10, Number(progressSlowState.afterSeconds) || 20);
       progressWrap.style.display = 'block';
+      progressWrap.setAttribute('aria-busy', 'true');
       progressIdx = 0;
       progressStartTs = performance.now();
       progressStage.textContent = progressStepsActive[0].label;
-      progressFill.style.width = `${progressStepsActive[0].pct}%`;
+      setGenerationProgress(progressStepsActive[0].pct);
       progressNote.textContent = progressStepsActive[0].note;
       progressTime.textContent = '0.0s';
       if (progressTimer) clearInterval(progressTimer);
@@ -1721,12 +2428,12 @@
         while (progressIdx + 1 < stepsNow.length && sec >= stepsNow[progressIdx + 1].t) {
           progressIdx += 1;
           progressStage.textContent = stepsNow[progressIdx].label;
-          progressFill.style.width = `${stepsNow[progressIdx].pct}%`;
+          setGenerationProgress(stepsNow[progressIdx].pct);
           progressNote.textContent = stepsNow[progressIdx].note;
         }
-        if (sec > 20) {
+        if (sec > progressSlowAfterSeconds) {
           progressStage.textContent = progressSlowState.label;
-          progressFill.style.width = '94%';
+          setGenerationProgress(94);
           progressNote.textContent = progressSlowState.note;
         }
       }, 200);
@@ -1736,16 +2443,20 @@
       if (progressTimer) clearInterval(progressTimer);
       progressTimer = null;
       progressStage.textContent = doneText || '완료';
-      progressFill.style.width = '100%';
+      setGenerationProgress(100);
       progressNote.textContent = noteText || '요청 처리가 완료되었습니다.';
       progressStepsActive = null;
       progressSlowState = null;
+      progressSlowAfterSeconds = 20;
+      progressWrap.setAttribute('aria-busy', 'false');
       setTimeout(() => { progressWrap.style.display = 'none'; }, 1200);
     }
 
     function updateSelectedCount() {
-      const cnt = Array.from(ncsSelect.selectedOptions).length;
-      selectedCount.textContent = `선택된 NCS 코드: ${cnt}`;
+      const cnt = Array.from(ncsSelect.selectedOptions)
+        .filter(option => String(option.value || '').trim())
+        .length;
+      selectedCount.textContent = cnt ? '선택된 NCS 코드: 1개' : '선택된 NCS 코드: 없음';
       if ((inputMode.value || 'upload') === 'manual') {
         renderQuestionPlanRows();
       }
@@ -1753,12 +2464,12 @@
 
     function setInputMode(mode) {
       const isUpload = mode !== 'manual';
-      if (isUpload && questionOptionBlock.parentElement !== uploadBlock) {
+      if (isUpload) {
         uploadBlock.insertBefore(questionOptionBlock, sclassBlock);
       } else if (!isUpload && questionOptionBlock.parentElement !== manualBlock) {
         manualBlock.appendChild(questionOptionBlock);
       }
-      if (isUpload && runActionBlock.parentElement !== uploadBlock) {
+      if (isUpload) {
         uploadBlock.insertBefore(runActionBlock, sclassBlock);
       } else if (!isUpload && runActionBlock.parentElement !== manualBlock) {
         manualBlock.appendChild(runActionBlock);
@@ -1766,10 +2477,12 @@
       if (!isUpload && questionOptionBlock.nextElementSibling !== runActionBlock) {
         manualBlock.insertBefore(questionOptionBlock, runActionBlock);
       }
+      uploadRequirementsCard.classList.toggle('hidden', !isUpload);
       uploadBlock.classList.toggle('hidden', !isUpload);
       manualBlock.classList.toggle('hidden', isUpload);
+      refreshRequiredDocumentStatus();
       renderQuestionPlanRows();
-      refreshRunButtonState();
+      syncGenerationButtonState();
     }
 
     function collectRuntimeKnobs() {
@@ -1817,6 +2530,58 @@
       meta.appendChild(p);
     }
 
+    function renderPresentationMaterial(packet) {
+      currentPresentationMaterialPacket = packet && typeof packet === 'object' ? packet : null;
+      if (!presentationMaterialResult) return;
+      if (!currentPresentationMaterialPacket) {
+        presentationMaterialResult.style.display = 'none';
+        if (presentationMaterialResultPrompt) presentationMaterialResultPrompt.style.display = 'none';
+        return;
+      }
+      presentationMaterialResult.style.display = 'flex';
+      if (presentationMaterialResultTitle) {
+        presentationMaterialResultTitle.textContent = String(currentPresentationMaterialPacket.title || '발표자료가 준비되었습니다.');
+      }
+      if (presentationMaterialResultMeta) {
+        const rows = Array.isArray(currentPresentationMaterialPacket.case_materials) ? currentPresentationMaterialPacket.case_materials.length : 0;
+        presentationMaterialResultMeta.textContent = `서버 자동 구성 · 근거 ${rows}개 · 사람 검토 필요`;
+      }
+      if (presentationMaterialResultPrompt) {
+        const prompt = String(currentPresentationMaterialPacket.task_prompt || '').trim();
+        presentationMaterialResultPrompt.textContent = prompt ? `발표 메인 질문: ${prompt}` : '';
+        presentationMaterialResultPrompt.style.display = prompt ? 'block' : 'none';
+      }
+    }
+
+    btnDownloadPresentationMaterial?.addEventListener('click', async () => {
+      if (!currentPresentationMaterialPacket) return;
+      btnDownloadPresentationMaterial.disabled = true;
+      const originalLabel = btnDownloadPresentationMaterial.textContent;
+      btnDownloadPresentationMaterial.textContent = 'Word 준비 중...';
+      try {
+        const response = await fetch('/api/presentation-material/docx', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({presentation_material: currentPresentationMaterialPacket}),
+        });
+        if (!response.ok) throw new Error('Word 파일 생성에 실패했습니다.');
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = 'presentation-material.docx';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      } catch (error) {
+        if (presentationMaterialResultMeta) presentationMaterialResultMeta.textContent = String(error?.message || 'Word 파일 생성에 실패했습니다.');
+      } finally {
+        btnDownloadPresentationMaterial.disabled = false;
+        btnDownloadPresentationMaterial.textContent = originalLabel || '발표자료 Word 다운로드';
+      }
+    });
+
     function renderMeta(data) {
       const meta = document.getElementById('meta');
       meta.innerHTML = '';
@@ -1826,6 +2591,15 @@
       addMetaPill(meta, `담당업무 글자수: ${(data.duty_text_preview || '').length}`);
       addMetaPill(meta, `지원자격 글자수: ${(data.qualification_text_preview || '').length}`);
       addMetaPill(meta, `우대사항 글자수: ${(data.preference_text_preview || '').length}`);
+      const presentationMaterialName = String(data.presentation_material_filename || '').trim();
+      const presentationMaterialLength = String(data.presentation_material_text_preview || '').length;
+      if (presentationMaterialName || presentationMaterialLength) {
+        addMetaPill(
+          meta,
+          `발표 자료 적용: ${presentationMaterialName || '직접 입력'} · ${presentationMaterialLength}자`,
+          'pill good'
+        );
+      }
       addMetaPill(meta, `NCS 소스: ${data.ncs_source || '-'}`, 'pill good');
       const resultGeneration = data.question_generation && typeof data.question_generation === 'object'
         ? data.question_generation
@@ -1905,6 +2679,8 @@
       const sourceLabels = {
         openai_api: 'OpenAI API 초안 유지',
         openai_api_quality_repaired_fields: 'OpenAI API 초안 유지 · 평가요소 보강',
+        openrouter_api: 'OpenRouter · Ox Alpha 초안 유지',
+        openrouter_api_quality_repaired_fields: 'OpenRouter · Ox Alpha 초안 유지 · 평가요소 보강',
         codex_cli: 'Codex 초안 유지',
         codex_cli_quality_repaired_fields: 'Codex 초안 유지 · 평가요소 보강',
         claude_code: 'Claude Code 초안 유지',
@@ -1933,6 +2709,7 @@
         duplicate_question_intent: '중복 평가의도 교체',
         evaluation_points_quality: '평가항목 관찰가능성 보강',
         case_materials_sufficient: '판단자료 구체화',
+        question_materials: '발표·토론 자료 구체화',
         inbasket_authority_context: '보고·위임 권한정보 보강',
         behavior_anchored_evaluation: '행동기반 평정척도 보강',
         standardized_task_conditions: '응시조건 표준화',
@@ -2274,6 +3051,35 @@
           });
           box.appendChild(evWrap);
         }
+        const ncsTrace = q.ncs_traceability && typeof q.ncs_traceability === 'object'
+          ? q.ncs_traceability
+          : null;
+        if (ncsTrace) {
+          const traceDetails = document.createElement('details');
+          traceDetails.className = 'task-conditions';
+          const traceSummary = document.createElement('summary');
+          traceSummary.textContent = 'NCS 연결 근거';
+          traceDetails.appendChild(traceSummary);
+          const traceRows = [
+            `능력단위: ${String(ncsTrace.ability_unit_name || comp || '-')}`,
+            `요소: ${String(ncsTrace.element_name || '-')}`,
+          ];
+          const criteria = Array.isArray(ncsTrace.performance_criteria)
+            ? ncsTrace.performance_criteria.filter(x => String(x || '').trim())
+            : [];
+          if (criteria.length) {
+            traceRows.push(`수행준거: ${criteria.join(' · ')}`);
+          } else {
+            traceRows.push('수행준거: NCS_MCP 응답에 연결된 수행준거가 없습니다.');
+          }
+          traceRows.forEach((value) => {
+            const row = document.createElement('div');
+            row.className = 'task-condition-row';
+            row.textContent = value;
+            traceDetails.appendChild(row);
+          });
+          box.appendChild(traceDetails);
+        }
         root.appendChild(box);
       }
       updateQNav();
@@ -2599,12 +3405,16 @@
         ? s.model_quality_retry
         : null;
       const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';
+      const serverKsaFallbackUsed = s.provider_fallback_used === true
+        && s.generation_mode === 'server_ksa_fallback';
       const humanReviewRequired = partialHumanReviewRequired
         || s.question_release_status === 'human_review_required'
         || (retryAudit && retryAudit.outcome === 'accepted_for_human_review');
       let orchestrationNotice = '';
       if (partialHumanReviewRequired) {
         orchestrationNotice = partialGenerationNotice(s, qList);
+      } else if (serverKsaFallbackUsed) {
+        orchestrationNotice = '외부 AI 응답을 사용할 수 없어, 확정된 공식 NCS KSA 근거로 서버가 대체 초안을 만들었습니다. 최종 사용 전에 면접 담당자가 검토하세요.';
       } else if (humanReviewRequired) {
         orchestrationNotice = 'NCS/KSA 근거와 안전 검사는 통과했지만 일부 표현 품질 항목이 남아 사람 검토가 필요합니다.';
       } else if (orchestration && orchestration.status === 'passed') {
@@ -2633,6 +3443,7 @@
       ].filter(Boolean);
 
       renderMeta(data);
+      renderPresentationMaterial(data.presentation_material || s.presentation_material || null);
       renderQualityReport(s.question_quality_report, notices.join(' '), currentQualityControl);
       renderPipelineDiag(data, qList);
       const allQuestionsForTextExport = Array.isArray(data.generated_questions_all)
@@ -2723,6 +3534,7 @@
         errorBox.textContent = `${partialText}정확한 NCS 세분류 매칭이 없습니다${termText}. 직접입력 모드에서 공식 NCS 코드를 검색·선택해야 합니다.`;
       }
       errorBox.style.display = 'block';
+      errorBox.focus();
       raw.textContent = JSON.stringify(payload, null, 2);
       updateWorkflowMenu();
     }
@@ -2740,15 +3552,30 @@
         'openai_api_content_restricted',
         'openai_api_request_rejected',
         'openai_api_upstream_unavailable',
+        'openrouter_api_generation_failed',
+        'openrouter_api_timeout',
+        'openrouter_api_unreachable',
+        'openrouter_api_invalid_output',
+        'openrouter_api_quality_rejected',
+        'openrouter_api_content_restricted',
+        'openrouter_api_request_rejected',
+        'openrouter_api_upstream_unavailable',
+        'openrouter_api_authentication_failed',
+        'openrouter_api_usage_limit_reached',
       ]);
+      const providerName = generationProviderConfig(detectedGenerationProvider()).shortLabel;
       const stageHint = modelFailureCodes.has(errorCode)
-        ? ' NCS 세분류 매칭과 KSA 조회는 완료되었으며, OpenAI 질문 생성 단계에서 실패했습니다.'
+        ? ` NCS 세분류 매칭과 KSA 조회는 완료되었으며, ${providerName} 질문 생성 단계에서 실패했습니다.`
         : '';
-      const diagnosticsHint = errorCode === 'openai_api_quality_rejected'
+      const diagnosticsHint = [
+        'openai_api_quality_rejected',
+        'openrouter_api_quality_rejected',
+      ].includes(errorCode)
         ? qualityDiagnosticsNotice(payload.detail || {})
         : '';
       errorBox.textContent = `오류: ${apiErrorMessage(payload, fallback)}${stageHint}${diagnosticsHint ? ` ${diagnosticsHint}` : ''}`;
       errorBox.style.display = 'block';
+      errorBox.focus();
       raw.textContent = JSON.stringify(payload.detail || payload, null, 2);
       updateWorkflowMenu();
     }
@@ -2772,22 +3599,52 @@
       if (providerBlock) {
         errorBox.style.display = 'block';
         errorBox.textContent = providerBlock.message;
+        if (providerBlock.kind === 'key') {
+          focusApiKeyError(providerBlock.message);
+        } else {
+          errorBox.focus();
+        }
         syncGenerationButtonState();
         return;
       }
       if (pendingQuestionReviewCount > 0) {
         errorBox.style.display = 'block';
         errorBox.textContent = '문항 검토 저장이 끝난 뒤 다시 생성해 주세요.';
+        errorBox.focus();
         return;
       }
-      const requestOpenAiApiKey = currentOpenAiApiKey();
+      const inputBoundary = clientInputBoundaryIssue();
+      if (inputBoundary) {
+        showClientBoundaryError(inputBoundary);
+        syncGenerationButtonState();
+        return;
+      }
+      const capacityBlock = generationCapacityBlockReason();
+      if (capacityBlock) {
+        errorBox.style.display = 'block';
+        errorBox.textContent = capacityBlock.message;
+        errorBox.focus();
+        syncGenerationButtonState();
+        return;
+      }
+      const requestGenerationProvider = detectedGenerationProvider()
+        || (serverEnvApiStatusValid() ? 'openrouter_api' : '');
+      const requestGenerationApiKey = currentGenerationApiKey();
       questionGenerationInFlight = true;
       try {
         const mode = inputMode.value || 'upload';
         let res;
         btn.disabled = true;
+        btn.setAttribute('aria-busy', 'true');
         btn.textContent = '실행 중...';
-        startProgress();
+        setApiKeyVisibility(false);
+        generationApiKey.disabled = true;
+        btnToggleApiKey.disabled = true;
+        btnPasteApiKey.disabled = true;
+        btnClearApiKey.disabled = true;
+        generationProviderCard.setAttribute('aria-busy', 'true');
+        const progressProfile = generationProgressProfile(requestGenerationProvider);
+        startProgress(progressProfile.steps, progressProfile.slowState);
 
         if (mode === 'upload') {
           const file = jdFile.files && jdFile.files[0];
@@ -2795,22 +3652,33 @@
           if (isBlockedUploadFile(file)) {
             throw new Error('직무기술서 파일은 HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.');
           }
+          const nFile = noticeFile.files && noticeFile.files[0];
+          if (!nFile) {
+            throw new Error('공공기관 채용공고문 파일을 먼저 선택해 주세요. 공고문과 NCS 기반 직무기술서는 모두 필수입니다.');
+          }
+          if (isBlockedUploadFile(nFile)) {
+            throw new Error('공고문 파일은 HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.');
+          }
 
           const fd = new FormData();
           const knobs = collectRuntimeKnobs();
           const questionPlanItems = collectQuestionPlan();
           const interviewMethods = collectInterviewMethods();
+          const presentationText = presentationMethodSelected()
+            ? String(presentationMaterialText?.value || '').trim()
+            : '';
+          const presentationFile = presentationMethodSelected()
+            ? (presentationMaterialFile?.files && presentationMaterialFile.files[0])
+            : null;
           const questionDisplayOptions = collectQuestionDisplayOptions();
           fd.append('jd_file', file);
-          fd.append('generation_provider', INSTITUTION_GENERATION_PROVIDER);
-          fd.append('openai_api_key', requestOpenAiApiKey);
+          fd.append('generation_provider', requestGenerationProvider);
+          if (requestGenerationApiKey) {
+            fd.append('generation_api_key', requestGenerationApiKey);
+          }
           fd.append('include_all_questions', questionDisplayOptions.includeAll ? 'true' : 'false');
           if (Number.isFinite(questionDisplayOptions.generatedQuestionsMaxItems) && questionDisplayOptions.generatedQuestionsMaxItems > 0) {
             fd.append('generated_questions_max_items', String(questionDisplayOptions.generatedQuestionsMaxItems));
-          }
-          const nFile = noticeFile.files && noticeFile.files[0];
-          if (nFile && isBlockedUploadFile(nFile)) {
-            throw new Error('공고문 파일은 HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.');
           }
           fd.append('strengths', '');
           if ((nFile || hasNoticeSupplementText()) && !noticeReviewConfirmed) {
@@ -2818,6 +3686,9 @@
           }
           if (noticeReviewConfirmed) {
             if (nFile) fd.append('notice_file', nFile);
+            if (noticeReviewPayload) {
+              fd.append('notice_review_json', JSON.stringify(noticeReviewPayload));
+            }
             fd.append('duty_text', (dutyText.value || '').trim());
             fd.append('qualification_text', (qualificationText.value || '').trim());
             fd.append('preference_text', (preferenceText.value || '').trim());
@@ -2825,16 +3696,20 @@
           }
           fd.append('question_plan_json', JSON.stringify({ items: questionPlanItems }));
           fd.append('interview_methods_json', JSON.stringify(interviewMethods));
+          if (presentationText) fd.append('presentation_material_text', presentationText);
+          if (presentationFile) fd.append('presentation_material_file', presentationFile);
           if (!reviewConfirmed || !jdReviewPayload) {
             throw new Error('Kordoc 추출 결과를 검토·확정한 뒤 실행해 주세요.');
           }
           fd.append('jd_review_json', JSON.stringify(jdReviewPayload));
           // 소분류 편집 결과 전달: 최종 목록 + 추가/삭제 delta
-          const finalSclass = dedupSclassLabels(
-            sclassItems
-              .filter(i => i.type !== 'unmatched')
-              .map(i => i.label)
-          );
+          const finalSclass = currentReviewedDetails().length
+            ? currentReviewedDetails()
+            : dedupSclassLabels(
+              sclassItems
+                .filter(i => i.type !== 'unmatched')
+                .map(i => i.label)
+            );
           const finalSet = new Set(finalSclass.map(normSclassLabel));
           const extractedBase = dedupSclassLabels(extractedSclassBase || []);
           const extractedSet = new Set(extractedBase.map(normSclassLabel));
@@ -2842,7 +3717,7 @@
           const removeSclass = extractedBase.filter(x => !finalSet.has(normSclassLabel(x)));
           const historyDetails = finalSclass.map(normSclassLabel).sort().join(',');
           const uploadGenerationContext = JSON.stringify({
-            generationProvider: INSTITUTION_GENERATION_PROVIDER,
+            generationProvider: requestGenerationProvider,
             file: [file.name, file.size, file.lastModified],
             noticeFile: nFile ? [nFile.name, nFile.size, nFile.lastModified] : null,
             details: historyDetails,
@@ -2850,6 +3725,8 @@
             qualification: (qualificationText.value || '').trim(),
             preference: (preferenceText.value || '').trim(),
             evaluation: (evalText.value || '').trim(),
+            presentationMaterialText: presentationText,
+            presentationMaterialFile: presentationFile ? [presentationFile.name, presentationFile.size, presentationFile.lastModified] : null,
             questionPlanItems,
             interviewMethods,
             knobs,
@@ -2870,23 +3747,29 @@
           const noticeText = document.getElementById('noticeText').value.trim();
           if (!noticeText) throw new Error('공고문 텍스트를 먼저 입력해 주세요.');
 
-          const selected = Array.from(ncsSelect.selectedOptions).map(opt => ({
-            ncsClCd: opt.value,
-            compeUnitName: opt.dataset.name || '',
-            compeUnitLevel: opt.dataset.level || '',
-            ncsSubdCdnm: opt.dataset.subd || '',
-          }));
+          const selected = Array.from(ncsSelect.selectedOptions)
+            .filter(opt => String(opt.value || '').trim())
+            .map(opt => ({
+              ncsClCd: opt.value,
+              compeUnitName: opt.dataset.name || '',
+              compeUnitLevel: opt.dataset.level || '',
+              ncsSubdCdnm: opt.dataset.subd || '',
+            }));
 
-          if (!selected.length) throw new Error('NCS 코드를 최소 1개 선택해 주세요.');
+          if (!selected.length) throw new Error('NCS 세분류·능력단위를 1개 선택해 주세요.');
           const knobs = collectRuntimeKnobs();
           const questionPlanItems = collectQuestionPlan();
           const interviewMethods = collectInterviewMethods();
+          const presentationText = presentationMethodSelected()
+            ? String(presentationMaterialText?.value || '').trim()
+            : '';
           const questionDisplayOptions = collectQuestionDisplayOptions();
           const manualGenerationContext = JSON.stringify({
-            generationProvider: INSTITUTION_GENERATION_PROVIDER,
+            generationProvider: requestGenerationProvider,
             codes: selected.map(row => row.ncsClCd).sort(),
             noticeText,
             evaluation: (evalTextManual.value || '').trim(),
+            presentationMaterialText: presentationText,
             questionPlanItems,
             interviewMethods,
             knobs,
@@ -2896,14 +3779,15 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              generation_provider: INSTITUTION_GENERATION_PROVIDER,
-              openai_api_key: requestOpenAiApiKey,
+              generation_provider: requestGenerationProvider,
+              ...generationCredentialPayload(requestGenerationApiKey),
               notice_text: noticeText,
               duty_text: noticeText,
               evaluation_text: (evalTextManual.value || '').trim(),
               selected_ncs: selected,
               question_plan: { items: questionPlanItems },
               interview_methods: interviewMethods,
+              presentation_material_text: presentationText,
               runtime_knobs: knobs,
               include_all_questions: questionDisplayOptions.includeAll,
               generated_questions_max_items: questionDisplayOptions.generatedQuestionsMaxItems,
@@ -2944,10 +3828,14 @@
         const msg = String(e.message || e);
         errorBox.style.display = 'block';
         errorBox.textContent = `오류: ${msg}`;
+        errorBox.focus();
         raw.textContent = `오류: ${msg}`;
         stopProgress('실패');
       } finally {
         questionGenerationInFlight = false;
+        btn.removeAttribute('aria-busy');
+        applyApiKeyTransportGuard();
+        renderGenerationProviderStatus();
         syncGenerationButtonState();
       }
     };
@@ -3011,8 +3899,9 @@
 
     updateQNav();
     applyApiKeyTransportGuard();
+    syncPresentationMaterialVisibility();
     setInputMode(inputMode.value || 'upload');
-    loadGenerationProviderStatus();
+    scheduleGenerationProviderDetection(true);
     loadNcsOptions('')
       .then(() => fetch('/health').then(r => r.json()))
       .then((h) => {

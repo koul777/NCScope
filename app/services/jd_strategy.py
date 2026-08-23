@@ -8,11 +8,13 @@ import re
 import time
 import math
 import csv
+import io
 import sqlite3
 import subprocess
 import zlib
 import uuid
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
 from collections import Counter
 from difflib import SequenceMatcher
@@ -25,10 +27,28 @@ from app.services.openai_http import (
     check_openai_connectivity_with_retries,
     post_chat_completions_with_retries,
 )
+from app.services.provider_config import (
+    OPENROUTER_PROVIDER,
+    normalize_generation_provider,
+    openrouter_recovery_model,
+    prepare_chat_payload,
+    provider_candidate_concurrency,
+    provider_model,
+    provider_timeout_sec,
+)
+from app.services.openai_quality_config import (
+    DEFAULT_QUALITY_MODEL,
+    apply_quality_reasoning,
+    quality_candidate_variants,
+    quality_completion_budget,
+)
+from app.services.question_candidate_selection import select_question_candidates
 from app.services.question_generation import (
     _editorial_realism_prompt_contract,
+    _extract_json_text,
     _generate_questions_with_openai_from_ncs,
     _neutral_attitude_prompt_contract,
+    _slice_balanced_json,
     _untrusted_context_prompt_contract,
     _unverified_material_precision_prompt_contract,
 )
@@ -145,6 +165,29 @@ def extract_pdf_text(file_bytes: bytes) -> str:
                 shutil.rmtree(td, ignore_errors=True)
         except Exception:
             pass
+
+    # Vercel/Linux does not have the developer workstation's Python313
+    # pdfminer helper.  pypdf is a declared runtime dependency, so use it
+    # before the byte-stream/OCR fallbacks; this keeps a text-based PDF usable
+    # even when the optional Node/Kordoc bridge is unavailable in a serverless
+    # build.
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(file_bytes))
+        pages: list[str] = []
+        for page in reader.pages:
+            try:
+                text = str(page.extract_text() or "").strip()
+            except Exception:
+                text = ""
+            if text:
+                pages.append(text)
+        extracted = _repair_mojibake("\n".join(pages).strip())
+        if len(extracted) >= 120:
+            return extracted
+    except Exception:
+        pass
 
     # 2) Best-effort standard-library fallback.
     content = file_bytes
@@ -308,12 +351,18 @@ def extract_focus_terms_from_pdf_vision(
     file_bytes: bytes,
     max_pages: int = 2,
     api_key_override: str = "",
+    generation_provider: str = "openai_api",
 ) -> list[str]:
     """
     Use OpenAI vision to extract role keywords when PDF text layer is broken.
     Returns canonical Korean terms suitable for NCS matching.
     """
-    api_key = settings.resolve_openai_key(api_key_override)
+    generation_provider = normalize_generation_provider(generation_provider)
+    api_key = (
+        settings.resolve_openrouter_key(api_key_override)
+        if generation_provider == OPENROUTER_PROVIDER
+        else settings.resolve_openai_key(api_key_override)
+    )
     if not api_key:
         return []
     images = _render_pdf_pages_png_py313(file_bytes=file_bytes, max_pages=max_pages)
@@ -336,7 +385,10 @@ def extract_focus_terms_from_pdf_vision(
         data_url = "data:image/png;base64," + base64.b64encode(img).decode("ascii")
         content.append({"type": "image_url", "image_url": {"url": data_url}})
 
-    vision_model = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+    vision_model = provider_model(
+        generation_provider,
+        os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
+    )
     payload = {
         "model": vision_model,
         "messages": [
@@ -348,10 +400,11 @@ def extract_focus_terms_from_pdf_vision(
     }
     try:
         data = post_chat_completions_with_retries(
-            payload=payload,
+            payload=prepare_chat_payload(payload, generation_provider),
             api_key=api_key,
-            timeout_sec=60.0,
+            timeout_sec=provider_timeout_sec(generation_provider, 60.0),
             max_attempts=1,
+            provider=generation_provider,
         )
         obj = json.loads(data["choices"][0]["message"]["content"])
         terms = obj.get("focus_terms", [])
@@ -1893,13 +1946,22 @@ def _official_question_grounding(
     question_code = str(
         row.get("ncsClCd") or row.get("ncs_code") or default_code
     ).strip()
+    official_rows = [
+        item
+        for item in (ncs_ksa or [])
+        if isinstance(item, dict)
+        and str(item.get("ncsClCd") or "").strip() == question_code
+        and str(item.get("factorName") or "").strip()
+    ]
     official_by_key = {
         re.sub(r"\s+", "", str(item.get("factorName") or "")).lower(): str(
             item.get("factorName") or ""
         ).strip()
-        for item in (ncs_ksa or [])
-        if str(item.get("ncsClCd") or "").strip() == question_code
-        and str(item.get("factorName") or "").strip()
+        for item in official_rows
+    }
+    official_by_id = {
+        stable_ksa_evidence_id(item): str(item.get("factorName") or "").strip()
+        for item in official_rows
     }
     raw_refs = (
         list(row.get("ksa_refs") or [])
@@ -1916,6 +1978,16 @@ def _official_question_grounding(
     verified_focus = official_by_key.get(focus_key) or (
         verified_refs[0] if verified_refs else ""
     )
+    # ``_server_selected_evidence_id`` is added only after the provider's
+    # declared id has been resolved against an official MCP row.  It lets the
+    # public result recover when a capable model returns the right evidence id
+    # but omits the redundant ``ksa_refs`` array, without trusting arbitrary
+    # provider-supplied factor labels.
+    server_selected_id = str(row.get("_server_selected_evidence_id") or "").strip()
+    server_selected_focus = official_by_id.get(server_selected_id, "")
+    if not verified_focus and server_selected_focus:
+        verified_focus = server_selected_focus
+        verified_refs = [server_selected_focus]
     if verified_focus:
         verified_refs = [
             verified_focus,
@@ -1968,6 +2040,8 @@ def generate_personalized_interview_questions(
     user_profile: str = "",
     target_count: int = 12,
     api_key_override: str = "",
+    generation_model: str = "",
+    generation_provider: str = "openai_api",
 ) -> dict[str, Any]:
     comp_name = competency_name or f"NCS-{ncs_code}"
     ncs_matches = [{"ncsClCd": ncs_code, "compeUnitName": comp_name}]
@@ -1985,6 +2059,8 @@ def generate_personalized_interview_questions(
         mode="personalized",
         extra_context=f"user_profile={user_profile[:3000]}",
         api_key_override=api_key_override,
+        generation_model=generation_model,
+        generation_provider=generation_provider,
     )
     questions: list[dict[str, Any]] = []
     for q in generated:
@@ -2012,8 +2088,13 @@ def generate_personalized_interview_questions(
             "evaluation_points": list(q.get("evaluation_points", []) or []) if isinstance(q.get("evaluation_points"), list) else [],
             "eval_points": list(q.get("evaluation_points", []) or []) if isinstance(q.get("evaluation_points"), list) else [],
             "ksa_refs": list(dict.fromkeys(verified_refs)),
-            "question_source": str(q.get("question_source") or "openai_api").strip(),
+            "question_source": str(q.get("question_source") or generation_provider).strip(),
             "model_question_preserved": True,
+            "candidate_selection_policy": str(q.get("candidate_selection_policy") or "").strip(),
+            "candidate_pool_count": int(q.get("candidate_pool_count") or 0),
+            "candidate_quality_score": float(q.get("candidate_quality_score") or 0.0),
+            "candidate_selection_score": float(q.get("candidate_selection_score") or 0.0),
+            "candidate_diversity_axes": dict(q.get("candidate_diversity_axes") or {}),
         })
     _refresh_ncs_code_main_question_repeat_metadata(questions)
     all_questions_grounded = bool(questions) and all(
@@ -2030,6 +2111,20 @@ def generate_personalized_interview_questions(
         "skills_from_profile": "",
         "questions": questions,
         "question_count": len(generated),
+        "generation_provider": generation_provider,
+        "provider_generation_model": str(
+            (generated[0] if generated else {}).get("provider_generation_model")
+            or generation_model
+        ).strip(),
+        "provider_candidate_variant_count": int(
+            (generated[0] if generated else {}).get("provider_candidate_variant_count") or 0
+        ),
+        "provider_candidate_variant_received_count": int(
+            (generated[0] if generated else {}).get(
+                "provider_candidate_variant_received_count"
+            )
+            or 0
+        ),
         "ncs_ksa_available": bool(ncs_ksa) and all_questions_grounded,
         "official_ksa_evidence": _server_official_ksa_evidence(ncs_ksa),
         "warning": (
@@ -2048,6 +2143,8 @@ def generate_diverse_interview_questions(
     target_count: int = 6,
     extra_context: str = "",
     api_key_override: str = "",
+    generation_model: str = "",
+    generation_provider: str = "openai_api",
 ) -> dict[str, Any]:
     comp_name = competency_name or f"NCS-{ncs_code}"
     ncs_matches = [{"ncsClCd": ncs_code, "compeUnitName": comp_name}]
@@ -2060,6 +2157,8 @@ def generate_diverse_interview_questions(
         mode="diverse",
         extra_context=extra_context,
         api_key_override=api_key_override,
+        generation_model=generation_model,
+        generation_provider=generation_provider,
     )
     questions_list: list[dict[str, Any]] = []
     for i, q in enumerate(generated, 1):
@@ -2094,8 +2193,13 @@ def generate_diverse_interview_questions(
                 "follow_up": (follow_ups[0] if follow_ups else ""),
                 "eval_points": list(q.get("evaluation_points", []) or []),
                 "ksa_refs": verified_refs,
-                "question_source": str(q.get("question_source") or "openai_api").strip(),
+                "question_source": str(q.get("question_source") or generation_provider).strip(),
                 "model_question_preserved": True,
+                "candidate_selection_policy": str(q.get("candidate_selection_policy") or "").strip(),
+                "candidate_pool_count": int(q.get("candidate_pool_count") or 0),
+                "candidate_quality_score": float(q.get("candidate_quality_score") or 0.0),
+                "candidate_selection_score": float(q.get("candidate_selection_score") or 0.0),
+                "candidate_diversity_axes": dict(q.get("candidate_diversity_axes") or {}),
             }
         )
     all_questions_grounded = bool(questions_list) and all(
@@ -2109,6 +2213,20 @@ def generate_diverse_interview_questions(
         "generation_mode": "ai_autonomous_ncs",
         "questions": questions_list,
         "question_count": len(questions_list),
+        "generation_provider": generation_provider,
+        "provider_generation_model": str(
+            (generated[0] if generated else {}).get("provider_generation_model")
+            or generation_model
+        ).strip(),
+        "provider_candidate_variant_count": int(
+            (generated[0] if generated else {}).get("provider_candidate_variant_count") or 0
+        ),
+        "provider_candidate_variant_received_count": int(
+            (generated[0] if generated else {}).get(
+                "provider_candidate_variant_received_count"
+            )
+            or 0
+        ),
         "ncs_ksa_available": bool(ncs_ksa) and all_questions_grounded,
         "official_ksa_evidence": _server_official_ksa_evidence(ncs_ksa),
         "warning": (
@@ -2200,6 +2318,64 @@ def _refresh_ncs_code_main_question_repeat_metadata(rows: list[dict[str, Any]]) 
             seen_by_signature.setdefault(signature, []).append(question)
 
 
+def _job_context_excerpt(
+    value: Any,
+    *,
+    anchors: list[str] | None = None,
+    limit: int = 220,
+) -> str:
+    """Extract a short operational excerpt from the uploaded job materials.
+
+    Deterministic recovery must remain useful when the model provider times
+    out.  The excerpt is deliberately source-derived and bounded; it is not a
+    domain profile or an invented occupation-specific scenario.
+    """
+
+    compact = re.sub(r"\s+", " ", str(value or "").strip())
+    compact = re.sub(
+        r"\[(?:공고문|직무기술서|담당업무|지원자격|우대사항|면접평가항목|발표자료)[^\]]*\]\s*",
+        "",
+        compact,
+    )
+    if not compact:
+        return ""
+    segments = [
+        re.sub(r"^[-•*○◦▪●\s]+", "", part).strip(" -·•○◦▪●")
+        for part in re.split(
+            r"(?<=[.!?。])\s+|(?=[○◦•▪●]\s)|(?=\d+[.)]\s)|\s+[|｜]\s+",
+            compact,
+        )
+        if len(part.strip()) >= 12
+    ]
+    if not segments:
+        segments = [compact]
+    normalized_anchors = [
+        re.sub(r"\s+", "", str(anchor or "")).casefold()
+        for anchor in (anchors or [])
+        if len(re.sub(r"\s+", "", str(anchor or ""))) >= 2
+    ]
+    operational_markers = (
+        "담당", "수행", "운영", "관리", "점검", "유지", "처리", "작성", "분석",
+        "설계", "개선", "보고", "민원", "현장", "설비", "자료", "기록",
+    )
+    scored: list[tuple[int, int, str]] = []
+    for position, segment in enumerate(segments):
+        normalized = re.sub(r"\s+", "", segment).casefold()
+        anchor_hits = sum(1 for anchor in normalized_anchors if anchor in normalized)
+        marker_hits = sum(1 for marker in operational_markers if marker in segment)
+        # Source order is intentional: callers place 담당업무 before JD and
+        # 공고문, while anchors keep the selected NCS work element preferred.
+        score = (anchor_hits * 10) + min(marker_hits, 5)
+        if score:
+            scored.append((score, -position, segment))
+    selected = [item[2] for item in sorted(scored, reverse=True)[:2]] if scored else segments[:1]
+    excerpt = " ".join(dict.fromkeys(selected)).strip()
+    if len(excerpt) <= max(40, int(limit or 220)):
+        return excerpt
+    clipped = excerpt[: max(40, int(limit or 220))].rsplit(" ", 1)[0].rstrip(" ,·")
+    return f"{clipped}…"
+
+
 def _build_ncs_code_template_fallback_question(
     *,
     unit: dict[str, Any] | None,
@@ -2209,8 +2385,15 @@ def _build_ncs_code_template_fallback_question(
     evidence_terms: list[str] | None = None,
     evidence_rows: list[dict[str, Any]] | None = None,
     index: int,
+    method_override: str | None = None,
+    case_slot_id: str | None = None,
+    case_slot_signature: str | None = None,
+    presentation_material_text: str = "",
+    job_context_text: str = "",
 ) -> dict[str, Any]:
-    method = _NCS_CODE_TEMPLATE_FALLBACK_METHODS[index % len(_NCS_CODE_TEMPLATE_FALLBACK_METHODS)]
+    method = str(method_override or "").strip() or _NCS_CODE_TEMPLATE_FALLBACK_METHODS[
+        index % len(_NCS_CODE_TEMPLATE_FALLBACK_METHODS)
+    ]
     label = str((unit or {}).get("compeUnitName") or comp_name or "해당 직무").strip()
     code = str((unit or {}).get("ncsClCd") or ncs_code).strip()
     detail = str(
@@ -2259,54 +2442,188 @@ def _build_ncs_code_template_fallback_question(
         competency_definition=str((unit or {}).get("compeUnitDef") or "").strip(),
     )
     surface_focus = str(task_frame.get("task_object") or "업무 판단과 수행 기준").strip()
+    # The traceable task frame can end in a mechanical suffix such as
+    # "관련 실무 적용·검증 절차".  Keep that wording in internal evidence,
+    # but trim only the generic suffix from candidate-facing copy.
+    candidate_surface_focus = re.sub(
+        r"\s*(?:관련\s*)?(?:실무\s*)?(?:적용|활용)(?:·|ㆍ|/)?\s*검증\s*(?:절차|기준)\s*$",
+        "",
+        surface_focus,
+    ).strip(" ·ㆍ/") or "해당 업무 수행 기준"
+    surface_focus = candidate_surface_focus
     ksa_kind = str(task_frame.get("ksa_type") or "").strip()
+    # Provider-free fallback requests can contain up to five slots for one
+    # competency.  Reusing one static sentence after the KSA pool is exhausted
+    # makes the UI look like it generated duplicate questions.  Keep the same
+    # official focus while rotating the observable decision angle by slot.
+    variation_axes = (
+        "요구사항과 기준을 먼저 확인한",
+        "마감·우선순위를 조정한",
+        "누락·오류 자료를 대조한",
+        "협업·보고 순서를 정한",
+        "결과를 검증하고 재발을 막은",
+    )
+    variation_axis = variation_axes[index % len(variation_axes)]
+    normalized_slot = _compact_question_intent_text(case_slot_id or "")
+    normalized_code = _compact_question_intent_text(code)
+    fallback_slot_id = (
+        normalized_slot
+        if normalized_slot
+        else f"{normalized_code}:{_compact_question_intent_text(method)}"
+    )
+    fallback_slot_signature = (
+        str(case_slot_signature or "").strip() or fallback_slot_id
+    )
+
+    job_excerpt = _job_context_excerpt(
+        job_context_text,
+        anchors=[detail, label, *pool[:3]],
+        limit=220,
+    )
+    candidate_context = job_excerpt or context_label
+    # Keep source-derived context compact and candidate-readable. The full
+    # notice/JD remains available in the request trace; this excerpt ensures
+    # provider-free recovery questions still name the actual advertised work.
+    if job_excerpt:
+        candidate_context = f"공고·직무기술서상 {job_excerpt}"
 
     if method == "상황면접":
+        scenario_variants = (
+            (
+                "핵심 자료 오류와 일정 지연이 동시에 발생한 상황",
+                "먼저 확인할 사실과 판단 기준, 위험을 통제할 행동·보고 순서",
+                "먼저 확인해야 할 사실과 기준은 무엇입니까?",
+                "결과가 기대와 다르면 어떤 후속 조치를 하시겠습니까?",
+            ),
+            (
+                "자료 오류로 점검 기록과 현장 측정값이 일치하지 않고 일정 지연과 교대 인수인계가 겹친 상황",
+                "기록의 신뢰도와 즉시 조치 범위를 가르는 판단 기준, 인수인계 전 행동 순서",
+                "기록과 측정값 중 우선 대조할 자료와 그 이유는 무엇입니까?",
+                "인수인계 뒤 새 정보가 확인되면 조치와 보고를 어떻게 수정하시겠습니까?",
+            ),
+            (
+                "자료 오류가 섞인 안전 위험 민원과 설비 복구 요청이 동시에 접수되어 일정 지연이 우려되는 상황",
+                "안전·서비스 영향의 우선순위, 확인 절차와 작업 중지·재개 기준",
+                "안전 위험과 복구 요청의 우선순위를 정할 때 어떤 사실을 확인합니까?",
+                "초기 위험 판단이 틀렸다고 드러나면 누구에게 무엇을 다시 보고하시겠습니까?",
+            ),
+            (
+                "자료 오류를 바로잡아야 하는데 상급자의 신속 처리 지시와 규정상 승인 절차가 충돌해 일정 지연이 우려되는 상황",
+                "권한 범위와 예외 승인 가능성을 확인한 뒤 위험을 줄이는 행동·보고 순서",
+                "지시와 규정이 충돌한다는 사실을 확인할 근거는 무엇입니까?",
+                "승인권자의 답변이 지연되면 업무를 어디까지 보류·진행하시겠습니까?",
+            ),
+            (
+                "자료 오류와 일정 지연이 겹친 가운데 협업 부서마다 점검 기준이 달라 마감 전 결과를 확정해야 하는 상황",
+                "공통 사실과 부서별 기준의 차이를 구분하고 결과 확정·보류를 결정하는 절차",
+                "부서별 기준이 다를 때 공통으로 확인할 자료와 조정 주체는 누구입니까?",
+                "확정 뒤 반대 근거가 나오면 기록과 다음 점검 계획을 어떻게 고치시겠습니까?",
+            ),
+        )
+        scenario, action_focus, first_follow_up, final_follow_up = scenario_variants[
+            index % len(scenario_variants)
+        ]
         question = (
-            f"{context_label} 업무에서 {surface_focus}에 따라 판단해야 하는데, 핵심 자료 오류와 일정 지연이 "
-            "동시에 발생한 상황입니다. 먼저 확인할 사실과 판단 기준, 위험을 통제할 행동·보고 순서를 설명해 주세요."
+            f"{candidate_context}에서 {surface_focus}에 따라 판단해야 하는데, {scenario}입니다. "
+            f"{action_focus}를 설명하고 위험을 통제할 행동 순서를 제시해 주세요."
         )
         follow_ups = [
-            "먼저 확인해야 할 사실과 기준은 무엇입니까?",
-            f"{context_label} 업무에서 {surface_focus}에 따라 그 행동을 선택한 이유는 무엇입니까?",
-            "결과가 기대와 다르면 어떤 후속 조치를 하시겠습니까?",
+            first_follow_up,
+            f"{candidate_context}에서 {surface_focus}에 따라 그 행동을 선택한 이유와 직접 남길 기록은 무엇입니까?",
+            final_follow_up,
         ]
-        evaluation_points = ["사실 확인", "판단 기준", "행동 순서", "위험 통제"]
+        evaluation_points = ["사실 확인", "판단 기준", "행동 순서와 보고", "위험 통제와 후속점검"]
     elif method == "직무지식면접":
         question = (
-            f"{context_label}에서 {surface_focus}에 관해 확인해야 할 절차와 기준, 적용 범위, 산출물, "
+            f"{candidate_context}에서 {variation_axis} {surface_focus}에 관해 확인해야 할 절차와 기준, 적용 범위, 산출물, "
             "예외상황 대응 및 오류 예방 방법을 설명해 주세요."
         )
         follow_ups = [
-            f"{context_label} 업무에서 {surface_focus}의 근거가 되는 문서나 사실은 무엇입니까?",
+            f"{candidate_context}에서 {surface_focus}의 근거가 되는 문서나 사실은 무엇입니까?",
             "예외상황에서 기준 적용을 어떻게 조정하겠습니까?",
             "산출물 품질과 오류 예방은 어떻게 점검하겠습니까?",
         ]
         evaluation_points = ["절차·기준 이해", "예외상황 판단", "산출물 품질", "오류 예방"]
     elif method == "인바스켓면접":
         question = (
-            f"[인바스켓과제] {context_label} 관련 요청, 오류 정정, 보고 문서가 동시에 들어왔습니다. "
+            f"[인바스켓과제] {candidate_context}에서 {variation_axis} 상황에 관련 요청, 오류 정정, 보고 문서가 동시에 들어왔습니다. "
             f"{surface_focus}에 따라 우선순위와 보고, 위임, 직접처리 판단을 제시하고, "
             "첫 조치와 기록 산출물을 포함해 주세요."
         )
         follow_ups = [
-            f"{context_label} 업무에서 {surface_focus}에 따라 가장 먼저 처리할 문서와 보류할 요청은 무엇입니까?",
+            f"{candidate_context}에서 {surface_focus}에 따라 가장 먼저 처리할 문서와 보류할 요청은 무엇입니까?",
             "보고, 위임, 직접처리를 나눈 판단 근거는 무엇입니까?",
             "처리 이후 기록과 후속 확인은 어떻게 남기겠습니까?",
         ]
         evaluation_points = ["우선순위 판단", "문서·요청 분류", "보고·위임·직접처리", "시간관리"]
     elif method == "발표면접":
-        question = (
-            f"[발표과제] {context_label}에서 {surface_focus}에 관한 현황 자료와 오류 사례가 주어졌습니다. "
-            "자료를 바탕으로 문제를 진단하고 대안 2가지, 실행계획과 성과지표를 발표한 뒤 "
-            "질의응답에 답변해 주세요."
+        presentation_variants = (
+            "현황 자료와 오류 사례를 바탕으로 원인과 대안을 제시",
+            "운영 지표 변화와 민원 기록을 비교해 개선 우선순위를 제시",
+            "절차 준수와 처리 속도 사이의 개선 대안을 비교해 제시",
+            "품질 점검 결과를 근거로 실행계획과 성과지표를 제시",
+            "제한된 인력·예산 안에서 단계별 개선 로드맵을 제시",
         )
-        follow_ups = [
-            f"{context_label}의 {surface_focus} 현황을 진단할 때 활용한 핵심 근거자료는 무엇입니까?",
-            "대안 중 우선순위를 가장 높게 둔 방안과 이유는 무엇입니까?",
-            "질의응답에서 반대 의견이 나오면 어떤 근거로 답변하시겠습니까?",
-        ]
-        evaluation_points = ["자료 분석", "논리적 구조화", "대안 실행가능성", "성과지표"]
+        presentation_focus = presentation_variants[index % len(presentation_variants)]
+        material_hint = ""
+        presentation_source_text = str(presentation_material_text or "").strip()
+        packet_task_hint = ""
+        if presentation_source_text:
+            # The presentation packet is built from this request's notice/JD
+            # and selected NCS evidence. Surface its generated main task in
+            # the candidate-facing question so the screen is not reduced to a
+            # generic "analyze the materials" placeholder. Keep the fallback
+            # bounded even when the packet contains long source excerpts.
+            for line in presentation_source_text.splitlines():
+                cleaned_line = re.sub(r"^[-•*]\s*", "", str(line or "").strip())
+                if cleaned_line.startswith("발표 메인 과제:"):
+                    raw_task_hint = cleaned_line.split(":", 1)[1].strip()
+                    packet_task_hint = raw_task_hint[:200]
+                    if len(raw_task_hint) > 200:
+                        packet_task_hint = packet_task_hint.rsplit(" ", 1)[0].rstrip(" ,·") + "…"
+                    break
+            # Keep official KSA evidence in the expandable packet, but avoid
+            # exposing the raw taxonomy label as if it were a candidate-facing
+            # instruction. The question still names the concrete task and
+            # points the candidate to the supplied source material.
+            for term in dict.fromkeys(pool):
+                cleaned_term = str(term or "").strip()
+                if cleaned_term:
+                    packet_task_hint = packet_task_hint.replace(cleaned_term, "해당 평가기준")
+            material_hint = " 제공된 발표 자료의 수치·사실을 우선 사용하고 자료명을 근거로 밝혀 주세요."
+        if packet_task_hint:
+            # The packet task already carries the selected job's concrete
+            # duty wording.  Do not prepend the official NCS detail/unit label
+            # (for example, ``<detail> <unit> 업무``) to the candidate-facing
+            # prompt; that taxonomy belongs in the traceability panel and is
+            # otherwise flagged as a label leak by the realism gate.
+            candidate_context = "제공된 직무 자료"
+            question = (
+                f"[발표과제] {candidate_context}에서 {packet_task_hint}"
+                f"{material_hint} 위 자료에서 확인되는 사실과 제약을 근거로 대안 2가지와 선택 기준, "
+                f"현황과 원인을 진단하고 {candidate_surface_focus} 관점의 실행계획·성과지표를 발표해 주세요. "
+                "대안 간 합의가 어렵다면 결정권자에게 보고할 기준과 질의응답 답변도 제시해 주세요."
+            )
+        else:
+            question = (
+                f"[발표과제] {candidate_context}에서 {surface_focus}를 기준으로 {presentation_focus}합니다."
+                f"{material_hint} 자료를 바탕으로 현황을 진단하고 대안 2가지, 실행계획과 성과지표를 발표한 뒤 "
+                "질의응답에 답변해 주세요."
+            )
+        follow_ups = (
+            [
+                f"방금 발표에서 다룬 {candidate_surface_focus} 기준과 핵심 사실이 달라진다면 우선순위와 판단을 어떻게 수정하시겠습니까?",
+                "앞서 선택한 대안의 실행 과정에서 일정 또는 품질 지표가 예상과 다르면 어떤 조치를 먼저 하시겠습니까?",
+                "질의응답에서 자료와 반대되는 근거가 나오면 어떤 부분을 재검증하고 발표안을 수정하시겠습니까?",
+            ]
+            if packet_task_hint
+            else [
+                f"{candidate_context}의 {surface_focus} 판단에 사용한 핵심 자료와 그 자료를 선택한 이유는 무엇입니까?",
+                "제시한 대안 중 우선안을 고른 기준과 예상되는 부작용은 무엇입니까?",
+                "질의응답에서 자료와 반대되는 근거가 나오면 어떤 부분을 재검증하고 발표안을 수정하시겠습니까?",
+            ]
+        )
+        evaluation_points = ["자료 근거 분석", "핵심 판단의 논리적 구조화", "대안 실행가능성", "성과지표와 질의응답"]
     elif method == "토론면접":
         approval_change_focus = "승인" in k1 and "변경" in k1
         if approval_change_focus:
@@ -2337,13 +2654,21 @@ def _build_ncs_code_template_fallback_question(
                 "근거가 모두 확인될 때까지 적용을 보류하자는 입장과 "
                 "긴급·저위험 건은 조건부로 먼저 처리한 뒤 사후 검증하자는 입장"
             )
+        debate_angle = (
+            "초기 사실 확인 순서",
+            "대안별 일정·품질 영향",
+            "예외 적용과 권한 범위",
+            "공통 실행안의 책임 배분",
+            "합의 후 검증·후속점검",
+        )[index % 5]
         question = (
-            f"[토론과제] {context_label} 업무에서 {surface_focus}에 따라 판단해야 하는 가운데 {scenario}. "
+            f"[토론과제] {candidate_context}에서 {surface_focus}에 따라 판단해야 하는 가운데 {scenario}. "
             f"{opposing_positions}이 충돌합니다. 각 입장의 근거와 위험, 타당성을 검토하세요. "
-            "합의할 수 있다면 공통 실행안을, 합의가 어렵다면 미합의 쟁점과 결정권자 이송 기준을 제시해 주세요."
+            f"특히 {debate_angle}을 쟁점으로 삼아 합의할 수 있다면 공통 실행안을, "
+            "합의가 어렵다면 미합의 쟁점과 결정권자 이송 기준을 제시해 주세요."
         )
         follow_ups = [
-            f"{context_label}의 {surface_focus}에 관한 초기 입장을 정하기 전에 어떤 문서와 사실을 확인하겠습니까?",
+            f"{candidate_context}의 {surface_focus}에 관한 초기 입장을 정하기 전에 어떤 문서와 사실을 확인하겠습니까?",
             "상대 입장에서 수용할 부분과 수용하기 어려운 부분을 어떤 기준으로 구분하겠습니까?",
             "공통안의 적용 범위·예외·검증·실행 책임 또는 미합의 이송 기준을 어떻게 정하겠습니까?",
         ]
@@ -2354,26 +2679,50 @@ def _build_ncs_code_template_fallback_question(
             "공통안 또는 미합의 이송안의 실행 가능성",
         ]
     elif method == "창의적 문제해결력면접":
+        creative_angle = (
+            "반복 오류의 원인 가설을 재구성하고",
+            "이해관계자 요구 변화까지 예측하고",
+            "제한된 자원 안에서 대안을 설계하고",
+            "새로운 자료·도구를 적용해 검증하고",
+            "실행 후 재발 신호를 조기에 탐지하고",
+        )[index % 5]
         question = (
-            f"[창의적 문제해결력과제] {context_label}에서 {surface_focus}와 관련된 반복 문제가 발생했습니다. "
-            "미래예측 관점에서 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법과 "
-            "실현가능성, 의사결정 기준, 실행계획을 제시해 주세요."
+            f"창의적 문제해결력과제에서 {candidate_context}의 {surface_focus}와 관련된 오류가 최근 3건 반복되고 "
+            "필수 확인자료 1건이 누락된 채 마감까지 2시간 남았습니다. "
+            f"전면 재작성과 우선 보완 중 선택해야 하는 압박 속에서 {creative_angle} "
+            "미래예측 관점으로 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법과 "
+            "실현가능성, 의사결정 기준, 실행계획·성과지표·리스크 보완을 제시해 주세요."
         )
         follow_ups = [
-            "핵심 문제정의를 위해 먼저 확인할 변화 신호는 무엇입니까?",
-            f"{context_label}의 {surface_focus}와 관련된 원인 가설은 어떻게 세우고 검증하겠습니까?",
-            "선택한 대안의 리스크와 보완책은 무엇입니까?",
+            "방금 제시한 문제 정의에서 먼저 확인할 변화 신호가 달라지면 무엇을 수정하시겠습니까?",
+            f"앞서 말씀하신 {surface_focus} 원인 가설을 뒷받침할 자료가 부족하거나 반대 결과가 나오면 검증 순서를 어떻게 바꾸시겠습니까?",
+            "선택한 대안의 리스크가 예상보다 커졌다면 실행계획과 성과지표를 어떻게 조정하시겠습니까?",
         ]
         evaluation_points = ["미래예측과 문제 정의", "창의적 사고와 대안 도출", "검증 방법과 실현가능성", "의사결정과 실행계획"]
     else:
+        experience_angle = (
+            "요구사항과 기준을 확인한 뒤",
+            "마감 압박 속 우선순위를 정한 뒤",
+            "누락·오류 자료를 대조한 뒤",
+            "협업 부서와 보고 순서를 조정한 뒤",
+            "결과를 검증하고 재발을 막은 뒤",
+        )[index % 5]
+        if ksa_kind == "태도":
+            experience_angle = (
+                "압박과 이해 충돌 속에서 요구사항과 기준을 확인한 뒤",
+                "마감 압박과 상충하는 요구 속에서 우선순위를 정한 뒤",
+                "누락·오류 자료와 책임 범위를 대조한 뒤",
+                "협업 부서와 이해 충돌 속에서 보고 순서를 조정한 뒤",
+                "결과에 대한 책임을 확인하고 재발을 막은 뒤",
+            )[index % 5]
         question = (
-            f"{context_label} 수행 과정에서 {surface_focus}에 따라 판단하거나 조치해 문제를 해결한 경험을 말씀해 주세요. "
-            "당시 상황, 본인 역할, 선택한 행동, 결과와 학습을 포함해 설명해 주세요."
+            f"{candidate_context}을 수행하던 실제 상황에서 본인이 겪은 경험 사례 하나를 골라 {experience_angle} {candidate_surface_focus}에 따라 어떤 판단과 행동을 했는지 말씀해 주세요. "
+            "그 결과를 문서·수치·기록·피드백으로 어떻게 확인했으며 이후 무엇을 개선했는지도 설명해 주세요."
         )
         follow_ups = [
-            "당시 상황과 본인이 맡은 구체적인 역할을 설명해 주세요.",
-            f"{context_label} 업무에서 {surface_focus}에 따라 실제로 취한 행동은 무엇이었습니까?",
-            "결과를 어떤 기준으로 확인했고 다시 한다면 무엇을 개선하시겠습니까?",
+            "방금 답변에서 당시 상황과 본인 역할, 직접 맡은 범위를 구분해 설명해 주세요.",
+            f"앞서 말씀하신 {candidate_surface_focus} 관련 행동의 근거 자료나 기준이 달랐다면 어떤 부분을 바꾸시겠습니까?",
+            "앞서 제시한 결과를 문서·수치·기록·피드백 중 무엇으로 확인했으며, 확인값이 다르면 어떻게 조정하시겠습니까?",
         ]
         evaluation_points = ["상황과 역할", "판단 근거", "실행 행동", "성과와 학습"]
 
@@ -2407,6 +2756,8 @@ def _build_ncs_code_template_fallback_question(
         "time_plan": [],
         "provided_materials": ["별도 자료 없음"],
         "required_outputs": ["판단 근거", "구체적 행동", "결과 확인 또는 후속점검"],
+        "case_slot_id": fallback_slot_id,
+        "case_signature": fallback_slot_signature,
         "standardization": "모든 지원자에게 동일한 자료, 기본 과제, 시간 조건과 허용된 후속질문 범위를 적용합니다.",
         "timing_basis": "기관 운영기준에서 동일 응답시간을 사전 확정합니다.",
     }
@@ -2464,6 +2815,26 @@ def _build_ncs_code_template_fallback_question(
                 "timing_basis": "기관 운영기준에 따라 사전 확정한 동일 시간구조를 적용합니다.",
             }
         )
+        provided_material_text = str(presentation_material_text or "").strip()
+        if provided_material_text:
+            # Keep the candidate-facing question compact while exposing the
+            # supplied source in the expandable task-conditions panel.
+            task_conditions["provided_materials"] = list(dict.fromkeys([
+                *task_conditions.get("provided_materials", []),
+                "응시자 제공 발표 자료",
+            ]))
+            task_conditions["case_materials"] = [
+                *list(task_conditions.get("case_materials") or []),
+                {
+                    "source": "응시자 제공 발표 자료",
+                    "field": "원문",
+                    "value": provided_material_text[:2400],
+                },
+            ]
+            task_conditions["case_facts"] = list(dict.fromkeys([
+                *task_conditions.get("case_facts", []),
+                "응시자가 제공한 발표 자료의 사실·수치·제약을 우선 검토함",
+            ]))
     elif method == "인바스켓면접":
         task_conditions.update(
             {
@@ -2552,7 +2923,8 @@ def _build_ncs_code_template_fallback_question(
         "ncsClCd": code,
         "ncs_detail": detail,
         "question_focus": k1,
-        "question_focus_surface": surface_focus,
+        "question_variation_axis": variation_axis,
+        "question_focus_surface": candidate_surface_focus,
         "question_task_frame": task_frame,
         "question_evidence_id": str(task_frame.get("evidence_id") or ""),
         "question_evidence_required": bool(task_frame.get("evidence_id")),
@@ -2573,6 +2945,8 @@ def generate_interview_questions_by_ncs_code(
     include_followups: bool = True,
     extra_context: str = "",
     api_key_override: str = "",
+    generation_model: str = "",
+    generation_provider: str = "openai_api",
 ) -> dict[str, Any]:
     code = str(ncs_code or "").strip()
     comp_name = competency_name or f"NCS-{code}"
@@ -2617,12 +2991,95 @@ def generate_interview_questions_by_ncs_code(
     except Exception:
         ai_topup_attempts = 2
     ai_topup_attempts = max(0, min(5, ai_topup_attempts))
+    # The public single-question path must issue one semantic generation only.
+    # Retrying an underfilled one-question result here used to hide as many as
+    # four additional provider calls behind one accepted HTTP request.
+    if desired_count == 1:
+        ai_topup_attempts = 0
     used_template_fallback = False
     ncs_ksa = _safe_fetch_ncs_ksa_by_units(
         ncs_matches=ncs_matches,
         max_units=min(max(1, len(ncs_matches)), 8),
         max_factors_per_unit=6,
     )
+    slot_units = [u for u in ncs_matches if str(u.get("ncsClCd", "")).strip()]
+    if is_sclass_mode and sclass_units:
+        ordered_slot_units: list[dict[str, Any]] = []
+        seen_slot_codes: set[str] = set()
+        for unit in sclass_units:
+            unit_code = str(unit.get("ncsClCd", "")).strip()
+            if not unit_code or unit_code in seen_slot_codes:
+                continue
+            seen_slot_codes.add(unit_code)
+            ordered_slot_units.append(unit)
+        slot_units = ordered_slot_units or slot_units
+    if not slot_units:
+        slot_units = [{"ncsClCd": code, "compeUnitName": comp_name}]
+    slot_unit_codes: list[str] = []
+    for unit in slot_units:
+        unit_code = str(unit.get("ncsClCd", "")).strip()
+        if unit_code and unit_code not in slot_unit_codes:
+            slot_unit_codes.append(unit_code)
+    if not slot_unit_codes:
+        slot_unit_codes = [str(code).strip()]
+    slot_unit_map: dict[str, dict[str, Any]] = {}
+    for unit in slot_units:
+        unit_code = str(unit.get("ncsClCd", "")).strip()
+        if unit_code and unit_code not in slot_unit_map:
+            slot_unit_map[unit_code] = unit
+    if str(code).strip() and str(code).strip() not in slot_unit_map:
+        slot_unit_map[str(code).strip()] = {"ncsClCd": str(code).strip(), "compeUnitName": comp_name}
+    method_signature_to_label = {
+        _compact_question_intent_text(method): method
+        for method in _NCS_CODE_TEMPLATE_FALLBACK_METHODS
+    }
+    fallback_methods = list(_NCS_CODE_TEMPLATE_FALLBACK_METHODS)
+
+    def _normalize_case_slot(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        code_part, _, method_part = raw.partition(":")
+        if not method_part:
+            return _compact_question_intent_text(raw)
+        return f"{_compact_question_intent_text(code_part)}:{_compact_question_intent_text(method_part)}"
+
+    def _slot_signature_for_row(row: dict[str, Any], fallback_index: int = 0) -> str:
+        conditions = row.get("task_conditions") if isinstance(row, dict) else {}
+        raw_slot = (
+            str((conditions or {}).get("case_slot_id") or "").strip()
+            if isinstance(conditions, dict)
+            else ""
+        )
+        if raw_slot:
+            return _normalize_case_slot(raw_slot)
+        q_type = str((row or {}).get("type") or (row or {}).get("question_type") or "").strip()
+        method_token = _compact_question_intent_text(q_type)
+        if not method_token and fallback_methods:
+            method_token = _compact_question_intent_text(fallback_methods[fallback_index % len(fallback_methods)])
+        q_code = _compact_question_intent_text(str((row or {}).get("ncsClCd") or code).strip() or str(code))
+        return f"{q_code}:{method_token}"
+
+    def _required_case_slots(goal_count: int) -> list[str]:
+        max_slots = max(1, min(goal_count, len(fallback_methods)))
+        slots: list[str] = []
+        for idx in range(max_slots):
+            method_token = _compact_question_intent_text(fallback_methods[idx % len(fallback_methods)])
+            unit_code = (
+                _compact_question_intent_text(slot_unit_codes[idx % len(slot_unit_codes)])
+                if slot_unit_codes
+                else _compact_question_intent_text(str(code).strip())
+            )
+            slots.append(f"{unit_code}:{method_token}")
+        return slots
+
+    def _method_from_slot(slot_id: str) -> str:
+        token = (
+            _compact_question_intent_text(slot_id.split(":", 1)[1])
+            if ":" in slot_id
+            else _compact_question_intent_text(slot_id)
+        )
+        return method_signature_to_label.get(token, fallback_methods[0])
 
     generated_raw = _generate_questions_with_openai_from_ncs(
         jd_text="",
@@ -2632,6 +3089,8 @@ def generate_interview_questions_by_ncs_code(
         mode="ncs_code_only",
         extra_context=extra_context,
         api_key_override=api_key_override,
+        generation_model=generation_model,
+        generation_provider=generation_provider,
     )
     generated: list[dict[str, Any]] = []
     seen_question_keys: set[str] = set()
@@ -2665,6 +3124,7 @@ def generate_interview_questions_by_ncs_code(
         return added
 
     _merge_generated(generated_raw)
+    required_case_slots = _required_case_slots(desired_count)
 
     for _ in range(ai_topup_attempts):
         if len(generated) >= desired_count:
@@ -2684,6 +3144,8 @@ def generate_interview_questions_by_ncs_code(
             mode="ncs_code_only",
             extra_context=dedup_hint,
             api_key_override=api_key_override,
+            generation_model=generation_model,
+            generation_provider=generation_provider,
         )
         _merge_generated(extra_raw)
 
@@ -2798,6 +3260,71 @@ def generate_interview_questions_by_ncs_code(
             existing.add(key)
             generated.append(q)
 
+    if used_template_fallback and required_case_slots:
+        current_slots = [
+            _slot_signature_for_row(row, idx)
+            for idx, row in enumerate(generated)
+        ]
+        slot_presence = {slot: idx for idx, slot in enumerate(current_slots)}
+        missing_case_slots = [slot for slot in required_case_slots if slot not in slot_presence]
+        if missing_case_slots:
+            required_slot_set = set(required_case_slots)
+            for missing_slot in missing_case_slots:
+                unit_code = missing_slot.split(":", 1)[0] if ":" in missing_slot else str(code).strip()
+                target_unit = slot_unit_map.get(unit_code) or slot_unit_map.get(slot_unit_codes[0]) or {"ncsClCd": str(code).strip(), "compeUnitName": comp_name}
+                unit_ksa_rows = [
+                    row for row in (ncs_ksa or [])
+                    if str(row.get("ncsClCd", "")).strip() == str(unit_code).strip()
+                ]
+                unit_evidence = [
+                    str(row.get("factorName", "")).strip()
+                    for row in unit_ksa_rows
+                    if str(row.get("factorName", "")).strip()
+                ]
+                official_unit_evidence = list(unit_evidence)
+                if not unit_evidence:
+                    unit_evidence = ["업무 우선순위 설정", "이해관계자 협업", "성과 점검 및 개선"]
+                replacement_method = _method_from_slot(missing_slot)
+
+                replacement = _build_ncs_code_template_fallback_question(
+                    unit=target_unit,
+                    comp_name=str(target_unit.get("compeUnitName", "")).strip() or comp_name,
+                    ncs_code=unit_code or str(code).strip(),
+                    ksa_terms=unit_evidence,
+                    evidence_terms=official_unit_evidence,
+                    evidence_rows=unit_ksa_rows,
+                    index=len(generated),
+                    method_override=replacement_method,
+                    case_slot_id=missing_slot,
+                    case_slot_signature=f"coverage:{missing_slot}",
+                )
+                replacement["type"] = replacement_method
+
+                replace_target: int | None = None
+                if replace_target is None:
+                    for idx, slot in enumerate(current_slots):
+                        if slot not in required_slot_set:
+                            replace_target = idx
+                            break
+                if replace_target is None:
+                    counts: dict[str, int] = {}
+                    for slot in current_slots:
+                        counts[slot] = counts.get(slot, 0) + 1
+                    for idx, slot in enumerate(current_slots):
+                        if counts.get(slot, 0) > 1 and slot != missing_slot:
+                            replace_target = idx
+                            break
+                if replace_target is None and len(generated) < desired_count:
+                    replace_target = len(generated)
+                    generated.append(replacement)
+                    current_slots.append(missing_slot)
+                elif replace_target is None:
+                    continue
+                else:
+                    generated[replace_target] = replacement
+                    current_slots[replace_target] = missing_slot
+            slot_presence = {slot: idx for idx, slot in enumerate(current_slots)}
+
     generated = _apply_entry_level_policy_to_questions(generated)
     grounded_generated: list[dict[str, Any]] = []
     for raw_question in generated:
@@ -2812,6 +3339,16 @@ def generate_interview_questions_by_ncs_code(
         question["question_focus_source"] = focus_source
         grounded_generated.append(question)
     generated = grounded_generated
+
+    for raw_question in generated:
+        if not isinstance(raw_question, dict):
+            continue
+        task_conditions = dict(raw_question.get("task_conditions") or {})
+        if not task_conditions.get("case_facts"):
+            task_conditions["case_facts"] = [
+                "사례 기반 판단의 확인자료와 근거를 제시해야 함",
+            ]
+            raw_question["task_conditions"] = task_conditions
 
     main_questions = [
         {
@@ -2833,6 +3370,11 @@ def generate_interview_questions_by_ncs_code(
             "task_conditions": dict(q.get("task_conditions") or {}),
             "question_source": str(q.get("question_source", "")).strip(),
             "model_question_preserved": bool(q.get("model_question_preserved")),
+            "candidate_selection_policy": str(q.get("candidate_selection_policy") or "").strip(),
+            "candidate_pool_count": int(q.get("candidate_pool_count") or 0),
+            "candidate_quality_score": float(q.get("candidate_quality_score") or 0.0),
+            "candidate_selection_score": float(q.get("candidate_selection_score") or 0.0),
+            "candidate_diversity_axes": dict(q.get("candidate_diversity_axes") or {}),
         }
         for q in generated
     ]
@@ -2879,10 +3421,43 @@ def generate_interview_questions_by_ncs_code(
         and bool(str(row.get("ncsClCd") or "").strip())
         for row in main_questions
     )
+    final_slots = [
+        _slot_signature_for_row(row, idx)
+        for idx, row in enumerate(generated)
+    ]
+    used_slots_set = set(final_slots)
+    covered_required_slots = [
+        slot for slot in required_case_slots
+        if slot in used_slots_set
+    ]
+    case_coverage = {
+        "required_slots": required_case_slots,
+        "required_count": len(required_case_slots),
+        "used_slots": sorted(used_slots_set),
+        "used_count": len(used_slots_set),
+        "missing_slots": [slot for slot in required_case_slots if slot not in used_slots_set],
+        "covered_required_count": len(covered_required_slots),
+        "coverage_ratio": round(len(covered_required_slots) / len(required_case_slots), 4) if required_case_slots else 0.0,
+    }
     result = {
         "ncs_code": code,
         "competency_name": comp_name,
         "generation_mode": generation_mode,
+        "generation_provider": generation_provider,
+        "provider_generation_model": str(
+            (generated[0] if generated else {}).get("provider_generation_model")
+            or generation_model
+        ).strip(),
+        "provider_candidate_variant_count": int(
+            (generated[0] if generated else {}).get("provider_candidate_variant_count") or 0
+        ),
+        "provider_candidate_variant_received_count": int(
+            (generated[0] if generated else {}).get(
+                "provider_candidate_variant_received_count"
+            )
+            or 0
+        ),
+        "case_coverage": case_coverage,
         "main_questions": main_questions,
         "follow_up_questions": follow_up_questions,
         "question_count": len(main_questions),
@@ -3463,24 +4038,43 @@ def _ai_rerank_ncs_matches(
     ranked_items: list[dict[str, Any]],
     top_k: int = 8,
     api_key_override: str = "",
+    generation_provider: str = "openai_api",
 ) -> list[dict[str, Any]]:
     enabled = os.getenv("ENABLE_AI_RERANK", "true").strip().lower() in {"1", "true", "yes", "y"}
     if not enabled:
         return []
 
-    api_key = settings.resolve_openai_key(api_key_override)
+    generation_provider = normalize_generation_provider(generation_provider)
+    api_key = (
+        settings.resolve_openrouter_key(api_key_override)
+        if generation_provider == OPENROUTER_PROVIDER
+        else settings.resolve_openai_key(api_key_override)
+    )
     if not api_key or len(ranked_items) < 2:
         return []
 
-    net_ok, _ = _check_openai_connectivity(api_key=api_key, ttl_sec=60)
+    if generation_provider == OPENROUTER_PROVIDER:
+        net_ok, _ = _check_openai_connectivity(
+            api_key=api_key,
+            ttl_sec=60,
+            provider=generation_provider,
+        )
+    else:
+        # Preserve the long-standing OpenAI call contract so local adapters
+        # and existing integrations that accept only api_key/ttl_sec continue
+        # to work. OpenRouter still receives the explicit provider boundary.
+        net_ok, _ = _check_openai_connectivity(
+            api_key=api_key,
+            ttl_sec=60,
+        )
     if not net_ok:
         return []
 
-    model = (
+    model = provider_model(generation_provider, (
         os.getenv("OPENAI_RERANK_MODEL", "").strip()
         or os.getenv("OPENAI_MODEL", "").strip()
         or "gpt-4o-mini"
-    )
+    ))
 
     candidates = []
     for it in ranked_items[:20]:
@@ -3523,10 +4117,11 @@ def _ai_rerank_ncs_matches(
 
     try:
         data = post_chat_completions_with_retries(
-            payload=payload,
+            payload=prepare_chat_payload(payload, generation_provider),
             api_key=api_key,
-            timeout_sec=15.0,
+            timeout_sec=provider_timeout_sec(generation_provider, 15.0),
             max_attempts=2,
+            provider=generation_provider,
         )
         content = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content", ""))
     except Exception:
@@ -3662,6 +4257,7 @@ def rerank_ncs_matches(
     top_k: int = 8,
     preferred_sclass: list[str] | None = None,
     openai_api_key: str = "",
+    generation_provider: str = "openai_api",
 ) -> tuple[list[dict[str, Any]], str]:
     rank_pool_k = max(top_k, 12)
     diversity_cap: int | None = None
@@ -3697,6 +4293,7 @@ def rerank_ncs_matches(
         ranked_items=ranked,
         top_k=top_k,
         api_key_override=openai_api_key,
+        generation_provider=generation_provider,
     )
     if ai_ranked:
         return ai_ranked[:top_k], "ai"
@@ -3741,7 +4338,11 @@ def build_strategy_with_rule_fallback(
     return obj
 
 
-def _check_openai_connectivity(api_key: str, ttl_sec: int = 60) -> tuple[bool, str]:
+def _check_openai_connectivity(
+    api_key: str,
+    ttl_sec: int = 60,
+    provider: str = "openai_api",
+) -> tuple[bool, str]:
     """Check a request credential without retaining a key-derived cache id."""
 
     enabled = os.getenv("OPENAI_NET_CHECK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -3787,6 +4388,7 @@ def _check_openai_connectivity(api_key: str, ttl_sec: int = 60) -> tuple[bool, s
             api_key=api_key,
             timeout=timeout,
             max_attempts=1,
+            provider=provider,
         )
     except Exception as e:
         ok = False
@@ -4260,6 +4862,26 @@ def _planned_question_example_for_prompt(method: str, job_context: str, factor_n
     return briefs.get(method, "설계 자산: 구체 사건·대상·제약 중 필요한 것 + 지원자의 판단 + 확인 가능한 결과.")
 
 
+_PLANNED_DIFFICULTY_AXES = (
+    "기본: 핵심 근거 하나를 정확히 적용",
+    "심화: 상충하는 근거·목표 두 개를 비교",
+    "고난도: 불완전 정보와 권한·시간 제약 아래 예외를 판단",
+)
+_PLANNED_QUESTION_ANGLES = (
+    "적용 근거와 범위",
+    "직접 수행 행동과 도메인 산출물",
+    "오류·예외 탐지와 처리 경계",
+    "결과 검증과 수정 조건",
+)
+_PLANNED_CONSTRAINT_AXES = (
+    "자료 또는 수치 불일치",
+    "마감 또는 선후 의존성",
+    "이해관계자 목표 충돌",
+    "승인 권한 또는 규정 예외",
+    "인력·예산 또는 품질 위험",
+)
+
+
 def _planned_question_sequence_for_prompt(
     question_plan: dict[str, Any] | None,
     method_names: list[str],
@@ -4319,6 +4941,15 @@ def _planned_question_sequence_for_prompt(
             "detail": detail,
             "type": method,
             "follow_up_count": max(0, min(5, int(row.get("follow_up_count", 3) or 0))),
+            "required_difficulty": _PLANNED_DIFFICULTY_AXES[
+                (idx - 1) % len(_PLANNED_DIFFICULTY_AXES)
+            ],
+            "required_question_angle": _PLANNED_QUESTION_ANGLES[
+                (idx - 1) % len(_PLANNED_QUESTION_ANGLES)
+            ],
+            "required_constraint_axis": _PLANNED_CONSTRAINT_AXES[
+                (idx - 1) % len(_PLANNED_CONSTRAINT_AXES)
+            ],
         }
         scenario_offset = scenario_offsets_by_method.get(method, 0)
         scenario_frame = _planned_scenario_frame_for_prompt(method, scenario_offset)
@@ -4520,6 +5151,70 @@ _OPENAI_MODEL_OUTPUT_FAILURE_CODES = frozenset(
 )
 
 
+class _OpenRouterTimeoutRecoveryOutputError(ValueError):
+    """The bounded medium timeout rescue returned unusable model output."""
+
+
+def _decode_strategy_model_content(content: Any) -> Any:
+    """Decode common OpenRouter JSON wrappers without inventing content.
+
+    Ox Alpha occasionally surrounds an otherwise valid object with a Markdown
+    fence or a short preamble, and OpenAI-compatible gateways may return text
+    parts instead of one string. Those are transport-format differences, not
+    semantic generation failures, so recover the balanced JSON value before
+    applying the existing strict count/content checks.
+    """
+
+    if isinstance(content, list):
+        content = "\n".join(
+            str(part.get("text") or "").strip()
+            for part in content
+            if isinstance(part, dict) and str(part.get("text") or "").strip()
+        )
+    text = str(content or "").strip()
+    extracted = _extract_json_text(text)
+    candidates = (
+        text,
+        extracted,
+        _slice_balanced_json(extracted),
+        _slice_balanced_json(text),
+    )
+    decoded: Any = None
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate = str(candidate or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            decoded = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            continue
+    if decoded is None:
+        raise ValueError("model_response_invalid_json")
+    if isinstance(decoded, list):
+        return {"interview_questions": decoded}
+    if not isinstance(decoded, dict):
+        return decoded
+
+    normalized = dict(decoded)
+    if not isinstance(normalized.get("interview_questions"), list):
+        for alias in ("questions", "items"):
+            if isinstance(normalized.get(alias), list):
+                normalized["interview_questions"] = normalized[alias]
+                break
+        else:
+            nested = normalized.get("data")
+            if isinstance(nested, dict):
+                nested_questions = nested.get("interview_questions")
+                if not isinstance(nested_questions, list):
+                    nested_questions = nested.get("questions")
+                if isinstance(nested_questions, list):
+                    normalized["interview_questions"] = nested_questions
+    return normalized
+
+
 def _safe_openai_generation_failure_reason(
     exc: BaseException,
     *,
@@ -4534,13 +5229,24 @@ def _safe_openai_generation_failure_reason(
         marker in normalized
         for marker in ("timed out", "timeout", "readtimeout", "connecttimeout")
     ):
-        return "openai_request_timeout"
+        return (
+            "openrouter_request_timeout"
+            if "openrouter" in normalized
+            else "openai_request_timeout"
+        )
     for code in _OPENAI_MODEL_OUTPUT_FAILURE_CODES:
         if code in normalized:
             return code
-    http_status = re.search(r"openai_http_(\d{3})", normalized)
+    http_status = re.search(r"(openai|openrouter)_http_(\d{3})", normalized)
     if http_status:
-        return f"openai_http_{http_status.group(1)}"
+        return f"{http_status.group(1)}_http_{http_status.group(2)}"
+    for code in (
+        "openrouter_request_timeout",
+        "openrouter_network_unreachable",
+        "openrouter_request_failed",
+    ):
+        if code in normalized:
+            return code
     return default
 
 
@@ -4629,10 +5335,16 @@ def _openai_interview_response_format(
     }
 
 
-def _openai_interview_completion_budget(target_count: int) -> int:
+def _openai_interview_completion_budget(
+    target_count: int,
+    reasoning_effort: str = "",
+) -> int:
     """Allow enough output for rich questions while retaining a hard ceiling."""
 
-    return max(4200, min(16000, int(target_count) * 850))
+    return quality_completion_budget(
+        target_count,
+        reasoning_effort=reasoning_effort,
+    )
 
 
 def build_strategy_with_openai(
@@ -4653,29 +5365,44 @@ def build_strategy_with_openai(
     interview_methods: list[str] | None = None,
     extra_context: str = "",
     generation_provider: str = "",
+    generation_model: str = "",
     max_model_requests: int = 2,
     transport_max_attempts: int = 1,
     allow_partial_model_output: bool | None = None,
 ) -> dict[str, Any]:
-    generation_provider = (
+    inferred_provider = (
+        OPENROUTER_PROVIDER
+        if str(api_key_override or "").strip().casefold().startswith("sk-or-")
+        else "openai_api"
+    )
+    generation_provider = normalize_generation_provider(
         generation_provider
         or os.getenv("INTERVIEW_GENERATION_PROVIDER")
         or os.getenv("JD_STRATEGY_PROVIDER")
-        or "openai_api"
-    ).strip().lower()
-    if generation_provider == "openai":
-        generation_provider = "openai_api"
-    if generation_provider != "openai_api":
+        or inferred_provider
+    )
+    if generation_provider not in {"openai_api", OPENROUTER_PROVIDER}:
         raise ValueError(
             "INTERVIEW_GENERATION_PROVIDER/generation_provider must be "
-            "'openai_api'; personal subscription CLI providers are disabled"
+            "'openai_api' or 'openrouter_api'; personal subscription CLI providers are disabled"
         )
 
-    api_key = settings.resolve_openai_key(api_key_override)
+    key_is_openrouter = str(api_key_override or "").strip().casefold().startswith("sk-or-")
+    if key_is_openrouter != (generation_provider == OPENROUTER_PROVIDER):
+        raise ValueError("generation_provider_key_mismatch")
+
+    api_key = (
+        settings.resolve_openrouter_key(api_key_override)
+        if generation_provider == OPENROUTER_PROVIDER
+        else settings.resolve_openai_key(api_key_override)
+    )
     default_target = max(5, min(50, int(os.getenv("INTERVIEW_TARGET_COUNT", "10") or "10")))
     target_count = int(target_count_override or default_target)
     target_count = max(1, min(50, target_count))
-    max_model_requests = max(1, min(2, int(max_model_requests or 1)))
+    max_model_requests = max(
+        1,
+        min(3 if generation_provider == OPENROUTER_PROVIDER else 2, int(max_model_requests or 1)),
+    )
     transport_max_attempts = max(1, min(3, int(transport_max_attempts or 1)))
     if allow_partial_model_output is None:
         allow_partial_model_output = (
@@ -4685,14 +5412,28 @@ def build_strategy_with_openai(
     strict_count = not bool(allow_partial_model_output)
     retry_target_count = target_count
     follow_up_count = max(0, min(5, int(follow_up_count if follow_up_count is not None else 3)))
-    primary_model = (os.getenv("OPENAI_STRATEGY_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
-    retry_model = (os.getenv("OPENAI_STRATEGY_RETRY_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
+    openai_primary_model = (
+        os.getenv("OPENAI_STRATEGY_MODEL", DEFAULT_QUALITY_MODEL)
+        or DEFAULT_QUALITY_MODEL
+    ).strip()
+    primary_model = provider_model(
+        generation_provider,
+        str(generation_model or openai_primary_model).strip(),
+    )
+    retry_model = provider_model(
+        generation_provider,
+        str(
+            generation_model
+            or os.getenv("OPENAI_STRATEGY_RETRY_MODEL", primary_model)
+            or primary_model
+        ).strip(),
+    )
     force_fallback = (os.getenv("OPENAI_FORCE_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "y"})
     if not api_key:
         return build_strategy_with_rule_fallback(
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
-            error_message="model_generation_failed: request OpenAI API key is not set",
+            error_message=f"model_generation_failed: request {generation_provider} API key is not set",
             target_count=target_count,
         )
     if force_fallback:
@@ -4704,10 +5445,24 @@ def build_strategy_with_openai(
         )
 
     strict_net_check = os.getenv("OPENAI_NET_CHECK_STRICT", "false").strip().lower() in {"1", "true", "yes", "y"}
-    net_ok, net_msg = _check_openai_connectivity(api_key=api_key, ttl_sec=60)
+    if generation_provider == OPENROUTER_PROVIDER:
+        # A separate models probe adds latency but cannot prove that this
+        # specific model request will succeed. Let the bounded completion
+        # requests perform authentication and capability validation directly.
+        net_ok, net_msg = True, ""
+    else:
+        net_ok, net_msg = _check_openai_connectivity(
+            api_key=api_key,
+            ttl_sec=60,
+            provider=generation_provider,
+        )
     precheck_warning = ""
     if not net_ok:
-        detail = "openai_network_unreachable"
+        detail = (
+            "openrouter_network_unreachable"
+            if generation_provider == OPENROUTER_PROVIDER
+            else "openai_network_unreachable"
+        )
         if strict_net_check:
             return build_strategy_with_rule_fallback(
                 ncs_matches=ncs_matches,
@@ -4769,6 +5524,8 @@ def build_strategy_with_openai(
                 "- required_task_statement와 required_observable_behavior의 뜻을 관찰 가능한 판단·행동·산출물로 번역하되 그 문구도 완성문 골격처럼 복사하지 마세요.\n"
                 "- question_evidence_id, question_focus_surface, question_focus, ksa_refs에는 같은 index의 내부 값을 정확히 보존해 문항과 근거를 연결하세요.\n"
                 "- required_scenario_frame은 해당 index의 required_task_statement에 맞춰 서버가 만든 KSA 정렬 상황 축입니다. 다른 일반 사건으로 교체하지 말고, 같은 표현을 복사하는 대신 구체 문서·데이터·이해관계자·제약을 정하세요. frame이 다르면 사건도 달라야 합니다.\n"
+                "- required_difficulty는 문항의 추론 난이도, required_question_angle은 주된 관찰 초점, required_constraint_axis는 사건의 핵심 제약입니다. 세 축을 해당 index의 사건·판단·최소 산출물에 실제로 반영하되 지원자에게 축 이름을 읽어 주지는 마세요.\n"
+                "- 기본/심화/고난도, 적용 근거/직접 수행/오류·예외/결과 검증, 자료 불일치/마감/이해관계자/권한/자원 제약이 전체 세트에서 고르게 분산되어야 합니다.\n"
                 "- required_question_example은 완성 질문이 아니라 면접기법별 설계 자산입니다. 필요한 자산만 골라 자연스러운 하나의 사건으로 구성하고 문구를 복사하지 마세요.\n"
                 "- required_followup_focus_example은 완성 꼬리질문이 아니라 답변 연동 방식입니다. 지정 slot을 포함해 꼬리질문 3개 중 최소 2개가 지원자의 직전 답변 내용·누락·선택·결과를 명시적으로 받아 묻게 하세요. 가능하면 꼬리1은 '방금 …', 꼬리2는 '앞서 …'로 시작해 참조 대상을 드러내세요.\n"
                 "- type=토론면접이면 '[토론과제]'로 시작하고 현장 사건, 구체적인 두 입장 충돌, 근거 검토와 공동안 또는 미합의 쟁점·결정권자 이송 기준을 포함하세요. 합의를 강제하거나 시간·입장발표 조건을 넣지 마세요.\n"
@@ -4815,6 +5572,9 @@ def build_strategy_with_openai(
         f"{priority_rules}"
         "생성 규칙:\n"
         f"- interview_questions {target_count}개 생성\n"
+        "- 전체 세트를 직무/능력단위, 상황, 난이도, KSA(지식·기술·태도), 질문 유형의 5개 축으로 먼저 배정한 뒤 작성\n"
+        "- 난이도는 기본(핵심 근거 적용), 심화(상충 근거 비교), 고난도(불완전 정보·권한·시간 제약 아래 예외 판단)를 가능한 한 고르게 분산\n"
+        "- 같은 문장을 바꿔 쓰는 것은 다른 후보가 아님. 사건 사실, 판단 갈등, 요구 산출물 중 최소 2개가 달라야 함\n"
         f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 정확히 {follow_up_count}개\n"
         f"- type/method는 선택 면접기법({', '.join(method_names)}) 중 하나만 사용\n"
         "- evidence_id가 배정된 문항은 일반 질문으로 대체하지 말고 해당 KSA의 판단·행동·결과를 직접 검증\n"
@@ -4861,6 +5621,21 @@ def build_strategy_with_openai(
             evaluation_text=evaluation_text,
             extra_context=extra_context,
         )
+    candidate_variants = quality_candidate_variants(
+        "OPENAI_STRATEGY_CANDIDATE_MULTIPLIER",
+        default=3.0,
+    )
+    if generation_provider == OPENROUTER_PROVIDER:
+        # Ox Alpha does not advertise multi-choice ``n``. Preserve the 2–3x
+        # candidate pool with independent bounded requests instead.
+        max_model_requests = max(max_model_requests, candidate_variants)
+    prompt += (
+        "\n\n[후보 풀 운영]\n"
+        f"- 서버는 같은 슬롯 계획에 대해 독립 후보 세트 {candidate_variants}개를 받아 "
+        "의미 중복을 제거하고 품질·다양성 점수로 최종 선별합니다.\n"
+        "- 각 응답 선택지는 모든 슬롯을 완결해야 하며, 익숙한 사건 골격을 반복하지 말고 "
+        "직무·상황·난이도·KSA·면접기법 축을 함께 점검하세요.\n"
+    )
 
     payload = {
         "model": primary_model,
@@ -4869,14 +5644,37 @@ def build_strategy_with_openai(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.25,
-        "max_completion_tokens": _openai_interview_completion_budget(target_count),
+        "n": candidate_variants,
         "response_format": _openai_interview_response_format(
             expected_count=target_count,
             follow_up_count=follow_up_count,
             interview_methods=method_names,
         ),
     }
-    timeout_sec = float(os.getenv("OPENAI_STRATEGY_TIMEOUT_SEC", "120") or "120")
+    if generation_provider == OPENROUTER_PROVIDER:
+        configured_openrouter_effort = str(
+            os.getenv("OPENROUTER_PRIMARY_REASONING_EFFORT") or "max"
+        ).strip().casefold()
+        if configured_openrouter_effort not in {"low", "medium", "high", "xhigh", "max"}:
+            configured_openrouter_effort = "max"
+        primary_reasoning_effort = configured_openrouter_effort
+        payload["reasoning_effort"] = configured_openrouter_effort
+        payload.pop("temperature", None)
+    else:
+        primary_reasoning_effort = apply_quality_reasoning(
+            payload,
+            model=primary_model,
+            specific_env_name="OPENAI_STRATEGY_REASONING_EFFORT",
+        )
+    payload["max_completion_tokens"] = _openai_interview_completion_budget(
+        target_count,
+        primary_reasoning_effort,
+    )
+    retry_reasoning_effort = ""
+    timeout_sec = provider_timeout_sec(
+        generation_provider,
+        float(os.getenv("OPENAI_STRATEGY_TIMEOUT_SEC", "120") or "120"),
+    )
     model_error = ""
     recovered_with_slim_retry = False
     model_request_count = 0
@@ -4889,71 +5687,238 @@ def build_strategy_with_openai(
         expected_count: int,
     ) -> dict[str, Any]:
         nonlocal model_request_count
-        model_request_count += 1
-        data = post_chat_completions_with_retries(
-            payload=local_payload,
-            api_key=api_key,
-            timeout_sec=local_timeout,
-            max_attempts=transport_max_attempts,
+        remaining_request_budget = max_model_requests - model_request_count
+        if remaining_request_budget <= 0:
+            raise RuntimeError("provider_generation_request_budget_exhausted")
+        request_count = (
+            min(candidate_variants, remaining_request_budget)
+            if generation_provider == OPENROUTER_PROVIDER
+            else 1
         )
-        choices = data.get("choices") if isinstance(data, dict) else None
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise ValueError("model_response_invalid_shape")
-        choice = choices[0]
-        finish_reason = str(choice.get("finish_reason") or "").strip().casefold()
-        if finish_reason == "length":
-            raise ValueError("model_response_truncated")
-        if finish_reason == "content_filter":
-            raise ValueError("model_response_content_filtered")
-        message = choice.get("message")
-        if not isinstance(message, dict):
-            raise ValueError("model_response_invalid_shape")
-        if str(message.get("refusal") or "").strip():
-            raise ValueError("model_response_refused")
-        content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("model_response_invalid_shape")
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise ValueError("model_response_invalid_json") from exc
-        if not isinstance(parsed, dict):
-            raise ValueError("model_response_not_object")
-        generated_questions = parsed.get("interview_questions")
-        if not isinstance(generated_questions, list):
-            raise ValueError("model_question_count_mismatch")
 
-        cleaned_questions: list[dict[str, Any]] = []
-        for question in generated_questions:
+        def _post_variant(variant_index: int) -> tuple[int, dict[str, Any], bool]:
+            variant_payload = prepare_chat_payload(local_payload, generation_provider)
+            if generation_provider == OPENROUTER_PROVIDER:
+                messages = variant_payload.get("messages")
+                if isinstance(messages, list) and messages:
+                    last_message = messages[-1]
+                    if isinstance(last_message, dict):
+                        last_message["content"] = (
+                            str(last_message.get("content") or "")
+                            + f"\n\n[독립 후보 세트 {variant_index}/{request_count}] "
+                            "다른 후보와 사건·판단 갈등·산출물 중 최소 2개가 다르게 작성하세요."
+                        )
+            data = post_chat_completions_with_retries(
+                payload=variant_payload,
+                api_key=api_key,
+                timeout_sec=local_timeout,
+                max_attempts=transport_max_attempts,
+                provider=generation_provider,
+            )
+            timeout_recovery_used = bool(
+                isinstance(data, dict)
+                and data.get("_ncscope_openrouter_timeout_recovery_used") is True
+            )
+            if isinstance(data, dict):
+                data = dict(data)
+                data.pop("_ncscope_openrouter_timeout_recovery_used", None)
+            return variant_index, data, timeout_recovery_used
+
+        model_request_count += request_count
+        response_sets: list[tuple[int, dict[str, Any], bool]] = []
+        request_errors: list[BaseException] = []
+        concurrency = provider_candidate_concurrency(generation_provider, request_count)
+        if generation_provider == OPENROUTER_PROVIDER and concurrency > 1:
+            with ThreadPoolExecutor(
+                max_workers=concurrency,
+                thread_name_prefix="openrouter-strategy-candidate",
+            ) as executor:
+                futures = {
+                    executor.submit(_post_variant, index): index
+                    for index in range(1, request_count + 1)
+                }
+                for future in as_completed(futures):
+                    try:
+                        response_sets.append(future.result())
+                    except BaseException as exc:
+                        request_errors.append(exc)
+        else:
+            for index in range(1, request_count + 1):
+                try:
+                    response_sets.append(_post_variant(index))
+                except BaseException as exc:
+                    request_errors.append(exc)
+
+        if not response_sets:
+            if request_errors:
+                raise request_errors[0]
+            raise ValueError("model_response_invalid_shape")
+
+        indexed_choices: list[tuple[int, int, dict[str, Any]]] = []
+        timeout_recovery_used = any(
+            recovered for _index, _data, recovered in response_sets
+        )
+        for request_variant_index, data, _recovered in sorted(
+            response_sets,
+            key=lambda item: item[0],
+        ):
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not isinstance(choices, list):
+                continue
+            for choice_index, choice in enumerate(choices, start=1):
+                if isinstance(choice, dict):
+                    indexed_choices.append(
+                        (request_variant_index, choice_index, choice)
+                    )
+        if not indexed_choices:
+            raise ValueError("model_response_invalid_shape")
+        valid_responses: list[dict[str, Any]] = []
+        failure_codes: list[str] = []
+        for request_variant_index, choice_index, choice in indexed_choices:
+            variant_index = (
+                request_variant_index
+                if generation_provider == OPENROUTER_PROVIDER
+                else choice_index
+            )
+            if not isinstance(choice, dict):
+                failure_codes.append("model_response_invalid_shape")
+                continue
+            finish_reason = str(choice.get("finish_reason") or "").strip().casefold()
+            if finish_reason == "length":
+                failure_codes.append("model_response_truncated")
+                continue
+            if finish_reason == "content_filter":
+                failure_codes.append("model_response_content_filtered")
+                continue
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                failure_codes.append("model_response_invalid_shape")
+                continue
+            if str(message.get("refusal") or "").strip():
+                failure_codes.append("model_response_refused")
+                continue
+            content = message.get("content")
+            if not content:
+                failure_codes.append("model_response_invalid_shape")
+                continue
+            try:
+                parsed = _decode_strategy_model_content(content)
+            except ValueError:
+                failure_codes.append("model_response_invalid_json")
+                continue
+            if not isinstance(parsed, dict):
+                failure_codes.append("model_response_not_object")
+                continue
+            generated_questions = parsed.get("interview_questions")
+            if not isinstance(generated_questions, list):
+                failure_codes.append("model_question_count_mismatch")
+                continue
+
+            cleaned_questions: list[dict[str, Any]] = []
+            for question in generated_questions:
+                if not isinstance(question, dict):
+                    continue
+                if not str(question.get("question") or "").strip():
+                    continue
+                cleaned_questions.append(dict(question))
+            if not cleaned_questions:
+                failure_codes.append("model_question_content_missing")
+                continue
+
+            raw_question_count = len(cleaned_questions)
+            # Some OpenRouter models honor the schema fields but still return
+            # more array items than requested. Extra complete questions are
+            # safe to discard deterministically; only an underfilled set needs
+            # another model attempt (or a fail-closed response in strict mode).
+            if raw_question_count < expected_count and strict_count:
+                failure_codes.append("model_question_count_mismatch")
+                continue
+            if raw_question_count > expected_count:
+                cleaned_questions = cleaned_questions[:expected_count]
+            for slot_index, question in enumerate(cleaned_questions):
+                question["_candidate_slot"] = slot_index
+                question["_candidate_variant"] = variant_index
+            parsed["interview_questions"] = cleaned_questions
+            parsed["_model_question_raw_count"] = raw_question_count
+            parsed["_model_question_count_mismatch"] = raw_question_count < expected_count
+            valid_responses.append(parsed)
+
+        if not valid_responses:
+            failure_priority = (
+                "model_response_truncated",
+                "model_response_content_filtered",
+                "model_response_refused",
+                "model_question_count_mismatch",
+                "model_question_content_missing",
+                "model_response_invalid_json",
+                "model_response_not_object",
+                "model_response_invalid_shape",
+            )
+            failure_set = set(failure_codes)
+            code = next(
+                (candidate for candidate in failure_priority if candidate in failure_set),
+                "model_response_invalid_shape",
+            )
+            if timeout_recovery_used:
+                raise _OpenRouterTimeoutRecoveryOutputError(code)
+            raise ValueError(code)
+
+        selected_response = dict(valid_responses[0])
+        first_questions = [
+            dict(question)
+            for question in valid_responses[0].get("interview_questions", [])
+            if isinstance(question, dict)
+        ]
+        if len(valid_responses) > 1:
+            candidate_pool = [
+                dict(question)
+                for response in valid_responses
+                for question in response.get("interview_questions", [])
+                if isinstance(question, dict)
+            ]
+            selected_questions, selection_metadata = select_question_candidates(
+                candidate_pool,
+                expected_count,
+            )
+            if len(selected_questions) != expected_count:
+                raise ValueError("model_question_count_mismatch")
+            selected_questions.sort(
+                key=lambda question: int(question.get("_candidate_slot", expected_count))
+            )
+            selected_response["interview_questions"] = selected_questions
+            selected_response["question_candidate_selection"] = {
+                **selection_metadata,
+                "requested_variant_count": (
+                    request_count
+                    if generation_provider == OPENROUTER_PROVIDER
+                    else int(local_payload.get("n") or 1)
+                ),
+                "received_variant_count": len(valid_responses),
+                "failed_variant_count": max(0, request_count - len(response_sets)),
+                "candidate_pool_count": len(candidate_pool),
+            }
+            selected_response["_model_question_raw_count"] = expected_count
+            selected_response["_model_question_count_mismatch"] = False
+        else:
+            selected_response["interview_questions"] = first_questions
+            selected_response["question_candidate_selection"] = {
+                "strategy": "single_valid_candidate_set",
+                "requested_variant_count": (
+                    request_count
+                    if generation_provider == OPENROUTER_PROVIDER
+                    else int(local_payload.get("n") or 1)
+                ),
+                "received_variant_count": 1,
+                "failed_variant_count": max(0, request_count - len(response_sets)),
+                "candidate_pool_count": len(first_questions),
+            }
+
+        for question in selected_response.get("interview_questions", []):
             if not isinstance(question, dict):
                 continue
-            if not str(question.get("question") or "").strip():
-                continue
-            cleaned_questions.append(dict(question))
-        if not cleaned_questions:
-            raise ValueError("model_question_content_missing")
-
-        raw_question_count = len(cleaned_questions)
-        parsed["_model_question_raw_count"] = raw_question_count
-        parsed["_model_question_count_mismatch"] = raw_question_count != expected_count
-        if raw_question_count != expected_count and strict_count:
-            raise ValueError("model_question_count_mismatch")
-        if raw_question_count > expected_count:
-            cleaned_questions = cleaned_questions[:expected_count]
-
-        parsed["interview_questions"] = cleaned_questions
-        if any(
-            not isinstance(question, dict)
-            or not str(question.get("question") or "").strip()
-            for question in cleaned_questions
-        ):
-            raise ValueError("model_question_content_missing")
-        # Do not collapse a complete provider response here. Near-duplicate
-        # detection is a question-level quality concern: the institution
-        # orchestration layer can identify the affected original slots and
-        # regenerate only those slots. Dropping rows at the provider boundary
-        # turns one similar question into an opaque whole-batch failure.
-        return parsed
+            question.pop("_candidate_slot", None)
+            question.pop("_candidate_variant", None)
+        return selected_response
 
     try:
         obj = _request_json(payload, timeout_sec, expected_count=target_count)
@@ -4963,16 +5928,39 @@ def build_strategy_with_openai(
             primary_exc,
             default="primary_request_failed",
         )
-        logger.error("openai_strategy_primary_failed reason=%s", primary_reason)
+        log_primary_failure = (
+            logger.warning
+            if primary_reason == "openrouter_request_timeout"
+            else logger.error
+        )
+        log_primary_failure(
+            "strategy_primary_failed provider=%s reason=%s",
+            generation_provider,
+            primary_reason,
+        )
+        allow_slim_retry = not (
+            generation_provider == OPENROUTER_PROVIDER
+            and (
+                primary_reason == "openrouter_request_timeout"
+                or isinstance(
+                    primary_exc,
+                    _OpenRouterTimeoutRecoveryOutputError,
+                )
+            )
+        )
         model_error = primary_reason
         slim_priority = ""
-        if max_model_requests < 2:
+        if model_request_count >= max_model_requests:
             obj = {}
             # The outer institution quality retry has already consumed the
             # second semantic generation budget.  Do not hide more upstream
             # calls behind this builder's slim retry.
             model_error = primary_reason
-        if max_model_requests >= 2 and has_priority_context:
+        if (
+            allow_slim_retry
+            and model_request_count < max_model_requests
+            and has_priority_context
+        ):
             slim_priority = (
                 f"[priority_duty]{duty_text[:1500]}\n"
                 f"[priority_eval]{evaluation_text[:1200]}\n"
@@ -5028,6 +6016,13 @@ def build_strategy_with_openai(
                     if part
                 ),
             )
+        slim_prompt += (
+            "\n\n[후보 풀 운영]\n"
+            f"- 독립 후보 세트 {candidate_variants}개 각각에서 정확히 "
+            f"{retry_target_count}개 슬롯을 완결하세요.\n"
+            "- 직무·상황·난이도·KSA·면접기법 축과 사건·판단·산출물의 중복을 "
+            "출력 전에 점검하세요.\n"
+        )
         slim_payload = {
             "model": retry_model,
             "messages": [
@@ -5035,18 +6030,56 @@ def build_strategy_with_openai(
                 {"role": "user", "content": slim_prompt},
             ],
             "temperature": 0.2,
-            "max_completion_tokens": _openai_interview_completion_budget(retry_target_count),
+            "n": candidate_variants,
             "response_format": _openai_interview_response_format(
                 expected_count=retry_target_count,
                 follow_up_count=follow_up_count,
                 interview_methods=method_names,
             ),
         }
-        if max_model_requests >= 2:
+        if generation_provider == OPENROUTER_PROVIDER:
+            retry_reasoning_effort = str(
+                os.getenv("OPENROUTER_INVALID_OUTPUT_RETRY_REASONING_EFFORT")
+                or os.getenv("OPENROUTER_FALLBACK_REASONING_EFFORT")
+                or "medium"
+            ).strip().casefold()
+            if retry_reasoning_effort not in {"low", "medium", "high", "xhigh"}:
+                retry_reasoning_effort = "medium"
+            slim_payload["reasoning_effort"] = retry_reasoning_effort
+            slim_payload["_openrouter_internal_recovery_effort"] = (
+                retry_reasoning_effort
+            )
+            if openrouter_recovery_model():
+                slim_payload["_openrouter_internal_recovery_model"] = "configured"
+            slim_payload.pop("temperature", None)
+        else:
+            retry_reasoning_effort = apply_quality_reasoning(
+                slim_payload,
+                model=retry_model,
+                specific_env_name="OPENAI_STRATEGY_REASONING_EFFORT",
+            )
+        slim_payload["max_completion_tokens"] = _openai_interview_completion_budget(
+            retry_target_count,
+            retry_reasoning_effort,
+        )
+        slim_timeout_sec = min(timeout_sec, 90.0)
+        if generation_provider == OPENROUTER_PROVIDER:
+            try:
+                slim_timeout_sec = float(
+                    str(
+                        os.getenv("OPENROUTER_INVALID_OUTPUT_RETRY_TIMEOUT_SEC")
+                        or os.getenv("OPENROUTER_FALLBACK_TIMEOUT_SEC")
+                        or "65"
+                    ).strip()
+                )
+            except (TypeError, ValueError):
+                slim_timeout_sec = 65.0
+            slim_timeout_sec = max(15.0, min(110.0, slim_timeout_sec))
+        if allow_slim_retry and model_request_count < max_model_requests:
             try:
                 obj = _request_json(
                     slim_payload,
-                    min(timeout_sec, 90.0),
+                    slim_timeout_sec,
                     expected_count=retry_target_count,
                 )
                 recovered_with_slim_retry = True
@@ -5060,7 +6093,11 @@ def build_strategy_with_openai(
                     retry_exc,
                     default="retry_request_failed",
                 )
-                logger.error("openai_strategy_retry_failed reason=%s", retry_reason)
+                logger.error(
+                    "strategy_retry_failed provider=%s reason=%s",
+                    generation_provider,
+                    retry_reason,
+                )
                 model_error = (
                     primary_reason
                     if retry_reason == "retry_request_failed"
@@ -5075,17 +6112,32 @@ def build_strategy_with_openai(
     obj["provider_generation_request_count"] = model_request_count
     obj["provider_generation_request_limit"] = max_model_requests
     obj["transport_attempt_limit_per_generation_request"] = transport_max_attempts
+    obj["provider_generation_model"] = retry_model if recovered_with_slim_retry else primary_model
+    obj["generation_provider"] = generation_provider
+    obj["provider_reasoning_effort"] = (
+        retry_reasoning_effort if recovered_with_slim_retry else primary_reasoning_effort
+    )
+    obj["provider_candidate_variant_count"] = candidate_variants
+    candidate_selection = obj.get("question_candidate_selection")
+    if isinstance(candidate_selection, dict):
+        obj["provider_candidate_variant_received_count"] = int(
+            candidate_selection.get("received_variant_count") or 0
+        )
     q_list = obj.get("interview_questions")
     if not isinstance(q_list, list):
         q_list = []
     q_list = [q for q in q_list if isinstance(q, dict)]
     for question in q_list:
-        question["question_source"] = "openai_api"
+        question["question_source"] = generation_provider
 
     generated_has_content = any(str((q or {}).get("question", "")).strip() for q in q_list)
     q_raw_count = int(obj.pop("_model_question_raw_count", 0) or 0)
     q_count_mismatch = bool(obj.pop("_model_question_count_mismatch", False))
     obj["interview_questions"] = list(q_list[:target_count])
+    if generated_has_content and q_raw_count > target_count:
+        obj.setdefault("provider_generation_notes", []).append(
+            f"model_question_count_trimmed:{q_raw_count}->{target_count}"
+        )
     if generated_has_content and q_count_mismatch and strict_count:
         generated_has_content = False
         model_error = "question_set_count_or_diversity_failed"
@@ -5122,7 +6174,7 @@ def build_strategy_with_openai(
     if model_error:
         obj["error"] = f"model_generation_failed: {model_error}"
     if precheck_warning and not model_error:
-        obj["warning"] = "openai_precheck_warning: openai_network_unreachable"
+        obj["warning"] = f"{generation_provider}_precheck_warning: {precheck_warning}"
     return obj
 
 

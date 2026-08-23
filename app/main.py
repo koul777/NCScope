@@ -1,13 +1,15 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import base64
 import csv
-import functools
 import hashlib
+import hmac
 import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -22,7 +24,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from docx import Document
+from docx.shared import Pt
 
 from app.init_db import init_db
 from app.repository import get_posting as repo_get_posting
@@ -50,7 +54,7 @@ from app.services.jd_strategy import (
     build_notice_context_from_jd,
     build_ncs_context_pack,
     build_strategy_with_openai as build_jd_strategy_with_openai,
-    extract_detail_categories_from_jd,
+    extract_detail_categories_from_jd,  # noqa: F401 - retained as a legacy monkeypatch boundary
     extract_small_categories_from_jd,
     extract_subcategory_text,
     extract_pdf_text,
@@ -72,6 +76,21 @@ from app.services.jd_strategy import (
     rerank_ncs_matches,
 )
 from app.services.ncs import map_ncs
+from app.services.provider_config import (
+    GenerationCredentialError,
+    OPENROUTER_PROVIDER,
+    configured_generation_provider,
+    generation_provider_config,
+    normalize_generation_provider,
+    openrouter_recovery_model,
+    resolve_generation_credential,
+    resolve_generation_model,
+    request_key_error_code,
+    request_key_error_message,
+    request_supported_generation_providers,
+    sanitize_generation_model,
+    use_generation_request,
+)
 from app.services.question_intent import (
     FOCUS_SCOPED_GENERAL_QUESTION_INTENTS,
     GENERAL_QUESTION_INTENTS,
@@ -110,6 +129,8 @@ from app.services.question_surface import (
     replace_official_ksa_surface,
     stable_ksa_evidence_id,
 )
+from app.services.request_budget import use_request_budget
+from app.services.server_question_fallback import build_server_ksa_fallback_strategy
 from app.services.auto_runner import start_auto_runner
 from app.services.ax_readiness import assess_ax_readiness
 from app.services.queue_manager import QueueManager
@@ -215,6 +236,16 @@ class JsonCharsetMiddleware:
         await self.app(scope, receive, send_with_json_charset)
 
 
+def _generation_request_budget_sec() -> float:
+    try:
+        configured = float(os.getenv("GENERATION_REQUEST_BUDGET_SEC", "285"))
+    except (TypeError, ValueError):
+        configured = 285.0
+    # Keep 15 seconds for deterministic fallback, serialization, and the
+    # response hop below this deployment's 300-second function duration.
+    return max(30.0, min(285.0, configured))
+
+
 class ExpensiveRequestLimitMiddleware:
     """Apply lightweight local backpressure to document/question APIs.
 
@@ -304,8 +335,16 @@ class ExpensiveRequestLimitMiddleware:
                 )
                 await response(scope, receive, send)
                 return
+        budgeted_generation = scope.get("method") == "POST" and (
+            path == "/api/jd/strategy/upload"
+            or path.startswith("/api/questions/generate")
+        )
         try:
-            await self.app(scope, receive, send)
+            if budgeted_generation:
+                with use_request_budget(_generation_request_budget_sec()):
+                    await self.app(scope, receive, send)
+            else:
+                await self.app(scope, receive, send)
         finally:
             if slot_acquired:
                 self._generation_slots.release()
@@ -351,6 +390,17 @@ async def add_no_cache_headers(request, call_next):
     """Ensure no caching for dynamic question generation APIs"""
     response = await call_next(request)
 
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path == "/":
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; base-uri 'none'; object-src 'none'; "
+            "frame-ancestors 'none'; form-action 'self'; connect-src 'self'; "
+            "img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'"
+        )
+
     if (
         request.url.path.startswith("/api/questions/")
         or request.url.path.startswith("/api/jd/")
@@ -367,10 +417,13 @@ UI_INDEX = BASE_DIR / "static" / "index.html"
 _ALIO_CACHE: dict[str, dict] = {}
 NCS_SCLASS_CSV = BASE_DIR.parent / "ncs_sclass_codes_with_code_no.csv"
 _SCLASS_OPTIONS_CACHE: list[dict] | None = None
-# 면접 질문 생성 최적 고정값 (10개 기준)
+# 면접 질문 생성 최적 고정값 (요청당 최대 5개 기준)
 FAST_NCS_TOP_K = 4          # NCS 매칭 상위 4개
-FAST_KSA_UNITS = 7          # KSA 수집 능력단위 7개 (기본 7개 면접기법 커버)
+FAST_KSA_UNITS = 3          # 한 배치의 공식 KSA 근거를 제공하는 능력단위 수
 FAST_KSA_FACTORS_PER_UNIT = 2  # 단위당 KSA 2개 (총 6개)
+# Keep one public generation request within a single bounded provider batch.
+# More questions use the existing offset/history-based regeneration flow.
+GENERATION_MAX_MAIN_QUESTIONS = 5
 SUPPORTED_INTERVIEW_METHODS = (
     "경험면접",
     "상황면접",
@@ -390,6 +443,8 @@ OPERATIONAL_REVIEW_NOTICE = (
 MODEL_PRESERVED_QUESTION_SOURCES = {
     "openai_api",
     "openai_api_quality_repaired_fields",
+    "openrouter_api",
+    "openrouter_api_quality_repaired_fields",
     "codex_cli",
     "codex_cli_quality_repaired_fields",
     "claude_code",
@@ -405,7 +460,7 @@ def _subscription_cli_source_base(value: Any) -> str:
     """Return a trusted free-form model source with exact evidence metadata."""
 
     source = str(value or "").strip()
-    for prefix in ("openai_api", "codex_cli", "claude_code"):
+    for prefix in ("openai_api", "openrouter_api", "codex_cli", "claude_code"):
         if source == prefix or source.startswith(f"{prefix}_"):
             return prefix
     return ""
@@ -596,7 +651,7 @@ def _merge_review_text(*values: Any, max_chars: int = 3000) -> str:
 def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dict[str, Any]:
     fallback_terms = _parse_sclass_terms("\n".join(str(term).strip() for term in (reviewed_detail_terms or []) if str(term).strip()))
     default_items = [
-        {"detail": term, "enabled": True, "main_count": 3, "follow_up_count": 3}
+        {"detail": term, "enabled": True, "main_count": 1, "follow_up_count": 3}
         for term in fallback_terms
     ]
     if not str(raw or "").strip():
@@ -620,9 +675,9 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
             enabled = row.get("enabled", True)
             enabled_bool = not (enabled is False or str(enabled).strip().lower() in {"0", "false", "no", "n"})
             try:
-                main_count = int(row.get("main_count", row.get("question_count", 3)) or 0)
+                main_count = int(row.get("main_count", row.get("question_count", 1)) or 0)
             except Exception:
-                main_count = 3
+                main_count = 1
             try:
                 follow_up_count = int(row.get("follow_up_count", row.get("followups", 3)) or 0)
             except Exception:
@@ -632,7 +687,7 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
                     {
                         "detail": detail,
                         "enabled": enabled_bool,
-                        "main_count": max(0, min(10, main_count)),
+                        "main_count": max(0, min(50, main_count)),
                         "follow_up_count": max(0, min(5, follow_up_count)),
                     }
                 )
@@ -644,7 +699,7 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
         if not key or key in seen:
             continue
         seen.add(key)
-        main_count = max(0, min(10, int(item.get("main_count", 0) or 0)))
+        main_count = max(0, min(50, int(item.get("main_count", 0) or 0)))
         normalized.append(
             {
                 "detail": str(item.get("detail", "")).strip(),
@@ -680,6 +735,267 @@ def _parse_question_plan_json(raw: str, reviewed_detail_terms: list[str]) -> dic
     }
 
 
+def _generation_main_question_capacity() -> int:
+    try:
+        configured_maximum = int(
+            str(
+                os.getenv(
+                    "GENERATION_MAX_MAIN_QUESTIONS",
+                    str(GENERATION_MAX_MAIN_QUESTIONS),
+                )
+            ).strip()
+        )
+    except (TypeError, ValueError):
+        configured_maximum = GENERATION_MAX_MAIN_QUESTIONS
+    return max(1, min(GENERATION_MAX_MAIN_QUESTIONS, configured_maximum))
+
+
+def _enforce_question_plan_capacity(question_plan: dict[str, Any]) -> None:
+    """Reject work that cannot reliably finish inside the public request window."""
+
+    selected_items = (
+        question_plan.get("selected_items")
+        if isinstance(question_plan, dict)
+        else []
+    )
+    requested_main_questions = sum(
+        max(0, int(item.get("main_count", 0) or 0))
+        for item in (selected_items or [])
+        if isinstance(item, dict) and bool(item.get("enabled", True))
+    )
+    selected_detail_count = sum(
+        1
+        for item in (selected_items or [])
+        if isinstance(item, dict)
+        and bool(item.get("enabled", True))
+        and int(item.get("main_count", 0) or 0) > 0
+    )
+    if selected_detail_count > 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "ncs_detail_capacity_exceeded",
+                "message": "세분류는 한 번에 하나만 선택할 수 있습니다.",
+                "requested_ncs_details": selected_detail_count,
+                "max_ncs_details": 1,
+                "retryable": False,
+            },
+        )
+    maximum = _generation_main_question_capacity()
+    if requested_main_questions <= maximum:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "question_plan_capacity_exceeded",
+            "message": (
+                "AI 안정성을 위해 주질문은 한 번에 최대 "
+                f"{maximum}개까지 생성할 수 있습니다. "
+                f"{maximum}개 이하로 줄인 뒤, 결과 화면의 다른 질문 생성 기능으로 이어서 생성해 주세요."
+            ),
+            "requested_main_questions": requested_main_questions,
+            "max_main_questions": maximum,
+            "retryable": False,
+        },
+    )
+
+
+def _validated_auxiliary_generation_count(
+    value: Any,
+    *,
+    field_name: str,
+) -> int:
+    """Validate auxiliary question counts before NCS or model work starts."""
+
+    if isinstance(value, bool):
+        parsed = 0
+    else:
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            parsed = 0
+    if parsed < 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "question_count_invalid",
+                "message": f"{field_name} must be a positive integer",
+                "field": field_name,
+                "retryable": False,
+            },
+        )
+    _enforce_question_plan_capacity(
+        {
+            "selected_items": [
+                {"enabled": True, "main_count": parsed},
+            ]
+        }
+    )
+    return parsed
+
+
+_MAX_SELECTED_NCS_ITEMS = 5
+_MAX_NCS_CODE_CHARS = 32
+_MAX_NCS_NAME_CHARS = 120
+_MAX_NCS_DEFINITION_CHARS = 1000
+_MAX_STRENGTHS_CHARS = 2000
+_MAX_NOTICE_TEXT_CHARS = 12000
+_MAX_DUTY_TEXT_CHARS = 3000
+_MAX_QUALIFICATION_TEXT_CHARS = 2400
+_MAX_PREFERENCE_TEXT_CHARS = 2400
+_MAX_EVALUATION_TEXT_CHARS = 2400
+_MAX_PRESENTATION_MATERIAL_TEXT_CHARS = 6000
+_MAX_PRESENTATION_MATERIAL_FILE_BYTES = 2 * 1024 * 1024
+_MAX_GENERATION_AVOID_QUESTION_ITEMS = 50
+_MAX_GENERATION_AVOID_QUESTION_CHARS = 300
+_SAFE_NCS_CODE_RE = re.compile(r"[0-9]{4,20}(?:_[0-9]{2}v[0-9]{1,2})?", re.IGNORECASE)
+
+
+def _raise_generation_input_capacity_error(
+    *,
+    field_name: str,
+    limit: int,
+    actual: int,
+    reason: str = "capacity_exceeded",
+    message: str = "",
+) -> None:
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "generation_input_capacity_exceeded",
+            "field": field_name,
+            "limit": int(limit),
+            "actual": int(actual),
+            "reason": reason,
+            "message": message or f"{field_name} exceeds the generation input limit of {limit}",
+            "retryable": False,
+        },
+    )
+
+
+def _validate_generation_text_input(
+    value: Any,
+    *,
+    field_name: str,
+    max_chars: int,
+) -> str:
+    raw = "" if value is None else str(value)
+    if len(raw) > max_chars:
+        _raise_generation_input_capacity_error(
+            field_name=field_name,
+            limit=max_chars,
+            actual=len(raw),
+        )
+    return raw.strip()
+
+
+def _validate_generation_text_collection_input(
+    value: Any,
+    *,
+    field_name: str,
+    max_chars: int,
+) -> None:
+    parts = value if isinstance(value, list) else [value]
+    raw = "\n".join(str(part or "") for part in parts)
+    _validate_generation_text_input(
+        raw,
+        field_name=field_name,
+        max_chars=max_chars,
+    )
+
+
+def _validate_generation_ncs_code(value: Any, *, field_name: str = "ncs_code") -> str:
+    code = _validate_generation_text_input(
+        value,
+        field_name=field_name,
+        max_chars=_MAX_NCS_CODE_CHARS,
+    )
+    if code and not _SAFE_NCS_CODE_RE.fullmatch(code):
+        _raise_generation_input_capacity_error(
+            field_name=field_name,
+            limit=_MAX_NCS_CODE_CHARS,
+            actual=len(code),
+            reason="unsafe_format",
+            message=(
+                f"{field_name} must contain a numeric NCS code and an optional "
+                "version suffix such as _25v3"
+            ),
+        )
+    return code
+
+
+def _validate_selected_ncs_generation_input(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    if len(value) > _MAX_SELECTED_NCS_ITEMS:
+        _raise_generation_input_capacity_error(
+            field_name="selected_ncs",
+            limit=_MAX_SELECTED_NCS_ITEMS,
+            actual=len(value),
+        )
+    for index, row in enumerate(value):
+        if not isinstance(row, dict):
+            continue
+        prefix = f"selected_ncs[{index}]"
+        _validate_generation_ncs_code(
+            row.get("ncsClCd", ""),
+            field_name=f"{prefix}.ncsClCd",
+        )
+        for key in ("compeUnitName", "ncsSubdCdnm"):
+            _validate_generation_text_input(
+                row.get(key, ""),
+                field_name=f"{prefix}.{key}",
+                max_chars=_MAX_NCS_NAME_CHARS,
+            )
+        _validate_generation_text_input(
+            row.get("compeUnitDef", ""),
+            field_name=f"{prefix}.compeUnitDef",
+            max_chars=_MAX_NCS_DEFINITION_CHARS,
+        )
+    return value
+
+
+def _generation_avoid_question_items(value: Any) -> list[Any]:
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = [part.strip() for part in re.split(r"[\r\n]+", raw) if part.strip()]
+    else:
+        parsed = value
+    return parsed if isinstance(parsed, list) else []
+
+
+def _validate_and_extract_generation_avoid_questions(
+    value: Any,
+    *,
+    field_name: str = "avoid_questions",
+) -> list[str]:
+    items = _generation_avoid_question_items(value)
+    if len(items) > _MAX_GENERATION_AVOID_QUESTION_ITEMS:
+        _raise_generation_input_capacity_error(
+            field_name=field_name,
+            limit=_MAX_GENERATION_AVOID_QUESTION_ITEMS,
+            actual=len(items),
+        )
+    for index, item in enumerate(items):
+        if isinstance(item, dict):
+            text_value = item.get("question") or item.get("text") or ""
+        else:
+            text_value = item
+        raw_text = "" if text_value is None else str(text_value)
+        if len(raw_text) > _MAX_GENERATION_AVOID_QUESTION_CHARS:
+            _raise_generation_input_capacity_error(
+                field_name=f"{field_name}[{index}]",
+                limit=_MAX_GENERATION_AVOID_QUESTION_CHARS,
+                actual=len(raw_text),
+            )
+    return _extract_question_texts(items)
+
+
 def _restrict_question_plan_to_terms(question_plan: dict[str, Any], allowed_terms: list[str]) -> dict[str, Any]:
     allowed: list[str] = []
     seen_allowed: set[str] = set()
@@ -704,7 +1020,7 @@ def _restrict_question_plan_to_terms(question_plan: dict[str, Any], allowed_term
         json.dumps(
             {
                 "items": [
-                    {"detail": term, "enabled": True, "main_count": 3, "follow_up_count": follow_up_count}
+                    {"detail": term, "enabled": True, "main_count": 1, "follow_up_count": follow_up_count}
                     for term in allowed
                 ]
             },
@@ -779,6 +1095,18 @@ def _parse_interview_methods(raw: str) -> list[str]:
             values = [str(x).strip() for x in (parsed.get("methods") or [])]
         else:
             values = [part.strip() for part in re.split(r"[\n,;/|]+", text) if part.strip()]
+    values = [value for value in values if value]
+    if len(values) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "interview_method_capacity_exceeded",
+                "message": "면접 형태는 한 번에 하나만 선택할 수 있습니다.",
+                "requested_interview_methods": len(values),
+                "max_interview_methods": 1,
+                "retryable": False,
+            },
+        )
     out: list[str] = []
     seen: set[str] = set()
     for value in values:
@@ -786,7 +1114,16 @@ def _parse_interview_methods(raw: str) -> list[str]:
         if mapped and mapped not in seen:
             seen.add(mapped)
             out.append(mapped)
-    return out or list(SUPPORTED_INTERVIEW_METHODS)
+    if text and not out:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "interview_method_invalid",
+                "message": "지원되는 면접 형태 하나를 선택해 주세요.",
+                "retryable": False,
+            },
+        )
+    return out or ["경험면접"]
 
 
 def _group_interview_questions_for_response(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -801,6 +1138,9 @@ def _group_interview_questions_for_response(questions: list[dict[str, Any]]) -> 
                 "evaluation_points": list((q or {}).get("evaluation_points", []) or []),
                 "method": str((q or {}).get("method") or (q or {}).get("type") or "").strip(),
                 "question_focus": str((q or {}).get("question_focus") or "").strip(),
+                "ncs_traceability": dict((q or {}).get("ncs_traceability") or {})
+                if isinstance((q or {}).get("ncs_traceability"), dict)
+                else {},
                 "question_intent": str((q or {}).get("question_intent") or "").strip(),
                 "question_repeat_signature": str((q or {}).get("question_repeat_signature") or "").strip(),
                 "question_repeat_duplicate": bool((q or {}).get("question_repeat_duplicate") is True),
@@ -1521,6 +1861,88 @@ def _structured_case_materials(context: dict[str, Any], facts: list[str]) -> lis
     ]
 
 
+def _job_context_condition_pack(
+    *,
+    job_context_text: str,
+    detail: str,
+    subject: str,
+    focus: str,
+    comp_def: str,
+) -> dict[str, Any]:
+    """Build deterministic case facts from the uploaded job sources.
+
+    Provider timeouts and quality repairs must retain the notice/JD evidence;
+    falling back to a domain profile alone can otherwise produce plausible but
+    unrelated scenarios.  Keep the excerpt bounded and use generic operating
+    assumptions only for the missing operational quantities.
+    """
+
+    source_text = str(job_context_text or "").strip()
+    layers = re.findall(r"\[([^\]]+)\]([^\[]*)", source_text)
+    anchors = [detail, subject, focus, comp_def]
+    chunks: list[str] = []
+    source_names: list[str] = []
+    material_rows: list[dict[str, str]] = []
+    for raw_label, raw_value in layers:
+        label = re.sub(r"\s+", " ", str(raw_label or "").strip())
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        segments = _presentation_source_segments(value, anchors, limit=3)
+        if not segments:
+            segments = [re.sub(r"\s+", " ", value)[:360]]
+        source_names.append(label or "직무자료")
+        selected = " ".join(segments[:3]).strip()[:700]
+        if selected:
+            chunks.append(selected)
+            material_rows.append(
+                {"source": label or "직무자료", "field": "업무 근거 발췌", "value": selected}
+            )
+    chunks = list(dict.fromkeys(chunk for chunk in chunks if chunk))[:6]
+    source_summary = " ".join(chunks[:2])[:560]
+    subject_label = subject or detail or "해당 직무"
+    facts = [
+        f"입력자료 근거: {chunk[:360]}"
+        for chunk in chunks[:3]
+    ]
+    facts.extend(
+        [
+            "운영 시나리오 가정: 핵심 확인자료 2종을 대조해야 함",
+            "운영 시나리오 가정: 처리 마감까지 4시간이 남아 있음",
+            "운영 시나리오 가정: 대안 2가지를 비교하고 1개를 우선 선택해야 함",
+        ]
+    )
+    source_names = [*source_names, "운영 시나리오"]
+    material_rows.extend(
+        [
+            {
+                "source": "운영 시나리오",
+                "field": "검토 기한",
+                "value": "처리 마감까지 4시간이 남아 있음",
+            },
+            {
+                "source": "운영 시나리오",
+                "field": "자료 대조·대안 비교",
+                "value": "핵심 확인자료 2종을 대조하고 대안 2가지를 비교해야 함",
+            },
+        ]
+    )
+    evidence = ", ".join(dict.fromkeys(source_names)) or "입력 직무자료"
+    anchor_summary = source_summary or subject_label
+    return {
+        "evidence": evidence,
+        "situation": f"{anchor_summary}에 관한 자료·기준이 서로 달라 사실 확인과 처리 우선순위를 정해야 하는 상황",
+        "inbasket": f"{anchor_summary} 관련 요청서, 검토 기록, 보고 문서",
+        "debate": (
+            f"{subject_label}의 근거 자료를 모두 확인한 뒤 처리하자는 입장과 "
+            "마감 내 저위험 범위를 조건부 처리하고 사후 검증하자는 입장"
+        ),
+        "stakeholders": "공고문·직무기술서에 명시된 담당자·협업부서·승인권자",
+        "case_facts": " | ".join(facts),
+        "case_materials": material_rows,
+    }
+
+
 def _task_conditions_for_method(
     method: str,
     subject: str = "",
@@ -1529,9 +1951,20 @@ def _task_conditions_for_method(
     comp_def: str = "",
     focus_type: str = "",
     variation_index: int = 0,
+    job_context_text: str = "",
 ) -> dict[str, Any]:
     """Return standardized candidate conditions paired with the task and rubric."""
-    context = _domain_context_pack(detail=detail, subject=subject, focus=focus, comp_def=comp_def)
+    context = (
+        _job_context_condition_pack(
+            job_context_text=job_context_text,
+            detail=detail,
+            subject=subject,
+            focus=focus,
+            comp_def=comp_def,
+        )
+        if str(job_context_text or "").strip()
+        else _domain_context_pack(detail=detail, subject=subject, focus=focus, comp_def=comp_def)
+    )
     evidence_materials = _context_item_list(context.get("evidence"))
     inbasket_materials = _context_item_list(context.get("inbasket"))
     base: dict[str, dict[str, Any]] = {
@@ -1624,6 +2057,12 @@ def _task_conditions_for_method(
                 *case_materials,
                 {"source": "추가 제약 카드", "field": "운영 제약", "value": variation},
             ]
+        topic_axis = _question_topic_axis(variation_index)
+        case_facts = [*case_facts, f"주제 축: {topic_axis}"]
+        case_materials = [
+            *case_materials,
+            {"source": "주제 축 카드", "field": "분석 초점", "value": topic_axis},
+        ]
     authority_methods = {"상황면접", "토론면접", "인바스켓면접", "창의적 문제해결력면접"}
     if method in authority_methods:
         explicit_authority_facts = context.get("authority_facts")
@@ -1671,6 +2110,11 @@ def _task_conditions_for_method(
             dict.fromkeys([*conditions.get("provided_materials", []), *material_sources])
         )
         conditions["case_materials"] = case_materials
+    # Keep the topic axis on every method, including experience and knowledge
+    # questions that do not receive a printable case packet.  The axis is an
+    # audit/runtime field used by candidate selection and diversity checks; it
+    # does not leak NCS labels into candidate-facing wording.
+    conditions["topic_axis"] = _question_topic_axis(variation_index)
     conditions["standardization"] = (
         "모든 지원자에게 동일한 자료, 기본 과제, 시간 조건과 허용된 후속질문 범위를 적용합니다."
     )
@@ -2237,6 +2681,358 @@ def _domain_context_pack(detail: str, subject: str, focus: str, comp_def: str) -
     return _merge_context_overlay(default, _focus_context_overlay(focus))
 
 
+def _presentation_source_segments(text: str, anchors: list[str], limit: int = 6) -> list[str]:
+    compact = re.sub(r"\s+", " ", str(text or "").strip())
+    # Review merging adds internal provenance tags such as
+    # ``[담당업무-우선]``. They are useful for server tracing but are not
+    # candidate-facing facts and can make a generated prompt look like a
+    # template or expose implementation metadata.
+    compact = re.sub(
+        r"\[(?:공고문|직무기술서|담당업무|지원자격|우대사항|면접평가항목|발표자료)[^\]]*\]\s*",
+        "",
+        compact,
+    )
+    if not compact:
+        return []
+    segments = [
+        re.sub(r"\s+", " ", chunk).strip(" -·•○◦▪")
+        for chunk in re.split(r"(?<=[.!?。])\s+|(?=[○◦•▪●]\s)|(?=\d+[.)]\s)", compact)
+        if len(chunk.strip()) >= 8
+    ]
+    normalized_anchors = [re.sub(r"\s+", "", str(value or "").lower()) for value in anchors if str(value or "").strip()]
+    matched = []
+    for segment in segments:
+        normalized = re.sub(r"\s+", "", segment.lower())
+        if normalized_anchors and any(anchor in normalized for anchor in normalized_anchors if len(anchor) >= 2):
+            matched.append(segment)
+    selected = matched or segments
+    return list(dict.fromkeys(selected))[:limit]
+
+
+def _generation_job_context_text(
+    *,
+    duty_text: str = "",
+    jd_text: str = "",
+    notice_text: str = "",
+    evaluation_text: str = "",
+) -> str:
+    """Build a bounded source bundle for deterministic question recovery.
+
+    The provider prompt already receives these layers separately.  The same
+    source bundle is passed to template/fallback repairs so a timeout never
+    downgrades a job-specific question into a domain-profile example.
+    """
+
+    layers = (
+        ("담당업무", duty_text),
+        ("직무기술서", jd_text),
+        ("공고문", notice_text),
+        ("면접평가항목", evaluation_text),
+    )
+    parts = [
+        f"[{label}]{re.sub(r'\s+', ' ', str(value or '').strip())[:1800]}"
+        for label, value in layers
+        if str(value or "").strip()
+    ]
+    return "\n".join(parts)[:6000]
+
+
+def _presentation_task_excerpt(value: str, limit: int = 360) -> str:
+    """Keep the candidate-facing task concrete without mid-sentence clipping."""
+
+    compact = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(compact) <= limit:
+        return compact
+    first_sentence = re.split(r"(?<=[.!?。])\s+", compact, maxsplit=1)[0].strip()
+    if 80 <= len(first_sentence) <= limit:
+        return first_sentence
+    return compact[:limit].rsplit(" ", 1)[0].rstrip(" ,·") + "…"
+
+
+def _build_presentation_material_packet(
+    *,
+    interview_methods: list[str],
+    jd_text: str,
+    notice_text: str,
+    duty_text: str,
+    question_plan: dict[str, Any],
+    ncs_matches: list[dict[str, Any]],
+    ncs_ksa: list[dict[str, Any]],
+    supplemental_text: str = "",
+) -> dict[str, Any] | None:
+    """Build a deterministic, reviewable presentation task packet."""
+    if "발표면접" not in {str(value or "").strip() for value in (interview_methods or [])}:
+        return None
+    selected_items = [
+        item for item in (question_plan.get("selected_items") or [])
+        if isinstance(item, dict)
+        and bool(item.get("enabled", True))
+        and int(item.get("main_count", 0) or 0) > 0
+    ] if isinstance(question_plan, dict) else []
+    selected_detail = str((selected_items[0] if selected_items else {}).get("detail") or "").strip()
+    unit = next(
+        (
+            row for row in (ncs_matches or [])
+            if isinstance(row, dict)
+            and (not selected_detail or str(row.get("ncsSubdCdnm") or row.get("compeUnitName") or "").strip() == selected_detail)
+        ),
+        next((row for row in (ncs_matches or []) if isinstance(row, dict)), {}),
+    )
+    code = str(unit.get("ncsClCd") or "").strip()
+    unit_name = str(unit.get("compeUnitName") or selected_detail or "선정 NCS 능력단위").strip()
+    detail = str(unit.get("ncsSubdCdnm") or selected_detail or "확정 세분류").strip()
+    comp_def = str(unit.get("compeUnitDef") or "").strip()
+    factors = list(dict.fromkeys(
+        str(row.get("factorName") or row.get("factor_name") or row.get("factor") or row.get("ksa") or "").strip()
+        for row in (ncs_ksa or [])
+        if isinstance(row, dict)
+        and (not code or str(row.get("ncsClCd") or "").strip() in {"", code})
+    ))[:6]
+    factors = [value for value in factors if value]
+    focus = factors[0] if factors else "핵심 업무 수행기준"
+    # Presentation packets must be built from the selected job materials.  Do
+    # not route this path through the old domain-profile table: those profiles
+    # contain example scenarios for other products and can silently inject
+    # unrelated, domain-specific facts into a candidate's assignment.
+    context: dict[str, Any] = {}
+    # Keep all supplied source layers in the packet.  A duty-text override is
+    # useful for editing, but it must not hide the notice/JD evidence that the
+    # interviewer is expected to review.  Each layer is searched separately so
+    # a long notice cannot crowd out the actual duty and NCS wording.
+    source_anchors = [detail, unit_name, *factors[:3]]
+    source_layers = [
+        ("공고문", notice_text),
+        ("직무기술서", jd_text),
+        ("담당업무 보완", duty_text),
+    ]
+    source_chunks_by_layer: list[tuple[str, list[str]]] = []
+    for source_label, source_value in source_layers:
+        layer_chunks = _presentation_source_segments(
+            str(source_value or ""),
+            source_anchors,
+            limit=3,
+        )
+        if layer_chunks:
+            source_chunks_by_layer.append((source_label, layer_chunks))
+    source_chunks: list[str] = []
+    seen_source_chunks: set[str] = set()
+    for _, chunks in source_chunks_by_layer:
+        for chunk in chunks:
+            source_key = re.sub(r"\s+", "", str(chunk or "")).casefold()
+            if not source_key or source_key in seen_source_chunks:
+                continue
+            seen_source_chunks.add(source_key)
+            source_chunks.append(chunk)
+    source_summary = " ".join(source_chunks)[:900]
+    if not source_summary:
+        source_summary = " ".join(
+            re.sub(r"\s+", " ", str(value or "").strip())
+            for _, value in source_layers
+            if str(value or "").strip()
+        )[:900]
+    duty_summary = source_summary or f"{detail}의 {unit_name} 수행내용"
+    # The main assignment should lead with the most operational source. Keep
+    # the notice in the evidence table, but prefer the reviewed duty override
+    # and JD excerpts over a notice's institutional introduction when forming
+    # the short candidate-facing task sentence.
+    task_source_chunks: list[str] = []
+    seen_task_source_chunks: set[str] = set()
+    for source_label in ("담당업무 보완", "직무기술서", "공고문"):
+        for layer, chunks in source_chunks_by_layer:
+            if layer != source_label:
+                continue
+            for chunk in chunks:
+                source_key = re.sub(r"\s+", "", str(chunk or "")).casefold()
+                if not source_key or source_key in seen_task_source_chunks:
+                    continue
+                seen_task_source_chunks.add(source_key)
+                task_source_chunks.append(chunk)
+    task_duty_summary = _presentation_task_excerpt(
+        " ".join(task_source_chunks) or duty_summary
+    )
+    facts = list(dict.fromkeys([
+        *[
+            f"{source_label} 근거: {chunk[:420]}"
+            for source_label, chunks in source_chunks_by_layer
+            for chunk in chunks[:2]
+        ],
+        f"능력단위 정의: {comp_def[:500] or unit_name}",
+        f"KSA 평가 근거: {focus}",
+        "자료 간 불일치가 남아 확정 전 추가 확인과 일정 내 조건부 실행 중 하나를 선택해야 함",
+        "입력 자료에서 확인되지 않은 기관 고유 수치·사실은 발표 전에 확인 대상으로 표시함",
+    ]))[:8]
+    presentation_task = str(context.get("presentation_task") or "").strip()
+    if not presentation_task:
+        presentation_task = (
+            f"공고문·직무기술서에 제시된 '{task_duty_summary}' 업무를 대상으로, "
+            f"'{focus}' 근거를 적용해야 하는 상황에서 핵심 자료가 일부 불일치하고 일정 제약이 발생했다고 가정합니다. "
+            "제공된 공고문·직무기술서·담당업무 보완 내용에서 확인되는 사실과 제약을 먼저 구분한 뒤, "
+            "확인할 사실, 판단 기준, 대안과 선택 근거, 실행·보고 순서, 결과 확인 방법을 발표하십시오."
+        )
+    constraints = [
+        str(value).strip()
+        for value in (context.get("presentation_constraints") or [])
+        if str(value).strip()
+    ][:6]
+    if not constraints:
+        constraints = [
+            "공고문·직무기술서·NCS KSA에 없는 기관 고유 수치나 사실은 추정하지 않습니다.",
+            f"'{focus}'를 판단 근거로 명시하고, 적용 범위와 예외를 구분합니다.",
+            "입력 자료의 불일치·누락·제약은 확인 필요 사항으로 표시하고, 확인 전후의 판단을 구분합니다.",
+        ]
+    deliverables = [
+        str(value).strip()
+        for value in (context.get("presentation_deliverables") or [])
+        if str(value).strip()
+    ][:6]
+    if not deliverables:
+        deliverables = [
+            f"{detail} 업무의 핵심 사실과 문제 정의표",
+            f"'{focus}' 기반 판단 기준과 확인자료 목록",
+            "대안 2가지·선택 근거·실행 순서·보고 대상",
+            "결과를 확인할 산출물·수치·기록·피드백과 보완 조치",
+        ]
+    material_rows = [
+        {
+            "source": "공고문·직무기술서",
+            "field": "발표 대상 업무",
+            "value": source_summary or "확정된 직무·공고 맥락",
+        },
+        {
+            "source": "NCS 능력단위",
+            "field": "능력단위·정의",
+            "value": " · ".join(value for value in (unit_name, comp_def) if value)[:700],
+        },
+    ]
+    for source_label, chunks in source_chunks_by_layer:
+        material_rows.append(
+            {
+                "source": source_label,
+                "field": "핵심 근거 발췌",
+                "value": " ".join(chunks)[:700],
+            }
+        )
+    if factors:
+        material_rows.append({"source": "NCS KSA", "field": "평가 근거", "value": " · ".join(factors)[:700]})
+    material_rows.extend([
+        {"source": "입력자료 종합", "field": "수행내용 근거", "value": duty_summary[:900]},
+        {"source": "입력자료 종합", "field": "검토 제약", "value": "자료에 직접 확인되는 사실·누락·불일치와 확인이 필요한 항목을 구분"},
+        {"source": "입력자료 종합", "field": "판단권한", "value": "공고문·직무기술서에 명시된 담당 범위와 보고·승인 기준을 우선 확인"},
+    ])
+    if supplemental_text.strip():
+        material_rows.append({"source": "사용자 보완자료", "field": "추가 확인자료", "value": supplemental_text.strip()[:700]})
+    material_rows = [
+        row for row in material_rows
+        if isinstance(row, dict) and all(str(row.get(field) or "").strip() for field in ("source", "field", "value"))
+    ][:10]
+    return {
+        "title": f"{detail} · {unit_name} 발표 과제 자료",
+        "generated": True,
+        "source": "server_job_notice_ncs_ksa",
+        "scenario_label": "NCS 기반 예시 시나리오 · 기관 사실·수치는 최종 확인 필요",
+        "ncs_code": code,
+        "ncs_detail": detail,
+        "competency": unit_name,
+        "focus": focus,
+        "provided_materials": list(dict.fromkeys(row["source"] for row in material_rows)),
+        "case_materials": material_rows,
+        "case_facts": facts,
+        "task_prompt": presentation_task,
+        "constraints": constraints,
+        "required_deliverables": deliverables,
+        "slide_outline": [
+            {"slide": 1, "title": "현황·문제·즉시 영향", "instruction": "제공된 사건의 사실, 누락·불일치 자료, 즉시 영향과 우선순위부터 정리합니다."},
+            {"slide": 2, "title": "판단 근거·위험 통제", "instruction": f"NCS KSA와 제공자료({str(context.get('evidence') or '공고문·직무기술서·현황자료')[:180]})를 연결해 위험요인과 통제 기준을 설명합니다."},
+            {"slide": 3, "title": "대안 비교·선택", "instruction": "검증 완료 후 실행하는 대안과 제한된 범위에서 조건부 준비하는 대안 등 2개를 품질·일정·권한·운영 영향으로 비교합니다."},
+            {"slide": 4, "title": "실행 순서·성과 확인", "instruction": "담당자별 행동, 보고·승인 순서, 산출물·수치·기록·피드백으로 결과를 확인하고 보완하는 방법을 제시합니다."},
+        ],
+        "use_rules": [
+            "제공자료에 없는 정밀 수치·법령 조항은 사실처럼 만들지 않습니다.",
+            "자료 간 값이 충돌하면 확인 필요 사항으로 표시하고 판단 근거를 설명합니다.",
+            "기관 사실과 자동 구성된 운영 시나리오는 최종 면접 전 사람이 검토합니다.",
+        ],
+        "review_required": True,
+    }
+
+
+def _presentation_material_prompt_text(packet: dict[str, Any] | None) -> str:
+    if not isinstance(packet, dict):
+        return ""
+    lines = [
+        "[서버 자동 생성 발표자료]",
+        f"제목: {str(packet.get('title') or '').strip()}",
+        f"시나리오 성격: {str(packet.get('scenario_label') or '').strip()}",
+        f"세분류: {str(packet.get('ncs_detail') or '').strip()} / 능력단위: {str(packet.get('competency') or '').strip()}",
+        f"평가 초점: {str(packet.get('focus') or '').strip()}",
+        f"발표 메인 과제: {str(packet.get('task_prompt') or '').strip()}",
+        "근거 자료:",
+    ]
+    for row in (packet.get("case_materials") or [])[:10]:
+        if isinstance(row, dict):
+            lines.append(f"- {row.get('source')}: {row.get('field')} = {row.get('value')}")
+    lines.append("슬라이드 구성:")
+    for slide in (packet.get("slide_outline") or [])[:4]:
+        if isinstance(slide, dict):
+            lines.append(f"- {slide.get('slide')}. {slide.get('title')}: {slide.get('instruction')}")
+    lines.append("발표 제약조건:")
+    lines.extend(f"- {str(value).strip()}" for value in (packet.get("constraints") or [])[:6] if str(value).strip())
+    lines.append("필수 산출물:")
+    lines.extend(f"- {str(value).strip()}" for value in (packet.get("required_deliverables") or [])[:6] if str(value).strip())
+    lines.append("운영 규칙: 자료에 없는 정밀 수치·법령 조항은 추정하지 말고, 충돌 값은 확인 대상으로 남깁니다.")
+    return "\n".join(lines)[:7000]
+
+
+def _attach_presentation_material_packet(strategy: dict[str, Any], packet: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(strategy, dict) or not isinstance(packet, dict):
+        return strategy
+    for question in strategy.get("interview_questions") or []:
+        if not isinstance(question, dict) or str(question.get("type") or question.get("method") or "").strip() != "발표면접":
+            continue
+        conditions = dict(question.get("task_conditions") or {}) if isinstance(question.get("task_conditions"), dict) else {}
+        packet_materials = [
+            str(value).strip()
+            for value in (packet.get("provided_materials") or [])
+            if str(value).strip()
+        ]
+        # The packet's source labels are authoritative for a presentation
+        # task. Do not retain the generic fallback labels (for example,
+        # "접수 현황표") from an unrelated example scenario.
+        conditions["provided_materials"] = list(dict.fromkeys(packet_materials)) or list(
+            dict.fromkeys(
+                str(value).strip()
+                for value in (conditions.get("provided_materials") or [])
+                if str(value).strip()
+            )
+        )
+        conditions["case_materials"] = list(packet.get("case_materials") or [])[:10]
+        conditions["presentation_task"] = str(packet.get("task_prompt") or "").strip()
+        conditions["presentation_constraints"] = list(packet.get("constraints") or [])[:6]
+        conditions["required_outputs"] = list(packet.get("required_deliverables") or [])[:6] or conditions.get("required_outputs", [])
+        packet_facts = [
+            str(value).strip()
+            for value in (packet.get("case_facts") or [])
+            if str(value).strip()
+        ]
+        # The fallback renderer has a generic example case pack so every
+        # method remains answerable when no presentation packet exists. Once a
+        # packet is built from this job's notice/JD/NCS inputs, those examples
+        # must not leak into the candidate-facing assignment (they can look
+        # like hardcoded facts from an unrelated occupation).
+        conditions["case_facts"] = list(dict.fromkeys(packet_facts)) or list(
+            dict.fromkeys(
+                str(value).strip()
+                for value in (conditions.get("case_facts") or [])
+                if str(value).strip()
+            )
+        )
+        question["task_conditions"] = conditions
+        question["presentation_material"] = packet
+    strategy["presentation_material"] = packet
+    strategy["presentation_material_generated"] = True
+    strategy["presentation_material_review_required"] = True
+    return strategy
+
+
 def _has_korean_final_consonant(text: str) -> bool:
     cleaned = re.sub(r"[\s\]\)\}\"'.,!?…:;]+$", "", str(text or ""))
     for ch in reversed(cleaned):
@@ -2326,6 +3122,30 @@ _QUESTION_VARIATION_STAKEHOLDER_PRESSURES = (
     "최종 승인권자가 자리를 비운 조건",
 )
 
+# Operating pressure and topic are separate diversity axes.  This keeps a
+# seven-question set from becoming the same new-project/budget scenario with
+# only the deadline wording changed.
+_QUESTION_TOPIC_AXES = (
+    "협업·이해관계자 조정",
+    "정책·규정 준수",
+    "리스크·품질관리",
+    "성과지표·검증",
+    "이용자·형평성",
+    "디지털·프로세스 개선",
+    "자원·일정 조정",
+    "조직학습·인수인계",
+    "보안·개인정보 보호",
+    "지속가능성·환경 영향",
+)
+
+
+def _question_topic_axis(variation_index: int) -> str:
+    try:
+        index = max(0, int(variation_index or 0))
+    except (TypeError, ValueError):
+        index = 0
+    return _QUESTION_TOPIC_AXES[index % len(_QUESTION_TOPIC_AXES)]
+
 
 def _question_variation_constraint(variation_index: int) -> str:
     try:
@@ -2413,6 +3233,48 @@ def _compact_material_reference(value: str, limit: int = 5, focus: str = "") -> 
     return ", ".join(dict.fromkeys(selected))
 
 
+def _ensure_question_material_reference(
+    question: Any,
+    method: str,
+    conditions: dict[str, Any] | None,
+) -> str:
+    """Make concrete case rows visible in presentation/debate questions."""
+
+    text = str(question or "").strip()
+    if method not in {"발표면접", "토론면접"} or not text:
+        return text
+    if "[제공자료]" in text or "[공통자료]" in text:
+        return text
+    if not isinstance(conditions, dict):
+        return text
+    rows = conditions.get("case_materials") if isinstance(conditions.get("case_materials"), list) else []
+    concrete = [
+        {
+            "source": str(row.get("source") or "").strip(),
+            "field": str(row.get("field") or "").strip(),
+            "value": str(row.get("value") or "").strip(),
+        }
+        for row in rows
+        if isinstance(row, dict)
+        and all(str(row.get(field) or "").strip() for field in ("source", "field", "value"))
+    ]
+    if not concrete:
+        return text
+    label = "[제공자료]" if method == "발표면접" else "[공통자료]"
+    material_text = "; ".join(
+        f"{row['source']}/{row['field']}={row['value'][:120]}"
+        for row in concrete[:5]
+    )
+    return f"{text} {label} {material_text}"
+
+
+def _strip_question_material_reference(value: Any) -> str:
+    """Remove the printable material appendix for repeat/dedup comparison."""
+
+    text = str(value or "").strip()
+    return re.sub(r"\s+\[(?:제공자료|공통자료)\].*$", "", text).strip()
+
+
 def _question_for_method(
     method: str,
     subject: str,
@@ -2422,8 +3284,27 @@ def _question_for_method(
     focus_type: str = "",
     variation_index: int = 0,
     task_frame: dict[str, str] | None = None,
+    job_context_text: str = "",
 ) -> str:
     label = subject or detail or "해당 직무"
+    # Carry a short source-derived anchor into deterministic repairs so a
+    # provider timeout cannot erase the actual duty from the candidate-facing
+    # prompt.  The full source bundle remains in the audit payload/materials.
+    source_anchor = ""
+    if str(job_context_text or "").strip():
+        for _source_label, _source_value in re.findall(
+            r"\[([^\]]+)\]([^\[]*)", str(job_context_text)
+        ):
+            source_parts = _presentation_source_segments(
+                _source_value,
+                [detail, subject, focus],
+                limit=2,
+            )
+            if source_parts:
+                source_anchor = source_parts[0][:180]
+                break
+        if source_anchor:
+            label = f"{label} · 공고·직무기술서 근거: {source_anchor}"
     focus = focus or "핵심 수행기준"
     focus_type = _normalize_ksa_type(focus_type, focus)
     frame = dict(task_frame or _question_task_frame(
@@ -2837,6 +3718,14 @@ def _question_repeat_signature(item: dict[str, Any]) -> str:
     refs = item.get("ksa_refs")
     if not focus and isinstance(refs, list) and refs:
         focus = str(refs[0] or "").strip()
+    variation_axis = str((item or {}).get("question_variation_axis") or "").strip()
+    if variation_axis:
+        # The provider-free fallback exposes a deliberate, structured angle
+        # (priority, evidence comparison, reporting, etc.) while preserving the
+        # same official KSA factor. Include that axis in dedup identity so a
+        # five-slot fallback set is not incorrectly reported as a repeat merely
+        # because the competency and KSA are shared.
+        focus = f"{focus} · {variation_axis}".strip(" ·")
     has_focus_scope = bool(focus)
     if intent in _GENERAL_QUESTION_INTENTS and not (
         intent in _FOCUS_SCOPED_GENERAL_QUESTION_INTENTS and has_focus_scope
@@ -3307,6 +4196,7 @@ def _adjust_generated_questions(
     interview_methods: list[str],
     ncs_matches: list[dict[str, Any]] | None = None,
     ncs_ksa: list[dict[str, Any]] | None = None,
+    job_context_text: str = "",
 ) -> dict[str, Any]:
     if not isinstance(strategy, dict):
         return strategy
@@ -3431,6 +4321,33 @@ def _adjust_generated_questions(
             ncs_code,
             planned_evidence_id or item.get("question_evidence_id"),
         )
+        if (
+            not provided_evidence
+            and is_subscription_cli_candidate
+            and str(item.get("provider_evidence_alias") or "").strip() == "element_id"
+        ):
+            hinted_element = str(item.get("element_id") or "").strip()
+            hinted_type = _ksa_key(item.get("ksa_type"))
+            for candidate in ncs_ksa or []:
+                if not isinstance(candidate, dict):
+                    continue
+                if str(candidate.get("ncsClCd") or "").strip() != ncs_code:
+                    continue
+                candidate_element = str(
+                    candidate.get("elementId") or candidate.get("element_id") or ""
+                ).strip()
+                candidate_type = _ksa_key(
+                    candidate.get("ksaTypeName")
+                    or candidate.get("factorType")
+                    or candidate.get("ksa_type")
+                )
+                if hinted_element and candidate_element != hinted_element:
+                    continue
+                if hinted_type and candidate_type and hinted_type != candidate_type:
+                    continue
+                provided_evidence = dict(candidate)
+                item["provider_evidence_alias_resolved"] = True
+                break
         requested_focus = _clean_question_text(item.get("question_focus"), max_chars=60)
         if not planned_evidence_id and not provided_evidence and requested_focus:
             requested_focus_row = _evidence_row_for_focus(ncs_ksa, ncs_code, requested_focus)
@@ -3647,6 +4564,7 @@ def _adjust_generated_questions(
             focus_type=focus_type,
             variation_index=idx,
             task_frame=task_frame,
+            job_context_text=job_context_text,
         )
         template_followups = _followups_for_method(
             method=method,
@@ -3726,7 +4644,12 @@ def _adjust_generated_questions(
             comp_def=str(item.get("compeUnitDef", "")).strip(),
             focus_type=focus_type,
             variation_index=idx,
+            job_context_text=job_context_text,
         )
+        item["question_topic_axis"] = str(
+            (item.get("task_conditions") or {}).get("topic_axis")
+            or _question_topic_axis(idx)
+        ).strip()
         item["question_variation_index"] = idx
         item["assessment_guide"] = _behavior_anchored_evaluation(
             method,
@@ -3753,6 +4676,7 @@ def _adjust_generated_questions(
                     comp_def=str(item.get("compeUnitDef", "")).strip(),
                     focus_type=focus_type,
                     variation_index=idx,
+                    job_context_text=job_context_text,
                 )
             if not item.get("assessment_guide"):
                 item["assessment_guide"] = _behavior_anchored_evaluation(
@@ -3837,6 +4761,7 @@ def _adjust_generated_questions(
                     focus_type=focus_type,
                     variation_index=idx,
                     task_frame=task_frame,
+                    job_context_text=job_context_text,
                 )
                 template_followups = _followups_for_method(
                     method=method,
@@ -3865,6 +4790,7 @@ def _adjust_generated_questions(
                     comp_def=str(item.get("compeUnitDef", "")).strip(),
                     focus_type=focus_type,
                     variation_index=idx,
+                    job_context_text=job_context_text,
                 )
                 item["assessment_guide"] = _behavior_anchored_evaluation(
                     method,
@@ -3907,6 +4833,7 @@ def _adjust_generated_questions(
                     comp_def=str(item.get("compeUnitDef", "")).strip(),
                     focus_type=focus_type,
                     variation_index=idx,
+                    job_context_text=job_context_text,
                 ),
                 "assessment_guide": _behavior_anchored_evaluation(
                     method,
@@ -3991,7 +4918,7 @@ def _adjust_generated_questions(
         if raw_issues and raw_issues.issubset(field_repair_issue_fields):
             for issue in raw_issues:
                 repairable_fields.update(field_repair_issue_fields[issue])
-        if repairable_fields:
+        if repairable_fields and "question" not in repairable_fields:
             candidate = dict(item)
             if "follow_ups" in repairable_fields:
                 candidate["follow_ups"] = list(fallback.get("follow_ups") or [])
@@ -4038,7 +4965,7 @@ def _adjust_generated_questions(
             if str(reason).strip()
         ] if isinstance(item.get("model_replacement_reasons"), list) else []
         quality_reasons = [
-            f"quality_gate_{issue}"
+            str(issue).strip()
             for issue in (probe_item.get("issues") or [])
             if str(issue).strip()
         ] if isinstance(probe_item.get("issues"), list) else []
@@ -4182,6 +5109,20 @@ def _fetch_ncs_ksa_or_502(
             max_factors_per_unit=max_factors_per_unit,
         )
     except NcsMcpError as exc:
+        # An otherwise healthy MCP can legitimately return no KSA rows when a
+        # manually submitted/expired NCS unit is not present in the official
+        # database.  Treat that as an actionable input selection error rather
+        # than an upstream outage so the request stops before provider work.
+        if "no official ksa rows" in str(exc).casefold():
+            logger.warning("ncs_mcp_ksa_unavailable selected_units=%s", len(ncs_matches or []))
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ncs_ksa_unavailable",
+                    "message": "선택한 NCS 세분류에서 공식 KSA 근거를 찾지 못했습니다. 목록에서 다른 세분류를 선택해 주세요.",
+                    "retryable": False,
+                },
+            ) from exc
         raise _internal_http_error(
             "ncs_mcp_ksa_failed",
             exc,
@@ -4327,6 +5268,16 @@ def _require_official_ksa_result(result: dict[str, Any]) -> None:
         )
 
     questions = _public_question_rows(result)
+    # ``generate-diverse`` is a compact public sampler, not the institution
+    # strategy route.  It still requires service-owned evidence, a matching
+    # task frame, three follow-ups, and four evaluation points, but its model
+    # question does not carry the richer strategy-only measurement/realism
+    # annotations.  Keep those stricter gates for the institution route.
+    diverse_public_shape = (
+        str(result.get("generation_mode") or "").strip() == "ai_autonomous_ncs"
+        and isinstance(result.get("questions"), list)
+        and not isinstance(result.get("interview_questions"), list)
+    )
 
     def _supporting_evidence_ids(question: dict[str, Any]) -> set[str]:
         """Return IDs attested by the service-owned NCS evidence registry.
@@ -4418,21 +5369,25 @@ def _require_official_ksa_result(result: dict[str, Any]) -> None:
         measurement = evaluate_ksa_measurement(question)
         realism = evaluate_question_realism(question)
         precision_grounding = evaluate_question_precision_grounding(question)
-        if not (
+        core_grounding_ok = (
             str(question.get("question_focus_source") or "").strip() == "official_ksa"
             and refs
             and str(question.get("ncsClCd") or question.get("ncs_code") or "").strip()
-            and str(question.get("question_source") or "").strip() == "openai_api"
+            and _subscription_cli_source_base(question.get("question_source"))
+            in {"openai_api", "openrouter_api"}
             and stable_evidence_id
             and evidence_consistent
             and task_frame_consistent
             and isinstance(evaluation_points, list)
             and evaluation_points_ok
             and len(follow_ups) == 3
-            and bool(measurement.get("passed"))
+        )
+        strict_quality_ok = (
+            bool(measurement.get("passed"))
             and bool(realism.get("passed"))
             and bool(precision_grounding.get("passed"))
-        ):
+        )
+        if not (core_grounding_ok and (diverse_public_shape or strict_quality_ok)):
             invalid_indices.append(index)
 
     if not questions or invalid_indices:
@@ -4471,6 +5426,11 @@ _SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jp
 _BLOCKED_DOC_SUFFIXES = {".hwp", ".hwpx"}
 _REVIEW_SESSION_TTL_SEC = 30 * 60
 _REVIEW_SESSION_MAX = 100
+_REVIEW_SESSION_SIGNATURE_VERSION = "v1"
+_REVIEW_SESSION_MAX_CLOCK_SKEW_SEC = 60
+_REVIEW_SESSION_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_REVIEW_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_REVIEW_SESSION_TOKEN_RE = re.compile(r"^v1\.[A-Za-z0-9_-]{43}$")
 _REVIEW_SESSION_LOCK = threading.Lock()
 _REVIEW_SESSION_BY_ID: dict[str, dict[str, Any]] = {}
 
@@ -4778,28 +5738,41 @@ _GENERATION_PROVIDER_ALIASES = {
     "claude_code": "claude_code",
     "openai": "openai_api",
     "openai_api": "openai_api",
+    "openrouter": "openrouter_api",
+    "openrouter_api": "openrouter_api",
 }
 _SUBSCRIPTION_CLI_PROVIDERS = frozenset({"codex_cli", "claude_code"})
 
 
 def _configured_generation_provider() -> str:
-    """Return the only provider exposed by the public-sector application."""
-
-    return "openai_api"
+    return configured_generation_provider()
 
 
 def _request_generation_provider(value: Any = "") -> str:
-    raw_provider = str(value or "").strip().lower()
-    provider = _GENERATION_PROVIDER_ALIASES.get(raw_provider, raw_provider) if raw_provider else "openai_api"
-    if provider != "openai_api":
+    provider = normalize_generation_provider(value, default=_configured_generation_provider())
+    if provider not in request_supported_generation_providers():
         raise HTTPException(
             status_code=400,
             detail=(
-                "generation_provider must be 'openai_api'; personal Codex and "
-                "Claude Code subscription logins are disabled for institutional use"
+                "generation_provider must be one of 'openai_api' or 'openrouter_api'; "
+                "personal Codex and Claude Code subscription logins are disabled for institutional use"
             ),
         )
     return provider
+
+
+def _inferred_generation_provider_from_key(request_key: str, provider: Any = "") -> str:
+    try:
+        resolved = resolve_generation_credential(
+            generation_api_key=request_key,
+            requested_provider=provider,
+        )
+    except GenerationCredentialError:
+        return normalize_generation_provider(
+            provider,
+            default=_configured_generation_provider(),
+        )
+    return resolved.provider
 
 
 def _require_local_subscription_cli_request(
@@ -4898,8 +5871,133 @@ def _prune_review_sessions(now: float | None = None, *, persist: bool = False) -
             logger.warning("review_session_metadata_prune_failed", exc_info=True)
 
 
-def _public_review_session(session: dict[str, Any]) -> dict[str, Any]:
+def _review_session_signing_key() -> bytes:
+    raw = os.getenv("REVIEW_SESSION_SIGNING_KEY", "")
+    if not raw or not raw.strip():
+        return b""
+    return raw.encode("utf-8")
+
+
+def _review_session_timestamp(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a finite timestamp")
+    timestamp = float(value)
+    if not math.isfinite(timestamp):
+        raise ValueError(f"{field} must be a finite timestamp")
+    return timestamp
+
+
+def _review_session_signature_message(session: dict[str, Any]) -> bytes:
+    created_at = _review_session_timestamp(session.get("created_at"), "created_at")
+    expires_at = _review_session_timestamp(session.get("expires_at"), "expires_at")
+    claims = {
+        "created_at": created_at.hex(),
+        "document_sha256": str(session.get("document_sha256") or ""),
+        "expires_at": expires_at.hex(),
+        "filename": str(session.get("filename") or ""),
+        "id": str(session.get("id") or ""),
+        "markdown_sha256": str(session.get("markdown_sha256") or ""),
+        "version": _REVIEW_SESSION_SIGNATURE_VERSION,
+    }
+    return json.dumps(
+        claims,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _sign_review_session(session: dict[str, Any], signing_key: bytes) -> str:
+    digest = hmac.new(
+        signing_key,
+        _review_session_signature_message(session),
+        hashlib.sha256,
+    ).digest()
+    encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return f"{_REVIEW_SESSION_SIGNATURE_VERSION}.{encoded}"
+
+
+def _verified_signed_review_session(
+    review_session_payload: dict[str, Any],
+    session_id: str,
+    signing_key: bytes,
+    *,
+    now: float,
+    field_name: str = "jd_review_json",
+) -> dict[str, Any]:
+    """Validate public review metadata and reconstruct trusted session claims."""
+
+    try:
+        signed_id = review_session_payload.get("id")
+        document_sha256 = review_session_payload.get("document_sha256")
+        markdown_sha256 = review_session_payload.get("markdown_sha256")
+        filename = review_session_payload.get("filename")
+        token = review_session_payload.get("token")
+        if not isinstance(signed_id, str) or not _REVIEW_SESSION_ID_RE.fullmatch(signed_id):
+            raise ValueError("invalid id")
+        if signed_id != session_id:
+            raise ValueError("mismatched id")
+        if not isinstance(document_sha256, str) or not _REVIEW_SESSION_SHA256_RE.fullmatch(
+            document_sha256
+        ):
+            raise ValueError("invalid document hash")
+        if not isinstance(markdown_sha256, str) or not _REVIEW_SESSION_SHA256_RE.fullmatch(
+            markdown_sha256
+        ):
+            raise ValueError("invalid markdown hash")
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or len(filename) > 160
+            or filename != _safe_member_label(filename)
+        ):
+            raise ValueError("unsafe filename")
+        if not isinstance(token, str) or not _REVIEW_SESSION_TOKEN_RE.fullmatch(token):
+            raise ValueError("invalid token")
+
+        created_at = _review_session_timestamp(
+            review_session_payload.get("created_at"),
+            "created_at",
+        )
+        expires_at = _review_session_timestamp(
+            review_session_payload.get("expires_at"),
+            "expires_at",
+        )
+        if expires_at != created_at + _REVIEW_SESSION_TTL_SEC:
+            raise ValueError("invalid expiry")
+
+        claims = {
+            "id": signed_id,
+            "document_sha256": document_sha256,
+            "markdown_sha256": markdown_sha256,
+            "filename": filename,
+            "created_at": created_at,
+            "expires_at": expires_at,
+        }
+        expected_token = _sign_review_session(claims, signing_key)
+        if not hmac.compare_digest(token, expected_token):
+            raise ValueError("invalid signature")
+        if created_at > now + _REVIEW_SESSION_MAX_CLOCK_SKEW_SEC:
+            raise ValueError("future timestamp")
+        if now > expires_at:
+            raise ValueError("expired timestamp")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{field_name}.review_session is expired or invalid",
+        ) from exc
+
     return {
+        "id": signed_id,
+        "document_sha256": document_sha256,
+        "markdown_sha256": markdown_sha256,
+        "filename": filename,
+        "created_at": created_at,
+    }
+
+
+def _public_review_session(session: dict[str, Any]) -> dict[str, Any]:
+    public = {
         "id": session["id"],
         "document_sha256": session["document_sha256"],
         "markdown_sha256": session["markdown_sha256"],
@@ -4907,6 +6005,10 @@ def _public_review_session(session: dict[str, Any]) -> dict[str, Any]:
         "created_at": session["created_at"],
         "expires_at": session["created_at"] + _REVIEW_SESSION_TTL_SEC,
     }
+    signing_key = _review_session_signing_key()
+    if signing_key:
+        public["token"] = _sign_review_session(public, signing_key)
+    return public
 
 
 def _create_review_session(upload_bytes: bytes, structured: dict[str, Any], filename: str) -> dict[str, Any]:
@@ -4933,7 +6035,15 @@ def _create_review_session(upload_bytes: bytes, structured: dict[str, Any], file
     return _public_review_session(session)
 
 
-def _validate_review_session(review_payload: dict[str, Any], upload_bytes: bytes) -> dict[str, Any]:
+def _validate_review_session(
+    review_payload: dict[str, Any],
+    upload_bytes: bytes,
+    filename: str | None = None,
+    *,
+    field_name: str = "jd_review_json",
+    upload_label: str = "jd_file",
+    parse_endpoint: str = "/api/jd/parse-review",
+) -> dict[str, Any]:
     review_session_payload = review_payload.get("review_session")
     if not isinstance(review_session_payload, dict):
         review_session_payload = {}
@@ -4945,17 +6055,31 @@ def _validate_review_session(review_payload: dict[str, Any], upload_bytes: bytes
     if not session_id:
         raise HTTPException(
             status_code=400,
-            detail="jd_review_json.review_session_id is required; call /api/jd/parse-review before generation",
+            detail=(
+                f"{field_name}.review_session_id is required; "
+                f"call {parse_endpoint} before generation"
+            ),
+        )
+    now = time.time()
+    signing_key = _review_session_signing_key()
+    signed_session: dict[str, Any] = {}
+    if signing_key:
+        signed_session = _verified_signed_review_session(
+            review_session_payload,
+            session_id,
+            signing_key,
+            now=now,
+            field_name=field_name,
         )
     with _REVIEW_SESSION_LOCK:
-        _prune_review_sessions()
+        _prune_review_sessions(now)
         session = dict(_REVIEW_SESSION_BY_ID.get(session_id, {}) or {})
     if not session:
         try:
             session = dict(
                 get_review_session(
                     session_id,
-                    now=time.time(),
+                    now=now,
                     ttl_sec=_REVIEW_SESSION_TTL_SEC,
                 )
                 or {}
@@ -4963,20 +6087,54 @@ def _validate_review_session(review_payload: dict[str, Any], upload_bytes: bytes
         except Exception:
             logger.warning("review_session_metadata_load_failed", exc_info=True)
             session = {}
+    if not session and signed_session:
+        # Vercel instances do not share memory or /tmp. The signed public
+        # metadata is sufficient to recover the hash-only session safely.
+        session = dict(signed_session)
     if not session:
-        raise HTTPException(status_code=409, detail="jd_review_json.review_session_id is expired or unknown")
+        raise HTTPException(status_code=409, detail=f"{field_name}.review_session_id is expired or unknown")
+    if signed_session and any(
+        session.get(field) != signed_session.get(field)
+        for field in (
+            "id",
+            "filename",
+            "document_sha256",
+            "markdown_sha256",
+            "created_at",
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{field_name}.review_session does not match server parse session",
+        )
     if session.get("document_sha256") != _sha256_bytes(upload_bytes):
-        raise HTTPException(status_code=409, detail="jd_review_json review session does not match uploaded jd_file")
+        raise HTTPException(
+            status_code=409,
+            detail=f"{field_name} review session does not match uploaded {upload_label}",
+        )
+    if signing_key and filename is not None and session.get("filename") != _safe_member_label(filename):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{field_name} review session does not match uploaded {upload_label} filename",
+        )
     payload_document = review_payload.get("document") if isinstance(review_payload.get("document"), dict) else {}
     payload_markdown = str(payload_document.get("markdown") or "")
-    if payload_markdown and _sha256_text(payload_markdown) != session.get("markdown_sha256"):
-        raise HTTPException(status_code=400, detail="jd_review_json.document.markdown does not match server parse session")
+    if signing_key and "markdown" not in payload_document:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name}.document.markdown is required for signed review session validation",
+        )
+    if (payload_markdown or signing_key) and _sha256_text(payload_markdown) != session.get("markdown_sha256"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name}.document.markdown does not match server parse session",
+        )
     if payload_markdown:
         session["markdown"] = payload_markdown
     return session
 
 
-def _sanitize_request_openai_key(value: str | None) -> str:
+def _sanitize_request_openai_key(value: str | None, *, provider: str = "openai_api") -> str:
     """Validate a BYOK credential without retaining or reflecting it."""
 
     key = str(value or "").strip()
@@ -4986,9 +6144,9 @@ def _sanitize_request_openai_key(value: str | None) -> str:
         raise HTTPException(
             status_code=400,
             detail={
-                "code": "openai_api_key_invalid",
-                "provider": "openai_api",
-                "message": "OpenAI API 키 형식이 올바르지 않습니다.",
+                "code": request_key_error_code(provider, "key_invalid"),
+                "provider": _inferred_generation_provider_from_key(key, provider),
+                "message": request_key_error_message(provider, invalid=True),
                 "retryable": False,
             },
         )
@@ -5000,26 +6158,118 @@ def _openai_key_source(request_key: str, request: Request | None = None) -> str:
     return settings.openai_key_source(request_key)
 
 
+def _generation_key_source(
+    provider: str,
+    *,
+    generation_api_key: Any = "",
+    openai_api_key: Any = "",
+    openrouter_api_key: Any = "",
+) -> str:
+    if any(
+        str(value or "").strip()
+        for value in (generation_api_key, openai_api_key, openrouter_api_key)
+    ):
+        return "request"
+    if normalize_generation_provider(provider) == OPENROUTER_PROVIDER:
+        return settings.openrouter_key_source("")
+    return settings.openai_key_source("")
+
+
+def _sanitize_request_generation_model(
+    value: Any,
+    *,
+    provider: str = "",
+) -> str:
+    try:
+        return sanitize_generation_model(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "generation_model_invalid",
+                "provider": _request_generation_provider(provider or _configured_generation_provider()),
+                "message": "generation_model 형식이 올바르지 않습니다.",
+                "retryable": False,
+            },
+        ) from exc
+
+
+def _resolve_request_generation(
+    *,
+    generation_api_key: Any = "",
+    openai_api_key: Any = "",
+    openrouter_api_key: Any = "",
+    provider: Any = "",
+    generation_model: Any = "",
+) -> tuple[str, str, str]:
+    sanitized_generation_key = _sanitize_request_openai_key(
+        generation_api_key,
+        provider=provider or "",
+    )
+    sanitized_openai_key = _sanitize_request_openai_key(
+        openai_api_key,
+        provider="openai_api",
+    )
+    sanitized_openrouter_key = _sanitize_request_openai_key(
+        openrouter_api_key,
+        provider="openrouter",
+    )
+    try:
+        credential = resolve_generation_credential(
+            generation_api_key=sanitized_generation_key,
+            openai_api_key=sanitized_openai_key,
+            openrouter_api_key=sanitized_openrouter_key,
+            requested_provider=provider,
+        )
+    except GenerationCredentialError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": exc.code,
+                "provider": exc.provider or "",
+                "message": exc.message,
+                "retryable": False,
+            },
+        ) from exc
+    requested_model = _sanitize_request_generation_model(
+        generation_model,
+        provider=credential.provider,
+    )
+    resolved_model = resolve_generation_model(
+        provider=credential.provider,
+        explicit_model=requested_model,
+    )
+    resolved_api_key = credential.api_key
+    if not resolved_api_key and credential.provider == OPENROUTER_PROVIDER:
+        resolved_api_key = settings.resolve_openrouter_key("")
+    return credential.provider, resolved_model, resolved_api_key
+
+
 def _require_allowed_openai_key(
     request_key: str,
     request: Request | None = None,
+    *,
+    provider: str = "openai_api",
 ) -> None:
     del request
     if str(request_key or "").strip():
         return
+    resolved_provider = _inferred_generation_provider_from_key(request_key, provider)
     raise HTTPException(
         status_code=400,
         detail={
-            "code": "openai_api_key_required",
-            "provider": "openai_api",
-            "message": "OpenAI API 키를 입력해 주세요.",
+            "code": request_key_error_code(resolved_provider, "key_required"),
+            "provider": resolved_provider,
+            "message": request_key_error_message(resolved_provider),
             "retryable": False,
         },
     )
 
 
 _SENSITIVE_QUERY_PARAMS = (
+    "generation_api_key",
     "openai_api_key",
+    "openrouter_api_key",
     "job_posting",
     "user_profile",
     "notice_text",
@@ -5029,6 +6279,7 @@ _SENSITIVE_QUERY_PARAMS = (
     "evaluation_text",
     "strengths",
     "jd_review_json",
+    "notice_review_json",
     "question_plan_json",
     "interview_methods_json",
     "avoid_questions",
@@ -5050,7 +6301,42 @@ def _ksa_key(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
 
 
-def _clean_ksa_evidence_row(row: dict[str, Any]) -> dict[str, str]:
+def _criteria_values(row: dict[str, Any]) -> list[str]:
+    """Return normalized NCS performance-criteria text without exposing it in prompts."""
+
+    raw = (
+        row.get("performanceCriteria")
+        or row.get("performance_criteria")
+        or row.get("performanceCriteriaTexts")
+        or row.get("criteria")
+        or []
+    )
+    if isinstance(raw, dict):
+        raw = raw.get("items") or raw.get("criteria") or raw.get("performance_criteria") or [raw]
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    values: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        if isinstance(value, dict):
+            value = (
+                value.get("text")
+                or value.get("description")
+                or value.get("criterion")
+                or value.get("criteria")
+                or value.get("performance_criteria")
+                or value.get("performanceCriteria")
+            )
+        text = _clean_question_text(value, max_chars=240)
+        if text and text not in seen:
+            seen.add(text)
+            values.append(text)
+    return values[:12]
+
+
+def _clean_ksa_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "evidence_id": stable_ksa_evidence_id(row),
         "ncsClCd": str(row.get("ncsClCd", "")).strip(),
@@ -5063,6 +6349,43 @@ def _clean_ksa_evidence_row(row: dict[str, Any]) -> dict[str, str]:
         "factorLevel": str(row.get("factorLevel", "")).strip(),
         "factorSource": str(row.get("factorSource", "")).strip(),
         "ksaStatus": str(row.get("ksaStatus", "")).strip(),
+        "elementId": str(row.get("elementId") or row.get("element_id") or "").strip(),
+        "factorNo": str(row.get("factorNo") or row.get("ksaNo") or row.get("number") or "").strip(),
+        "performanceCriteria": _criteria_values(row),
+    }
+
+
+def _ncs_traceability_payload(
+    question: dict[str, Any],
+    evidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Attach an internal, auditable link from a question to NCS evidence.
+
+    The payload is deliberately separate from candidate-facing wording.  It
+    records the ability unit, element, performance criteria (when returned by
+    NCS_MCP), KSA factor and stable evidence id so reviewers can trace the
+    question back to the official source without copying NCS labels into the
+    question itself.
+    """
+
+    row = evidence if isinstance(evidence, dict) else {}
+    criteria = _criteria_values(row)
+    return {
+        "ncs_code": str(question.get("ncsClCd") or row.get("ncsClCd") or "").strip(),
+        "ability_unit_name": str(
+            question.get("competency")
+            or row.get("compeUnitName")
+            or ""
+        ).strip(),
+        "element_id": str(row.get("elementId") or "").strip(),
+        "element_name": str(row.get("elementName") or "").strip(),
+        "performance_criteria": criteria,
+        "performance_criteria_linked": bool(criteria),
+        "ksa_type": str(row.get("ksaTypeName") or "").strip(),
+        "ksa_factor": str(row.get("factorName") or "").strip(),
+        "ksa_factor_no": str(row.get("factorNo") or "").strip(),
+        "evidence_id": str(row.get("evidence_id") or "").strip(),
+        "source": str(row.get("factorSource") or row.get("source") or "").strip(),
     }
 
 
@@ -6371,6 +7694,15 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
                 preferred_id = q["evidence_ids"][0] if q["evidence_ids"] else ""
             q["question_evidence_id"] = preferred_id
             q["question_evidence_required"] = True
+            primary_evidence = next(
+                (
+                    row
+                    for row in evidence
+                    if str(row.get("evidence_id") or "").strip() == preferred_id
+                ),
+                evidence[0],
+            )
+            q["ncs_traceability"] = _ncs_traceability_payload(q, primary_evidence)
         enriched.append(q)
     strategy["interview_questions"] = enriched
     strategy["question_evidence_policy"] = "ncs_mcp_ksa_attached_by_evidence_id"
@@ -6384,6 +7716,7 @@ def _run_runtime_question_quality_orchestration(
     ncs_ksa: list[dict[str, Any]] | None,
     avoid_questions: list[str] | None = None,
     generation_offset: int | None = None,
+    job_context_text: str = "",
 ) -> dict[str, Any]:
     """Recheck generated questions and repair shallow or repeated tasks.
 
@@ -6394,6 +7727,11 @@ def _run_runtime_question_quality_orchestration(
 
     if not isinstance(strategy, dict):
         strategy = {}
+    avoid_questions = [
+        cleaned
+        for cleaned in (_strip_question_material_reference(value) for value in (avoid_questions or []))
+        if cleaned
+    ]
     questions = [
         dict(item)
         for item in (strategy.get("interview_questions") or [])
@@ -6652,6 +7990,7 @@ def _run_runtime_question_quality_orchestration(
             focus_type=focus_type,
             variation_index=variation_index,
             task_frame=task_frame,
+            job_context_text=job_context_text,
         )
         repaired_source = "quality_orchestrator_repair"
         repaired_model_preserved = False
@@ -6886,6 +8225,21 @@ def _run_runtime_question_quality_orchestration(
     strategy["question_quality_orchestration"] = metadata
     strategy["question_customization_policy"] = (
         "model_candidate_then_ksa_measurement_history_dedup_repair_and_full_recheck"
+    )
+    # Keep the quality report based on the substantive question text, then
+    # expose the concrete case rows in the final candidate-facing question.
+    # This avoids treating a long data appendix as a wording defect while
+    # ensuring exports and print views remain self-contained.
+    for item in strategy.get("interview_questions") or []:
+        if isinstance(item, dict):
+            method = str(item.get("type") or item.get("method") or "").strip()
+            item["question"] = _ensure_question_material_reference(
+                item.get("question"),
+                method,
+                item.get("task_conditions"),
+            )
+    strategy["interview_by_competency"] = _group_interview_questions_for_response(
+        strategy.get("interview_questions") or []
     )
     return strategy
 
@@ -7169,10 +8523,9 @@ def _filter_ncs_code_result_against_avoid_list(
 
 
 def _generation_provider_descriptor(provider: str = "") -> dict[str, Any]:
-    provider = (
-        _GENERATION_PROVIDER_ALIASES.get(str(provider).strip().lower(), str(provider).strip().lower())
-        if str(provider).strip()
-        else _configured_generation_provider()
+    provider = normalize_generation_provider(
+        provider,
+        default=_configured_generation_provider(),
     )
     if provider == "codex_cli":
         return {
@@ -7190,15 +8543,35 @@ def _generation_provider_descriptor(provider: str = "") -> dict[str, Any]:
             "requires_request_api_key": False,
             "local_only": True,
         }
-    if provider == "openai_api":
-        return {
-            "provider": "openai_api",
-            "provider_label": "OpenAI API",
-            "auth_mode": "request_scoped_api_key",
-            "requires_request_api_key": True,
-            "credential_managed_by": "request",
-            "local_only": False,
+    if provider in request_supported_generation_providers():
+        config = generation_provider_config(provider)
+        descriptor = {
+            "provider": str(config.get("provider") or provider),
+            "provider_label": str(config.get("provider_label") or provider),
+            "auth_mode": str(config.get("auth_mode") or "request_scoped_api_key"),
+            "requires_request_api_key": bool(config.get("requires_request_api_key")),
+            "credential_managed_by": str(config.get("credential_managed_by") or "request"),
+            "key_label": str(config.get("key_label") or "API 키"),
+            "default_model": str(config.get("default_model") or ""),
+            "supports_custom_model": bool(config.get("supports_custom_model")),
+            "local_only": bool(config.get("local_only")),
         }
+        if provider == OPENROUTER_PROVIDER:
+            server_key_state = settings.openrouter_server_key_state()
+            recovery_model = openrouter_recovery_model()
+            descriptor["server_key_enabled"] = settings.openrouter_server_key_enabled()
+            descriptor["server_key_state"] = server_key_state
+            descriptor["recovery_model"] = recovery_model
+            descriptor["recovery_enabled"] = bool(recovery_model)
+            if server_key_state == "configured":
+                descriptor.update(
+                    {
+                        "auth_mode": "server_env_api_key",
+                        "requires_request_api_key": False,
+                        "credential_managed_by": "server_env",
+                    }
+                )
+        return descriptor
     return {
         "provider": provider,
         "provider_label": provider or "설정 오류",
@@ -7274,6 +8647,9 @@ _INSTITUTION_API_SAFE_MODEL_FAILURE_REASONS = frozenset(
     {
         "openai_request_timeout",
         "openai_network_unreachable",
+        "openrouter_request_timeout",
+        "openrouter_network_unreachable",
+        "openrouter_request_failed",
         "model_response_not_object",
         "model_response_invalid_shape",
         "model_response_invalid_json",
@@ -7299,51 +8675,78 @@ _INSTITUTION_API_SAFE_MODEL_FAILURE_REASONS = frozenset(
         "openai_http_502",
         "openai_http_503",
         "openai_http_504",
+        "openrouter_http_400",
+        "openrouter_http_401",
+        "openrouter_http_403",
+        "openrouter_http_404",
+        "openrouter_http_408",
+        "openrouter_http_409",
+        "openrouter_http_422",
+        "openrouter_http_425",
+        "openrouter_http_429",
+        "openrouter_http_500",
+        "openrouter_http_502",
+        "openrouter_http_503",
+        "openrouter_http_504",
     }
 )
 
 
-def _institution_api_provider_http_error(exc: BaseException) -> HTTPException:
+def _institution_api_provider_http_error(
+    exc: BaseException,
+    *,
+    provider: str = "openai_api",
+) -> HTTPException:
     """Return a stable, non-sensitive failure for request-scoped API use."""
 
+    resolved_provider = _request_generation_provider(provider)
+    config = generation_provider_config(resolved_provider)
+    provider_label = str(config.get("provider_label") or "API")
+    error_prefix = "openrouter" if resolved_provider == "openrouter_api" else "openai"
     normalized = str(exc or "").casefold()
-    if "openai_http_401" in normalized or "openai_http_403" in normalized:
+    if any(
+        f"{error_prefix}_http_{status}" in normalized
+        for status in (401, 403)
+    ):
         return HTTPException(
             status_code=401,
             detail={
-                "code": "openai_api_authentication_failed",
-                "provider": "openai_api",
-                "message": "입력한 OpenAI API 키를 인증하지 못했습니다.",
+                "code": f"{resolved_provider}_authentication_failed",
+                "provider": resolved_provider,
+                "message": f"입력한 {provider_label} 키를 인증하지 못했습니다.",
                 "retryable": False,
             },
         )
-    if "openai_http_429" in normalized:
+    if f"{error_prefix}_http_429" in normalized:
         return HTTPException(
             status_code=429,
             detail={
-                "code": "openai_api_usage_limit_reached",
-                "provider": "openai_api",
-                "message": "OpenAI API 사용량 또는 요청 한도를 확인해 주세요.",
+                "code": f"{resolved_provider}_usage_limit_reached",
+                "provider": resolved_provider,
+                "message": f"{provider_label} 사용량 또는 요청 한도를 확인해 주세요.",
                 "retryable": True,
             },
         )
-    if "openai_request_timeout" in normalized or "openai_http_408" in normalized:
+    if (
+        f"{error_prefix}_request_timeout" in normalized
+        or f"{error_prefix}_http_408" in normalized
+    ):
         return HTTPException(
             status_code=504,
             detail={
-                "code": "openai_api_timeout",
-                "provider": "openai_api",
-                "message": "OpenAI API 응답 시간이 초과되었습니다. 문항 수를 줄이거나 잠시 후 다시 시도해 주세요.",
+                "code": f"{resolved_provider}_timeout",
+                "provider": resolved_provider,
+                "message": f"{provider_label} 응답 시간이 초과되었습니다. 문항 수를 줄이거나 잠시 후 다시 시도해 주세요.",
                 "retryable": True,
             },
         )
-    if "openai_network_unreachable" in normalized:
+    if f"{error_prefix}_network_unreachable" in normalized:
         return HTTPException(
             status_code=503,
             detail={
-                "code": "openai_api_unreachable",
-                "provider": "openai_api",
-                "message": "서버에서 OpenAI API에 연결하지 못했습니다. 네트워크 연결을 확인해 주세요.",
+                "code": f"{resolved_provider}_unreachable",
+                "provider": resolved_provider,
+                "message": f"서버에서 {provider_label}에 연결하지 못했습니다. 네트워크 연결을 확인해 주세요.",
                 "retryable": True,
             },
         )
@@ -7361,9 +8764,9 @@ def _institution_api_provider_http_error(exc: BaseException) -> HTTPException:
         return HTTPException(
             status_code=502,
             detail={
-                "code": "openai_api_invalid_output",
-                "provider": "openai_api",
-                "message": "OpenAI API 응답이 잘렸거나 요청한 문항 수·형식을 충족하지 못했습니다.",
+                "code": f"{resolved_provider}_invalid_output",
+                "provider": resolved_provider,
+                "message": f"{provider_label} 응답이 잘렸거나 요청한 문항 수·형식을 충족하지 못했습니다.",
                 "retryable": True,
             },
         )
@@ -7397,8 +8800,8 @@ def _institution_api_provider_http_error(exc: BaseException) -> HTTPException:
         return HTTPException(
             status_code=502,
             detail={
-                "code": "openai_api_quality_rejected",
-                "provider": "openai_api",
+                "code": f"{resolved_provider}_quality_rejected",
+                "provider": resolved_provider,
                 "message": message,
                 "retryable": True,
                 "quality_diagnostics": quality_diagnostics,
@@ -7411,44 +8814,44 @@ def _institution_api_provider_http_error(exc: BaseException) -> HTTPException:
         return HTTPException(
             status_code=422,
             detail={
-                "code": "openai_api_content_restricted",
-                "provider": "openai_api",
-                "message": "OpenAI API가 입력 내용에 대한 질문 생성을 완료하지 않았습니다. 입력 문서를 확인해 주세요.",
+                "code": f"{resolved_provider}_content_restricted",
+                "provider": resolved_provider,
+                "message": f"{provider_label}가 입력 내용에 대한 질문 생성을 완료하지 않았습니다. 입력 문서를 확인해 주세요.",
                 "retryable": False,
             },
         )
     if any(
-        f"openai_http_{status}" in normalized
+        f"{error_prefix}_http_{status}" in normalized
         for status in (400, 404, 409, 422, 425)
     ):
         return HTTPException(
             status_code=502,
             detail={
-                "code": "openai_api_request_rejected",
-                "provider": "openai_api",
-                "message": "OpenAI API가 모델 또는 요청 형식을 거절했습니다. 서버의 OpenAI 모델 설정을 확인해 주세요.",
+                "code": f"{resolved_provider}_request_rejected",
+                "provider": resolved_provider,
+                "message": f"{provider_label}가 모델 또는 요청 형식을 거절했습니다. 모델 설정을 확인해 주세요.",
                 "retryable": False,
             },
         )
     if any(
-        f"openai_http_{status}" in normalized
+        f"{error_prefix}_http_{status}" in normalized
         for status in (500, 502, 503, 504)
     ):
         return HTTPException(
             status_code=502,
             detail={
-                "code": "openai_api_upstream_unavailable",
-                "provider": "openai_api",
-                "message": "OpenAI API 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.",
+                "code": f"{resolved_provider}_upstream_unavailable",
+                "provider": resolved_provider,
+                "message": f"{provider_label} 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.",
                 "retryable": True,
             },
         )
     return HTTPException(
         status_code=502,
         detail={
-            "code": "openai_api_generation_failed",
-            "provider": "openai_api",
-            "message": "OpenAI API에서 질문을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            "code": f"{resolved_provider}_generation_failed",
+            "provider": resolved_provider,
+            "message": f"{provider_label}에서 질문을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
             "retryable": True,
         },
     )
@@ -7704,6 +9107,12 @@ def _institution_hard_question_indexes(result: Any) -> list[int]:
 
     for index, question in enumerate(questions, start=1):
         source = str(question.get("question_source") or "").strip()
+        if bool(result.get("template_fallback_used")) or source in {
+            "template_fallback",
+            "rule_fallback",
+            "quality_orchestrator_repair",
+        }:
+            hard_indexes.add(index)
         if evaluate_question_precision_grounding(question).get("passed") is not True:
             hard_indexes.add(index)
     return sorted(index for index in hard_indexes if 1 <= index <= len(questions))
@@ -7914,77 +9323,50 @@ def _partial_safe_question_strategy(
         )
     )
     partial_forbidden_codes = {
+        "invalid_question_result",
+        "result_error",
+        "empty_question_set",
+        "question_evidence_assignment_failed",
+        "question_count_mismatch",
         "question_quality_report_missing",
         "question_quality_report_unclassified",
         "question_quality_unclassified_issue",
         "question_quality_orchestration_missing",
         "question_quality_orchestration_unclassified",
     }
-    if request_codes & partial_forbidden_codes and not questions:
+    if request_codes & partial_forbidden_codes:
         return None
 
     failed_indexes = _institution_hard_question_indexes(result)
     failed_set = {idx for idx in failed_indexes if isinstance(idx, int) and idx > 0}
-
-    if not failed_set and len(questions) >= requested_count:
+    if (
+        not failed_set
+        or len(questions) != requested_count
+        or any(index > requested_count for index in failed_set)
+    ):
         return None
 
-    rows: list[dict[str, Any]] = []
-    for index in range(1, requested_count + 1):
-        if index in failed_set or index > len(questions):
-            rows.append({})
-        else:
-            rows.append(dict(questions[index - 1]))
+    kept_indexes = [
+        index for index in range(1, requested_count + 1) if index not in failed_set
+    ]
+    if not kept_indexes:
+        return None
+
+    partial_questions = [dict(questions[index - 1]) for index in kept_indexes]
+    if not partial_questions or not all(
+        str(item.get("question") or "").strip() for item in partial_questions
+    ):
+        return None
 
     partial = dict(result)
-    if not rows:
-        return None
-
-    partial["interview_questions"] = rows
+    partial["interview_questions"] = partial_questions
     partial["question_plan_used"] = resolved_plan
     partial["interview_methods_used"] = methods
-    partial["interview_questions"] = [
-        dict(row) for row in partial.get("interview_questions") or []
-    ]
-
-    adjusted = _adjust_generated_questions(
-        partial,
-        question_plan=resolved_plan,
-        interview_methods=methods,
-        ncs_matches=ncs_matches,
-        ncs_ksa=ncs_ksa,
-    )
-    adjusted = _run_runtime_question_quality_orchestration(
-        adjusted,
-        question_plan=resolved_plan,
-        ncs_ksa=ncs_ksa,
-        avoid_questions=avoid_questions or [],
-        generation_offset=generation_offset,
-    )
-    partial = adjusted
-
-    partial_questions: list[dict[str, Any]] = [
-        dict(item)
-        for item in (adjusted.get("interview_questions") or [])
-        if isinstance(item, dict)
-    ]
-    if len(partial_questions) != requested_count:
-        if len(partial_questions) > requested_count:
-            partial_questions = partial_questions[:requested_count]
-        else:
-            while len(partial_questions) < requested_count:
-                partial_questions.append({})
-    partial["interview_questions"] = partial_questions
     partial["interview_by_competency"] = _group_interview_questions_for_response(
         partial_questions
     )
 
-    report = partial.get("question_quality_report")
-    kept_indexes = [
-        index
-        for index in range(1, requested_count + 1)
-        if index not in failed_set and index <= len(questions)
-    ]
+    report = result.get("question_quality_report")
     if isinstance(report, dict):
         report_items_by_index = {
             int(item.get("index") or fallback_index): dict(item)
@@ -8074,22 +9456,6 @@ def _partial_safe_question_strategy(
         "omitted_indexes": sorted(failed_set),
         "omission_reasons_by_index": safe_reasons_by_index,
     }
-    if evidence_locks is not None:
-        partial["question_evidence_assignment"] = _raw_model_evidence_assignment_report(
-            {
-                "interview_questions": [
-                    dict(item)
-                    for item in (result.get("interview_questions") or [])
-                    if isinstance(item, dict)
-                ]
-            },
-            evidence_locks,
-        )
-    partial["partial_generation"]["fill_method"] = (
-        "template_fill_with_question_plan"
-        if failed_set
-        else "question_plan_fill"
-    )
     partial["question_release_status"] = "partial_human_review_required"
     return partial
 
@@ -8117,6 +9483,12 @@ def _institution_hard_question_rejection_codes(
         codes.append("result_error")
     if not questions or not all(str(row.get("question") or "").strip() for row in questions):
         codes.append("empty_question_set")
+    if bool(result.get("template_fallback_used")) or any(
+        str(row.get("question_source") or "").strip()
+        in {"template_fallback", "rule_fallback", "quality_orchestrator_repair"}
+        for row in questions
+    ):
+        codes.append("deterministic_fallback")
     evidence_assignment = result.get("question_evidence_assignment")
     if (
         isinstance(evidence_assignment, dict)
@@ -8618,8 +9990,40 @@ async def _generate_quality_gated_institution_strategy(
 ) -> dict[str, Any]:
     """Generate once and perform one bounded retry only for quality rejection."""
 
+    active_generation_provider = normalize_generation_provider(
+        build_kwargs.get("generation_provider", ""),
+        default=_configured_generation_provider(),
+    )
+    model_requests_per_batch = _clamp_int(
+        os.getenv("INSTITUTION_MODEL_REQUESTS_PER_BATCH"),
+        default=2,
+        lo=1,
+        hi=2,
+    )
+    quality_retry_enabled = _coerce_bool_flag(
+        os.getenv("INSTITUTION_QUALITY_RETRY_ENABLED"),
+        default=True,
+    )
+    generation_batch_size = _clamp_int(
+        os.getenv("INSTITUTION_GENERATION_BATCH_SIZE"),
+        default=_INSTITUTION_GENERATION_BATCH_SIZE,
+        lo=1,
+        hi=20,
+    )
+    generation_batch_concurrency = _clamp_int(
+        os.getenv("INSTITUTION_GENERATION_BATCH_CONCURRENCY"),
+        default=_INSTITUTION_GENERATION_BATCH_CONCURRENCY,
+        lo=1,
+        hi=4,
+    )
     generation_started_at = time.perf_counter()
     generation_attempt_elapsed_ms: list[int] = []
+    job_context_text = _generation_job_context_text(
+        duty_text=str(build_kwargs.get("duty_text") or ""),
+        jd_text=str(build_kwargs.get("jd_text") or ""),
+        notice_text=str(build_kwargs.get("notice_text") or ""),
+        evaluation_text=str(build_kwargs.get("evaluation_text") or ""),
+    )
 
     def with_generation_timing(result: dict[str, Any]) -> dict[str, Any]:
         result["generation_timing"] = {
@@ -8657,11 +10061,15 @@ async def _generate_quality_gated_institution_strategy(
         ncs_ksa=ncs_ksa,
     )
     initial_generation_batch_count = len(
-        _generation_batch_plans(runtime_question_plan)
+        _generation_batch_plans(
+            runtime_question_plan,
+            max_batch_size=generation_batch_size,
+        )
     )
     provider_generation_request_limit = max(
-        3,
-        initial_generation_batch_count * 3,
+        1,
+        initial_generation_batch_count
+        * (model_requests_per_batch + int(quality_retry_enabled)),
     )
 
     async def run_once(
@@ -8671,7 +10079,6 @@ async def _generate_quality_gated_institution_strategy(
         local_interview_methods: list[str],
         local_evidence_locks: list[tuple[int, str]],
     ) -> tuple[dict[str, Any], list[str]]:
-        loop = asyncio.get_running_loop()
         attempt_started_at = time.perf_counter()
         # A retry batch already contains only failed original slots.  Generate
         # each one independently so one weak/duplicate draft cannot steer the
@@ -8681,18 +10088,20 @@ async def _generate_quality_gated_institution_strategy(
         retry_batch_size = (
             1
             if local_question_plan.get("targeted_retry") and local_count <= 4
-            else _INSTITUTION_GENERATION_BATCH_SIZE
+            else generation_batch_size
         )
         batch_specs = _generation_batch_plans(
             local_question_plan,
             max_batch_size=retry_batch_size,
         )
-        semaphore = asyncio.Semaphore(_INSTITUTION_GENERATION_BATCH_CONCURRENCY)
+        semaphore = asyncio.Semaphore(generation_batch_concurrency)
 
         async def build_batch(
             batch_plan: dict[str, Any],
             original_indexes: list[int],
             batch_methods: list[str],
+            *,
+            recovery_attempt: int = 0,
         ) -> dict[str, Any]:
             effective_methods = batch_methods or list(local_interview_methods)
             batch_runtime_plan, batch_evidence_locks = (
@@ -8709,13 +10118,31 @@ async def _generate_quality_gated_institution_strategy(
             batch_kwargs["target_count_override"] = int(
                 batch_runtime_plan.get("total_main_count") or 0
             )
+            if recovery_attempt:
+                # Preserve every completed batch and retry only the provider
+                # batch whose response was malformed/truncated.  The retry is
+                # still bounded by the request-wide deadline propagated by
+                # ``to_thread`` and owns one semantic model request at most.
+                batch_kwargs["max_model_requests"] = 1
+                recovery_note = (
+                    "[서버 배치 복구] 이전 응답이 JSON 형식, 필수 필드 또는 정확한 "
+                    "문항 수 검사에 실패했습니다. 같은 잠금 슬롯을 새로 작성하고 "
+                    "interview_questions 배열 개수를 정확히 지키세요."
+                )
+                batch_kwargs["extra_context"] = _join_generation_context(
+                    recovery_note,
+                    str(batch_kwargs.get("extra_context") or ""),
+                )[:2000]
             async with semaphore:
-                generated = await loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        build_jd_strategy_with_openai,
-                        **batch_kwargs,
-                    ),
+                # ``run_in_executor`` does not propagate ContextVars.  The
+                # request-wide generation deadline therefore used to vanish
+                # exactly where the OpenRouter call started, allowing nested
+                # timeout/recovery requests to outlive Vercel's proxy window.
+                # ``to_thread`` copies the current context into the worker so
+                # every provider attempt shares the same hard deadline.
+                generated = await asyncio.to_thread(
+                    build_jd_strategy_with_openai,
+                    **batch_kwargs,
                 )
             _require_institution_api_model_output(generated)
             evidence_assignment = _raw_model_evidence_assignment_report(
@@ -8729,6 +10156,7 @@ async def _generate_quality_gated_institution_strategy(
                 effective_methods,
                 ncs_matches=ncs_matches,
                 ncs_ksa=ncs_ksa,
+                job_context_text=job_context_text,
             )
             processed = _attach_ksa_evidence_to_strategy(processed, ncs_ksa)
             return {
@@ -8744,15 +10172,63 @@ async def _generate_quality_gated_institution_strategy(
                 "question_count": int(
                     batch_runtime_plan.get("total_main_count") or 0
                 ),
+                "batch_recovery_attempt": recovery_attempt,
             }
 
         try:
-            batch_results = await asyncio.gather(
+            batch_results_raw = await asyncio.gather(
                 *(
                     build_batch(batch_plan, original_indexes, batch_methods)
                     for batch_plan, original_indexes, batch_methods in batch_specs
-                )
+                ),
+                return_exceptions=True,
             )
+            failed_positions = [
+                index
+                for index, result in enumerate(batch_results_raw)
+                if isinstance(result, BaseException)
+            ]
+            recoverable_batch_codes = {
+                "model_response_not_object",
+                "model_response_invalid_shape",
+                "model_response_invalid_json",
+                "model_response_truncated",
+                "model_question_count_mismatch",
+                "model_question_content_missing",
+            }
+            retry_positions = [
+                index
+                for index in failed_positions
+                if str(batch_results_raw[index]) in recoverable_batch_codes
+            ]
+            if retry_positions:
+                recovered_results = await asyncio.gather(
+                    *(
+                        build_batch(
+                            *batch_specs[index],
+                            recovery_attempt=1,
+                        )
+                        for index in retry_positions
+                    ),
+                    return_exceptions=True,
+                )
+                for index, recovered in zip(
+                    retry_positions,
+                    recovered_results,
+                    strict=True,
+                ):
+                    batch_results_raw[index] = recovered
+
+            remaining_errors = [
+                result
+                for result in batch_results_raw
+                if isinstance(result, BaseException)
+            ]
+            if remaining_errors:
+                raise remaining_errors[0]
+            batch_results = [
+                result for result in batch_results_raw if isinstance(result, dict)
+            ]
         finally:
             generation_attempt_elapsed_ms.append(
                 max(0, int(round((time.perf_counter() - attempt_started_at) * 1000)))
@@ -8764,6 +10240,7 @@ async def _generate_quality_gated_institution_strategy(
         raw_questions: list[str] = []
         provider_generation_request_count = 0
         batch_question_counts: list[int] = []
+        recovered_batch_count = 0
         for batch_result in batch_results:
             batch_strategy = batch_result["strategy"]
             merged_questions.extend(
@@ -8777,6 +10254,9 @@ async def _generate_quality_gated_institution_strategy(
                 batch_strategy.get("provider_generation_request_count") or 0
             )
             batch_question_counts.append(int(batch_result["question_count"] or 0))
+            recovered_batch_count += int(
+                int(batch_result.get("batch_recovery_attempt") or 0) > 0
+            )
 
         processed["interview_questions"] = merged_questions
         processed["interview_by_competency"] = _group_interview_questions_for_response(
@@ -8791,9 +10271,10 @@ async def _generate_quality_gated_institution_strategy(
             "applied": len(batch_results) > 1,
             "policy": "locked-plan-parallel-batches-v1",
             "batch_count": len(batch_results),
-            "batch_size_limit": _INSTITUTION_GENERATION_BATCH_SIZE,
-            "max_concurrency": _INSTITUTION_GENERATION_BATCH_CONCURRENCY,
+            "batch_size_limit": generation_batch_size,
+            "max_concurrency": generation_batch_concurrency,
             "batch_question_counts": batch_question_counts,
+            "recovered_batch_count": recovered_batch_count,
         }
         processed = _run_runtime_question_quality_orchestration(
             processed,
@@ -8801,6 +10282,7 @@ async def _generate_quality_gated_institution_strategy(
             ncs_ksa=ncs_ksa,
             avoid_questions=avoid_questions,
             generation_offset=generation_offset,
+            job_context_text=job_context_text,
         )
         processed["question_evidence_assignment"] = (
             _raw_model_evidence_assignment_report(
@@ -8811,7 +10293,7 @@ async def _generate_quality_gated_institution_strategy(
         return processed, raw_questions
 
     first_build_kwargs = dict(build_kwargs)
-    first_build_kwargs.setdefault("max_model_requests", 2)
+    first_build_kwargs.setdefault("max_model_requests", model_requests_per_batch)
     first_build_kwargs.setdefault("transport_max_attempts", 1)
     strategy, previous_questions = await run_once(
         first_build_kwargs,
@@ -8830,7 +10312,7 @@ async def _generate_quality_gated_institution_strategy(
     if not trigger_codes:
         strategy["model_quality_retry"] = {
             "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
-            "provider": "openai_api",
+            "provider": active_generation_provider,
             "attempted": False,
             "retry_count": 0,
             "attempt_count": 1,
@@ -8850,13 +10332,14 @@ async def _generate_quality_gated_institution_strategy(
     )
     if not first_hard_codes:
         logger.warning(
-            "institution_question_quality_reviewable_without_retry provider=openai_api codes=%s issues=%s",
+            "institution_question_quality_reviewable_without_retry provider=%s codes=%s issues=%s",
+            active_generation_provider,
             ",".join(sorted(set(trigger_codes))),
             ",".join(first_quality_issue_codes),
         )
         strategy["model_quality_retry"] = {
             "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
-            "provider": "openai_api",
+            "provider": active_generation_provider,
             "attempted": False,
             "retry_count": 0,
             "attempt_count": 1,
@@ -8873,6 +10356,16 @@ async def _generate_quality_gated_institution_strategy(
         strategy["question_release_status"] = "human_review_required"
         return with_generation_timing(strategy)
 
+    if not quality_retry_enabled:
+        logger.warning(
+            "institution_question_quality_retry_disabled provider=%s codes=%s",
+            active_generation_provider,
+            ",".join(sorted(set(trigger_codes))),
+        )
+        raise InstitutionQuestionQualityRejected(
+            rejection_diagnostics(strategy, attempt_count=1)
+        )
+
     if any(code not in _INSTITUTION_RETRYABLE_QUALITY_CODES for code in trigger_codes):
         partial = _partial_safe_question_strategy(
             strategy,
@@ -8888,7 +10381,7 @@ async def _generate_quality_gated_institution_strategy(
         if partial is not None:
             partial["model_quality_retry"] = {
                 "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
-                "provider": "openai_api",
+                "provider": active_generation_provider,
                 "attempted": False,
                 "retry_count": 0,
                 "attempt_count": 1,
@@ -8952,7 +10445,8 @@ async def _generate_quality_gated_institution_strategy(
         )
 
     logger.warning(
-        "institution_question_quality_retry_started provider=openai_api codes=%s candidates=%s evidence_locks=%s targeted=%s retry_count=%s",
+        "institution_question_quality_retry_started provider=%s codes=%s candidates=%s evidence_locks=%s targeted=%s retry_count=%s",
+        active_generation_provider,
         ",".join(sorted(trigger_codes)),
         len(previous_questions),
         len(retry_evidence_locks),
@@ -9047,6 +10541,7 @@ async def _generate_quality_gated_institution_strategy(
             ncs_ksa=ncs_ksa,
             avoid_questions=avoid_questions,
             generation_offset=generation_offset,
+            job_context_text=job_context_text,
         )
         retried["provider_generation_request_count"] = total_generation_request_count
         # The orchestration pass preserves evidence IDs, while the raw assignment
@@ -9076,13 +10571,14 @@ async def _generate_quality_gated_institution_strategy(
         if not hard_retry_codes:
             remaining_issue_codes = _institution_question_quality_issue_codes(retried)
             logger.warning(
-                "institution_question_quality_retry_reviewable provider=openai_api codes=%s issues=%s",
+                "institution_question_quality_retry_reviewable provider=%s codes=%s issues=%s",
+                active_generation_provider,
                 ",".join(sorted(set(retry_codes))),
                 ",".join(remaining_issue_codes),
             )
             retried["model_quality_retry"] = {
                 "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
-                "provider": "openai_api",
+                "provider": active_generation_provider,
                 "attempted": True,
                 "retry_count": 1,
                 "attempt_count": 2,
@@ -9100,7 +10596,8 @@ async def _generate_quality_gated_institution_strategy(
             retried["question_release_status"] = "human_review_required"
             return with_generation_timing(retried)
         logger.warning(
-            "institution_question_quality_retry_failed provider=openai_api codes=%s hard_codes=%s",
+            "institution_question_quality_retry_failed provider=%s codes=%s hard_codes=%s",
+            active_generation_provider,
             ",".join(sorted(set(retry_codes))),
             ",".join(sorted(set(hard_retry_codes))),
         )
@@ -9118,7 +10615,7 @@ async def _generate_quality_gated_institution_strategy(
         if partial is not None:
             partial["model_quality_retry"] = {
                 "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
-                "provider": "openai_api",
+                "provider": active_generation_provider,
                 "attempted": True,
                 "retry_count": 1,
                 "attempt_count": 2,
@@ -9141,12 +10638,13 @@ async def _generate_quality_gated_institution_strategy(
         )
 
     logger.info(
-        "institution_question_quality_retry_passed provider=openai_api evidence_locks=%s",
+        "institution_question_quality_retry_passed provider=%s evidence_locks=%s",
+        active_generation_provider,
         len(planned_evidence_locks),
     )
     retried["model_quality_retry"] = {
         "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
-        "provider": "openai_api",
+        "provider": active_generation_provider,
         "attempted": True,
         "retry_count": 1,
         "attempt_count": 2,
@@ -9160,6 +10658,101 @@ async def _generate_quality_gated_institution_strategy(
         **targeted_retry_metadata,
     }
     return with_generation_timing(retried)
+
+
+def _institution_server_ksa_fallback_strategy(
+    *,
+    question_plan: dict[str, Any],
+    interview_methods: list[str],
+    ncs_matches: list[dict[str, Any]],
+    ncs_ksa: list[dict[str, Any]],
+    requested_provider: str,
+    presentation_material_text: str = "",
+    job_context_text: str = "",
+    generation_offset: int | None = None,
+    avoid_questions: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Return a provider-free, official-KSA draft after model exhaustion.
+
+    This boundary intentionally receives only the already validated server plan
+    and NCS evidence.  It never reflects the provider exception or a credential
+    into the public response, and it returns ``None`` unless every requested
+    slot can be filled from an exact official evidence assignment.
+    """
+
+    runtime_plan, evidence_locks = _planned_question_evidence_assignments(
+        question_plan=question_plan,
+        interview_methods=interview_methods,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+    )
+    try:
+        fallback = build_server_ksa_fallback_strategy(
+            question_plan=runtime_plan,
+            interview_methods=interview_methods,
+            ncs_matches=ncs_matches,
+            ncs_ksa=ncs_ksa,
+            target_count=int(runtime_plan.get("total_main_count") or 0),
+            presentation_material_text=presentation_material_text,
+            job_context_text=job_context_text,
+            generation_offset=generation_offset,
+            avoid_questions=avoid_questions,
+        )
+    except Exception as exc:
+        logger.error(
+            "institution_server_ksa_fallback_internal_failure exception_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "server_ksa_fallback_failed",
+                "provider": "server_ksa_fallback",
+                "message": "서버 KSA 대체 문항 구성 중 내부 오류가 발생했습니다.",
+                "retryable": True,
+            },
+        ) from None
+    if fallback.get("fallback_failure_code") == "fallback_question_build_failed":
+        logger.error("institution_server_ksa_fallback_build_failed")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "server_ksa_fallback_failed",
+                "provider": "server_ksa_fallback",
+                "message": "서버 KSA 대체 문항 구성 중 내부 오류가 발생했습니다.",
+                "retryable": True,
+            },
+        )
+    questions = [
+        item
+        for item in (fallback.get("interview_questions") or [])
+        if isinstance(item, dict) and str(item.get("question") or "").strip()
+    ]
+    requested_count = int(runtime_plan.get("total_main_count") or 0)
+    if requested_count < 1 or len(questions) != requested_count:
+        return None
+
+    fallback["question_plan_used"] = runtime_plan
+    fallback["interview_methods_used"] = list(interview_methods)
+    fallback["requested_generation_provider"] = requested_provider
+    fallback["question_evidence_assignment"] = _raw_model_evidence_assignment_report(
+        fallback,
+        evidence_locks,
+    )
+    fallback = _attach_ksa_evidence_to_strategy(fallback, ncs_ksa)
+    fallback["model_quality_retry"] = {
+        "policy": _INSTITUTION_QUALITY_RETRY_POLICY,
+        "provider": requested_provider,
+        "attempted": True,
+        "outcome": "server_ksa_fallback",
+        "evidence_lock_count": len(evidence_locks),
+        "provider_failure_code": "provider_generation_unavailable",
+    }
+    fallback["question_release_status"] = "human_review_required"
+    fallback["human_review_required"] = True
+    fallback["provider_fallback_used"] = True
+    fallback["degraded"] = True
+    return fallback
 
 
 def _verify_institution_openai_api(api_key: str) -> tuple[bool, str]:
@@ -9179,19 +10772,73 @@ def generation_provider_status(
     request: Request,
     provider: str = Query(default=""),
 ) -> dict[str, Any]:
-    """Report the request-scoped BYOK contract without accepting a secret."""
+    """Report credential readiness without receiving or verifying a secret."""
 
     _reject_sensitive_query_params(request, destination="generation request body")
-    active_provider = _request_generation_provider(provider)
+    active_provider = _request_generation_provider(provider) if str(provider or "").strip() else _configured_generation_provider()
     descriptor = _generation_provider_descriptor(active_provider)
     descriptor["configured_default"] = _configured_generation_provider()
+    descriptor["supported_providers"] = list(request_supported_generation_providers())
+    try:
+        configured_maximum = int(
+            str(
+                os.getenv(
+                    "GENERATION_MAX_MAIN_QUESTIONS",
+                    str(GENERATION_MAX_MAIN_QUESTIONS),
+                )
+            ).strip()
+        )
+    except (TypeError, ValueError):
+        configured_maximum = GENERATION_MAX_MAIN_QUESTIONS
+    descriptor["generation_limits"] = {
+        "max_main_questions_per_request": max(
+            1,
+            min(GENERATION_MAX_MAIN_QUESTIONS, configured_maximum),
+        ),
+        "max_follow_up_questions_per_main": 5,
+        "max_ncs_details_per_request": 1,
+        "max_interview_methods_per_request": 1,
+        "request_budget_sec": int(_generation_request_budget_sec()),
+    }
+    if active_provider == OPENROUTER_PROVIDER:
+        server_key_state = settings.openrouter_server_key_state()
+        if server_key_state == "configured":
+            return {
+                **descriptor,
+                "status": "configured",
+                "available": True,
+                "authenticated": False,
+                "credential_configured": True,
+                "message": "Vercel 환경변수의 OpenRouter API 키로 Ox Alpha를 사용합니다.",
+                "login_command": "",
+            }
+        if settings.openrouter_server_key_enabled():
+            invalid = server_key_state == "invalid"
+            return {
+                **descriptor,
+                "status": "key_invalid" if invalid else "key_required",
+                "available": False,
+                "authenticated": False,
+                "credential_configured": False,
+                "message": (
+                    "Vercel의 OPENROUTER_API_KEY가 sk-or- 형식인지 확인해 주세요."
+                    if invalid
+                    else "Vercel Production에 OPENROUTER_API_KEY를 설정해 주세요."
+                ),
+                "login_command": "",
+            }
     return {
         **descriptor,
         "status": "key_required",
         "available": True,
         "authenticated": False,
         "credential_configured": False,
-        "message": "화면에 OpenAI API 키를 입력해 주세요. 키는 생성 요청에만 사용됩니다.",
+        "message": (
+            "본인의 OpenRouter API 키(sk-or-...)를 입력해 주세요. "
+            "키는 해당 생성 요청에만 사용되고 서버 키로 대체되지 않습니다."
+            if active_provider == OPENROUTER_PROVIDER
+            else "본인의 OpenAI API 키(sk-...)를 입력해 주세요. 키는 해당 생성 요청에만 사용됩니다."
+        ),
         "login_command": "",
     }
 
@@ -9220,6 +10867,74 @@ def health(request: Request) -> dict:
 @app.get("/")
 def ui() -> FileResponse:
     return FileResponse(UI_INDEX)
+
+
+def _presentation_docx_text(value: Any, limit: int = 2000) -> str:
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", str(value or "").strip())[:limit]
+
+
+@app.post("/api/presentation-material/docx")
+def presentation_material_docx(payload: dict[str, Any] = Body(...)) -> StreamingResponse:
+    """Return the generated presentation packet as a real Word document."""
+    packet = payload.get("presentation_material") if isinstance(payload, dict) else None
+    if not isinstance(packet, dict) or packet.get("generated") is not True:
+        raise HTTPException(status_code=422, detail="presentation_material is not a generated packet")
+    document = Document()
+    normal = document.styles["Normal"]
+    normal.font.name = "Malgun Gothic"
+    normal.font.size = Pt(10)
+    document.add_heading(_presentation_docx_text(packet.get("title"), 180) or "발표 과제 자료", level=0)
+    intro = document.add_paragraph()
+    intro.add_run("생성 방식: ").bold = True
+    intro.add_run("서버 자동 구성 · 공고문·직무기술서·NCS KSA 기반 · 사람 검토 필요")
+    document.add_heading("발표 메인 과제", level=1)
+    document.add_paragraph(_presentation_docx_text(packet.get("task_prompt"), 2200))
+    document.add_paragraph(_presentation_docx_text(packet.get("scenario_label"), 240))
+    document.add_paragraph(
+        f"NCS 세분류: {_presentation_docx_text(packet.get('ncs_detail'), 120)} | "
+        f"능력단위: {_presentation_docx_text(packet.get('competency'), 180)} | "
+        f"평가 초점: {_presentation_docx_text(packet.get('focus'), 180)}"
+    )
+    document.add_heading("발표 과제 자료", level=1)
+    rows = [row for row in (packet.get("case_materials") or []) if isinstance(row, dict)][:10]
+    table = document.add_table(rows=1, cols=3)
+    table.style = "Table Grid"
+    for cell, label in zip(table.rows[0].cells, ("출처", "항목", "내용")):
+        cell.text = label
+    for row in rows:
+        cells = table.add_row().cells
+        cells[0].text = _presentation_docx_text(row.get("source"), 120)
+        cells[1].text = _presentation_docx_text(row.get("field"), 160)
+        cells[2].text = _presentation_docx_text(row.get("value"), 1200)
+    facts = [_presentation_docx_text(value, 500) for value in (packet.get("case_facts") or []) if str(value or "").strip()][:6]
+    if facts:
+        document.add_heading("사례 사실", level=1)
+        for fact in facts:
+            document.add_paragraph(fact, style="List Bullet")
+    document.add_heading("슬라이드 구성", level=1)
+    for slide in (packet.get("slide_outline") or [])[:4]:
+        if not isinstance(slide, dict):
+            continue
+        paragraph = document.add_paragraph(style="List Number")
+        paragraph.add_run(_presentation_docx_text(slide.get("title"), 160)).bold = True
+        paragraph.add_run(f" — {_presentation_docx_text(slide.get('instruction'), 700)}")
+    document.add_heading("발표 제약조건", level=1)
+    for constraint in (packet.get("constraints") or [])[:6]:
+        document.add_paragraph(_presentation_docx_text(constraint, 600), style="List Bullet")
+    document.add_heading("필수 산출물", level=1)
+    for deliverable in (packet.get("required_deliverables") or [])[:6]:
+        document.add_paragraph(_presentation_docx_text(deliverable, 600), style="List Bullet")
+    document.add_heading("사용·검토 원칙", level=1)
+    for rule in (packet.get("use_rules") or [])[:6]:
+        document.add_paragraph(_presentation_docx_text(rule, 600), style="List Bullet")
+    output = io.BytesIO()
+    document.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="presentation-material.docx"'},
+    )
 
 
 @app.get("/api/ncs/sclass/options")
@@ -9747,6 +11462,11 @@ def alio_recommend(
     pages: int = Query(default=2, ge=1, le=5),
     per_page: int = Query(default=100, ge=10, le=300),
 ) -> dict:
+    strengths = _validate_generation_text_input(
+        strengths,
+        field_name="strengths",
+        max_chars=_MAX_STRENGTHS_CHARS,
+    )
     candidates: list[dict] = []
     # 1) Try recruitment API
     try:
@@ -9854,7 +11574,11 @@ def alio_options(
 def alio_strategy(payload: dict) -> dict:
     desired_job = str(payload.get("desired_job", "")).strip()
     desired_region = str(payload.get("desired_region", "")).strip()
-    strengths = str(payload.get("strengths", "")).strip()
+    strengths = _validate_generation_text_input(
+        payload.get("strengths", ""),
+        field_name="strengths",
+        max_chars=_MAX_STRENGTHS_CHARS,
+    )
     posting_id = str(payload.get("posting_id", "")).strip()
     if not (desired_job and strengths and posting_id):
         raise HTTPException(status_code=400, detail="desired_job, strengths, posting_id are required")
@@ -9950,7 +11674,10 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
 
 
 @app.post("/api/notice/parse-review")
-async def parse_notice_review_endpoint(notice_file: UploadFile = File(...)) -> dict:
+async def parse_notice_review_endpoint(
+    request: Request,
+    notice_file: UploadFile = File(...),
+) -> dict:
     """Parse a job notice and return editable duty/evaluation text candidates."""
 
     data = await _read_upload_limited(notice_file, "notice_file")
@@ -9959,7 +11686,17 @@ async def parse_notice_review_endpoint(notice_file: UploadFile = File(...)) -> d
     filename = notice_file.filename or ""
     _reject_hwp_upload("공고문 파일", filename)
     parsed = _parse_upload_document(data, filename, "notice_file")
-    return structure_job_notice(parsed, filename=filename)
+    structured = structure_job_notice(parsed, filename=filename)
+    review_session = _create_review_session(data, structured, filename)
+    _record_audit_event(
+        request,
+        action="notice_parse_review",
+        resource_type="notice_review_session",
+        resource_id=review_session["id"],
+    )
+    structured["review_session_id"] = review_session["id"]
+    structured["review_session"] = review_session
+    return structured
 
 
 @app.post("/api/jd/strategy/upload")
@@ -9967,9 +11704,13 @@ async def jd_strategy_upload(
     request: Request,
     jd_file: UploadFile = File(...),
     notice_file: UploadFile | None = File(default=None),
+    presentation_material_file: UploadFile | None = File(default=None),
     strengths: str = Form(default=""),
+    generation_api_key: str = Form(default=""),
     openai_api_key: str = Form(default=""),
+    openrouter_api_key: str = Form(default=""),
     generation_provider: str = Form(default=""),
+    generation_model: str = Form(default=""),
     manual_sclass: str = Form(default=""),
     manual_sclass_add: str = Form(default=""),
     manual_sclass_remove: str = Form(default=""),
@@ -9977,6 +11718,7 @@ async def jd_strategy_upload(
     qualification_text: str = Form(default=""),
     preference_text: str = Form(default=""),
     evaluation_text: str = Form(default=""),
+    presentation_material_text: str = Form(default=""),
     question_plan_json: str = Form(default=""),
     interview_methods_json: str = Form(default=""),
     avoid_questions_json: str = Form(default=""),
@@ -9984,15 +11726,81 @@ async def jd_strategy_upload(
     generated_questions_max_items: int | None = Form(default=None),
     generation_offset: int | None = Form(default=None),
     jd_review_json: str = Form(default=""),
+    notice_review_json: str = Form(default=""),
 ) -> dict:
     # 최적값 고정 (사용자 노출 제거)
     _reject_sensitive_query_params(request, destination="form data")
-    request_generation_provider = _request_generation_provider(generation_provider)
+    strengths = _validate_generation_text_input(
+        strengths,
+        field_name="strengths",
+        max_chars=_MAX_STRENGTHS_CHARS,
+    )
+    duty_text = _validate_generation_text_input(
+        duty_text,
+        field_name="duty_text",
+        max_chars=_MAX_DUTY_TEXT_CHARS,
+    )
+    qualification_text = _validate_generation_text_input(
+        qualification_text,
+        field_name="qualification_text",
+        max_chars=_MAX_QUALIFICATION_TEXT_CHARS,
+    )
+    preference_text = _validate_generation_text_input(
+        preference_text,
+        field_name="preference_text",
+        max_chars=_MAX_PREFERENCE_TEXT_CHARS,
+    )
+    evaluation_text = _validate_generation_text_input(
+        evaluation_text,
+        field_name="evaluation_text",
+        max_chars=_MAX_EVALUATION_TEXT_CHARS,
+    )
+    presentation_material_text = _validate_generation_text_input(
+        presentation_material_text,
+        field_name="presentation_material_text",
+        max_chars=_MAX_PRESENTATION_MATERIAL_TEXT_CHARS,
+    )
+    request_avoid_questions = _validate_and_extract_generation_avoid_questions(
+        avoid_questions_json,
+        field_name="avoid_questions_json",
+    )
+    interview_methods = _parse_interview_methods(interview_methods_json)
+    if (
+        (presentation_material_file is not None or presentation_material_text.strip())
+        and "발표면접" not in interview_methods
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "presentation_material_requires_presentation_method",
+                "message": "발표 자료는 발표면접을 선택한 경우에만 입력·첨부할 수 있습니다.",
+                "retryable": False,
+            },
+        )
     run_top_k, run_ksa_units, run_ksa_factors = FAST_NCS_TOP_K, FAST_KSA_UNITS, FAST_KSA_FACTORS_PER_UNIT
-    request_openai_api_key = _sanitize_request_openai_key(openai_api_key)
-    _require_allowed_openai_key(request_openai_api_key, request)
+    (
+        request_generation_provider,
+        request_generation_model,
+        request_generation_api_key,
+    ) = _resolve_request_generation(
+        generation_api_key=generation_api_key,
+        openai_api_key=openai_api_key,
+        openrouter_api_key=openrouter_api_key,
+        provider=generation_provider,
+        generation_model=generation_model,
+    )
+    _require_allowed_openai_key(
+        request_generation_api_key,
+        request,
+        provider=request_generation_provider,
+    )
 
-    async def _read_text(upload: UploadFile | None, label: str) -> tuple[str, bytes, str]:
+    async def _read_text(
+        upload: UploadFile | None,
+        label: str,
+        *,
+        parse_document: bool = True,
+    ) -> tuple[str, bytes, str]:
         if not upload:
             return "", b"", ""
         name = (upload.filename or "").lower()
@@ -10001,14 +11809,22 @@ async def jd_strategy_upload(
         data = await _read_upload_limited(upload, label)
         if not data:
             raise HTTPException(status_code=400, detail=f"{label} is empty")
+        if not parse_document:
+            return "", data, name
         parsed = _parse_upload_document(data, upload.filename or "", label)
         text = str(parsed.get("markdown") or "")
         if text.strip():
             return text, data, name
         raise HTTPException(status_code=400, detail=f"{label} could not be parsed")
 
-    jd_text, jd_bytes, jd_name = await _read_text(jd_file, "jd_file")
-    notice_text, _, _ = await _read_text(notice_file, "notice_file")
+    # Enforce upload size/type/emptiness before validating review metadata, while
+    # avoiding a second Kordoc parse for the already reviewed JD.
+    jd_text, jd_bytes, jd_name = await _read_text(
+        jd_file,
+        "jd_file",
+        parse_document=False,
+    )
+
     review_payload: dict[str, Any] = {}
     if jd_review_json.strip():
         try:
@@ -10018,13 +11834,136 @@ async def jd_strategy_upload(
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"jd_review_json is invalid: {exc}") from exc
 
+    if review_payload.get("review_confirmed") is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="jd_review_json.review_confirmed must be the boolean true",
+        )
     reviewed_fields = review_payload.get("fields") if isinstance(review_payload.get("fields"), dict) else {}
-    review_session: dict[str, Any] | None = None
-    if review_payload.get("review_confirmed") is True:
-        review_session = _validate_review_session(review_payload, jd_bytes)
+    _validate_generation_text_collection_input(
+        reviewed_fields.get("duties") or [],
+        field_name="jd_review_json.fields.duties",
+        max_chars=_MAX_DUTY_TEXT_CHARS,
+    )
+    _validate_generation_text_collection_input(
+        reviewed_fields.get("qualifications") or [],
+        field_name="jd_review_json.fields.qualifications",
+        max_chars=_MAX_QUALIFICATION_TEXT_CHARS,
+    )
+    _validate_generation_text_collection_input(
+        reviewed_fields.get("preferences") or [],
+        field_name="jd_review_json.fields.preferences",
+        max_chars=_MAX_PREFERENCE_TEXT_CHARS,
+    )
+    review_session: dict[str, Any] | None = _validate_review_session(
+        review_payload,
+        jd_bytes,
+        jd_file.filename or "",
+    )
     reviewed_markdown = str((review_session or {}).get("markdown") or "").strip()
     if reviewed_markdown:
         jd_text = reviewed_markdown
+    reviewed_detail_terms = _parse_sclass_terms(
+        "\n".join(
+            str(value).strip()
+            for value in (reviewed_fields.get("ncs_detail_candidates") or [])
+            if str(value).strip()
+        )
+    )
+    question_plan = _parse_question_plan_json(question_plan_json, reviewed_detail_terms)
+    _enforce_question_plan_capacity(question_plan)
+    if question_plan["selected_terms"]:
+        reviewed_detail_terms = list(question_plan["selected_terms"])
+    if not reviewed_detail_terms:
+        raise HTTPException(
+            status_code=422,
+            detail="Human-reviewed NCS detail candidates are required",
+        )
+
+    # Only inspect the second document after deterministic capacity validation.
+    # The UI already parsed it for human review, so a signed/hash-bound review
+    # session lets generation reuse that markdown without a second Kordoc call.
+    notice_text = ""
+    notice_payload: dict[str, Any] = {}
+    if notice_review_json.strip():
+        try:
+            candidate = json.loads(notice_review_json)
+            if isinstance(candidate, dict):
+                notice_payload = candidate
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"notice_review_json is invalid: {exc}",
+            ) from exc
+        if notice_payload.get("review_confirmed") is not True:
+            raise HTTPException(
+                status_code=400,
+                detail="notice_review_json.review_confirmed must be the boolean true",
+            )
+    if notice_file:
+        _, notice_bytes, _ = await _read_text(
+            notice_file,
+            "notice_file",
+            parse_document=False,
+        )
+        if notice_payload:
+            notice_session = _validate_review_session(
+                notice_payload,
+                notice_bytes,
+                notice_file.filename or "",
+                field_name="notice_review_json",
+                upload_label="notice_file",
+                parse_endpoint="/api/notice/parse-review",
+            )
+            notice_text = str((notice_session or {}).get("markdown") or "").strip()
+        else:
+            parsed_notice = _parse_upload_document(
+                notice_bytes,
+                notice_file.filename or "",
+                "notice_file",
+            )
+            notice_text = str(parsed_notice.get("markdown") or "").strip()
+            if not notice_text:
+                raise HTTPException(status_code=400, detail="notice_file could not be parsed")
+    elif notice_payload:
+        raise HTTPException(
+            status_code=400,
+            detail="notice_file is required when notice_review_json is provided",
+        )
+    presentation_material_filename = ""
+    if presentation_material_file is not None:
+        presentation_material_filename = str(presentation_material_file.filename or "").strip()
+        _reject_hwp_upload("발표 자료 파일", presentation_material_filename)
+        presentation_material_bytes = await _read_upload_limited(
+            presentation_material_file,
+            "presentation_material_file",
+        )
+        if len(presentation_material_bytes) > _MAX_PRESENTATION_MATERIAL_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "presentation_material_file exceeds the 2 MiB presentation-material limit"
+                ),
+            )
+        if not presentation_material_bytes:
+            raise HTTPException(status_code=400, detail="presentation_material_file is empty")
+        parsed_presentation_material = _parse_upload_document(
+            presentation_material_bytes,
+            presentation_material_filename,
+            "presentation_material_file",
+        )
+        parsed_material_text = str(parsed_presentation_material.get("markdown") or "").strip()
+        if not parsed_material_text:
+            raise HTTPException(status_code=422, detail="presentation_material_file could not be parsed")
+        presentation_material_text = _validate_generation_text_input(
+            "\n\n".join(
+                value
+                for value in (presentation_material_text, parsed_material_text)
+                if str(value or "").strip()
+            ),
+            field_name="presentation_material_text",
+            max_chars=_MAX_PRESENTATION_MATERIAL_TEXT_CHARS,
+        )
     duty_text_clean = _merge_review_text(
         duty_text,
         reviewed_fields.get("duties") or [],
@@ -10063,11 +12002,16 @@ async def jd_strategy_upload(
     use_vision_ocr = (str(__import__("os").getenv("ENABLE_VISION_OCR", "false")).strip().lower() in {"1", "true", "yes", "y"})
     # Vision OCR은 텍스트 추출이 실패했을 때만 실행 (텍스트가 있으면 오히려 NCS 매칭 오염 가능)
     if use_vision_ocr and jd_name.endswith(".pdf") and len(jd_text.strip()) < 50:
-        vision_terms = extract_focus_terms_from_pdf_vision(
-            jd_bytes,
-            max_pages=2,
-            api_key_override=request_openai_api_key,
-        )
+        with use_generation_request(
+            provider=request_generation_provider,
+            generation_model=request_generation_model,
+        ):
+            vision_terms = extract_focus_terms_from_pdf_vision(
+                jd_bytes,
+                max_pages=2,
+                api_key_override=request_generation_api_key,
+                generation_provider=request_generation_provider,
+            )
     prompt_notice_text = _build_priority_notice_text(
         notice_text=notice_text,
         duty_text=duty_text_clean,
@@ -10149,29 +12093,18 @@ async def jd_strategy_upload(
 
     # CSV 실패 시 keywords 기반 fallback (NCS API 호출)
     if not verified_sclass and seeds:
-        inferred_keywords = infer_keywords_from_subcategory_ai(subcategory_text=subcategory_text, jd_text=jd_for_match)
-        reviewed_keywords = review_ocr_terms_with_openai(terms=(inferred_keywords or seeds[:12]), jd_text=jd_for_match)
+        with use_generation_request(
+            provider=request_generation_provider,
+            generation_model=request_generation_model,
+        ):
+            inferred_keywords = infer_keywords_from_subcategory_ai(subcategory_text=subcategory_text, jd_text=jd_for_match)
+            reviewed_keywords = review_ocr_terms_with_openai(terms=(inferred_keywords or seeds[:12]), jd_text=jd_for_match)
 
     ncs_query_terms = [str(v.get("sclass_name", "")).strip() for v in verified_sclass if str(v.get("sclass_name", "")).strip()]
     if not ncs_query_terms:
         ncs_query_terms = [t for t in (reviewed_keywords or inferred_keywords or seeds[:8]) if t]
 
-    reviewed_detail_terms = _parse_sclass_terms(
-        "\n".join(
-            str(value).strip()
-            for value in (reviewed_fields.get("ncs_detail_candidates") or [])
-            if str(value).strip()
-        )
-    )
-    question_plan = _parse_question_plan_json(question_plan_json, reviewed_detail_terms)
-    interview_methods = _parse_interview_methods(interview_methods_json)
-    if question_plan["selected_terms"]:
-        reviewed_detail_terms = list(question_plan["selected_terms"])
-    mcp_only = bool(
-        review_payload.get("review_confirmed") is True and bool(reviewed_detail_terms)
-    )
-    if not mcp_only and not reviewed_detail_terms:
-        reviewed_detail_terms = extract_detail_categories_from_jd(jd_text)
+    mcp_only = True
 
     ncs_items: list[dict[str, Any]] = []
     # Preferred path: use authoritative NCS-MCP only when review-confirmed detail labels
@@ -10191,23 +12124,40 @@ async def jd_strategy_upload(
             ncs_error = "ncs_mcp_search_failed"
             mcp_only = False
         else:
-            if ncs_items:
-                ncs_source = "ncs-mcp"
-                ncs_query_terms = list(mcp_lookup_terms)
-                matched_lookup_terms, unmatched_lookup_terms = _detail_lookup_coverage(
-                    mcp_lookup_terms,
-                    ncs_items,
-                )
-                if unmatched_lookup_terms:
-                    ncs_error = (
-                        "Local NCS DB returned partial exact coverage for reviewed detail-class terms. "
-                        f"matched={len(matched_lookup_terms)} unmatched={len(unmatched_lookup_terms)}."
+            matched_lookup_terms, unmatched_lookup_terms = _detail_lookup_coverage(
+                mcp_lookup_terms,
+                ncs_items,
+            )
+            if not ncs_items or unmatched_lookup_terms:
+                suggestion_terms = unmatched_lookup_terms or mcp_lookup_terms
+                try:
+                    suggestions = suggest_units_by_text(
+                        suggestion_terms,
+                        max_units=12,
                     )
-            else:
-                mcp_only = False
-                ncs_error = (
-                    "Local NCS DB returned no exact competency units for reviewed detail-class terms."
+                except NcsMcpError:
+                    suggestions = []
+                message = (
+                    "Local NCS DB returned partial exact coverage for reviewed "
+                    "detail-class terms. Human selection is required."
+                    if ncs_items
+                    else "Local NCS DB returned no exact competency units for "
+                    "the reviewed detail candidates. Human selection is required."
                 )
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": message,
+                        "lookup_terms": list(mcp_lookup_terms),
+                        "matched_detail_terms": list(matched_lookup_terms),
+                        "unmatched_detail_terms": list(
+                            unmatched_lookup_terms or mcp_lookup_terms
+                        ),
+                        "suggested_ncs_units": list(suggestions or []),
+                    },
+                )
+            ncs_source = "ncs-mcp"
+            ncs_query_terms = list(mcp_lookup_terms)
 
     # 4) 코드 기반 조회 후, 키워드 기반으로 순차 fallback
     max_sclass_verified = _clamp_sclass_limit(os.getenv("NCS_API_MAX_SCLASS_VERIFIED", "4"), default=4)
@@ -10259,15 +12209,20 @@ async def jd_strategy_upload(
             if mcp_only
             and review_payload.get("review_confirmed") is True
             and reviewed_detail_terms
-            else request_openai_api_key
+            else request_generation_api_key
         )
-        ncs_matches, rerank_mode = rerank_ncs_matches(
-            jd_text=unit_rank_query_text or jd_for_match,
-            ncs_items=ncs_items,
-            top_k=run_top_k,
-            preferred_sclass=ncs_query_terms,
-            openai_api_key=unit_rerank_api_key,
-        )
+        with use_generation_request(
+            provider=request_generation_provider,
+            generation_model=request_generation_model,
+        ):
+            ncs_matches, rerank_mode = rerank_ncs_matches(
+                jd_text=unit_rank_query_text or jd_for_match,
+                ncs_items=ncs_items,
+                top_k=run_top_k,
+                preferred_sclass=ncs_query_terms,
+                openai_api_key=unit_rerank_api_key,
+                generation_provider=request_generation_provider,
+            )
         if ncs_matches:
             ncs_source = f"{ncs_source}+ai-rerank" if rerank_mode == "ai" else f"{ncs_source}+rerank"
         else:
@@ -10368,7 +12323,7 @@ async def jd_strategy_upload(
     if ncs_matches:
         ksa_rank_top_n = _clamp_int(os.getenv("KSA_RANK_TOP_N", "12"), default=12, lo=6, hi=20)
         ksa_rank_per_unit = _clamp_int(os.getenv("KSA_RANK_PER_UNIT_LIMIT", "3"), default=3, lo=1, hi=4)
-        ksa_rank_units = _clamp_int(os.getenv("KSA_RANK_MAX_UNITS", "12"), default=12, lo=2, hi=30)
+        ksa_rank_units = _clamp_int(os.getenv("KSA_RANK_MAX_UNITS", "5"), default=5, lo=2, hi=5)
         ksa_candidate_per_unit = _clamp_int(os.getenv("KSA_CANDIDATE_PER_UNIT", "12"), default=12, lo=3, hi=24)
         ksa_sim_weight = _to_float_or(os.getenv("KSA_SIMILARITY_WEIGHT", "0.75"), 0.75)
         ksa_unit_weight = _to_float_or(os.getenv("KSA_UNIT_WEIGHT", "0.25"), 0.25)
@@ -10435,9 +12390,20 @@ async def jd_strategy_upload(
         ncs_items=ncs_items,
         ncs_matches=ncs_matches,
     )
-    request_avoid_questions = _extract_question_texts(avoid_questions_json)
+    presentation_material_packet = _build_presentation_material_packet(
+        interview_methods=interview_methods,
+        jd_text=jd_text,
+        notice_text=notice_context,
+        duty_text=duty_text_clean,
+        question_plan=question_plan,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+        supplemental_text=presentation_material_text,
+    )
+    presentation_material_prompt = _presentation_material_prompt_text(presentation_material_packet)
     avoid_context = _build_avoid_questions_context(request_avoid_questions, max_items=20)
     avoid_context = _join_generation_context(avoid_context, _quality_feedback_context(ncs_matches))
+    avoid_context = _join_generation_context(avoid_context, presentation_material_prompt)
     enable_ai_refine = bool(inferred_keywords or reviewed_keywords or ai_ncs_code_candidates)
 
     build_kwargs = {
@@ -10451,29 +12417,62 @@ async def jd_strategy_upload(
         "duty_text": duty_text_clean,
         "evaluation_text": evaluation_text_clean,
         "desired_job": "",
-        "api_key_override": request_openai_api_key,
+        "api_key_override": request_generation_api_key,
         "target_count_override": question_plan["total_main_count"],
         "follow_up_count": question_plan["follow_up_count"],
         "question_plan": question_plan,
         "interview_methods": interview_methods,
         "extra_context": avoid_context,
         "generation_provider": request_generation_provider,
+        "generation_model": request_generation_model,
     }
     try:
-        strategy = await _generate_quality_gated_institution_strategy(
-            build_kwargs=build_kwargs,
+        with use_generation_request(
+            provider=request_generation_provider,
+            generation_model=request_generation_model,
+        ):
+            strategy = await _generate_quality_gated_institution_strategy(
+                build_kwargs=build_kwargs,
+                question_plan=question_plan,
+                interview_methods=interview_methods,
+                ncs_matches=ncs_matches,
+                ncs_ksa=ncs_ksa,
+                avoid_questions=request_avoid_questions,
+                generation_offset=generation_offset,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "jd_strategy_provider_failed_using_server_ksa_fallback provider=%s",
+            request_generation_provider,
+        )
+        strategy = _institution_server_ksa_fallback_strategy(
             question_plan=question_plan,
             interview_methods=interview_methods,
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
-            avoid_questions=request_avoid_questions,
+            requested_provider=request_generation_provider,
+            presentation_material_text=presentation_material_prompt or presentation_material_text,
+            job_context_text=_generation_job_context_text(
+                duty_text=duty_text_clean,
+                jd_text=jd_text,
+                notice_text=notice_context,
+                evaluation_text=evaluation_text_clean,
+            ),
             generation_offset=generation_offset,
+            avoid_questions=request_avoid_questions,
         )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("jd_strategy_generation_or_quality_failed provider=openai_api")
-        raise _institution_api_provider_http_error(e) from e
+        if strategy is None:
+            logger.error(
+                "jd_strategy_generation_and_server_fallback_failed provider=%s",
+                request_generation_provider,
+            )
+            raise _institution_api_provider_http_error(
+                e,
+                provider=request_generation_provider,
+            ) from e
+    strategy = _attach_presentation_material_packet(strategy, presentation_material_packet)
     _register_question_quality_evidence(
         strategy,
         source_endpoint="/api/jd/strategy/upload",
@@ -10516,6 +12515,9 @@ async def jd_strategy_upload(
     return {
         "filename": jd_file.filename,
         "notice_filename": notice_file.filename if notice_file else "",
+        "presentation_material_filename": presentation_material_filename,
+        "presentation_material_text_preview": presentation_material_text[:1200],
+        "presentation_material": presentation_material_packet,
         "jd_text_preview": jd_text[:1200],
         "notice_text_preview": notice_text[:1200],
         "notice_context_preview": notice_context[:1200],
@@ -10541,8 +12543,26 @@ async def jd_strategy_upload(
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,
-        "question_generation": _generation_provider_descriptor(request_generation_provider),
-        "openai_key_source": _openai_key_source(request_openai_api_key, request),
+        "question_generation": {
+            **_generation_provider_descriptor(request_generation_provider),
+            "resolved_model": str(
+                strategy.get("provider_generation_model")
+                or request_generation_model
+                or generation_provider_config(request_generation_provider).get("default_model")
+                or ""
+            ),
+        },
+        "provider_key_source": _generation_key_source(
+            request_generation_provider,
+            generation_api_key=generation_api_key,
+            openai_api_key=openai_api_key,
+            openrouter_api_key=openrouter_api_key,
+        ),
+        "openai_key_source": (
+            _openai_key_source(request_generation_api_key, request)
+            if request_generation_provider == "openai_api"
+            else "not_selected"
+        ),
         "extracted_focus_terms": vision_terms,
         "subcategory_text_preview": subcategory_text[:800],
         "small_categories_extracted": extracted_small_categories,
@@ -10585,25 +12605,93 @@ async def jd_strategy_upload(
 @app.post("/api/questions/generate-from-text")
 async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     _reject_sensitive_query_params(request, destination="JSON body")
-    request_generation_provider = _request_generation_provider(
-        payload.get("generation_provider", "")
+    notice_text = _validate_generation_text_input(
+        payload.get("notice_text", ""),
+        field_name="notice_text",
+        max_chars=_MAX_NOTICE_TEXT_CHARS,
     )
-    notice_text = str(payload.get("notice_text", "")).strip()
-    duty_text = str(payload.get("duty_text", "")).strip()
-    evaluation_text = str(payload.get("evaluation_text", "")).strip()
-    request_openai_api_key = _sanitize_request_openai_key(payload.get("openai_api_key", ""))
-    _require_allowed_openai_key(request_openai_api_key, request)
+    duty_text = _validate_generation_text_input(
+        payload.get("duty_text", ""),
+        field_name="duty_text",
+        max_chars=_MAX_DUTY_TEXT_CHARS,
+    )
+    _validate_generation_text_input(
+        payload.get("qualification_text", ""),
+        field_name="qualification_text",
+        max_chars=_MAX_QUALIFICATION_TEXT_CHARS,
+    )
+    _validate_generation_text_input(
+        payload.get("preference_text", ""),
+        field_name="preference_text",
+        max_chars=_MAX_PREFERENCE_TEXT_CHARS,
+    )
+    evaluation_text = _validate_generation_text_input(
+        payload.get("evaluation_text", ""),
+        field_name="evaluation_text",
+        max_chars=_MAX_EVALUATION_TEXT_CHARS,
+    )
+    presentation_material_text = _validate_generation_text_input(
+        payload.get("presentation_material_text", ""),
+        field_name="presentation_material_text",
+        max_chars=_MAX_PRESENTATION_MATERIAL_TEXT_CHARS,
+    )
+    _validate_generation_text_input(
+        payload.get("strengths", ""),
+        field_name="strengths",
+        max_chars=_MAX_STRENGTHS_CHARS,
+    )
+    selected_ncs = payload.get("selected_ncs", [])
+    _validate_selected_ncs_generation_input(selected_ncs)
+    raw_avoid_questions = payload.get("avoid_questions")
+    avoid_field_name = "avoid_questions"
+    if raw_avoid_questions is None:
+        raw_avoid_questions = payload.get("current_questions")
+        avoid_field_name = "current_questions"
+    if raw_avoid_questions is None:
+        raw_avoid_questions = payload.get("currentQuestions")
+        avoid_field_name = "currentQuestions"
+    if raw_avoid_questions is None:
+        raw_avoid_questions = payload.get("avoid_questions_json")
+        avoid_field_name = "avoid_questions_json"
+    request_avoid_questions = _validate_and_extract_generation_avoid_questions(
+        raw_avoid_questions,
+        field_name=avoid_field_name,
+    )
+    raw_interview_methods = payload.get("interview_methods_json", payload.get("interview_methods", ""))
+    if not isinstance(raw_interview_methods, str):
+        raw_interview_methods = json.dumps(raw_interview_methods, ensure_ascii=False)
+    interview_methods = _parse_interview_methods(raw_interview_methods)
+    if presentation_material_text.strip() and "발표면접" not in interview_methods:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "presentation_material_requires_presentation_method",
+                "message": "발표 자료는 발표면접을 선택한 경우에만 입력할 수 있습니다.",
+                "retryable": False,
+            },
+        )
+    (
+        request_generation_provider,
+        request_generation_model,
+        request_generation_api_key,
+    ) = _resolve_request_generation(
+        generation_api_key=payload.get("generation_api_key", ""),
+        openai_api_key=payload.get("openai_api_key", ""),
+        openrouter_api_key=payload.get("openrouter_api_key", ""),
+        provider=payload.get("generation_provider", ""),
+        generation_model=payload.get("generation_model", ""),
+    )
+    _require_allowed_openai_key(
+        request_generation_api_key,
+        request,
+        provider=request_generation_provider,
+    )
     raw_generation_offset = payload.get("generation_offset")
     generation_offset = (
         _clamp_int(raw_generation_offset, default=0, lo=0, hi=1_000_000)
         if raw_generation_offset is not None
         else None
     )
-    selected_ncs = payload.get("selected_ncs", [])
-    raw_interview_methods = payload.get("interview_methods_json", payload.get("interview_methods", ""))
-    if not isinstance(raw_interview_methods, str):
-        raw_interview_methods = json.dumps(raw_interview_methods, ensure_ascii=False)
-    interview_methods = _parse_interview_methods(raw_interview_methods)
     knobs = payload.get("runtime_knobs", {}) if isinstance(payload.get("runtime_knobs", {}), dict) else {}
     run_top_k, run_ksa_units, run_ksa_factors = _clamp_runtime_knobs(
         ncs_top_k=knobs.get("ncs_top_k"),
@@ -10621,7 +12709,6 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         raise HTTPException(status_code=400, detail="notice_text is required")
     if not isinstance(selected_ncs, list) or not selected_ncs:
         raise HTTPException(status_code=400, detail="selected_ncs is required")
-    _require_ncs_mcp_url()
 
     ncs_matches: list[dict[str, Any]] = []
     seen_codes: set[str] = set()
@@ -10659,6 +12746,8 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         raw_question_plan = json.dumps(raw_question_plan, ensure_ascii=False)
     question_plan = _parse_question_plan_json(raw_question_plan, plan_terms)
     question_plan = _restrict_question_plan_to_terms(question_plan, plan_terms)
+    _enforce_question_plan_capacity(question_plan)
+    _require_ncs_mcp_url()
 
     prompt_notice_text = _build_priority_notice_text(
         notice_text=notice_text,
@@ -10669,7 +12758,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     # NCS 평가요소를 수집해 OpenAI 입력에 함께 전달한다.
     ksa_rank_top_n = _clamp_int(os.getenv("KSA_RANK_TOP_N", "12"), default=12, lo=6, hi=20)
     ksa_rank_per_unit = _clamp_int(os.getenv("KSA_RANK_PER_UNIT_LIMIT", "3"), default=3, lo=1, hi=4)
-    ksa_rank_units = _clamp_int(os.getenv("KSA_RANK_MAX_UNITS", "12"), default=12, lo=2, hi=30)
+    ksa_rank_units = _clamp_int(os.getenv("KSA_RANK_MAX_UNITS", "5"), default=5, lo=2, hi=5)
     ksa_candidate_per_unit = _clamp_int(os.getenv("KSA_CANDIDATE_PER_UNIT", "12"), default=12, lo=3, hi=24)
     ksa_sim_weight = _to_float_or(os.getenv("KSA_SIMILARITY_WEIGHT", "0.75"), 0.75)
     ksa_unit_weight = _to_float_or(os.getenv("KSA_UNIT_WEIGHT", "0.25"), 0.25)
@@ -10726,16 +12815,20 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         ncs_items=ncs_matches,
         ncs_matches=ncs_matches,
     )
-    raw_avoid_questions = payload.get("avoid_questions")
-    if raw_avoid_questions is None:
-        raw_avoid_questions = payload.get("current_questions")
-    if raw_avoid_questions is None:
-        raw_avoid_questions = payload.get("currentQuestions")
-    if raw_avoid_questions is None:
-        raw_avoid_questions = payload.get("avoid_questions_json")
-    request_avoid_questions = _extract_question_texts(raw_avoid_questions)
+    presentation_material_packet = _build_presentation_material_packet(
+        interview_methods=interview_methods,
+        jd_text=notice_text,
+        notice_text=prompt_notice_text,
+        duty_text=duty_text,
+        question_plan=question_plan,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+        supplemental_text=presentation_material_text,
+    )
+    presentation_material_prompt = _presentation_material_prompt_text(presentation_material_packet)
     avoid_context = _build_avoid_questions_context(request_avoid_questions, max_items=20)
     avoid_context = _join_generation_context(avoid_context, _quality_feedback_context(ncs_matches))
+    avoid_context = _join_generation_context(avoid_context, presentation_material_prompt)
 
     build_kwargs = {
         "jd_text": notice_text,
@@ -10748,29 +12841,62 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "duty_text": duty_text,
         "evaluation_text": evaluation_text,
         "desired_job": "",
-        "api_key_override": request_openai_api_key,
+        "api_key_override": request_generation_api_key,
         "target_count_override": question_plan["total_main_count"] or None,
         "follow_up_count": question_plan["follow_up_count"],
         "question_plan": question_plan,
         "interview_methods": interview_methods,
         "extra_context": avoid_context,
         "generation_provider": request_generation_provider,
+        "generation_model": request_generation_model,
     }
     try:
-        strategy = await _generate_quality_gated_institution_strategy(
-            build_kwargs=build_kwargs,
+        with use_generation_request(
+            provider=request_generation_provider,
+            generation_model=request_generation_model,
+        ):
+            strategy = await _generate_quality_gated_institution_strategy(
+                build_kwargs=build_kwargs,
+                question_plan=question_plan,
+                interview_methods=interview_methods,
+                ncs_matches=ncs_matches,
+                ncs_ksa=ncs_ksa,
+                avoid_questions=request_avoid_questions,
+                generation_offset=generation_offset,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "manual_strategy_provider_failed_using_server_ksa_fallback provider=%s",
+            request_generation_provider,
+        )
+        strategy = _institution_server_ksa_fallback_strategy(
             question_plan=question_plan,
             interview_methods=interview_methods,
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
-            avoid_questions=request_avoid_questions,
+            requested_provider=request_generation_provider,
+            presentation_material_text=presentation_material_prompt or presentation_material_text,
+            job_context_text=_generation_job_context_text(
+                duty_text=duty_text,
+                jd_text=notice_text,
+                notice_text=notice_text,
+                evaluation_text=evaluation_text,
+            ),
             generation_offset=generation_offset,
+            avoid_questions=request_avoid_questions,
         )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("manual_strategy_generation_or_quality_failed provider=openai_api")
-        raise _institution_api_provider_http_error(e) from e
+        if strategy is None:
+            logger.error(
+                "manual_strategy_generation_and_server_fallback_failed provider=%s",
+                request_generation_provider,
+            )
+            raise _institution_api_provider_http_error(
+                e,
+                provider=request_generation_provider,
+            ) from e
+    strategy = _attach_presentation_material_packet(strategy, presentation_material_packet)
     _register_question_quality_evidence(
         strategy,
         source_endpoint="/api/questions/generate-from-text",
@@ -10818,11 +12944,31 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "notice_context_preview": notice_text[:1200],
         "duty_text_preview": duty_text[:1200],
         "evaluation_text_preview": evaluation_text[:1200],
+        "presentation_material_text_preview": presentation_material_text[:1200],
+        "presentation_material": presentation_material_packet,
         "profile_used": False,
         "ncs_source": "manual-selected",
         "ncs_error": "",
-        "question_generation": _generation_provider_descriptor(request_generation_provider),
-        "openai_key_source": _openai_key_source(request_openai_api_key, request),
+        "question_generation": {
+            **_generation_provider_descriptor(request_generation_provider),
+            "resolved_model": str(
+                strategy.get("provider_generation_model")
+                or request_generation_model
+                or generation_provider_config(request_generation_provider).get("default_model")
+                or ""
+            ),
+        },
+        "provider_key_source": _generation_key_source(
+            request_generation_provider,
+            generation_api_key=payload.get("generation_api_key", ""),
+            openai_api_key=payload.get("openai_api_key", ""),
+            openrouter_api_key=payload.get("openrouter_api_key", ""),
+        ),
+        "openai_key_source": (
+            _openai_key_source(request_generation_api_key, request)
+            if request_generation_provider == "openai_api"
+            else "not_selected"
+        ),
         "extracted_focus_terms": [],
         "subcategory_text_preview": "",
         "small_categories": [],
@@ -10869,7 +13015,7 @@ def generate_questions_personalized(
     competency_name: str = Query("", description="NCS competency unit name (optional)"),
     job_posting_query: str = Query("", alias="job_posting", include_in_schema=False),
     user_profile_query: str = Query("", alias="user_profile", include_in_schema=False),
-    target_count: int = Query(12, description="Number of question templates (default 12)"),
+    target_count: int = Query(1, description="Number of question templates (operational maximum 1)"),
 ) -> dict:
     """Generate personalized interview question templates based on job posting and user profile.
 
@@ -10877,13 +13023,13 @@ def generate_questions_personalized(
     All questions are examples meant to guide actual interview preparation.
 
     JSON Body:
-        generation_provider: Optional; only ``openai_api`` is accepted.
-        openai_api_key: Required request-scoped OpenAI API key; never persisted.
+        generation_provider: Optional ``openrouter_api`` or ``openai_api`` hint.
+        generation_api_key: Request-scoped key; provider is verified from its prefix.
         ncs_code: NCS competency code (required, e.g., '02020302')
         competency_name: Optional competency name for better context
         job_posting: Job posting/recruitment info text (company, position, requirements)
         user_profile: User profile/resume text (experience, skills, achievements)
-        target_count: Number of question templates (1-12, default 12)
+        target_count: Number of question templates (currently exactly 1)
 
     Returns:
         - ncs_code: Input NCS code
@@ -10895,41 +13041,73 @@ def generate_questions_personalized(
     try:
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
-        _request_generation_provider(body.get("generation_provider"))
+        requested_provider = body.get("generation_provider", "")
         if str(job_posting_query or "").strip() or str(user_profile_query or "").strip():
             raise HTTPException(
                 status_code=400,
                 detail="job_posting and user_profile must be sent in the JSON body, not the query string",
             )
-        request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
-        _require_allowed_openai_key(request_openai_api_key, request)
-        ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
-        competency_name = str(body.get("competency_name") or competency_name or "").strip()
-        job_posting = str(body.get("job_posting") or "").strip()
-        user_profile = str(body.get("user_profile") or "").strip()
-        if "target_count" in body:
-            target_count = _clamp_int(body.get("target_count"), default=target_count, lo=1, hi=12)
-
+        target_count = _validated_auxiliary_generation_count(
+            body.get("target_count", target_count),
+            field_name="target_count",
+        )
+        ncs_code = _validate_generation_ncs_code(
+            body.get("ncs_code") or ncs_code or "",
+        )
+        competency_name = _validate_generation_text_input(
+            body.get("competency_name") or competency_name or "",
+            field_name="competency_name",
+            max_chars=_MAX_NCS_NAME_CHARS,
+        )
+        job_posting = _validate_generation_text_input(
+            body.get("job_posting", ""),
+            field_name="job_posting",
+            max_chars=_MAX_NOTICE_TEXT_CHARS,
+        )
+        user_profile = _validate_generation_text_input(
+            body.get("user_profile", ""),
+            field_name="user_profile",
+            max_chars=_MAX_STRENGTHS_CHARS,
+        )
+        (
+            request_generation_provider,
+            request_generation_model,
+            request_generation_api_key,
+        ) = _resolve_request_generation(
+            generation_api_key=body.get("generation_api_key", ""),
+            openai_api_key=body.get("openai_api_key", ""),
+            openrouter_api_key=body.get("openrouter_api_key", ""),
+            provider=requested_provider,
+            generation_model=body.get("generation_model", ""),
+        )
+        _require_allowed_openai_key(
+            request_generation_api_key,
+            request,
+            provider=request_generation_provider,
+        )
         if not ncs_code or not ncs_code.strip():
             raise HTTPException(status_code=400, detail="ncs_code is required")
 
         if len(ncs_code.strip()) < 4:
             raise HTTPException(status_code=400, detail="ncs_code format invalid (e.g., 02020302)")
 
-        if target_count < 1 or target_count > 12:
-            target_count = min(max(target_count, 1), 12)
-
         _require_ncs_mcp_url()
 
         # Generate personalized questions
-        result = generate_personalized_interview_questions(
-            ncs_code=ncs_code.strip(),
-            competency_name=competency_name.strip() or "",
-            job_posting=job_posting.strip() or "",
-            user_profile=user_profile.strip() or "",
-            target_count=target_count,
-            api_key_override=request_openai_api_key,
-        )
+        with use_generation_request(
+            provider=request_generation_provider,
+            generation_model=request_generation_model,
+        ):
+            result = generate_personalized_interview_questions(
+                ncs_code=ncs_code.strip(),
+                competency_name=competency_name.strip() or "",
+                job_posting=job_posting.strip() or "",
+                user_profile=user_profile.strip() or "",
+                target_count=target_count,
+                api_key_override=request_generation_api_key,
+                generation_model=request_generation_model,
+                generation_provider=request_generation_provider,
+            )
         _require_institution_api_question_output(result)
         _require_official_ksa_result(result)
 
@@ -10960,8 +13138,11 @@ def generate_questions_personalized(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("personalized_question_generation_failed provider=openai_api")
-        raise _institution_api_provider_http_error(e) from e
+        logger.error("personalized_question_generation_failed provider=%s", request_generation_provider)
+        raise _institution_api_provider_http_error(
+            e,
+            provider=request_generation_provider,
+        ) from e
 
 
 @app.post("/api/questions/generate-by-ncs-code")
@@ -10970,7 +13151,7 @@ def generate_questions_by_ncs_code(
     payload: dict[str, Any] | None = Body(default=None),
     ncs_code: str = Query("", description="NCS competency code (e.g., 02020302)"),
     competency_name: str = Query("", description="NCS competency unit name (optional)"),
-    target_count: int = Query(10, description="Number of questions to generate (default 10)"),
+    target_count: int = Query(1, description="Number of questions to generate (operational maximum 1)"),
     include_followups: bool = Query(True, description="Include follow-up questions (default True)"),
 ) -> dict:
     """Generate interview questions using only NCS code (no job description file required).
@@ -10979,11 +13160,11 @@ def generate_questions_by_ncs_code(
     Supports 4 question types: behavioral, situational, technical, development-oriented.
 
     JSON Body:
-        generation_provider: Optional; only ``openai_api`` is accepted.
-        openai_api_key: Required request-scoped OpenAI API key; never persisted.
+        generation_provider: Optional ``openrouter_api`` or ``openai_api`` hint.
+        generation_api_key: Request-scoped key; provider is verified from its prefix.
         ncs_code: NCS competency code (required, e.g. '02020302')
         competency_name: Optional competency name for context
-        target_count: Number of main questions (1-25, default 10)
+        target_count: Number of main questions (currently exactly 1)
         include_followups: Include follow-up questions (default True)
 
     Returns:
@@ -10996,26 +13177,55 @@ def generate_questions_by_ncs_code(
     try:
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
-        _request_generation_provider(body.get("generation_provider"))
-        request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
-        _require_allowed_openai_key(request_openai_api_key, request)
-        ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
-        competency_name = str(body.get("competency_name") or competency_name or "").strip()
-        if "target_count" in body:
-            target_count = _clamp_int(body.get("target_count"), default=target_count, lo=1, hi=25)
+        requested_provider = body.get("generation_provider", "")
+        target_count = _validated_auxiliary_generation_count(
+            body.get("target_count", target_count),
+            field_name="target_count",
+        )
+        ncs_code = _validate_generation_ncs_code(
+            body.get("ncs_code") or ncs_code or "",
+        )
+        competency_name = _validate_generation_text_input(
+            body.get("competency_name") or competency_name or "",
+            field_name="competency_name",
+            max_chars=_MAX_NCS_NAME_CHARS,
+        )
+        raw_avoid_questions = body.get("avoid_questions")
+        avoid_field_name = "avoid_questions"
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("current_questions")
+            avoid_field_name = "current_questions"
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("currentQuestions")
+            avoid_field_name = "currentQuestions"
+        if raw_avoid_questions is None:
+            raw_avoid_questions = body.get("avoid_questions_json")
+            avoid_field_name = "avoid_questions_json"
+        request_avoid_questions = _validate_and_extract_generation_avoid_questions(
+            raw_avoid_questions,
+            field_name=avoid_field_name,
+        )
+        (
+            request_generation_provider,
+            request_generation_model,
+            request_generation_api_key,
+        ) = _resolve_request_generation(
+            generation_api_key=body.get("generation_api_key", ""),
+            openai_api_key=body.get("openai_api_key", ""),
+            openrouter_api_key=body.get("openrouter_api_key", ""),
+            provider=requested_provider,
+            generation_model=body.get("generation_model", ""),
+        )
+        _require_allowed_openai_key(
+            request_generation_api_key,
+            request,
+            provider=request_generation_provider,
+        )
         if "include_followups" in body:
             raw_include_followups = body.get("include_followups")
             if not isinstance(raw_include_followups, bool):
                 raise HTTPException(status_code=422, detail="include_followups must be a boolean")
             include_followups = raw_include_followups
-        raw_avoid_questions = body.get("avoid_questions")
-        if raw_avoid_questions is None:
-            raw_avoid_questions = body.get("current_questions")
-        if raw_avoid_questions is None:
-            raw_avoid_questions = body.get("currentQuestions")
-        if raw_avoid_questions is None:
-            raw_avoid_questions = body.get("avoid_questions_json")
-
         # Validate inputs
         if not ncs_code or not ncs_code.strip():
             raise HTTPException(status_code=400, detail="ncs_code is required")
@@ -11023,24 +13233,26 @@ def generate_questions_by_ncs_code(
         if len(ncs_code.strip()) < 4:
             raise HTTPException(status_code=400, detail="ncs_code format invalid (e.g., 02020302)")
 
-        if target_count < 1 or target_count > 25:
-            target_count = min(max(target_count, 1), 25)
-
         _require_ncs_mcp_url()
 
-        request_avoid_questions = _extract_question_texts(raw_avoid_questions)
         avoid_questions = request_avoid_questions
         avoid_context = _build_avoid_questions_context(avoid_questions, max_items=16)
 
         # Generate questions
-        result = generate_interview_questions_by_ncs_code(
-            ncs_code=ncs_code.strip(),
-            competency_name=competency_name.strip() or "",
-            target_count=target_count,
-            include_followups=include_followups,
-            extra_context=avoid_context,
-            api_key_override=request_openai_api_key,
-        )
+        with use_generation_request(
+            provider=request_generation_provider,
+            generation_model=request_generation_model,
+        ):
+            result = generate_interview_questions_by_ncs_code(
+                ncs_code=ncs_code.strip(),
+                competency_name=competency_name.strip() or "",
+                target_count=target_count,
+                include_followups=include_followups,
+                extra_context=avoid_context,
+                api_key_override=request_generation_api_key,
+                generation_model=request_generation_model,
+                generation_provider=request_generation_provider,
+            )
         _require_institution_api_question_output(result)
         _require_official_ksa_result(result)
 
@@ -11059,6 +13271,14 @@ def generate_questions_by_ncs_code(
             result_main_questions,
             expected_count=target_count,
         )
+        if not any(
+            isinstance(row, dict) and str(row.get("question") or "").strip()
+            for row in result_main_questions
+        ):
+            # The provider result was valid before history filtering, but every
+            # item may have matched the caller's avoid list. Never report a
+            # successful generation with zero usable questions.
+            raise RuntimeError("institution_api_question_generation_failed")
         generated_questions_count = len(generated_questions)
         generated_questions_total_count = len(result_main_questions)
         generated_question_text_rows, generated_question_texts = _build_generated_question_text_payload(
@@ -11081,8 +13301,11 @@ def generate_questions_by_ncs_code(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("ncs_code_question_generation_failed provider=openai_api")
-        raise _institution_api_provider_http_error(e) from e
+        logger.error("ncs_code_question_generation_failed provider=%s", request_generation_provider)
+        raise _institution_api_provider_http_error(
+            e,
+            provider=request_generation_provider,
+        ) from e
 
 
 @app.get("/api/questions/templates")
@@ -11149,9 +13372,9 @@ def generate_batch_diverse_questions(
     payload: dict[str, Any] | None = Body(default=None),
     ncs_code: str = Query("", description="NCS code (e.g., 0202010203_19v2)"),
     competency_name: str = Query("", description="Competency name"),
-    batch_count: int = Query(20, description="Number of questions to generate (10-50, default 20)"),
+    batch_count: int = Query(1, description="Number of questions to generate (operational maximum 1)"),
 ) -> dict:
-    """Generate batch of diverse interview questions (10-50 questions).
+    """Generate one diverse interview question in the current production mode.
 
     IMPORTANT: AI generates completely different questions EVERY TIME - no caching!
     Each request = Fresh questions. No repetition ever.
@@ -11159,11 +13382,11 @@ def generate_batch_diverse_questions(
     Format: #1, #2, #3... with question type, competency, NCS code, question, follow-up, eval points
 
     JSON Body:
-        generation_provider: Optional; only ``openai_api`` is accepted.
-        openai_api_key: Required request-scoped OpenAI API key; never persisted.
+        generation_provider: Optional ``openrouter_api`` or ``openai_api`` hint.
+        generation_api_key: Request-scoped key; provider is verified from its prefix.
         ncs_code: NCS code (required)
         competency_name: Competency name (optional)
-        batch_count: Total questions (10-50, default 20)
+        batch_count: Total questions (currently exactly 1)
 
     Returns:
         Batch of diverse questions in numbered format
@@ -11173,25 +13396,53 @@ def generate_batch_diverse_questions(
     try:
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
-        _request_generation_provider(body.get("generation_provider"))
-        request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
-        _require_allowed_openai_key(request_openai_api_key, request)
-        ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
-        competency_name = str(body.get("competency_name") or competency_name or "").strip()
-        if "batch_count" in body:
-            batch_count = _clamp_int(body.get("batch_count"), default=batch_count, lo=10, hi=50)
+        requested_provider = body.get("generation_provider", "")
+        batch_count = _validated_auxiliary_generation_count(
+            body.get("batch_count", batch_count),
+            field_name="batch_count",
+        )
+        ncs_code = _validate_generation_ncs_code(
+            body.get("ncs_code") or ncs_code or "",
+        )
+        competency_name = _validate_generation_text_input(
+            body.get("competency_name") or competency_name or "",
+            field_name="competency_name",
+            max_chars=_MAX_NCS_NAME_CHARS,
+        )
         raw_avoid_questions = body.get("avoid_questions")
+        avoid_field_name = "avoid_questions"
         if raw_avoid_questions is None:
             raw_avoid_questions = body.get("current_questions")
+            avoid_field_name = "current_questions"
         if raw_avoid_questions is None:
             raw_avoid_questions = body.get("currentQuestions")
+            avoid_field_name = "currentQuestions"
         if raw_avoid_questions is None:
             raw_avoid_questions = body.get("avoid_questions_json")
-
+            avoid_field_name = "avoid_questions_json"
+        request_avoid_questions = _validate_and_extract_generation_avoid_questions(
+            raw_avoid_questions,
+            field_name=avoid_field_name,
+        )
+        (
+            request_generation_provider,
+            request_generation_model,
+            request_generation_api_key,
+        ) = _resolve_request_generation(
+            generation_api_key=body.get("generation_api_key", ""),
+            openai_api_key=body.get("openai_api_key", ""),
+            openrouter_api_key=body.get("openrouter_api_key", ""),
+            provider=requested_provider,
+            generation_model=body.get("generation_model", ""),
+        )
+        _require_allowed_openai_key(
+            request_generation_api_key,
+            request,
+            provider=request_generation_provider,
+        )
         if not ncs_code or not ncs_code.strip():
             raise HTTPException(status_code=400, detail="ncs_code required")
 
-        batch_count = min(max(batch_count, 10), 50)
         _require_ncs_mcp_url()
 
         # Generate multiple rounds of diverse questions with strict deduplication
@@ -11199,13 +13450,12 @@ def generate_batch_diverse_questions(
         seen_questions = set()
         seen_question_texts = []
         final_official_ksa_evidence: dict[str, dict[str, Any]] = {}
-        request_avoid_questions = _extract_question_texts(raw_avoid_questions)
         avoid_keys = {
             normalize_question_dedup_key(q)
             for q in request_avoid_questions
             if normalize_question_dedup_key(q)
         }
-        max_attempts = 50  # Prevent infinite loops
+        max_attempts = 1
         attempt = 0
 
         while len(final_questions) < batch_count and attempt < max_attempts:
@@ -11214,13 +13464,19 @@ def generate_batch_diverse_questions(
                 [*request_avoid_questions, *seen_question_texts],
                 max_items=16,
             )
-            result = generate_diverse_interview_questions(
-                ncs_code=ncs_code.strip(),
-                competency_name=competency_name.strip() or "",
-                target_count=6,
-                extra_context=avoid_context,
-                api_key_override=request_openai_api_key,
-            )
+            with use_generation_request(
+                provider=request_generation_provider,
+                generation_model=request_generation_model,
+            ):
+                result = generate_diverse_interview_questions(
+                    ncs_code=ncs_code.strip(),
+                    competency_name=competency_name.strip() or "",
+                    target_count=batch_count,
+                    extra_context=avoid_context,
+                    api_key_override=request_generation_api_key,
+                    generation_model=request_generation_model,
+                    generation_provider=request_generation_provider,
+                )
             _require_institution_api_question_output(result)
             _require_official_ksa_result(result)
             for evidence_row in result.get("official_ksa_evidence", []):
@@ -11304,8 +13560,11 @@ def generate_batch_diverse_questions(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("batch_question_generation_failed provider=openai_api")
-        raise _institution_api_provider_http_error(e) from e
+        logger.error("batch_question_generation_failed provider=%s", request_generation_provider)
+        raise _institution_api_provider_http_error(
+            e,
+            provider=request_generation_provider,
+        ) from e
 
 
 @app.post("/api/questions/generate-diverse")
@@ -11315,9 +13574,9 @@ def generate_diverse_questions(
     ncs_code: str = Query("", description="NCS competency code (e.g., 0202010102_19v2)"),
     competency_name: str = Query("", description="Competency unit name (optional)"),
     job_posting_query: str = Query("", alias="job_posting", include_in_schema=False),
-    target_count: int = Query(6, description="Number of diverse question types (1-6, default 6)"),
+    target_count: int = Query(1, description="Number of diverse question types (operational maximum 1)"),
 ) -> dict:
-    """Generate 6 diverse interview question types.
+    """Generate one diverse interview question in the current production mode.
 
     IMPROVEMENT: Creates highly varied questions with 6 different formats:
     1. STAR (행동기반) - Specific past success with STAR structure
@@ -11334,51 +13593,80 @@ def generate_diverse_questions(
     - Evaluation points (역량 평가 포인트)
 
     JSON Body:
-        generation_provider: Optional; only ``openai_api`` is accepted.
-        openai_api_key: Required request-scoped OpenAI API key; never persisted.
+        generation_provider: Optional ``openrouter_api`` or ``openai_api`` hint.
+        generation_api_key: Request-scoped key; provider is verified from its prefix.
         ncs_code: NCS competency code (required, e.g., '0202010102_19v2')
         competency_name: Competency unit name (optional)
         job_posting: Job posting context text (optional)
-        target_count: How many diverse types (1-6, default all 6)
+        target_count: How many diverse types (currently exactly 1)
 
     Returns:
-        List of 6 diverse questions, each with different evaluation angle
+        One diverse question with an evaluation angle
     """
     try:
         _reject_sensitive_query_params(request, destination="JSON body")
         body = payload if isinstance(payload, dict) else {}
-        _request_generation_provider(body.get("generation_provider"))
+        requested_provider = body.get("generation_provider", "")
         if str(job_posting_query or "").strip():
             raise HTTPException(
                 status_code=400,
                 detail="job_posting must be sent in the JSON body, not the query string",
             )
-        request_openai_api_key = _sanitize_request_openai_key(body.get("openai_api_key", ""))
-        _require_allowed_openai_key(request_openai_api_key, request)
-        ncs_code = str(body.get("ncs_code") or ncs_code or "").strip()
-        competency_name = str(body.get("competency_name") or competency_name or "").strip()
-        job_posting = str(body.get("job_posting") or "").strip()
-        if "target_count" in body:
-            target_count = _clamp_int(body.get("target_count"), default=target_count, lo=1, hi=6)
+        target_count = _validated_auxiliary_generation_count(
+            body.get("target_count", target_count),
+            field_name="target_count",
+        )
+        ncs_code = _validate_generation_ncs_code(
+            body.get("ncs_code") or ncs_code or "",
+        )
+        competency_name = _validate_generation_text_input(
+            body.get("competency_name") or competency_name or "",
+            field_name="competency_name",
+            max_chars=_MAX_NCS_NAME_CHARS,
+        )
+        job_posting = _validate_generation_text_input(
+            body.get("job_posting", ""),
+            field_name="job_posting",
+            max_chars=_MAX_NOTICE_TEXT_CHARS,
+        )
         raw_avoid_questions = body.get("avoid_questions")
+        avoid_field_name = "avoid_questions"
         if raw_avoid_questions is None:
             raw_avoid_questions = body.get("current_questions")
+            avoid_field_name = "current_questions"
         if raw_avoid_questions is None:
             raw_avoid_questions = body.get("currentQuestions")
+            avoid_field_name = "currentQuestions"
         if raw_avoid_questions is None:
             raw_avoid_questions = body.get("avoid_questions_json")
-
+            avoid_field_name = "avoid_questions_json"
+        request_avoid_questions = _validate_and_extract_generation_avoid_questions(
+            raw_avoid_questions,
+            field_name=avoid_field_name,
+        )
+        (
+            request_generation_provider,
+            request_generation_model,
+            request_generation_api_key,
+        ) = _resolve_request_generation(
+            generation_api_key=body.get("generation_api_key", ""),
+            openai_api_key=body.get("openai_api_key", ""),
+            openrouter_api_key=body.get("openrouter_api_key", ""),
+            provider=requested_provider,
+            generation_model=body.get("generation_model", ""),
+        )
+        _require_allowed_openai_key(
+            request_generation_api_key,
+            request,
+            provider=request_generation_provider,
+        )
         if not ncs_code or not ncs_code.strip():
             raise HTTPException(status_code=400, detail="ncs_code is required")
-
-        if target_count < 1 or target_count > 6:
-            target_count = min(max(target_count, 1), 6)
 
         _require_ncs_mcp_url()
 
         ncs_code_clean = ncs_code.strip()
         competency_name_clean = competency_name.strip()
-        request_avoid_questions = _extract_question_texts(raw_avoid_questions)
         avoid_keys = {
             normalize_question_dedup_key(q)
             for q in request_avoid_questions
@@ -11389,7 +13677,7 @@ def generate_diverse_questions(
         seen_keys = set()
         seen_texts = []
         final_official_ksa_evidence: dict[str, dict[str, Any]] = {}
-        max_attempts = 20
+        max_attempts = 1
         attempt = 0
         raw_result = {
             "ncs_code": ncs_code_clean,
@@ -11404,14 +13692,20 @@ def generate_diverse_questions(
                 [*request_avoid_questions, *seen_texts],
                 max_items=16,
             )
-            raw_result = generate_diverse_interview_questions(
-                ncs_code=ncs_code_clean,
-                competency_name=competency_name_clean or "",
-                job_posting=job_posting.strip() or "",
-                target_count=needed,
-                extra_context=avoid_context,
-                api_key_override=request_openai_api_key,
-            )
+            with use_generation_request(
+                provider=request_generation_provider,
+                generation_model=request_generation_model,
+            ):
+                raw_result = generate_diverse_interview_questions(
+                    ncs_code=ncs_code_clean,
+                    competency_name=competency_name_clean or "",
+                    job_posting=job_posting.strip() or "",
+                    target_count=needed,
+                    extra_context=avoid_context,
+                    api_key_override=request_generation_api_key,
+                    generation_model=request_generation_model,
+                    generation_provider=request_generation_provider,
+                )
             _require_institution_api_question_output(raw_result)
             _require_official_ksa_result(raw_result)
             for evidence_row in raw_result.get("official_ksa_evidence", []):
@@ -11453,6 +13747,7 @@ def generate_diverse_questions(
         }
         _require_official_ksa_result(
             {
+                "generation_mode": result.get("generation_mode", "ai_autonomous_ncs"),
                 "ncs_ksa_available": True,
                 "questions": final_questions,
                 "official_ksa_evidence": list(final_official_ksa_evidence.values()),
@@ -11485,5 +13780,8 @@ def generate_diverse_questions(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("diverse_question_generation_failed provider=openai_api")
-        raise _institution_api_provider_http_error(e) from e
+        logger.error("diverse_question_generation_failed provider=%s", request_generation_provider)
+        raise _institution_api_provider_http_error(
+            e,
+            provider=request_generation_provider,
+        ) from e

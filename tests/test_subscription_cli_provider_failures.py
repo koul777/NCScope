@@ -18,10 +18,10 @@ def test_status_rejects_personal_subscription_cli_providers(provider: str) -> No
         )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == (
-        "generation_provider must be 'openai_api'; personal Codex and "
-        "Claude Code subscription logins are disabled for institutional use"
-    )
+    detail = response.json()["detail"]
+    assert "openai_api" in detail
+    assert "openrouter_api" in detail
+    assert "personal Codex and Claude Code subscription logins are disabled" in detail
 
 
 @pytest.mark.parametrize("provider", ["codex", "codex_cli", "claude", "claude_code"])
@@ -46,8 +46,9 @@ def test_generation_rejects_personal_subscription_cli_providers_before_runtime(
         )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == (
-        "generation_provider must be 'openai_api'; personal Codex and "
-        "Claude Code subscription logins are disabled for institutional use"
-    )
+    detail = response.json()["detail"]
+    assert detail["code"] == "generation_provider_invalid"
+    assert detail["provider"] == provider
+    assert detail["retryable"] is False
+    assert REQUEST_KEY not in response.text
     assert REQUEST_KEY not in response.text

@@ -15,6 +15,7 @@ def test_jd_strategy_upload_no_nameerror_regression(monkeypatch, mocker):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     mocker.patch("app.main.init_db", return_value=None)
     mocker.patch("app.main.start_auto_runner", return_value=None)
+    parse_upload = mocker.patch("app.main._parse_upload_document")
     mocker.patch("app.main.extract_small_categories_from_jd", return_value=[])
     mocker.patch("app.main.extract_detail_categories_from_jd", return_value=[])
     mocker.patch("app.main.extract_subcategory_text", return_value="")
@@ -107,13 +108,33 @@ def test_jd_strategy_upload_no_nameerror_regression(monkeypatch, mocker):
     structured = {"document": {"markdown": jd_text}, "fields": {"ncs_detail_candidates": ["총무"]}}
     session = main._create_review_session(jd_text.encode("utf-8"), structured, "jd.txt")
     review = {**structured, "review_confirmed": True, "review_session_id": session["id"], "review_session": session}
+    notice_text = "공공기관 채용공고 담당업무 및 면접 평가항목"
+    notice_structured = {
+        "document": {"markdown": notice_text},
+        "fields": {"duty_text": "담당업무", "evaluation_text": "면접 평가항목"},
+    }
+    notice_session = main._create_review_session(
+        notice_text.encode("utf-8"),
+        notice_structured,
+        "notice.txt",
+    )
+    notice_review = {
+        **notice_structured,
+        "review_confirmed": True,
+        "review_session_id": notice_session["id"],
+        "review_session": notice_session,
+    }
 
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/jd/strategy/upload",
-            files={"jd_file": ("jd.txt", jd_text, "text/plain")},
+            files={
+                "jd_file": ("jd.txt", jd_text, "text/plain"),
+                "notice_file": ("notice.txt", notice_text, "text/plain"),
+            },
             data={
                 "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "notice_review_json": json.dumps(notice_review, ensure_ascii=False),
                 "openai_api_key": REQUEST_OPENAI_KEY,
             },
         )
@@ -124,5 +145,6 @@ def test_jd_strategy_upload_no_nameerror_regression(monkeypatch, mocker):
     assert body["ncs_source"].startswith("ncs-mcp")
     assert "strategy" in body
     build_strategy.assert_called_once()
+    parse_upload.assert_not_called()
     assert build_strategy.call_args.kwargs["api_key_override"] == REQUEST_OPENAI_KEY
     assert REQUEST_OPENAI_KEY not in resp.text

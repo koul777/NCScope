@@ -8,13 +8,20 @@ the extracted 세분류.  ``ncs_unit_detail`` is the authoritative KSA path.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any
 
 import httpx
 
 from app.settings import settings
+from app.services.request_budget import (
+    RequestBudgetExceeded,
+    clamp_timeout_to_request_budget,
+)
 
 MCP_PROTOCOL_VERSION = "2025-03-26"
 _TOOLS_TTL = 300.0
@@ -65,7 +72,11 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
     }
     try:
-        with httpx.Client(timeout=settings.ncs_mcp_timeout_sec(), follow_redirects=True) as client:
+        request_timeout = clamp_timeout_to_request_budget(
+            settings.ncs_mcp_timeout_sec(),
+            reserve_sec=2.0,
+        )
+        with httpx.Client(timeout=request_timeout, follow_redirects=True) as client:
             init = client.post(
                 endpoint,
                 headers=headers,
@@ -82,6 +93,10 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
             )
             init.raise_for_status()
             _decode_rpc(init.text)
+            request_timeout = clamp_timeout_to_request_budget(
+                settings.ncs_mcp_timeout_sec(),
+                reserve_sec=2.0,
+            )
             response = client.post(
                 endpoint,
                 headers=headers,
@@ -91,10 +106,11 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                     "method": method,
                     "params": params or {},
                 },
+                timeout=request_timeout,
             )
             response.raise_for_status()
             return _decode_rpc(response.text)
-    except (httpx.HTTPError, NcsMcpError) as exc:
+    except (httpx.HTTPError, NcsMcpError, RequestBudgetExceeded) as exc:
         global _last_error
         _last_error = "ncs_mcp_request_failed"
         if isinstance(exc, NcsMcpError):
@@ -322,6 +338,42 @@ def _first_ksa_value(row: dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _criteria_texts(value: Any) -> list[str]:
+    """Normalize the optional NCS performance-criteria payload.
+
+    NCS_MCP versions in the wild expose criteria as either strings or small
+    objects (``text``, ``description``, ``criterion``).  Keep the client
+    tolerant so the question layer can preserve a trace even when the server
+    changes only the envelope shape.
+    """
+
+    if isinstance(value, dict):
+        value = value.get("items") or value.get("criteria") or value.get("performance_criteria") or [value]
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, dict):
+            text = _first_ksa_value(
+                item,
+                "text",
+                "description",
+                "criterion",
+                "criteria",
+                "performance_criteria",
+                "performanceCriteria",
+            )
+        else:
+            text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
 def _canonical_ksa_type(row: dict[str, Any]) -> str:
     raw = _first_ksa_value(row, "ksa_type", "ksaType", "ksa_type_name", "ksaTypeName", "factorType")
     compact = re.sub(r"\s+", "", raw).lower()
@@ -366,6 +418,11 @@ def _interleave_element_ksa(elements: list[dict[str, Any]]) -> list[dict[str, An
             annotated = dict(row)
             annotated["_ncscope_element_id"] = element.get("element_id")
             annotated["_ncscope_element_name"] = element.get("element_name", "")
+            annotated["_ncscope_element_criteria"] = _criteria_texts(
+                element.get("criteria")
+                or element.get("performance_criteria")
+                or element.get("performanceCriteria")
+            )
             element_rows.append(annotated)
         if element_rows:
             queues.append(element_rows)
@@ -386,12 +443,16 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
 
     if "ncs_unit_detail" not in _tool_names():
         raise NcsMcpError("configured NCS MCP does not expose ncs_unit_detail")
-    output: list[dict[str, Any]] = []
     per_unit_limit = max(1, int(max_factors_per_unit or 12))
-    for unit in units:
+    selected_units = [
+        dict(unit)
+        for unit in (units or [])
+        if isinstance(unit, dict)
+        and str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+    ]
+
+    def fetch_unit(unit: dict[str, Any]) -> list[dict[str, Any]]:
         code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
-        if not code:
-            continue
         result = _call_tool(
             "ncs_unit_detail",
             {"unit_code": code, "include": ["elements", "criteria", "ksa"], "text_version": "raw"},
@@ -406,14 +467,16 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
         interleaved = _interleave_element_ksa(
             [element for element in (detail.get("elements") or []) if isinstance(element, dict)]
         )
+        rows: list[dict[str, Any]] = []
         for row in _balanced_ksa(interleaved, per_unit_limit):
-            output.append(
+            rows.append(
                 {
                     "ncsClCd": code,
                     "compeUnitName": unit.get("compeUnitName") or detail_unit.get("unit_name", ""),
                     "ncsSubdCdnm": unit.get("ncsSubdCdnm") or classification.get("sub", ""),
                     "elementId": row.get("_ncscope_element_id"),
                     "elementName": row.get("_ncscope_element_name", ""),
+                    "performanceCriteria": row.get("_ncscope_element_criteria") or [],
                     "factorName": _first_ksa_value(row, "text", "ksa_text", "factorName", "factor_name"),
                     "ksaTypeName": _canonical_ksa_type(row),
                     "ksaNo": _first_ksa_value(row, "ksa_no", "ksaNo", "number"),
@@ -423,6 +486,33 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
                     "isOfficialKsa": True,
                 }
             )
+        return rows
+
+    try:
+        configured_concurrency = int(
+            str(os.getenv("NCS_MCP_KSA_CONCURRENCY", "1")).strip()
+        )
+    except (TypeError, ValueError):
+        configured_concurrency = 1
+    concurrency = max(1, min(8, configured_concurrency, len(selected_units) or 1))
+    if concurrency == 1:
+        per_unit_rows = [fetch_unit(unit) for unit in selected_units]
+    else:
+        with ThreadPoolExecutor(
+            max_workers=concurrency,
+            thread_name_prefix="ncs-mcp-ksa",
+        ) as executor:
+            # ``map`` retains the confirmed NCS-unit order while overlapping
+            # independent network calls. This keeps evidence assignment stable.
+            futures = [
+                executor.submit(copy_context().run, fetch_unit, unit)
+                for unit in selected_units
+            ]
+            per_unit_rows = [future.result() for future in futures]
+
+    output: list[dict[str, Any]] = []
+    for rows in per_unit_rows:
+        output.extend(rows)
     return output
 
 

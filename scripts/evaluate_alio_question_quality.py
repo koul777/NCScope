@@ -459,40 +459,29 @@ def evaluate_cached_document(
         details = list(fields.get("ncs_detail_candidates") or [])
         details = [str(detail).strip() for detail in details if str(detail).strip()]
         if not details:
-            fallback_detail = str(
-                fields.get("position")
-                or fields.get("title")
-                or fields.get("job_title")
-                or fields.get("직무")
-                or fields.get("업무")
-                or path.stem
-            ).strip()
-            if not fallback_detail:
-                fallback_detail = "no_detail"
-            details = [fallback_detail]
-            row["detail_source"] = "fallback_from_filename_or_title"
+            absence_reason = str(fields.get("ncs_detail_absence_reason") or "").strip()
             row["coverage_blocker_type"] = "parsed_no_detail"
             row["coverage_blocker_details"] = _format_coverage_blocker_details(
                 [
                     {
-                        "detail": fallback_detail,
+                        "detail": "",
                         "coverage_status": "parsed_no_detail",
                         "coverage_blocker_type": "parsed_no_detail",
                         "review_action": "manual_review_parse_or_source_mapping",
-                        "coverage_blocker_reason": str(fields.get("ncs_detail_absence_reason") or "").strip()
-                        or "No explicit NCS detail candidates were parsed; generated using document title fallback.",
+                        "coverage_blocker_reason": absence_reason
+                        or "No explicit NCS detail candidates were parsed.",
                     }
                 ]
             )
             row["review_action"] = "manual_review_parse_or_source_mapping"
-            absence_reason = str(fields.get("ncs_detail_absence_reason") or "").strip()
-            if absence_reason:
-                row["coverage_blocker_reason"] = absence_reason
-                row["manual_review_suggestions"] = f"parsed-no-detail: {absence_reason}"
-            row["manual_review_suggestions"] = row["manual_review_suggestions"] or (
-                "parsed-no-detail: no explicit NCS detail candidates were parsed; review fallback detail before model training."
+            row["coverage_blocker_reason"] = absence_reason
+            row["manual_review_suggestions"] = (
+                f"parsed-no-detail: {absence_reason}"
+                if absence_reason
+                else "parsed-no-detail: no explicit NCS detail candidates were parsed; review source mapping."
             )
             row["status"] = "parsed_no_detail"
+            return row, question_rows
         row["detail_count"] = len(details)
         row["details"] = "; ".join(details)
 
@@ -545,8 +534,8 @@ def evaluate_cached_document(
         )
         row["manual_review_suggestions"] = _manual_review_suggestions(unmatched)
         if not covered_details and not units:
-            # Keep the issue for diagnostics and continue to template-only generation.
             row["status"] = "no_exact_units"
+            return row, question_rows
 
         plan_details = covered_details or checked_details[:max(1, int(max_units_per_detail) )]
         plan = build_question_plan(
@@ -736,16 +725,8 @@ def evaluate_cached_document(
             evaluation_points: list[str] = []
             ksa_refs: list[str] = []
             ksa_evidence: list[dict[str, Any]] = []
-            item_issues = [
-                str(x).strip()
-                for x in (item.get("issues") or [])
-                if str(x).strip()
-            ] if isinstance(item.get("issues"), list) else []
             question_focus = str(item.get("question_focus") or "").strip()
             question_focus_type = str(item.get("question_focus_type") or "").strip()
-            assessment_scale = str(item.get("assessment_scale") or "").strip()
-            assessment_anchors = ""
-            interviewer_instruction = ""
             question_intent = str(item.get("question_intent") or "").strip()
             question_repeat_signature = str(item.get("question_repeat_signature") or "").strip()
             item_repeat_value = item.get("question_repeat_duplicate")
@@ -782,15 +763,6 @@ def evaluate_cached_document(
                 ksa_evidence = [x for x in (q_obj.get("ksa_evidence") or []) if isinstance(x, dict)] if isinstance(q_obj.get("ksa_evidence"), list) else []
                 question_focus = question_focus or str(q_obj.get("question_focus") or "").strip()
                 question_focus_type = question_focus_type or str(q_obj.get("question_focus_type") or "").strip()
-                assessment_guide = q_obj.get("assessment_guide") if isinstance(q_obj.get("assessment_guide"), dict) else {}
-                assessment_scale = assessment_scale or str(assessment_guide.get("scale") or "").strip()
-                anchor_map = assessment_guide.get("anchors") if isinstance(assessment_guide.get("anchors"), dict) else {}
-                assessment_anchors = " | ".join(
-                    str(anchor_map.get(level) or "").strip()
-                    for level in ("high", "medium", "low")
-                    if str(anchor_map.get(level) or "").strip()
-                )
-                interviewer_instruction = str(assessment_guide.get("interviewer_instruction") or "").strip()
                 question_intent = question_intent or str(q_obj.get("question_intent") or "").strip()
                 question_repeat_signature = question_repeat_signature or str(q_obj.get("question_repeat_signature") or "").strip()
                 repeat_value = q_obj.get("question_repeat_duplicate")
@@ -940,14 +912,15 @@ def write_quality_reports(
     rows: list[dict[str, Any]],
     question_rows: list[dict[str, Any]],
     report_dir: Path,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path]:
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}-{uuid4().hex[:8]}"
     md_path = report_dir / f"alio_question_quality_{stamp}.md"
     csv_path = report_dir / f"alio_question_quality_{stamp}.csv"
     item_csv_path = report_dir / f"alio_question_quality_items_{stamp}.csv"
     list_json_path = report_dir / f"alio_question_quality_list_{stamp}.json"
-    safe_text = lambda value: str(value or "").replace("|", "/").replace("\n", " ").strip()
+    def safe_text(value: Any) -> str:
+        return str(value or "").replace("|", "/").replace("\n", " ").strip()
 
     questions_by_attachment: dict[str, list[dict[str, Any]]] = {}
     for item in question_rows:
@@ -1476,7 +1449,7 @@ def write_quality_reports(
         json.dumps(question_by_doc, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    return md_path, csv_path, item_csv_path, list_json_path
+    return md_path, csv_path, item_csv_path
 
 
 def _stringify_text_array(value: Any) -> list[str]:
@@ -2021,11 +1994,26 @@ def main() -> int:
         rows.append(row)
         question_rows.extend(items)
         time.sleep(0.1)
-    md_path, csv_path, item_csv_path, question_list_json_path = write_quality_reports(
+    report_paths = write_quality_reports(
         rows,
         question_rows,
         Path(args.report_dir),
     )
+    if len(report_paths) == 4:
+        # Compatibility with callers that temporarily adopted the four-path
+        # return value while the question-list JSON export was introduced.
+        md_path, csv_path, item_csv_path, question_list_json_path = report_paths
+    else:
+        md_path, csv_path, item_csv_path = report_paths
+        item_prefix = "alio_question_quality_items_"
+        if item_csv_path.name.startswith(item_prefix):
+            question_list_json_path = item_csv_path.with_name(
+                "alio_question_quality_list_"
+                f"{item_csv_path.name[len(item_prefix):item_csv_path.name.rfind('.')]}"
+                ".json"
+            )
+        else:
+            question_list_json_path = item_csv_path.with_suffix(".json")
     print(f"report={md_path}")
     print(f"csv={csv_path}")
     print(f"item_csv={item_csv_path}")

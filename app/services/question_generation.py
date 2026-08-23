@@ -2,12 +2,30 @@
 
 import copy
 import json
+import math
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from typing import Any
 
+from app.services.provider_config import (
+    OPENROUTER_PROVIDER,
+    normalize_generation_provider,
+    prepare_chat_payload,
+    provider_candidate_concurrency,
+    provider_model,
+    provider_timeout_sec,
+)
 from app.services.openai_http import post_chat_completions_with_retries
+from app.services.openai_quality_config import (
+    DEFAULT_QUALITY_MODEL,
+    apply_quality_reasoning,
+    quality_candidate_multiplier,
+    quality_candidate_variants,
+    quality_completion_budget,
+)
+from app.services.question_candidate_selection import select_question_candidates
 from app.services.question_intent import (
     FOCUS_SCOPED_GENERAL_QUESTION_INTENTS,
     GENERAL_QUESTION_INTENTS,
@@ -500,6 +518,13 @@ def _render_question_generation_prompt(
         "- 질문은 선택된 면접 기법의 목적과 답변 방식을 반영하되, 기법명이나 평가용 키워드를 체크리스트처럼 나열하지 않습니다.\n"
         "- 질문끼리 사건, 산출물, 판단 갈등이 겹치지 않아야 합니다. 같은 evidence_id를 다시 쓰면 일정 지연, 수치 불일치, 이해관계자 충돌, 규정 예외, 자원 제약 등 서로 다른 사건으로 번역합니다.\n"
         "- 민감하거나 차별적인 질문은 생성하지 않습니다.\n\n"
+        "[다양성 포트폴리오]\n"
+        "- 전체 문항을 직무/능력단위, 상황, 난이도, KSA 유형, 질문 유형의 5개 축으로 먼저 배정한 뒤 작성합니다.\n"
+        "- 난이도는 기본(핵심 근거 1개 적용), 심화(상충 근거 비교), 고난도(불완전 정보·권한·시간 제약 아래 예외 판단)를 고르게 섞습니다.\n"
+        "- 상황 축은 수치·자료 불일치, 일정 압박, 이해관계자 충돌, 규정 예외, 자원 제약, 품질 위험을 순환하고 같은 사건 골격을 반복하지 않습니다.\n"
+        "- 소재 축은 협업·이해관계자 조정, 정책·규정 준수, 리스크·품질관리, 성과지표·검증, 이용자·형평성, 디지털·프로세스 개선, 자원·일정 조정, 조직학습·인수인계를 순환합니다.\n"
+        "- KSA 축은 가능한 범위에서 지식·기술·태도를 분산하고, 질문 유형 축은 선택된 면접기법을 균형 있게 배정합니다.\n"
+        "- 문장 표현만 바꾼 변형은 새 후보로 보지 않습니다. 사건 사실, 판단 갈등, 요구 산출물 중 최소 2개가 달라야 합니다.\n\n"
         "[근거 추적과 의미 번역]\n"
         "- 각 질문은 [KSA]에서 evidence_id 하나를 주 검증 근거로 선택합니다.\n"
         "- NCS 능력단위·official_factor·public_focus·task_statement·observable_behavior는 평가위원용 내부 근거 메타데이터이자 의미 힌트입니다. 어떤 값도 완성된 질문 문구나 문장 골격으로 취급하지 않습니다.\n"
@@ -526,8 +551,8 @@ def _render_question_generation_prompt(
         f"{_unverified_material_precision_prompt_contract()}"
         "- 경험면접: 구체적인 실제 사건, 당시 역할, 선택 또는 직접 행동 하나, 관찰된 결과만 주질문에서 답하게 합니다. 유급 실무만 요구하지 말고 학업·프로젝트·봉사 등 가장 가까운 실제 경험도 허용하되, 새 한 장짜리 산출물을 요구하거나 주질문부터 가정 상황으로 바꾸지 않습니다. STAR는 답변 구조이지 주질문 필수 단어 목록이 아닙니다.\n"
         "- 상황면접: 충분한 사건 사실, 선택이 필요한 딜레마, 권한·시간 등 제약을 주고 첫 조치와 후속 순서, 위험 대응을 답하게 합니다. 과거 경험을 묻지 않습니다.\n"
-        "- 발표면접: 검토할 자료 묶음과 수치 이상 또는 이해관계 충돌을 주되, KSA에 가장 가까운 판단 family 하나만 발표하게 합니다. 자원 총량의 신뢰할 수 있는 숫자가 없으면 상대적 우선순위·범위·배분 원칙을 묻고 정확한 배분량이나 '수치화'를 요구하지 않습니다.\n"
-        "- 토론면접: 공통 사실을 중립적으로 주고 양립하기 어려운 두 제안과 영향을 받는 이해관계자를 제시해, 공동 판단 기준·예외·실행 책임이 있는 공동안을 만들게 합니다. 합의 자체를 강제하지 말고 합의가 어려우면 남은 쟁점과 결정권자 이송 기준을 제시하게 합니다.\n"
+        "- 발표면접: 검토할 자료 묶음과 수치 이상 또는 이해관계 충돌을 주되, KSA에 가장 가까운 판단 family 하나만 발표하게 합니다. 자료는 최소 3행의 출처/항목/값을 포함한 실제 검토대상으로 구성하고, 자료가 없으면 임의의 정밀 수치를 만들지 않습니다. 자원 총량의 신뢰할 수 있는 숫자가 없으면 상대적 우선순위·범위·배분 원칙을 묻고 정확한 배분량이나 '수치화'를 요구하지 않습니다.\n"
+        "- 토론면접: 공통 사실을 중립적으로 주고 양립하기 어려운 두 제안과 영향을 받는 이해관계자를 제시해, 공동 판단 기준·예외·실행 책임이 있는 공동안을 만들게 합니다. 공통자료는 최소 3행의 출처/항목/값을 포함하고 어느 한 입장을 정답처럼 만들지 않습니다. 합의 자체를 강제하지 말고 합의가 어려우면 남은 쟁점과 결정권자 이송 기준을 제시하게 합니다.\n"
         "- 창의적 문제해결력면접: 미래 변화 신호와 불명확한 문제, 현실 제약을 주고 문제 재정의·복수 대안·검증 방법·실행 결정을 답하게 합니다.\n"
         "- 인바스켓면접: 도착 시각과 마감이 다른 여러 문서·요청, 선후 의존성, 보고·위임 권한을 주고 우선순위와 첫 조치를 답하게 합니다.\n"
         "- 직무지식면접: 이름 있는 규정·서식·데이터와 예외 또는 오류를 주고 적용 결정, 산출물, 품질 검증을 답하게 합니다.\n"
@@ -648,6 +673,14 @@ def _build_question_generation_prompt(
         unit = str(row.get("compeUnitName", "")).strip()
         code = str(row.get("ncsClCd") or "").strip()
         unit_row = units_by_code.get(code) or units_by_name.get(unit) or {}
+        criteria_raw = row.get("performanceCriteria") or row.get("performance_criteria") or []
+        if isinstance(criteria_raw, str):
+            criteria_raw = [criteria_raw]
+        criteria_hint = "; ".join(
+            str(value).strip()
+            for value in (criteria_raw if isinstance(criteria_raw, (list, tuple)) else [])
+            if str(value).strip()
+        )
         frame = build_question_task_frame(
             evidence_row=row,
             factor_name=factor,
@@ -661,7 +694,9 @@ def _build_question_generation_prompt(
             f"evidence_id={frame['evidence_id']} | official_factor={factor} | "
             f"public_focus={frame['task_object']} | task_statement={frame['task_statement']} | "
             f"observable_behavior={frame['observable_behavior']} | type={factor_type or '미분류'} | "
-            f"unit={unit} | source={src}"
+            f"unit={unit} | element={row.get('elementName') or row.get('element_name') or ''} | "
+            f"performance_criteria={criteria_hint} | "
+            f"source={src}"
         )
 
     prompt = _render_question_generation_prompt(
@@ -813,6 +848,22 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "follow_up": follow_ups[0] if follow_ups else "",
         "ksa_refs": ksa_refs,
     }
+    # Preserve optional diversity/trace fields emitted by Ox Alpha.  The
+    # deterministic adjuster remains the source of truth, but carrying these
+    # hints into candidate selection lets it balance K/S/A types before the
+    # final evidence attachment pass.
+    for source_key, target_key in (
+        ("ksa_type", "ksa_type"),
+        ("ksaTypeName", "ksa_type"),
+        ("factorType", "ksa_type"),
+        ("element_id", "element_id"),
+        ("elementId", "element_id"),
+        ("topic_axis", "topic_axis"),
+        ("question_topic_axis", "topic_axis"),
+    ):
+        value = str(item.get(source_key) or "").strip()
+        if value and target_key not in normalized:
+            normalized[target_key] = value
     evidence_id = str(item.get("question_evidence_id") or item.get("evidence_id") or "").strip()
     surface_focus = str(item.get("question_focus_surface") or item.get("public_focus") or "").strip()
     if evidence_id:
@@ -936,6 +987,29 @@ def _attach_candidate_surface_evidence(
             ),
             None,
         )
+    if selected is None and evidence_id:
+        # Ox Alpha occasionally echoes the visible element id (for example
+        # ``ksa_el-02``) instead of the opaque stable evidence id supplied in
+        # the prompt.  Use that only as a non-authoritative metadata hint so
+        # candidate selection can balance K/S/A types; the original provider
+        # id and ``assignment_valid`` flag remain unchanged for auditability.
+        compact_id = re.sub(r"\s+", "", evidence_id).casefold()
+        selected = next(
+            (
+                row
+                for row in official_rows
+                if (
+                    str(row.get("elementId") or row.get("element_id") or "").strip()
+                    and re.sub(
+                        r"\s+", "", str(row.get("elementId") or row.get("element_id") or "")
+                    ).casefold()
+                    in compact_id
+                )
+            ),
+            None,
+        )
+        if selected is not None:
+            out["provider_evidence_alias"] = "element_id"
     if selected is None:
         return out
 
@@ -1009,8 +1083,25 @@ def _attach_candidate_surface_evidence(
     ]
     out["question_focus_surface"] = primary_surface
     out["question_task_frame"] = frame
+    out["element_id"] = str(
+        selected.get("elementId") or selected.get("element_id") or out.get("element_id") or ""
+    ).strip()
+    out["ksa_type"] = str(
+        selected.get("ksaTypeName")
+        or selected.get("factorType")
+        or selected.get("ksa_type")
+        or out.get("ksa_type")
+        or ""
+    ).strip()
     expected_evidence_id = str(frame.get("evidence_id") or "").strip()
     assignment_valid = bool(evidence_id and evidence_id == expected_evidence_id)
+    # Private server-owned marker used by the public grounding gate.  The
+    # provider may omit ``ksa_refs`` even after declaring a valid evidence id;
+    # this marker records that the id was resolved against the MCP row above,
+    # rather than merely echoed by the model.
+    if expected_evidence_id:
+        out["_server_selected_evidence_id"] = expected_evidence_id
+        out["_server_selected_focus"] = str(selected.get("factorName") or "").strip()
     out["question_evidence_id"] = evidence_id
     out["question_evidence_required"] = True
     out["question_evidence_assignment_valid"] = assignment_valid
@@ -1035,8 +1126,15 @@ def _generate_questions_with_openai_from_ncs(
     mode: str = "diverse",
     extra_context: str = "",
     api_key_override: str = "",
+    generation_model: str = "",
+    generation_provider: str = "openai_api",
 ) -> list[dict[str, Any]]:
-    api_key = settings.resolve_openai_key(api_key_override)
+    generation_provider = normalize_generation_provider(generation_provider)
+    api_key = (
+        settings.resolve_openrouter_key(api_key_override)
+        if generation_provider == OPENROUTER_PROVIDER
+        else settings.resolve_openai_key(api_key_override)
+    )
     if not api_key:
         return []
 
@@ -1049,13 +1147,29 @@ def _generate_questions_with_openai_from_ncs(
         timeout_sec = float(str(os.getenv("OPENAI_QUESTION_TIMEOUT_SEC", "60")).strip() or "60")
     except Exception:
         timeout_sec = 60.0
-    timeout_sec = max(15.0, min(240.0, timeout_sec))
+    timeout_sec = provider_timeout_sec(
+        generation_provider,
+        max(15.0, min(240.0, timeout_sec)),
+    )
 
     try:
         max_variants = int(str(os.getenv("OPENAI_QUESTION_VARIANT_ATTEMPTS", "3")).strip() or "3")
     except Exception:
         max_variants = 3
     max_variants = max(1, min(3, max_variants))
+
+    candidate_multiplier = quality_candidate_multiplier(
+        "OPENAI_QUESTION_CANDIDATE_MULTIPLIER",
+        default=3.0,
+    )
+    candidate_goal = max(target_n, int(math.ceil(target_n * candidate_multiplier)))
+    variant_count = min(
+        max_variants,
+        quality_candidate_variants(
+            "OPENAI_QUESTION_CANDIDATE_MULTIPLIER",
+            default=3.0,
+        ),
+    )
 
     prompt = _build_question_generation_prompt(
         ncs_matches=ncs_matches,
@@ -1067,55 +1181,89 @@ def _generate_questions_with_openai_from_ncs(
         extra_context=extra_context,
     )
 
+    openai_model = str(
+        generation_model
+        or os.getenv("OPENAI_QUESTION_MODEL", DEFAULT_QUALITY_MODEL)
+        or DEFAULT_QUALITY_MODEL
+    ).strip()
+    model = provider_model(generation_provider, openai_model)
     payload_base = {
-        "model": settings.openai_model,
+        "model": model,
         "messages": [
             {"role": "system", "content": "공공기관 구조화 면접 설계 전문가입니다. JSON만 출력하세요."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.82,
-        "max_tokens": 4000,
     }
+    if generation_provider == OPENROUTER_PROVIDER:
+        reasoning_effort = "max"
+        payload_base["reasoning_effort"] = reasoning_effort
+        payload_base.pop("temperature", None)
+    else:
+        reasoning_effort = apply_quality_reasoning(
+            payload_base,
+            model=model,
+            specific_env_name="OPENAI_QUESTION_REASONING_EFFORT",
+        )
+    if reasoning_effort:
+        payload_base["max_completion_tokens"] = quality_completion_budget(
+            target_n,
+            reasoning_effort=reasoning_effort,
+        )
+    else:
+        payload_base["max_tokens"] = max(4000, min(16000, target_n * 900))
 
     attempts: list[tuple[dict[str, Any], float]] = []
     p1 = copy.deepcopy(payload_base)
     p1["response_format"] = {"type": "json_object"}
+    p1["messages"][1]["content"] = (
+        str(p1["messages"][1]["content"])
+        + "\n\n후보 포트폴리오 A: 면접기법과 KSA 유형의 균형, 기본·심화 난이도 분산을 우선하세요."
+    )
     attempts.append((p1, timeout_sec))
 
     p2 = copy.deepcopy(payload_base)
-    p2["temperature"] = 0.92
+    if not reasoning_effort:
+        p2["temperature"] = 0.92
     p2["messages"][1]["content"] = (
         str(p2["messages"][1]["content"])
-        + "\n\n변형 지시: 동일 KSA라도 문항의 사건 맥락, 제약 조건, 판단 트리거를 완전히 다르게 설계해 주세요."
+        + "\n\n후보 포트폴리오 B: 동일 KSA라도 사건 맥락, 권한·시간·자료 제약, 판단 트리거와 산출물을 A와 완전히 다르게 설계하세요. 심화·고난도를 우선하세요."
     )
     attempts.append((p2, min(240.0, timeout_sec + 20.0)))
 
     p3 = copy.deepcopy(payload_base)
-    p3["temperature"] = 0.72
-    p3["top_p"] = 0.95
-    p3["presence_penalty"] = 0.1
+    if not reasoning_effort:
+        p3["temperature"] = 0.72
+        p3["top_p"] = 0.95
+        p3["presence_penalty"] = 0.1
     p3["messages"][1]["content"] = (
         str(p3["messages"][1]["content"])
-        + "\n\n중요: 설명문 없이 JSON만 출력하세요. 유효한 JSON 객체 1개만 반환하세요."
+        + "\n\n후보 포트폴리오 C: A·B에서 적게 다룬 직무/능력단위·KSA·면접기법·상황 축을 우선 보완하세요. 설명문 없이 유효한 JSON 객체 1개만 반환하세요."
     )
     attempts.append((p3, min(240.0, timeout_sec + 30.0)))
 
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for payload, req_timeout in attempts[:max_variants]:
+    def _request_variant(
+        variant_index: int,
+        payload: dict[str, Any],
+        req_timeout: float,
+    ) -> tuple[int, list[dict[str, Any]]]:
         try:
             data = post_chat_completions_with_retries(
-                payload=payload,
+                payload=prepare_chat_payload(payload, generation_provider),
                 api_key=api_key,
-                timeout_sec=req_timeout,
+                # Portfolio B/C may receive a larger OpenAI budget. Re-apply
+                # the provider cap so OpenRouter never exceeds the serverless
+                # upstream deadline merely because it is a later variant.
+                timeout_sec=provider_timeout_sec(generation_provider, req_timeout),
                 # Each payload variant is one intentional semantic request.
                 # Do not multiply it with transport retries or the optional
                 # curl subprocess (which would expose the bearer token in a
                 # child-process command line on some operating systems).
                 max_attempts=1,
+                provider=generation_provider,
             )
         except Exception:
-            continue
+            return variant_index, []
 
         parsed = [
             _attach_candidate_surface_evidence(
@@ -1126,20 +1274,70 @@ def _generate_questions_with_openai_from_ncs(
             for row in _parse_openai_response(_extract_message_content(data))
         ]
         for row in parsed:
-            row["question_source"] = "openai_api"
-        if not parsed:
-            continue
+            row["question_source"] = generation_provider
+            row["_candidate_variant"] = variant_index
+        return variant_index, parsed
 
-        for row in parsed:
-            if _question_near_duplicate_seen(row, merged):
-                continue
-            if _question_already_seen(row, seen):
-                continue
-            merged.append(row)
-            if len(merged) >= target_n:
+    requested_attempts = [
+        (variant_index, payload, req_timeout)
+        for variant_index, (payload, req_timeout) in enumerate(
+            attempts[:variant_count],
+            start=1,
+        )
+    ]
+    variant_results: list[tuple[int, list[dict[str, Any]]]] = []
+    concurrency = provider_candidate_concurrency(generation_provider, variant_count)
+    if generation_provider == OPENROUTER_PROVIDER and concurrency > 1:
+        with ThreadPoolExecutor(
+            max_workers=concurrency,
+            thread_name_prefix="openrouter-question-candidate",
+        ) as executor:
+            futures = {
+                executor.submit(_request_variant, index, payload, req_timeout): index
+                for index, payload, req_timeout in requested_attempts
+            }
+            for future in as_completed(futures):
+                try:
+                    variant_results.append(future.result())
+                except Exception:
+                    variant_results.append((futures[future], []))
+    else:
+        for index, payload, req_timeout in requested_attempts:
+            result = _request_variant(index, payload, req_timeout)
+            variant_results.append(result)
+            if sum(len(rows) for _, rows in variant_results) >= candidate_goal:
                 break
-        if len(merged) >= target_n:
-            break
 
-    return merged[:target_n]
+    candidate_pool: list[dict[str, Any]] = []
+    for _, parsed in sorted(variant_results, key=lambda item: item[0]):
+        candidate_pool.extend(parsed)
+
+    selected, selection_metadata = select_question_candidates(
+        candidate_pool,
+        target_n,
+    )
+    selected_audits = [
+        audit
+        for audit in (selection_metadata.get("selected") or [])
+        if isinstance(audit, dict)
+    ]
+    for index, row in enumerate(selected):
+        audit = selected_audits[index] if index < len(selected_audits) else {}
+        row.pop("_candidate_variant", None)
+        row["candidate_selection_policy"] = str(
+            selection_metadata.get("strategy") or "quality_weighted_greedy_coverage_v1"
+        )
+        row["candidate_pool_count"] = int(
+            selection_metadata.get("candidate_count") or len(candidate_pool)
+        )
+        row["candidate_quality_score"] = float(audit.get("quality_score") or 0.0)
+        row["candidate_selection_score"] = float(audit.get("selection_score") or 0.0)
+        row["candidate_diversity_axes"] = dict(audit.get("axes") or {})
+        row["generation_provider"] = generation_provider
+        row["provider_generation_model"] = model
+        row["provider_candidate_variant_count"] = variant_count
+        row["provider_candidate_variant_received_count"] = sum(
+            1 for _, rows in variant_results if rows
+        )
+    return selected
 

@@ -1730,6 +1730,33 @@ def _scenario_stimulus(item: Mapping[str, Any], question: str) -> str:
         value = item.get(key)
         if isinstance(value, str) and value.strip():
             parts.append(value)
+    # Presentation packets keep the concrete case in ``task_conditions`` so
+    # the candidate-facing question stays compact.  Include those packet facts
+    # in the realism stimulus; otherwise the checker sees only the method
+    # marker and incorrectly reports a generic presentation prompt even when
+    # the generated packet contains a real source-backed dilemma.
+    conditions = item.get("task_conditions")
+    if isinstance(conditions, Mapping):
+        for key in (
+            "presentation_task",
+            "case_facts",
+            "case_materials",
+            "provided_materials",
+            "presentation_constraints",
+        ):
+            value = conditions.get(key)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                for row in value:
+                    if isinstance(row, Mapping):
+                        parts.append(" ".join(
+                            str(row.get(field) or "").strip()
+                            for field in ("source", "field", "value")
+                            if str(row.get(field) or "").strip()
+                        ))
+                    elif str(row or "").strip():
+                        parts.append(str(row).strip())
+            elif isinstance(value, str) and value.strip():
+                parts.append(value)
     return _clean_text(" ".join(parts), limit=2400)
 
 
@@ -2196,6 +2223,22 @@ def evaluate_question_realism(
                 evidence
                 for evidence in scaffold_evidence
                 if re.sub(r"[^0-9A-Za-z가-힣]+", "", evidence).casefold() != "토론과제"
+            ]
+    elif resolved_method == "발표면접" and re.match(
+        r"^\s*\[발표과제\]", question, re.IGNORECASE
+    ):
+        # ``[발표과제]`` is the public method marker, not a template slot. If
+        # the packet carries concrete source facts and a real trade-off, keep
+        # the marker while still enforcing the generic-scaffold gate for empty
+        # or placeholder prompts.
+        presentation_signals = _scenario_signals(
+            _scenario_stimulus(source_item, question)
+        )
+        if presentation_signals["concrete_fact"] and presentation_signals["dilemma"]:
+            scaffold_evidence = [
+                evidence
+                for evidence in scaffold_evidence
+                if re.sub(r"[^0-9A-Za-z가-힣]+", "", evidence).casefold() != "발표과제"
             ]
     no_generic_scaffolding = bool(question) and not scaffold_evidence
     if not no_generic_scaffolding:

@@ -14,38 +14,66 @@ def _page() -> tuple[str, str]:
     return html, scripts[0]
 
 
-def test_request_scoped_api_card_has_password_input_and_security_warning() -> None:
+def test_server_managed_api_card_keeps_an_optional_accessible_override_field() -> None:
     html, script = _page()
 
     assert 'id="generationProviderCard"' in html
     assert 'id="generationProviderName"' in html
-    assert 'id="openaiApiKey"' in html
+    assert 'id="generationProviderSelect"' not in html
+    assert '<label id="generationApiKeyLabel" for="generationApiKey">개인 API 키 (선택)</label>' in html
+    assert 'id="generationApiKey"' in html
     assert 'type="password"' in html
     assert 'autocomplete="off"' in html
     assert 'spellcheck="false"' in html
-    assert 'id="btnClearOpenAiApiKey"' in html
+    assert '입력하지 않아도 됩니다 · 개인 키로 바꾸려면 입력' in html
+    assert 'id="btnToggleApiKey"' in html
+    assert 'aria-pressed="false"' in html
+    assert 'id="btnPasteApiKey"' in html
+    assert 'id="btnClearApiKey"' in html
+    assert 'id="openRouterKeyHelp"' in html
+    assert 'href="https://openrouter.ai/settings/keys"' in html
+    assert 'target="_blank" rel="noopener noreferrer"' in html
+    assert "서버 키를 기본으로 사용합니다." in html
+    assert "개인 키로 바꾸려는 경우에만" in html
+    assert "<code>sk-or-…</code>" in html
+    assert "openRouterKeyHelp generationProviderKeyNote" in html
     assert 'id="apiKeySecurityWarning"' in html
     assert 'role="note"' in html
     assert 'aria-busy="true"' in html
     assert 'id="generationProviderError"' in html
     assert 'role="alert"' in html
     assert 'id="btnRefreshGenerationProvider"' in html
-    assert "'/api/generation-provider/status?provider=openai_api'" in script
+    assert 'id="generationProviderModelNote"' in html
+    assert 'OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구' in html
     assert "btnRefreshGenerationProvider.addEventListener('click', loadGenerationProviderStatus)" in script
-    assert "loadGenerationProviderStatus();" in script
+    assert "scheduleGenerationProviderDetection(true);" in script
+    assert "Vercel Production 서버 키" in html
+    assert "Vercel 환경변수의 OpenRouter API 키" in script
+    assert "serverEnvApiStatusValid" in script
+    assert "server_env_api_key" in script
 
 
-def test_provider_is_fixed_to_openai_request_scoped_status_contract() -> None:
+def test_provider_is_auto_detected_from_one_key_without_a_selector() -> None:
     html, script = _page()
 
     assert 'id="generationProviderSelect"' not in html
-    assert '<option value="codex_cli"' not in html
-    assert '<option value="claude_code"' not in html
-    assert 'id="generationProviderLogin"' not in html
-    assert 'id="generationProviderLoginCommand"' not in html
-    assert "const INSTITUTION_GENERATION_PROVIDER = 'openai_api'" in script
-    assert "function requestScopedApiStatusValid(status=generationProviderStatus)" in script
-    assert "status.provider === INSTITUTION_GENERATION_PROVIDER" in script
+    assert "function detectedGenerationProvider(apiKey=currentGenerationApiKey())" in script
+    openrouter_branch = script.index("key.startsWith('sk-or-')")
+    openai_branch = script.index("key.startsWith('sk-')")
+    assert openrouter_branch < openai_branch
+    assert "if (key.startsWith('sk-or-')) return 'openrouter_api'" in script
+    assert "if (key.startsWith('sk-')) return 'openai_api'" in script
+    assert "modelNote: 'OpenRouter · Ox Alpha Max 우선 · 저비용 모델·서버 KSA 자동복구'" in script
+    assert "s.provider_fallback_used === true" in script
+    assert "s.generation_mode === 'server_ksa_fallback'" in script
+    status_url = "`/api/generation-provider/status?provider=${encodeURIComponent(requestedProvider)}`"
+    assert status_url in script
+    status_signature = (
+        "function requestScopedApiStatusValid("
+        "status=generationProviderStatus, provider=detectedGenerationProvider())"
+    )
+    assert status_signature in script
+    assert "status.provider === provider" in script
     assert "status.status === 'key_required'" in script
     assert "status.available === true" in script
     assert "status.authenticated === false" in script
@@ -54,56 +82,75 @@ def test_provider_is_fixed_to_openai_request_scoped_status_contract() -> None:
     assert "status.credential_managed_by === 'request'" in script
     assert "status.requires_request_api_key === true" in script
     assert "status.local_only === false" in script
+    assert "return requestScoped || serverEnvApiStatusValid(status, effectiveProvider)" in script
+    assert "status.auth_mode === 'server_env_api_key'" in script
+    assert "status.credential_managed_by === 'server_env'" in script
+    assert "status.requires_request_api_key === false" in script
+    assert "status.credential_configured === true" in script
     assert "const requestId = ++generationProviderRequestId" in script
     assert "requestId !== generationProviderRequestId" in script
 
 
-def test_api_key_is_kept_only_in_page_memory_and_can_be_cleared() -> None:
+def test_api_key_is_kept_only_in_form_memory_and_has_safe_controls() -> None:
     _, script = _page()
 
-    assert "function currentOpenAiApiKey()" in script
-    assert "String(openaiApiKey.value || '').trim()" in script
-    assert "openaiApiKey.addEventListener('input'" in script
-    assert "btnClearOpenAiApiKey.addEventListener('click'" in script
+    assert "function currentGenerationApiKey()" in script
+    assert "String(generationApiKey.value || '').trim()" in script
+    assert "generationApiKey.addEventListener('input'" in script
+    assert "btnToggleApiKey.addEventListener('click'" in script
+    assert "navigator.clipboard.readText" in script
+    assert "btnClearApiKey.addEventListener('click'" in script
     assert "window.addEventListener('pagehide'" in script
-    assert script.count("openaiApiKey.value = ''") == 2
+    assert script.count("generationApiKey.value = ''") == 2
+    assert "setApiKeyVisibility(false)" in script
     assert "function apiKeyTransportIsSecure()" in script
     assert "window.isSecureContext === true" in script
-    assert "openaiApiKey.disabled = !secure" in script
+    assert "generationApiKey.disabled = !secure" in script
     assert "localStorage" not in script
     assert "sessionStorage" not in script
+    assert "document.cookie" not in script
     assert "Authorization" not in script
 
 
-def test_generation_requires_valid_status_and_nonempty_request_key() -> None:
+def test_generation_accepts_server_key_or_valid_request_override_and_focuses_errors() -> None:
     _, script = _page()
 
     assert "function requestScopedApiReady(status=generationProviderStatus)" in script
     assert "requestScopedApiStatusValid(status)" in script
-    assert "Boolean(currentOpenAiApiKey())" in script
+    assert "Boolean(currentGenerationApiKey())" in script
+    assert "if (serverEnvApiStatusValid(status)) return true" in script
     assert "function generationProviderBlockReason()" in script
+    assert "if (!apiKey && !serverConfigured)" in script
+    assert "const serverConfigured = serverEnvApiStatusValid()" in script
+    assert "if (!detectedProvider)" in script
     assert "if (generationProviderLoading)" in script
     assert "if (generationProviderLoadError || !generationProviderStatus)" in script
-    assert "generationProviderStatus.provider !== INSTITUTION_GENERATION_PROVIDER" in script
+    assert "generationProviderStatus.provider !== detectedProvider" in script
     assert "if (!requestScopedApiStatusValid())" in script
-    assert "if (!currentOpenAiApiKey())" in script
     assert "const providerBlock = generationProviderBlockReason()" in script
-    assert "setGenerationProviderBadge('키 입력 필요', 'warn')" in script
-    assert "setGenerationProviderBadge('요청 준비됨', 'good')" in script
+    assert "function focusApiKeyError(message)" in script
+    assert "generationApiKey.setAttribute('aria-invalid', 'true')" in script
+    assert "generationApiKey.focus({ preventScroll: true })" in script
+    assert "if (providerBlock.kind === 'key')" in script
+    assert "if (questionGenerationInFlight) return" in script
     assert script.count("syncGenerationButtonState();") >= 5
 
 
-def test_upload_and_json_generation_send_request_key_with_fixed_provider() -> None:
+def test_upload_and_json_send_only_generic_key_and_detected_provider() -> None:
     _, script = _page()
 
-    assert "const requestOpenAiApiKey = currentOpenAiApiKey()" in script
-    assert "fd.append('generation_provider', INSTITUTION_GENERATION_PROVIDER)" in script
-    assert "fd.append('openai_api_key', requestOpenAiApiKey)" in script
-    assert "generation_provider: INSTITUTION_GENERATION_PROVIDER" in script
-    assert "openai_api_key: requestOpenAiApiKey" in script
+    assert "const requestGenerationProvider = detectedGenerationProvider()" in script
+    assert "const requestGenerationApiKey = currentGenerationApiKey()" in script
+    assert "fd.append('generation_provider', requestGenerationProvider)" in script
+    assert "fd.append('generation_api_key', requestGenerationApiKey)" in script
+    assert "generation_provider: requestGenerationProvider" in script
+    assert "...generationCredentialPayload(requestGenerationApiKey)" in script
+    assert "return apiKey ? { generation_api_key: apiKey } : {}" in script
     assert script.count("generation_provider") == 2
-    assert script.count("openai_api_key") == 2
-    assert script.count("generationProvider: INSTITUTION_GENERATION_PROVIDER") == 2
+    assert script.count("generation_api_key") == 2
+    assert "openai_api_key" not in script
+    assert "openrouter_api_key" not in script
+    assert script.count("generationProvider: requestGenerationProvider") == 2
 
     upload_history = script.split("const uploadGenerationContext = JSON.stringify({", 1)[1].split(
         "prepareQuestionHistory", 1
@@ -111,10 +158,29 @@ def test_upload_and_json_generation_send_request_key_with_fixed_provider() -> No
     manual_history = script.split("const manualGenerationContext = JSON.stringify({", 1)[1].split(
         "prepareQuestionHistory", 1
     )[0]
-    assert "openai_api_key" not in upload_history
-    assert "requestOpenAiApiKey" not in upload_history
-    assert "openai_api_key" not in manual_history
-    assert "requestOpenAiApiKey" not in manual_history
+    assert "generation_api_key" not in upload_history
+    assert "requestGenerationApiKey" not in upload_history
+    assert "generation_api_key" not in manual_history
+    assert "requestGenerationApiKey" not in manual_history
+
+
+def test_openrouter_latency_has_honest_progress_and_accessible_live_state() -> None:
+    html, script = _page()
+
+    assert 'id="progressWrap"' in html
+    assert 'role="status"' in html
+    assert 'aria-live="polite"' in html
+    assert 'id="generationProgressBar"' in html
+    assert 'role="progressbar"' in html
+    assert 'aria-valuenow="0"' in html
+    assert "const OPENROUTER_PROGRESS_STEPS = [" in script
+    assert "label: 'Ox Alpha 질문 후보 생성'" in script
+    assert "label: '중복 제거·품질 선별'" in script
+    assert "afterSeconds: 60" in script
+    assert "혼잡하면 몇 분 걸릴 수 있습니다" in script
+    assert "setGenerationProgress(94)" in script
+    assert "btn.setAttribute('aria-busy', 'true')" in script
+    assert "generationApiKey.disabled = true" in script
 
 
 def test_result_metadata_uses_result_provenance_and_supports_api_model_sources() -> None:
@@ -130,7 +196,10 @@ def test_result_metadata_uses_result_provenance_and_supports_api_model_sources()
     assert "resultGeneration.provider || generationProviderStatus" not in script
     assert "resultGeneration.provider_label || generationProviderStatus" not in script
     assert "OpenAI key:" not in script
-    assert "openai_api: 'OpenAI API" in script
+    assert "openai_api: GENERATION_PROVIDER_CONFIGS.openai_api.label" in script
+    assert "openrouter_api: GENERATION_PROVIDER_CONFIGS.openrouter_api.label" in script
+    assert "openrouter_api: 'OpenRouter · Ox Alpha 초안 유지'" in script
+    assert "openrouter_api_quality_repaired_fields: 'OpenRouter · Ox Alpha 초안 유지 · 평가요소 보강'" in script
     assert "model: 'OpenAI API" in script
     assert "codex_cli: 'Codex" in script
     assert "claude_code: 'Claude Code" in script
@@ -168,27 +237,51 @@ def test_quality_rejection_uses_safe_diagnostics_only() -> None:
     assert "실패 슬롯:" in script
     assert "주요 검사:" in script
     assert "qualityIssueLabel(code, '기타 필수 품질 검사 실패')" in script
-    assert "errorCode === 'openai_api_quality_rejected'" in script
+    assert "'openai_api_quality_rejected'," in script
+    assert "'openrouter_api_quality_rejected'," in script
+    assert "].includes(errorCode)" in script
+
+
+def test_openrouter_failures_are_classified_as_model_stage_errors() -> None:
+    _, script = _page()
+
+    for code in (
+        "openrouter_api_generation_failed",
+        "openrouter_api_timeout",
+        "openrouter_api_unreachable",
+        "openrouter_api_invalid_output",
+        "openrouter_api_quality_rejected",
+        "openrouter_api_content_restricted",
+        "openrouter_api_request_rejected",
+        "openrouter_api_upstream_unavailable",
+        "openrouter_api_authentication_failed",
+        "openrouter_api_usage_limit_reached",
+    ):
+        assert f"'{code}'" in script
 
 
 def test_partial_human_review_result_is_rendered_as_usable_output() -> None:
     _, script = _page()
 
-    assert "const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';" in script
+    release_status = "const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';"
+    assert release_status in script
     assert "function partialGenerationNotice(strategy, questions)" in script
     assert "strategy.partial_generation && typeof strategy.partial_generation === 'object'" in script
     assert "requested_question_count" in script
     assert "returned_question_count" in script
     assert "omitted_question_count" in script
     assert "omitted_indexes" in script
-    assert "요청 ${requested || '-'}개 중 ${returned || 0}개를 반환했고 ${omitted || 0}개는 제외되었습니다." in script
+    message = "요청 ${requested || '-'}개 중 ${returned || 0}개를 반환했고 ${omitted || 0}개는 제외되었습니다."
+    assert message in script
     assert "반환된 문항은 사용할 수 있지만, 누락된 슬롯을 포함해 사람 검토가 필요합니다." in script
 
 
 def test_human_review_release_state_overrides_completed_orchestration_notice() -> None:
     _, script = _page()
 
-    partial_state = script.index("const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';")
+    partial_state = script.index(
+        "const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';"
+    )
     release_state = script.index("s.question_release_status === 'human_review_required'")
     retry_state = script.index("retryAudit.outcome === 'accepted_for_human_review'")
     partial_notice = script.index("orchestrationNotice = partialGenerationNotice(s, qList);")

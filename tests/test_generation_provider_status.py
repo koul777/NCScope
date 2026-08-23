@@ -29,8 +29,8 @@ def test_status_advertises_request_scoped_api_key_without_verifying_server_key(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["provider"] == "openai_api"
-    assert payload["configured_default"] == "openai_api"
+    assert payload["provider"] == "openrouter_api"
+    assert payload["configured_default"] == "openrouter_api"
     assert payload["auth_mode"] == "request_scoped_api_key"
     assert payload["status"] == "key_required"
     assert payload["available"] is True
@@ -61,6 +61,58 @@ def test_status_is_independent_of_server_openai_environment(monkeypatch) -> None
         assert payload["authenticated"] is False
         assert payload["requires_request_api_key"] is True
         assert SERVER_KEY not in response.text
+
+
+def test_status_advertises_configured_openrouter_server_environment_without_echoing_it(
+    monkeypatch,
+) -> None:
+    server_key = "sk-or-v1-server-key-must-not-be-echoed"
+    monkeypatch.setenv("OPENROUTER_API_KEY", server_key)
+    monkeypatch.setenv("OPENROUTER_ALLOW_SERVER_KEY", "true")
+
+    with TestClient(main.app) as client:
+        response = client.get("/api/generation-provider/status?provider=openrouter")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "openrouter_api"
+    assert payload["auth_mode"] == "server_env_api_key"
+    assert payload["credential_managed_by"] == "server_env"
+    assert payload["requires_request_api_key"] is False
+    assert payload["credential_configured"] is True
+    assert payload["status"] == "configured"
+    assert payload["available"] is True
+    assert payload["authenticated"] is False
+    assert payload["server_key_state"] == "configured"
+    assert payload["server_key_enabled"] is True
+    assert payload["generation_limits"] == {
+        "max_main_questions_per_request": 5,
+        "max_follow_up_questions_per_main": 5,
+        "max_ncs_details_per_request": 1,
+        "max_interview_methods_per_request": 1,
+        "request_budget_sec": 285,
+    }
+    assert "Vercel 환경변수의 OpenRouter API 키" in payload["message"]
+    assert server_key not in response.text
+
+
+def test_status_reports_invalid_opted_in_openrouter_server_key_without_echoing_it(
+    monkeypatch,
+) -> None:
+    server_key = "not-an-openrouter-key"
+    monkeypatch.setenv("OPENROUTER_API_KEY", server_key)
+    monkeypatch.setenv("OPENROUTER_ALLOW_SERVER_KEY", "true")
+
+    with TestClient(main.app) as client:
+        response = client.get("/api/generation-provider/status?provider=openrouter")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "key_invalid"
+    assert payload["available"] is False
+    assert payload["credential_configured"] is False
+    assert payload["server_key_state"] == "invalid"
+    assert server_key not in response.text
 
 
 def test_status_does_not_consume_or_echo_query_credentials(monkeypatch) -> None:
@@ -108,7 +160,7 @@ def test_health_uses_only_mcp_readiness_and_advertises_request_scoped_key(
     assert payload["keys"]["openai_request_scoped"] is True
     assert payload["keys"]["openai_authenticated"] is False
     descriptor = payload["question_generation"]
-    assert descriptor["provider"] == "openai_api"
+    assert descriptor["provider"] == "openrouter_api"
     assert descriptor["auth_mode"] == "request_scoped_api_key"
     assert descriptor["requires_request_api_key"] is True
     assert descriptor["local_only"] is False

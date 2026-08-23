@@ -67,6 +67,69 @@ def test_structure_job_description_merges_detail_from_kordoc_table_blocks() -> N
     assert result["fields"]["duties"] == ["문서 접수 및 보고자료 작성"]
 
 
+def test_structure_job_description_recovers_aks_electric_jd_from_flattened_pdf_text() -> None:
+    """A PDF conversion can drop page 1 while flattening page 2 table labels."""
+
+    markdown = """
+수행업무(전기기기유지보수) 1. 전기안전관리자의 직무(산업통상자원부고시 제2022-128호) 수행 2. 전기설비(수변전설비 및 발전기, 분전반 등) 운전 및 조작 업무 3. 전기설비 점검 및 기록, 보존 관리 4. 전기설비 유지보수 5. 전기설비 사고 응급조치 및 사후 복구 업무 ○ (전기기기 및 관련 시설물 관리) 자동제어설비의 조작 및 유지보수 ○ (소방안전관리) 소화활동설비의 조작 및 유지보수, 피난설비의 조작 및 유지보수필요지식·전기도면 지식 ·수전설비 구성형태 ·전기안전관리 법령 및 관련 지식 ·한국전기설비규정(KEC) ·소방설비관련 기본지식
+2
+※ 본 직무수행 내용은 기관의 고유직무를 반영하여 NCS에서 제시한 내용을 수정하였습니다.
+필요기술·전기도면 판독능력 ·전기설비 점검 및 보수 능력 ·보호계전기 적용 기술 ·소방시설 점검 및 매뉴얼 분석
+직무수행태도안전관리 및 법규 준수 의지, 안전사고 예방 및 대처 능력, 책임감
+필요자격전기 분야 기능사 이상의 자격증 전기안전관리법 시행규칙 [별표8]의 안전관리보조원 이상 선임 기준 충족자
+직업기초능력의사소통능력, 수리능력, 문제해결능력, 기술능력, 직업윤리
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="03. ncs 기반 채용 직무 설명자료.pdf")
+    fields = result["fields"]
+
+    assert fields["ncs_detail_candidates"] == [
+        "전기기기유지보수",
+        "전기설비운영",
+        "전기안전관리",
+        "소방안전관리",
+    ]
+    assert fields["ncs_detail_source"] == "contextual"
+    assert fields["knowledge"] == [
+        "·전기도면 지식 ·수전설비 구성형태 ·전기안전관리 법령 및 관련 지식 ·한국전기설비규정(KEC) ·소방설비관련 기본지식"
+    ]
+    assert fields["skills"] == [
+        "·전기도면 판독능력 ·전기설비 점검 및 보수 능력 ·보호계전기 적용 기술 ·소방시설 점검 및 매뉴얼 분석"
+    ]
+    assert fields["attitudes"] == [
+        "안전관리 및 법규 준수 의지, 안전사고 예방 및 대처 능력, 책임감"
+    ]
+    assert fields["qualifications"] == [
+        "전기 분야 기능사 이상의 자격증 전기안전관리법 시행규칙 [별표8]의 안전관리보조원 이상 선임 기준 충족자"
+    ]
+    assert fields["basic_competencies"] == [
+        "의사소통능력, 수리능력, 문제해결능력, 기술능력, 직업윤리"
+    ]
+    assert all("필요지식" not in duty and "필요기술" not in duty for duty in fields["duties"])
+    assert all(item != "2" and "본 직무수행 내용" not in item for values in fields.values() if isinstance(values, list) for item in values if isinstance(item, str))
+
+
+def test_structure_job_description_reads_required_qualification_from_kordoc_table_block() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {"text": "필요\n자격"},
+                        {"text": "전기 분야 기능사 이상의 자격증"},
+                    ]
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="jd.hwp")
+
+    assert result["fields"]["qualifications"] == ["전기 분야 기능사 이상의 자격증"]
+
+
 def test_structure_job_description_splits_numbered_detail_cells_from_kordoc_blocks() -> None:
     parsed = {
         "markdown": "",

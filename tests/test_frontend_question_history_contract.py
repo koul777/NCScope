@@ -37,8 +37,9 @@ def test_frontend_inline_javascript_parses() -> None:
 def test_frontend_history_is_bounded_and_sent_by_both_generation_modes() -> None:
     script = _inline_script()
 
-    assert "questionHistory = merged.slice(-500)" in script
-    assert "return questionHistory.slice(-500)" in script
+    assert "const MAX_QUESTION_HISTORY_ITEMS = 50" in script
+    assert "questionHistory = merged.slice(-MAX_QUESTION_HISTORY_ITEMS)" in script
+    assert "return questionHistory.slice(-MAX_QUESTION_HISTORY_ITEMS)" in script
     assert "rememberQuestions(currentQuestions)" in script
     assert "fd.append('avoid_questions_json', JSON.stringify(currentQuestionTexts()))" in script
     assert "avoid_questions: currentQuestionTexts()" in script
@@ -112,7 +113,7 @@ def test_frontend_locks_only_the_stale_question_after_review_conflict() -> None:
 
 def test_upload_history_context_includes_confirmed_ncs_details_before_history_read() -> None:
     script = _inline_script()
-    final_sclass = script.index("const finalSclass = dedupSclassLabels")
+    final_sclass = script.index("const finalSclass = currentReviewedDetails().length")
     history_details = script.index("const historyDetails = finalSclass.map(normSclassLabel).sort().join(',')")
     context = script.index("const uploadGenerationContext = JSON.stringify", history_details)
     prepare_history = script.index("prepareQuestionHistory(`upload|${uploadGenerationContext}`)", context)

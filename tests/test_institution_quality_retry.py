@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -163,6 +165,16 @@ def _patch_pipeline(
 
 def _post_primary(client: TestClient, path: str):
     return _post_primary_with_payload(client, path, _generation_payload())
+
+
+def _assert_server_ksa_fallback(response) -> dict[str, Any]:
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    assert strategy["provider_fallback_used"] is True
+    assert strategy["degraded"] is True
+    assert strategy["question_release_status"] == "human_review_required"
+    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
+    return strategy
 
 
 def _post_primary_with_payload(
@@ -353,7 +365,7 @@ def test_primary_endpoint_does_not_retry_when_first_candidate_passes(
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
-def test_primary_endpoint_stops_after_one_quality_retry_and_returns_sanitized_502(
+def test_primary_endpoint_stops_after_one_quality_retry_and_uses_server_fallback(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -373,13 +385,262 @@ def test_primary_endpoint_stops_after_one_quality_retry_and_returns_sanitized_50
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, path)
 
-    assert response.status_code == 502
+    _assert_server_ksa_fallback(response)
     assert len(build_calls) == 2
-    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
     assert "question_quality_report_failed" not in response.text
-    assert "needs_review" not in response.text
     assert REQUEST_KEY not in response.text
     assert all(REQUEST_KEY not in str(call.get("extra_context") or "") for call in build_calls)
+
+
+def test_serverless_budget_disables_nested_and_quality_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_calls: list[dict[str, Any]] = []
+
+    def builder(**kwargs: Any) -> dict[str, Any]:
+        build_calls.append(copy.deepcopy(kwargs))
+        return _model_strategy()
+
+    _patch_pipeline(monkeypatch, builder)
+    monkeypatch.setenv("INSTITUTION_MODEL_REQUESTS_PER_BATCH", "1")
+    monkeypatch.setenv("INSTITUTION_QUALITY_RETRY_ENABLED", "false")
+    monkeypatch.setattr(
+        main,
+        "_run_runtime_question_quality_orchestration",
+        lambda strategy, **_kwargs: _quality_result(strategy, passed=False),
+    )
+
+    with TestClient(main.app, client=REMOTE_CLIENT) as client:
+        response = _post_primary(client, "/api/questions/generate-from-text")
+
+    _assert_server_ksa_fallback(response)
+    assert len(build_calls) == 1
+    assert build_calls[0]["max_model_requests"] == 1
+    assert build_calls[0]["transport_max_attempts"] == 1
+
+
+def test_serverless_openrouter_five_question_request_uses_parallel_micro_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_calls: list[dict[str, Any]] = []
+    question_count = 5
+    runtime_plan = {
+        "total_main_count": question_count,
+        "follow_up_count": 1,
+        "question_sequence": [
+            {
+                "index": index,
+                "detail": "Facilities",
+                "type": "경험면접",
+                "follow_up_count": 1,
+            }
+            for index in range(1, question_count + 1)
+        ],
+    }
+
+    def builder(**kwargs: Any) -> dict[str, Any]:
+        build_calls.append(copy.deepcopy(kwargs))
+        return {
+            "interview_questions": [
+                {
+                    "question": f"Model question {index}",
+                    "question_source": "openrouter_api",
+                }
+                for index in range(1, int(kwargs["target_count_override"]) + 1)
+            ],
+            "provider_generation_request_count": 1,
+        }
+
+    def quality(strategy: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        count = len(strategy.get("interview_questions") or [])
+        return {
+            **strategy,
+            "question_quality_report": {
+                "passed": True,
+                "summary": {
+                    "question_count": count,
+                    "expected_question_count": count,
+                    "count_matches_plan": True,
+                },
+                "items": [
+                    {"index": index, "ready": True, "issues": []}
+                    for index in range(1, count + 1)
+                ],
+            },
+            "question_quality_orchestration": {
+                "status": "passed",
+                "items": [
+                    {"index": index, "final_issues": []}
+                    for index in range(1, count + 1)
+                ],
+            },
+        }
+
+    monkeypatch.setenv("INSTITUTION_MODEL_REQUESTS_PER_BATCH", "2")
+    monkeypatch.setenv("INSTITUTION_QUALITY_RETRY_ENABLED", "false")
+    monkeypatch.setenv("INSTITUTION_GENERATION_BATCH_SIZE", "1")
+    monkeypatch.setenv("INSTITUTION_GENERATION_BATCH_CONCURRENCY", "4")
+    monkeypatch.setattr(main, "build_jd_strategy_with_openai", builder)
+    monkeypatch.setattr(
+        main,
+        "_planned_question_evidence_assignments",
+        lambda **kwargs: (dict(kwargs["question_plan"]), []),
+    )
+    monkeypatch.setattr(
+        main,
+        "_adjust_generated_questions",
+        lambda strategy, *_args, **_kwargs: strategy,
+    )
+    monkeypatch.setattr(
+        main,
+        "_attach_ksa_evidence_to_strategy",
+        lambda strategy, *_args, **_kwargs: strategy,
+    )
+    monkeypatch.setattr(main, "_run_runtime_question_quality_orchestration", quality)
+    monkeypatch.setattr(main, "_public_questions_precision_grounded", lambda _result: True)
+
+    result = asyncio.run(
+        main._generate_quality_gated_institution_strategy(
+            build_kwargs={"generation_provider": "openrouter_api"},
+            question_plan=runtime_plan,
+            interview_methods=["경험면접"],
+            ncs_matches=[],
+            ncs_ksa=[],
+            avoid_questions=[],
+            generation_offset=None,
+        )
+    )
+
+    assert len(build_calls) == 5
+    assert [call["target_count_override"] for call in build_calls] == [1, 1, 1, 1, 1]
+    assert result["generation_batching"] == {
+        "applied": True,
+        "policy": "locked-plan-parallel-batches-v1",
+        "batch_count": 5,
+        "batch_size_limit": 1,
+        "max_concurrency": 4,
+        "batch_question_counts": [1, 1, 1, 1, 1],
+        "recovered_batch_count": 0,
+    }
+    assert result["model_quality_retry"]["provider_generation_request_limit"] == 10
+
+
+def test_serverless_microbatch_recovers_only_invalid_provider_slot_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question_count = 5
+    runtime_plan = {
+        "total_main_count": question_count,
+        "follow_up_count": 1,
+        "question_sequence": [
+            {
+                "index": index,
+                "detail": "Facilities",
+                "type": "경험면접",
+                "follow_up_count": 1,
+            }
+            for index in range(1, question_count + 1)
+        ],
+    }
+    attempts: dict[int, int] = {}
+    calls: list[dict[str, Any]] = []
+    lock = threading.Lock()
+
+    def builder(**kwargs: Any) -> dict[str, Any]:
+        original_index = int(
+            kwargs["question_plan"]["generation_batch_original_indexes"][0]
+        )
+        with lock:
+            attempts[original_index] = attempts.get(original_index, 0) + 1
+            attempt = attempts[original_index]
+            calls.append(copy.deepcopy(kwargs))
+        if original_index == 3 and attempt == 1:
+            return {
+                "interview_questions": [],
+                "error": "model_generation_failed: model_response_invalid_json",
+                "question_generation_policy": "model_only_no_template_fallback",
+            }
+        return {
+            "interview_questions": [
+                {
+                    "question": f"Model question {original_index}",
+                    "question_source": "openrouter_api",
+                }
+            ],
+            "provider_generation_request_count": 1,
+        }
+
+    def quality(strategy: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        count = len(strategy.get("interview_questions") or [])
+        return {
+            **strategy,
+            "question_quality_report": {
+                "passed": True,
+                "summary": {
+                    "question_count": count,
+                    "expected_question_count": count,
+                    "count_matches_plan": True,
+                },
+                "items": [
+                    {"index": index, "ready": True, "issues": []}
+                    for index in range(1, count + 1)
+                ],
+            },
+            "question_quality_orchestration": {
+                "status": "passed",
+                "items": [
+                    {"index": index, "final_issues": []}
+                    for index in range(1, count + 1)
+                ],
+            },
+        }
+
+    monkeypatch.setenv("INSTITUTION_MODEL_REQUESTS_PER_BATCH", "2")
+    monkeypatch.setenv("INSTITUTION_QUALITY_RETRY_ENABLED", "false")
+    monkeypatch.setenv("INSTITUTION_GENERATION_BATCH_SIZE", "1")
+    monkeypatch.setenv("INSTITUTION_GENERATION_BATCH_CONCURRENCY", "4")
+    monkeypatch.setattr(main, "build_jd_strategy_with_openai", builder)
+    monkeypatch.setattr(
+        main,
+        "_planned_question_evidence_assignments",
+        lambda **kwargs: (dict(kwargs["question_plan"]), []),
+    )
+    monkeypatch.setattr(
+        main,
+        "_adjust_generated_questions",
+        lambda strategy, *_args, **_kwargs: strategy,
+    )
+    monkeypatch.setattr(
+        main,
+        "_attach_ksa_evidence_to_strategy",
+        lambda strategy, *_args, **_kwargs: strategy,
+    )
+    monkeypatch.setattr(main, "_run_runtime_question_quality_orchestration", quality)
+    monkeypatch.setattr(main, "_public_questions_precision_grounded", lambda _result: True)
+
+    result = asyncio.run(
+        main._generate_quality_gated_institution_strategy(
+            build_kwargs={"generation_provider": "openrouter_api"},
+            question_plan=runtime_plan,
+            interview_methods=["경험면접"],
+            ncs_matches=[],
+            ncs_ksa=[],
+            avoid_questions=[],
+            generation_offset=None,
+        )
+    )
+
+    assert len(calls) == 6
+    assert attempts == {1: 1, 2: 1, 3: 2, 4: 1, 5: 1}
+    recovery_call = next(
+        call
+        for call in calls
+        if call.get("max_model_requests") == 1
+        and call["question_plan"]["generation_batch_original_indexes"] == [3]
+    )
+    assert "서버 배치 복구" in recovery_call["extra_context"]
+    assert len(result["interview_questions"]) == question_count
+    assert result["generation_batching"]["recovered_batch_count"] == 1
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
@@ -457,7 +718,7 @@ def test_primary_endpoint_returns_evidence_grounded_model_draft_for_soft_review_
         (None, "label_like_metadata_exposure"),
     ],
 )
-def test_primary_endpoint_still_rejects_unresolved_hard_quality_findings(
+def test_primary_endpoint_replaces_unresolved_hard_quality_findings(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     hard_issue: str | None,
@@ -513,9 +774,8 @@ def test_primary_endpoint_still_rejects_unresolved_hard_quality_findings(
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, path)
 
-    assert response.status_code == 502
+    _assert_server_ksa_fallback(response)
     assert len(build_calls) == 2
-    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
     assert "accepted_for_human_review" not in response.text
     assert REQUEST_KEY not in response.text
 
@@ -526,6 +786,9 @@ def test_primary_endpoint_targeted_retry_rebuilds_only_failed_slot_and_revalidat
     path: str,
 ) -> None:
     methods = ["경험면접", "상황면접", "발표면접"]
+    # This test isolates the downstream multi-slot retry engine. Public request
+    # parsing is independently locked to one method per request.
+    monkeypatch.setattr(main, "_parse_interview_methods", lambda _raw: list(methods))
     payload = _generation_payload_with_plan(main_count=3, interview_methods=methods)
     ksa_rows = [
         _ksa("첫 번째 KSA", "1"),
@@ -733,6 +996,9 @@ def test_primary_endpoint_returns_partial_safe_questions_after_targeted_retry_ex
     path: str,
 ) -> None:
     methods = ["경험면접", "상황면접", "발표면접"]
+    # Bypass only the public single-method boundary to exercise legacy
+    # downstream retry isolation with a multi-slot fixture.
+    monkeypatch.setattr(main, "_parse_interview_methods", lambda _raw: list(methods))
     payload = _generation_payload_with_plan(main_count=3, interview_methods=methods)
     ksa_rows = [
         _ksa("첫 번째 KSA", "1"),
@@ -903,13 +1169,16 @@ def test_primary_endpoint_returns_partial_safe_questions_after_targeted_retry_ex
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
-def test_primary_endpoint_targeted_retry_stress_keeps_twenty_question_order_and_timing(
+def test_primary_endpoint_targeted_retry_keeps_max_safe_question_order_and_timing(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
-    total_count = 20
-    failed_index = 11
+    total_count = 5
+    failed_index = 3
     selected_methods = ["경험면접", "상황면접", "발표면접", "토론면접"]
+    # Public requests cannot select this list; the parser override keeps this
+    # focused as a downstream ordering/timing unit test.
+    monkeypatch.setattr(main, "_parse_interview_methods", lambda _raw: list(selected_methods))
     method_by_index = [
         selected_methods[(index - 1) % len(selected_methods)]
         for index in range(1, total_count + 1)
@@ -1133,33 +1402,21 @@ def test_primary_endpoint_targeted_retry_stress_keeps_twenty_question_order_and_
         response = _post_primary_with_payload(client, path, payload)
 
     assert response.status_code == 200
-    assert len(build_calls) == 5
-    initial_calls = sorted(
-        build_calls[:4],
-        key=lambda call: min(call["question_plan"]["generation_batch_original_indexes"]),
-    )
-    for expected_indexes, batch_call in zip(
-        [
-            list(range(1, 6)),
-            list(range(6, 11)),
-            list(range(11, 16)),
-            list(range(16, 21)),
-        ],
-        initial_calls,
-        strict=True,
-    ):
-        expected_batch_methods = [method_by_index[index - 1] for index in expected_indexes]
-        assert batch_call["target_count_override"] == 5
-        assert batch_call["question_plan"]["generation_batch"] is True
-        assert batch_call["question_plan"]["generation_batch_original_indexes"] == expected_indexes
-        assert batch_call["question_plan"]["total_main_count"] == 5
-        assert len(batch_call["question_plan"]["question_sequence"]) == 5
-        assert [
-            item["type"] for item in batch_call["question_plan"]["question_sequence"]
-        ] == expected_batch_methods
-        assert batch_call["interview_methods"] == list(dict.fromkeys(expected_batch_methods))
+    assert len(build_calls) == 2
+    initial_call = build_calls[0]
+    expected_indexes = list(range(1, total_count + 1))
+    expected_batch_methods = [method_by_index[index - 1] for index in expected_indexes]
+    assert initial_call["target_count_override"] == total_count
+    assert initial_call["question_plan"]["generation_batch"] is True
+    assert initial_call["question_plan"]["generation_batch_original_indexes"] == expected_indexes
+    assert initial_call["question_plan"]["total_main_count"] == total_count
+    assert len(initial_call["question_plan"]["question_sequence"]) == total_count
+    assert [
+        item["type"] for item in initial_call["question_plan"]["question_sequence"]
+    ] == expected_batch_methods
+    assert initial_call["interview_methods"] == list(dict.fromkeys(expected_batch_methods))
 
-    retry_call = build_calls[4]
+    retry_call = build_calls[1]
     assert retry_call["target_count_override"] == 1
     assert retry_call["question_plan"]["targeted_retry"] is True
     assert retry_call["question_plan"]["targeted_retry_original_indexes"] == [failed_index]
@@ -1182,15 +1439,16 @@ def test_primary_endpoint_targeted_retry_stress_keeps_twenty_question_order_and_
     assert orchestration_calls[1]["questions"] == [retried_question["question"]]
     assert orchestration_calls[2]["questions"] == expected_questions
     assert strategy["generation_batching"] == {
-        "applied": True,
+        "applied": False,
         "policy": "locked-plan-parallel-batches-v1",
-        "batch_count": 4,
+        "batch_count": 1,
         "batch_size_limit": 5,
         "max_concurrency": 4,
-        "batch_question_counts": [5, 5, 5, 5],
+        "batch_question_counts": [5],
+        "recovered_batch_count": 0,
     }
     assert strategy["model_quality_retry"]["provider_generation_request_count"] == 0
-    assert strategy["model_quality_retry"]["provider_generation_request_limit"] == 12
+    assert strategy["model_quality_retry"]["provider_generation_request_limit"] == 3
 
     timing = strategy["generation_timing"]
     assert timing["generation_attempt_count"] >= 2
@@ -1201,7 +1459,7 @@ def test_primary_endpoint_targeted_retry_stress_keeps_twenty_question_order_and_
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
 @pytest.mark.parametrize("failure_stage", ["provider", "empty", "postprocess"])
-def test_non_quality_failures_are_never_retried(
+def test_non_quality_failures_are_not_retried_before_server_fallback(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     failure_stage: str,
@@ -1235,9 +1493,8 @@ def test_non_quality_failures_are_never_retried(
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, path)
 
-    assert response.status_code == 502
+    _assert_server_ksa_fallback(response)
     assert build_count == 1
-    assert response.json()["detail"]["code"] == "openai_api_generation_failed"
     assert "leaked" not in response.text
     assert REQUEST_KEY not in response.text
 
@@ -1276,8 +1533,7 @@ def test_retry_locks_each_server_validated_evidence_assignment(
     assert first_id in build_calls[1]["extra_context"]
     assert REQUEST_KEY not in build_calls[1]["extra_context"]
     if change_assignment:
-        assert response.status_code == 502
-        assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
+        _assert_server_ksa_fallback(response)
         assert "evidence_assignment_changed" not in response.text
     else:
         assert response.status_code == 200

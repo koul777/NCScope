@@ -120,8 +120,8 @@ def _assert_key_required(response) -> None:
     assert response.status_code == 400
     detail = response.json()["detail"]
     assert set(detail) == {"code", "provider", "message", "retryable"}
-    assert detail["code"] == "openai_api_key_required"
-    assert detail["provider"] == "openai_api"
+    assert detail["code"] == "openrouter_key_required"
+    assert detail["provider"] == "openrouter_api"
     assert isinstance(detail["message"], str) and detail["message"]
     assert detail["retryable"] is False
     assert REQUEST_KEY not in response.text
@@ -147,7 +147,7 @@ def test_status_declares_request_key_required_without_receiving_a_credential(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["provider"] == "openai_api"
+    assert payload["provider"] == "openrouter_api"
     assert payload["auth_mode"] == "request_scoped_api_key"
     assert payload["status"] == "key_required"
     assert payload["authenticated"] is False
@@ -296,7 +296,7 @@ def test_settings_never_resolve_server_environment_as_generation_fallback(
     assert main.settings.openai_key_source("") == "missing"
 
 
-def test_provider_failure_does_not_expose_request_or_server_key_or_fallback(
+def test_provider_failure_uses_server_ksa_fallback_without_exposing_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", SERVER_KEY)
@@ -315,17 +315,49 @@ def test_provider_failure_does_not_expose_request_or_server_key_or_fallback(
             json=_generation_payload(),
         )
 
-    assert response.status_code == 502
-    detail = response.json()["detail"]
-    assert detail["code"] == "openai_api_generation_failed"
-    assert detail["provider"] == "openai_api"
-    assert isinstance(detail["message"], str) and detail["message"]
-    assert detail["retryable"] is True
-    assert "strategy" not in response.json()
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    assert strategy["provider_fallback_used"] is True
+    assert strategy["degraded"] is True
+    assert strategy["question_release_status"] == "human_review_required"
+    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
     assert "upstream failure" not in response.text
     assert "template_fallback" not in response.text
     assert REQUEST_KEY not in response.text
     assert SERVER_KEY not in response.text
+
+
+def test_unexpected_server_fallback_defect_is_not_misattributed_to_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-or-server-fallback-internal-secret"
+
+    def provider_failure(**_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError(f"provider failed with {secret}")
+
+    def fallback_failure(**_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError(f"fallback defect with {secret}")
+
+    _patch_generation_pipeline(monkeypatch, provider_failure)
+    monkeypatch.setattr(main, "build_server_ksa_fallback_strategy", fallback_failure)
+
+    with TestClient(main.app, client=REMOTE_CLIENT) as client:
+        response = client.post(
+            "/api/questions/generate-from-text",
+            json=_generation_payload(),
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "server_ksa_fallback_failed",
+        "provider": "server_ksa_fallback",
+        "message": "서버 KSA 대체 문항 구성 중 내부 오류가 발생했습니다.",
+        "retryable": True,
+    }
+    assert "openai_api_generation_failed" not in response.text
+    assert "provider failed" not in response.text
+    assert "fallback defect" not in response.text
+    assert secret not in response.text
 
 
 @pytest.mark.parametrize("provider", ["codex_cli", "claude_code"])
@@ -505,7 +537,7 @@ def test_openai_strategy_marks_freeform_provenance_and_requests_exact_evidence(
     "path",
     ["/api/questions/generate-from-text", "/api/jd/strategy/upload"],
 )
-def test_post_quality_deterministic_repair_is_rejected(
+def test_post_quality_deterministic_repair_is_replaced_by_server_ksa_fallback(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -560,8 +592,10 @@ def test_post_quality_deterministic_repair_is_rejected(
                 },
             )
 
-    assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    assert strategy["provider_fallback_used"] is True
+    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
     assert "quality_orchestrator_repair" not in response.text
     assert REQUEST_KEY not in response.text
 
@@ -589,7 +623,7 @@ def test_post_quality_deterministic_repair_is_rejected(
         ),
     ],
 )
-def test_public_strategy_rejects_model_text_when_a_post_quality_gate_failed(
+def test_public_strategy_replaces_model_text_when_a_post_quality_gate_failed(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     quality_report: dict[str, Any],
@@ -646,9 +680,11 @@ def test_public_strategy_rejects_model_text_when_a_post_quality_gate_failed(
                 },
             )
 
-    assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
-    assert "needs_review" not in response.text
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    assert strategy["provider_fallback_used"] is True
+    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
+    assert _model_strategy()["interview_questions"][0]["question"] not in response.text
     assert REQUEST_KEY not in response.text
 
 
@@ -663,7 +699,7 @@ def test_public_strategy_rejects_model_text_when_a_post_quality_gate_failed(
         },
     ],
 )
-def test_empty_model_output_is_not_returned_as_a_successful_strategy(
+def test_empty_model_output_is_replaced_by_server_ksa_fallback(
     monkeypatch: pytest.MonkeyPatch,
     builder_result: dict[str, Any],
 ) -> None:
@@ -675,9 +711,10 @@ def test_empty_model_output_is_not_returned_as_a_successful_strategy(
             json=_generation_payload(),
         )
 
-    assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "openai_api_generation_failed"
-    assert "strategy" not in response.json()
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    assert strategy["provider_fallback_used"] is True
+    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
     assert "upstream detail" not in response.text
     assert "template_fallback" not in response.text
     assert REQUEST_KEY not in response.text

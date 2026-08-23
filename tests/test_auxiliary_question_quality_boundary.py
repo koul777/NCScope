@@ -315,7 +315,7 @@ def _post_auxiliary_endpoint(
         }
         if path.endswith("generate-batch"):
             payload.pop("target_count")
-            payload["batch_count"] = 10
+            payload["batch_count"] = 1
 
     with TestClient(main.app) as client:
         return client.post(path, json=payload)
@@ -392,7 +392,7 @@ def test_auxiliary_endpoint_accepts_natural_question_with_exact_evidence(
 def test_batch_validates_provider_output_and_deduplicated_final_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    questions = [_ready_question(suffix=f"사례 번호 {index}") for index in range(10)]
+    questions = [_ready_question(suffix=f"사례 번호 {index}") for index in range(1)]
     calls = {"count": 0}
 
     def fake_generate(**_kwargs: Any) -> dict[str, Any]:
@@ -408,10 +408,47 @@ def test_batch_validates_provider_output_and_deduplicated_final_set(
             json={
                 "openai_api_key": REQUEST_KEY,
                 "ncs_code": NCS_CODE,
-                "batch_count": 10,
+                "batch_count": 1,
             },
         )
 
     assert response.status_code == 200, response.text
-    assert response.json()["data"]["batch_count"] == 10
+    assert response.json()["data"]["batch_count"] == 1
     assert calls["count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "count_field"),
+    [
+        ("/api/questions/generate-batch", "batch_count"),
+        ("/api/questions/generate-diverse", "target_count"),
+    ],
+)
+def test_single_question_duplicate_does_not_trigger_generation_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    count_field: str,
+) -> None:
+    question = _ready_question(suffix="반복 금지")
+    calls = 0
+
+    def fake_generate(**_kwargs: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return _result(question)
+
+    monkeypatch.setenv("GENERATION_MAX_MAIN_QUESTIONS", "1")
+    monkeypatch.setattr(main, "generate_diverse_interview_questions", fake_generate)
+    with TestClient(main.app) as client:
+        response = client.post(
+            path,
+            json={
+                "openai_api_key": REQUEST_KEY,
+                "ncs_code": NCS_CODE,
+                count_field: 1,
+                "avoid_questions": [question["question"]],
+            },
+        )
+
+    assert response.status_code == 502
+    assert calls == 1

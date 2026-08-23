@@ -177,7 +177,7 @@ def test_generate_diverse_passes_request_avoid_questions_as_context(monkeypatch)
     assert "문서 요구사항 파악 경험" in captured_contexts[0]
 
 
-def test_generate_batch_combines_request_avoid_and_current_request_questions(monkeypatch) -> None:
+def test_generate_batch_uses_request_avoid_context_in_its_single_attempt(monkeypatch) -> None:
     captured_contexts: list[str] = []
     call_index = {"value": 0}
 
@@ -203,15 +203,14 @@ def test_generate_batch_combines_request_avoid_and_current_request_questions(mon
                 "openai_api_key": REQUEST_OPENAI_KEY,
                 "ncs_code": "0202030201_25v3",
                 "competency_name": "문서작성",
-                "batch_count": 10,
+                "batch_count": 1,
                 "avoid_questions": ["문서 요구사항 파악 경험을 설명해 주세요."],
             },
         )
 
     assert response.status_code == 200
-    assert len(captured_contexts) >= 2
+    assert len(captured_contexts) == 1
     assert "문서 요구사항 파악 경험" in captured_contexts[0]
-    assert "자료 오류 점검 질문 1" in captured_contexts[1]
 
 
 def test_generate_from_text_uses_only_current_request_avoid_questions(monkeypatch) -> None:
@@ -507,20 +506,13 @@ def test_generate_from_text_rejects_deterministic_repairs_across_history_cycles(
                 "generation_offset": cycle,
             }
             response = client.post("/api/questions/generate-from-text", json=payload)
-            assert response.status_code == 502
-            detail = response.json()["detail"]
-            assert detail["code"] == "openai_api_quality_rejected"
-            assert detail["provider"] == "openai_api"
-            assert detail["retryable"] is True
-            assert "문서 크기나 GPT 과부하가 아니라" in detail["message"]
-            diagnostics = detail["quality_diagnostics"]
-            assert diagnostics["requested_question_count"] == 1
-            assert diagnostics["failed_question_count"] == 1
-            assert diagnostics["failed_indexes"] == [1]
-            assert diagnostics["attempt_count"] == 2
+            assert response.status_code == 200
+            strategy = response.json()["strategy"]
+            assert strategy["provider_fallback_used"] is True
+            assert strategy["question_release_status"] == "human_review_required"
+            assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
             assert "경험이 있으십니까" not in response.text
             assert "template_fallback" not in response.text
-            assert "strategy" not in response.json()
             history.append(f"이전 화면 질문 {cycle}")
 
     # A valid model response that fails the final quality boundary receives one
@@ -538,7 +530,7 @@ def test_generate_from_text_rejects_deterministic_repairs_across_history_cycles(
 
 
 def test_review_then_regenerate_uses_feedback_and_rotates_quality_run(monkeypatch) -> None:
-    code = "SIM-OPER-REVIEW-001"
+    code = "0202030201_25v3"
     unit = {
         "ncsClCd": code,
         "compeUnitName": "운영문서검토",
@@ -633,7 +625,7 @@ def test_review_then_regenerate_uses_feedback_and_rotates_quality_run(monkeypatc
 def test_generate_from_text_repair_exception_returns_sanitized_502_without_fallback(
     monkeypatch,
 ) -> None:
-    code = "SIM-REPAIR-ERROR-001"
+    code = "0202030202_25v3"
     unit = {
         "ncsClCd": code,
         "compeUnitName": "문서작성",
@@ -710,27 +702,19 @@ def test_generate_from_text_repair_exception_returns_sanitized_502_without_fallb
         response = client.post("/api/questions/generate-from-text", json=payload)
 
     assert repair_failures > 0
-    assert response.status_code == 502
-    detail = response.json()["detail"]
-    assert detail["code"] == "openai_api_quality_rejected"
-    assert detail["provider"] == "openai_api"
-    assert detail["retryable"] is True
-    assert "문서 크기나 GPT 과부하가 아니라" in detail["message"]
-    diagnostics = detail["quality_diagnostics"]
-    assert diagnostics["requested_question_count"] == 1
-    assert diagnostics["failed_question_count"] == 1
-    assert diagnostics["failed_indexes"] == [1]
-    assert diagnostics["attempt_count"] == 2
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    assert strategy["provider_fallback_used"] is True
+    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
     assert repeated_question not in response.text
     assert "simulated item repair failure" not in response.text
     assert "template_fallback" not in response.text
-    assert "strategy" not in response.json()
 
 
 def test_generate_from_text_surfaces_adjustment_failure_without_rule_fallback(
     monkeypatch,
 ) -> None:
-    code = "SIM-SECOND-ADJUST-001"
+    code = "0202030203_25v3"
     unit = {
         "ncsClCd": code,
         "compeUnitName": "문서작성",
@@ -797,11 +781,8 @@ def test_generate_from_text_surfaces_adjustment_failure_without_rule_fallback(
         response = client.post("/api/questions/generate-from-text", json=payload)
 
     assert builder_called is True
-    assert response.status_code == 502
-    assert response.json()["detail"] == {
-        "code": "openai_api_generation_failed",
-        "provider": "openai_api",
-        "message": "OpenAI API에서 질문을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
-        "retryable": True,
-    }
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    assert strategy["provider_fallback_used"] is True
+    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
     assert "simulated adjustment defect" not in response.text

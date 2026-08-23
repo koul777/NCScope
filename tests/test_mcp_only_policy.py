@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import io
+import threading
+import time
 import zipfile
 
 import pytest
@@ -338,6 +340,9 @@ def test_notice_parse_review_prefills_duty_and_evaluation_text():
     body = resp.json()
     assert "경영계획 수립" in body["fields"]["duty_text"]
     assert "문제해결능력" in body["fields"]["evaluation_text"]
+    assert body["review_session_id"] == body["review_session"]["id"]
+    assert body["review_session"]["document_sha256"]
+    assert body["review_session"]["markdown_sha256"]
 
 
 def test_mcp_only_requires_human_review_confirmation(monkeypatch, mocker):
@@ -351,6 +356,25 @@ def test_mcp_only_requires_human_review_confirmation(monkeypatch, mocker):
             files=_upload_files(),
             data={
                 "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "question_plan_json": json.dumps(
+                    {
+                        "items": [
+                            {
+                                "detail": "\uacbd\uc601\uae30\ud68d",
+                                "enabled": True,
+                                "main_count": 1,
+                                "follow_up_count": 3,
+                            },
+                            {
+                                "detail": "\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870",
+                                "enabled": True,
+                                "main_count": 1,
+                                "follow_up_count": 3,
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
                 "openai_api_key": REQUEST_OPENAI_KEY,
             },
         )
@@ -370,6 +394,25 @@ def test_mcp_only_rejects_truthy_string_confirmation(monkeypatch, mocker):
             files=_upload_files(),
             data={
                 "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "question_plan_json": json.dumps(
+                    {
+                        "items": [
+                            {
+                                "detail": "\uacbd\uc601\uae30\ud68d",
+                                "enabled": True,
+                                "main_count": 1,
+                                "follow_up_count": 3,
+                            },
+                            {
+                                "detail": "\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870",
+                                "enabled": True,
+                                "main_count": 1,
+                                "follow_up_count": 3,
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
                 "openai_api_key": REQUEST_OPENAI_KEY,
             },
         )
@@ -472,6 +515,9 @@ def test_mcp_only_returns_manual_suggestions_when_detail_has_no_exact_match(monk
 
 def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    # Public requests are single-detail. Bypass only that input boundary here
+    # to retain coverage of the downstream exact-coverage/suggestion policy.
+    monkeypatch.setattr(main, "_enforce_question_plan_capacity", lambda _plan: None)
     _patch_mcp_upload_common(mocker)
     matched_unit = {
         "ncsClCd": "0201010103_22v2",
@@ -503,6 +549,25 @@ def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
             files=_upload_files(),
             data={
                 "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "question_plan_json": json.dumps(
+                    {
+                        "items": [
+                            {
+                                "detail": "\uacbd\uc601\uae30\ud68d",
+                                "enabled": True,
+                                "main_count": 1,
+                                "follow_up_count": 3,
+                            },
+                            {
+                                "detail": "\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870",
+                                "enabled": True,
+                                "main_count": 1,
+                                "follow_up_count": 3,
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
                 "openai_api_key": REQUEST_OPENAI_KEY,
             },
         )
@@ -665,7 +730,7 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert question["ksa_evidence"][0]["ksaStatus"] == "official"
 
 
-def test_upload_requires_request_openai_key_even_with_server_env(monkeypatch, mocker):
+def test_upload_requires_request_key_even_with_server_openai_env(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.setenv("OPENAI_API_KEY", SERVER_OPENAI_KEY)
     _patch_mcp_upload_common(mocker)
@@ -682,8 +747,8 @@ def test_upload_requires_request_openai_key_even_with_server_env(monkeypatch, mo
         )
 
     assert resp.status_code == 400
-    assert resp.json()["detail"]["code"] == "openai_api_key_required"
-    assert resp.json()["detail"]["provider"] == "openai_api"
+    assert resp.json()["detail"]["code"] == "openrouter_key_required"
+    assert resp.json()["detail"]["provider"] == "openrouter_api"
     assert resp.json()["detail"]["retryable"] is False
     assert SERVER_OPENAI_KEY not in resp.text
     build_strategy.assert_not_called()
@@ -717,7 +782,7 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
         return_value=_openai_model_strategy(
             unit,
             ksa,
-            methods=("\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"),
+            methods=("\ubc1c\ud45c\uba74\uc811",),
         ),
     )
     with TestClient(main.app) as client:
@@ -731,10 +796,10 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
                 "selected_ncs": [unit],
                 "question_plan": {
                     "items": [
-                        {"detail": "\uacbd\uc601\uae30\ud68d", "enabled": True, "main_count": 2, "follow_up_count": 4}
+                        {"detail": "\uacbd\uc601\uae30\ud68d", "enabled": True, "main_count": 1, "follow_up_count": 4}
                     ]
                 },
-                "interview_methods": ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"],
+                "interview_methods": ["\ubc1c\ud45c\uba74\uc811"],
             },
         )
 
@@ -742,9 +807,9 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
     body = resp.json()
     assert body["openai_key_source"] == "request"
     assert body["operational_notice"] == main.OPERATIONAL_REVIEW_NOTICE
-    assert body["question_plan"]["total_main_count"] == 2
+    assert body["question_plan"]["total_main_count"] == 1
     assert body["question_plan"]["follow_up_count"] == 4
-    assert body["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"]
+    assert body["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811"]
     rank_ksa.assert_called_once()
     ksa_query_text = rank_ksa.call_args.kwargs["query_text"]
     assert "duty: board reporting and KPI dashboard" in ksa_query_text
@@ -754,14 +819,14 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
     kwargs = build_strategy.call_args.kwargs
     assert kwargs["api_key_override"] == REQUEST_OPENAI_KEY
     assert main.settings.resolve_openai_key(kwargs["api_key_override"]) == REQUEST_OPENAI_KEY
-    assert kwargs["target_count_override"] == 2
+    assert kwargs["target_count_override"] == 1
     assert kwargs["follow_up_count"] == 4
     assert kwargs["question_plan"]["selected_terms"] == ["\uacbd\uc601\uae30\ud68d"]
-    assert kwargs["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811", "\ud1a0\ub860\uba74\uc811"]
+    assert kwargs["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811"]
     assert REQUEST_OPENAI_KEY not in resp.text
 
 
-def test_generate_from_text_requires_request_openai_key_even_with_server_env(monkeypatch, mocker):
+def test_generate_from_text_requires_request_key_even_with_server_openai_env(monkeypatch, mocker):
     monkeypatch.setenv("OPENAI_API_KEY", SERVER_OPENAI_KEY)
     build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai")
 
@@ -772,8 +837,8 @@ def test_generate_from_text_requires_request_openai_key_even_with_server_env(mon
         )
 
     assert resp.status_code == 400
-    assert resp.json()["detail"]["code"] == "openai_api_key_required"
-    assert resp.json()["detail"]["provider"] == "openai_api"
+    assert resp.json()["detail"]["code"] == "openrouter_key_required"
+    assert resp.json()["detail"]["provider"] == "openrouter_api"
     assert resp.json()["detail"]["retryable"] is False
     assert SERVER_OPENAI_KEY not in resp.text
     build_strategy.assert_not_called()
@@ -836,7 +901,7 @@ def test_generation_status_declares_request_scoped_key_contract(monkeypatch):
 
     assert status_resp.status_code == 200
     status = status_resp.json()
-    assert status["provider"] == "openai_api"
+    assert status["provider"] == "openrouter_api"
     assert status["auth_mode"] == "request_scoped_api_key"
     assert status["status"] == "key_required"
     assert status["available"] is True
@@ -898,13 +963,13 @@ def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkey
     assert resp.status_code == 200
     body = resp.json()
     assert body["question_plan"]["selected_terms"] == ["\uc0ac\ubb34\ud589\uc815"]
-    assert body["question_plan"]["total_main_count"] == 3
+    assert body["question_plan"]["total_main_count"] == 1
     assert body["question_plan"]["follow_up_count"] == 5
     kwargs = build_strategy.call_args.kwargs
     assert kwargs["api_key_override"] == REQUEST_OPENAI_KEY
     assert main.settings.resolve_openai_key(kwargs["api_key_override"]) == REQUEST_OPENAI_KEY
     assert kwargs["question_plan"]["selected_terms"] == ["\uc0ac\ubb34\ud589\uc815"]
-    assert kwargs["target_count_override"] == 3
+    assert kwargs["target_count_override"] == 1
     assert REQUEST_OPENAI_KEY not in resp.text
 
 
@@ -1033,6 +1098,61 @@ def test_mcp_ksa_limit_balances_types_without_hiding_later_elements(mocker):
         "둘째 요소 기술",
         "둘째 요소 태도",
     }
+
+
+def test_mcp_ksa_concurrency_preserves_confirmed_unit_order(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_KSA_CONCURRENCY", "3")
+    mocker.patch(
+        "app.services.ncs_mcp_client._tool_names",
+        return_value={"ncs_unit_detail"},
+    )
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_call_tool(_name, arguments):
+        nonlocal active, max_active
+        code = arguments["unit_code"]
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep({"U1": 0.03, "U2": 0.01, "U3": 0.02}[code])
+        with lock:
+            active -= 1
+        return {
+            "data": {
+                "unit": {
+                    "unit_name": f"Unit {code}",
+                    "classification": {"sub": "Facilities"},
+                },
+                "elements": [
+                    {
+                        "element_id": f"E-{code}",
+                        "element_name": f"Element {code}",
+                        "ksa": [
+                            {
+                                "text": f"Knowledge {code}",
+                                "ksa_type": "knowledge",
+                                "ksa_no": "K1",
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        side_effect=fake_call_tool,
+    )
+
+    rows = ncs_mcp_client.get_ksa_by_units(
+        [{"ncsClCd": code} for code in ("U1", "U2", "U3")],
+        max_factors_per_unit=1,
+    )
+
+    assert max_active >= 2
+    assert [row["ncsClCd"] for row in rows] == ["U1", "U2", "U3"]
 
 
 def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):

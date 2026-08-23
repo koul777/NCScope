@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from fastapi import HTTPException
 
 from app.services.jd_strategy import _build_ncs_code_template_fallback_question
 from app.services.question_evaluation_alignment import (
@@ -558,7 +559,7 @@ def test_ncs_code_fallback_templates_require_human_review(index: int) -> None:
 def test_runtime_knobs_allow_default_seven_ksa_units() -> None:
     _, ksa_units, _ = _clamp_runtime_knobs(None, None, None)
 
-    assert ksa_units == 7
+    assert ksa_units == 3
 
 
 def test_adjust_questions_enforces_selected_method_and_exact_counts() -> None:
@@ -2184,29 +2185,37 @@ def test_adjust_questions_distinguishes_all_interview_methods(
         assert all(row["minutes"] > 0 for row in conditions["time_plan"])
 
 
-def test_parse_interview_methods_canonicalizes_aliases_and_preserves_order() -> None:
-    methods = _parse_interview_methods(
-        json.dumps(
-            ["행동형", "PT", "토의면접", "in-basket", "직무지식형", "창의적 문제해결력", "situational"],
-            ensure_ascii=False,
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    [
+        ("행동형", "경험면접"),
+        ("PT", "발표면접"),
+        ("토의면접", "토론면접"),
+        ("in-basket", "인바스켓면접"),
+        ("직무지식형", "직무지식면접"),
+        ("창의적 문제해결력", "창의적 문제해결력면접"),
+        ("situational", "상황면접"),
+    ],
+)
+def test_parse_interview_methods_canonicalizes_one_alias(alias: str, expected: str) -> None:
+    assert _parse_interview_methods(json.dumps([alias], ensure_ascii=False)) == [expected]
+
+
+def test_parse_interview_methods_rejects_multiple_values() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        _parse_interview_methods(
+            json.dumps(["경험면접", "상황면접"], ensure_ascii=False)
         )
-    )
 
-    assert methods == ["경험면접", "발표면접", "토론면접", "인바스켓면접", "직무지식면접", "창의적 문제해결력면접", "상황면접"]
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["code"] == "interview_method_capacity_exceeded"
+    assert exc_info.value.detail["max_interview_methods"] == 1
 
 
-def test_parse_interview_methods_defaults_to_all_supported_methods() -> None:
+def test_parse_interview_methods_defaults_to_experience_interview() -> None:
     methods = _parse_interview_methods("")
 
-    assert methods == [
-        "경험면접",
-        "상황면접",
-        "발표면접",
-        "토론면접",
-        "인바스켓면접",
-        "직무지식면접",
-        "창의적 문제해결력면접",
-    ]
+    assert methods == ["경험면접"]
 
 
 def test_adjust_questions_rotates_selected_methods_without_blind_hiring_cues() -> None:

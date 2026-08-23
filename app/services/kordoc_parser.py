@@ -41,7 +41,9 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
         "자격요건",
         "응시자격",
         "필수자격",
+        "필요자격",
         "자격기준",
+        "자격사항",
         "지원요건",
         "응시요건",
         "관련 자격",
@@ -111,6 +113,24 @@ _NOTICE_REVIEW_ALIASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# These labels are safe enough to treat as transitions even when a PDF text
+# layer glues the next table row directly onto the previous row's value.
+_INLINE_SECTION_TRANSITION_ALIASES: dict[str, tuple[str, ...]] = {
+    "knowledge": ("필요지식",),
+    "skills": ("필요지식/기술", "필요지식 및 기술", "필요기술"),
+    "attitudes": ("직무수행태도", "수행태도"),
+    "qualifications": (
+        "필요자격",
+        "필수자격",
+        "지원자격",
+        "응시자격",
+        "자격요건",
+        "자격사항",
+    ),
+    "preferences": ("우대사항", "우대조건", "가점사항", "우대요건"),
+    "basic_competencies": ("직업기초능력",),
+}
+
 
 def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
@@ -165,6 +185,75 @@ def _section_for_label(label: str) -> str | None:
     if "세분류" in key and any(marker in key for marker in ("ncs", "특화분류", "소분류")):
         return "ncs_detail"
     return None
+
+
+def _section_prefix_for_text(value: str) -> tuple[str, str] | None:
+    """Read a table label even when PDF flattening glues its value to it.
+
+    Kordoc normally preserves table cells, but some HWP-to-PDF conversions
+    return lines such as ``필요지식·전기도면...`` or
+    ``직무수행태도안전관리...``.  Exact-label matching leaves every later
+    line inside the previous section, so use only unambiguous section labels
+    as line prefixes and preserve the attached value for human review.
+    """
+
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if not text:
+        return None
+    ambiguous = {_norm("지식"), _norm("기술"), _norm("태도")}
+    aliases = sorted(
+        (
+            (section, alias)
+            for section, values in _SECTION_ALIASES.items()
+            for alias in values
+            if _norm(alias) not in ambiguous
+        ),
+        key=lambda item: len(_norm(item[1])),
+        reverse=True,
+    )
+    for section, alias in aliases:
+        # PDF text can insert spaces or line-break remnants between the label
+        # characters.  At this point each input is already one logical line,
+        # so optional whitespace is safe and keeps the remainder indexable.
+        pattern = r"\s*".join(re.escape(char) for char in alias if not char.isspace())
+        match = re.match(rf"^{pattern}\s*[:：\-]?\s*(.*)$", text, flags=re.DOTALL)
+        if match:
+            return section, match.group(1).strip()
+    return None
+
+
+def _split_inline_section_transitions(value: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """Split strong table labels that were concatenated onto one PDF line."""
+
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if not text:
+        return None
+    matches: list[tuple[int, int, str]] = []
+    for section, aliases in _INLINE_SECTION_TRANSITION_ALIASES.items():
+        for alias in aliases:
+            pattern = r"\s*".join(re.escape(char) for char in alias if not char.isspace())
+            for match in re.finditer(pattern, text):
+                matches.append((match.start(), match.end(), section))
+    if not matches:
+        return None
+
+    # Prefer the longest label at the same position (for example
+    # ``필요지식/기술`` over its ``필요지식`` prefix) and drop overlaps.
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    selected: list[tuple[int, int, str]] = []
+    for start, end, section in matches:
+        if selected and start < selected[-1][1]:
+            continue
+        selected.append((start, end, section))
+
+    prefix = text[: selected[0][0]].strip()
+    segments: list[tuple[str, str]] = []
+    for index, (_start, end, section) in enumerate(selected):
+        next_start = selected[index + 1][0] if index + 1 < len(selected) else len(text)
+        remainder = text[end:next_start]
+        remainder = re.sub(r"^\s*[:：\-]?\s*", "", remainder).strip()
+        segments.append((section, remainder))
+    return prefix, segments
 
 
 def _looks_like_detail_candidate(value: str) -> bool:
@@ -567,6 +656,28 @@ def _extract_contextual_ncs_detail_candidates(markdown: str) -> list[str]:
         return []
 
     candidates: list[str] = []
+    # Some HWP-to-PDF conversions omit the first-page NCS classification table
+    # but retain the institution-specific duty, KSA, and qualification rows.
+    # This combination is deliberately narrow: it recovers four review
+    # candidates only when the electrical-maintenance, legal-safety, and fire
+    # facility evidence all survive together.
+    aks_electric_facility_signature = (
+        _has_any_norm(text, ("전기기기유지보수",))
+        and _has_any_norm(text, ("수변전설비", "수전설비"))
+        and _has_any_norm(text, ("전기안전관리자의 직무", "전기안전관리 법령"))
+        and _has_any_norm(text, ("소방안전관리",))
+        and _has_any_norm(text, ("소화활동설비", "피난설비", "소방시설 점검"))
+    )
+    if aks_electric_facility_signature:
+        candidates.extend(
+            [
+                "전기기기유지보수",
+                "전기설비운영",
+                "전기안전관리",
+                "소방안전관리",
+            ]
+        )
+
     if _has_any_norm(text, ("하수도 시설운영", "하수처리", "물재생센터")) and _has_any_norm(
         text,
         ("채수", "수질검사", "수질실험실", "수질분석", "시설운영"),
@@ -991,6 +1102,16 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         line = raw_line.strip()
         if not line:
             continue
+        cleaned_line = _clean_text(line)
+        if re.fullmatch(r"(?:페이지\s*)?\d+(?:\s*/\s*\d+)?", cleaned_line, flags=re.IGNORECASE):
+            continue
+        if (
+            cleaned_line.startswith("※")
+            and "본 직무수행 내용" in cleaned_line
+            and "NCS" in cleaned_line.upper()
+        ):
+            current = None
+            continue
         cells = _split_table_row(line)
         if cells:
             if _is_separator_row(cells):
@@ -1003,6 +1124,28 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                 continue
         heading_text = re.sub(r"^#{1,6}\s*", "", line)
         heading_text = re.sub(r"^(?:\d+[.)]|[가-힣][.)])\s*", "", heading_text)
+        transitions = _split_inline_section_transitions(heading_text)
+        if transitions:
+            prefix, segments = transitions
+            if prefix:
+                prefixed = _section_prefix_for_text(prefix)
+                if prefixed:
+                    current, remainder = prefixed
+                    if remainder:
+                        add(current, remainder, line=line_no)
+                elif current:
+                    add(current, prefix, line=line_no)
+            for section, remainder in segments:
+                current = section
+                if remainder:
+                    add(section, remainder, line=line_no)
+            continue
+        prefixed = _section_prefix_for_text(heading_text)
+        if prefixed:
+            current, remainder = prefixed
+            if remainder:
+                add(current, remainder, line=line_no)
+            continue
         heading = _section_for_label(heading_text)
         if heading:
             current = heading

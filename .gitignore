@@ -48,3 +48,4 @@ run_interview_questions.py
 .pytest_cache/
 htmlcov/
 Claude-Code-Usage-Monitor/
+.vercel

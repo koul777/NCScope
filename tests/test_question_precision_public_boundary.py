@@ -124,7 +124,7 @@ def _from_text_payload() -> dict[str, Any]:
 @pytest.mark.parametrize(
     "path", ["/api/questions/generate-from-text", "/api/jd/strategy/upload"]
 )
-def test_primary_public_routes_reject_unsupported_precision_at_final_boundary(
+def test_primary_public_routes_replace_unsupported_precision_with_server_fallback(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -164,17 +164,11 @@ def test_primary_public_routes_reject_unsupported_precision_at_final_boundary(
                 },
             )
 
-    assert response.status_code == 502
-    detail = response.json()["detail"]
-    assert detail["code"] == "openai_api_quality_rejected"
-    assert detail["provider"] == "openai_api"
-    assert detail["retryable"] is True
-    assert "문서 크기나 GPT 과부하가 아니라" in detail["message"]
-    diagnostics = detail["quality_diagnostics"]
-    assert diagnostics["requested_question_count"] == 1
-    assert diagnostics["failed_question_count"] == 1
-    assert diagnostics["failed_indexes"] == [1]
-    assert diagnostics["attempt_count"] == 2
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    assert strategy["provider_fallback_used"] is True
+    assert strategy["question_release_status"] == "human_review_required"
+    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
     assert "기준연도" not in response.text
     assert "분자" not in response.text
     assert REQUEST_KEY not in response.text
@@ -222,7 +216,7 @@ def test_auxiliary_public_routes_reject_unsupported_precision_generically(
     }
     if path.endswith("generate-batch"):
         payload.pop("target_count")
-        payload["batch_count"] = 10
+        payload["batch_count"] = 1
 
     with TestClient(main.app) as client:
         response = client.post(path, json=payload)
