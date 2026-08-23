@@ -48,6 +48,9 @@ def test_deployment_profile_values_are_synchronized_with_vercel_config() -> None
         "DATABASE_URL",
         "OPENROUTER_PRIMARY_REASONING_EFFORT",
         "OPENROUTER_TIMEOUT_SEC",
+        "OPENROUTER_HIGH_RISK_REASONING_EFFORT",
+        "OPENROUTER_QUALITY_RETRY_REASONING_EFFORT",
+        "OPENROUTER_HIGH_RISK_TIMEOUT_SEC",
         "OPENROUTER_MAX_REASONING_RESERVE",
         "OPENROUTER_RECOVERY_MODEL",
         "OPENROUTER_RECOVERY_JSON_MODE",
@@ -92,7 +95,8 @@ def test_vercel_notes_describe_capacity_budget_recovery_and_review_reuse() -> No
     assert "https://ncscope.vercel.app" in deployment
     assert "285-second application request budget" in compact_notes
     assert "`maxDuration` is 300 seconds" in compact_notes
-    assert "Ox Alpha Max primary at most 8 seconds" in compact_notes
+    assert "ordinary Ox Alpha requests at most 8 seconds" in compact_notes
+    assert "high-risk high-reasoning requests at most 15 seconds" in compact_notes
     assert "at most 15 seconds" in compact_notes
     assert "`openai/gpt-oss-20b`" in compact_notes
     assert "up to five main questions" in compact_notes

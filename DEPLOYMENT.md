@@ -40,7 +40,8 @@ The Vercel production deployment uses a **server-managed OpenRouter key**.
 Store `OPENROUTER_API_KEY` as a sensitive Production environment variable and
 set `OPENROUTER_ALLOW_SERVER_KEY=true`. Visitors can then generate without
 entering a key in the browser. The public UI and server pin the default path to
-OpenRouter `stealth/ox-alpha` with Max reasoning. The canonical public URL is
+OpenRouter `stealth/ox-alpha`; ordinary requests use medium reasoning and
+high-risk interview formats use high reasoning. The canonical public URL is
 `https://ncscope.vercel.app`. The encrypted Production secret is stored by
 Vercel, not read from the developer workstation, so the deployed service keeps
 working when that workstation is offline.
@@ -69,6 +70,15 @@ healthy response has these fields:
   "server_key_state": "configured",
   "recovery_model": "openai/gpt-oss-20b",
   "recovery_enabled": true,
+  "reasoning_profiles": {
+    "standard": "medium",
+    "high_risk": "high",
+    "quality_retry": "high"
+  },
+  "timeout_profiles_sec": {
+    "standard": 8,
+    "high_risk": 15
+  },
   "generation_limits": {
     "max_main_questions_per_request": 5,
     "max_follow_up_questions_per_main": 5,
@@ -91,15 +101,17 @@ request keys must not be saved to browser storage, files, DB, logs, traces,
 error reports, or responses. See `SECURITY.md` for the shared-key cost and
 abuse controls required for a public deployment.
 
-Quality-first primary generation uses the Max model with a bounded public
-`reasoning_effort=medium` setting and normally builds a 3x candidate pool before
+Quality-first primary generation uses the pinned Ox Alpha model. Ordinary
+one-question requests use the bounded public `reasoning_effort=medium` setting;
+presentation, debate, in-basket, creative-problem-solving, and complex plans use
+`high`. The pipeline normally builds a 3x candidate pool before
 exact/semantic deduplication and quality selection across
 job/unit, scenario, difficulty, KSA, and question-method coverage. OpenAI uses
 up to three choices in one POST (`n=3`). Ox Alpha does not advertise `n`, so
 OpenRouter uses up to three independent single-choice POSTs with bounded
 parallelism instead. A failed OpenRouter variant does not discard the valid
 variants; responses record requested and received variant counts. The primary
-payload is pinned to `stealth/ox-alpha`, `reasoning_effort=medium`, and
+payload is pinned to `stealth/ox-alpha` and the method-aware reasoning profile, and
 capability-safe JSON-object output. A deployment may configure one server-owned
 `OPENROUTER_RECOVERY_MODEL`; that model is used only by bounded timeout or
 invalid-output recovery and cannot be selected by a browser request.
@@ -110,7 +122,7 @@ Configure
 `1` is the explicit lower-cost escape hatch. Per-path reasoning can be
 overridden with `OPENAI_STRATEGY_REASONING_EFFORT` or
 `OPENAI_QUESTION_REASONING_EFFORT` for OpenAI. The OpenRouter primary remains
-pinned to the Max model; the public effort is medium for latency control. A
+pinned to the Ox Alpha model; the public effort is method-aware for latency control. A
 configured recovery model uses its native reasoning parameters and is still
 routed only through the pinned OpenRouter origin.
 Optional vision OCR and NCS AI reranking are separately bounded stages.
@@ -177,6 +189,9 @@ OPENROUTER_ALLOW_SERVER_KEY=true
 DATABASE_URL=sqlite:////tmp/ncscope.db
 OPENROUTER_PRIMARY_REASONING_EFFORT=medium
 OPENROUTER_TIMEOUT_SEC=8
+OPENROUTER_HIGH_RISK_REASONING_EFFORT=high
+OPENROUTER_QUALITY_RETRY_REASONING_EFFORT=high
+OPENROUTER_HIGH_RISK_TIMEOUT_SEC=15
 OPENROUTER_MAX_REASONING_RESERVE=6000
 OPENROUTER_RECOVERY_MODEL=openai/gpt-oss-20b
 OPENROUTER_RECOVERY_JSON_MODE=true
@@ -228,15 +243,16 @@ application request budget. Every NCS and OpenRouter timeout is clamped to the
 remaining shared budget, leaving 15 seconds for deterministic fallback and
 response serialization.
 
-The public profile gives the Ox Alpha Max primary at most 8 seconds and a
-6,000-token Max reasoning reserve, with the primary reasoning effort set to
-`high` for a faster bounded response. If it times out, the same OpenRouter
-origin may call the administrator-configured `OPENROUTER_RECOVERY_MODEL`
-(currently `openai/gpt-oss-20b`) for at most 15 seconds. If Ox Alpha returns
-unusable JSON before timing out, the single slim correction uses that configured
-recovery model and the same 15-second cap. When a recovery model is configured, its
-native reasoning parameters are used; `OPENROUTER_FALLBACK_REASONING_EFFORT`
-is only the fallback policy for a deployment without a recovery model.
+The public profile gives ordinary Ox Alpha requests at most 8 seconds and
+high-risk high-reasoning requests at most 15 seconds. The 6,000-token reasoning
+reserve remains bounded by the shared request budget. If a request times out,
+the same OpenRouter origin may call the administrator-configured
+`OPENROUTER_RECOVERY_MODEL` (currently `openai/gpt-oss-20b`) for at most 15
+seconds. If Ox Alpha returns unusable JSON, the single quality correction uses
+the high reasoning profile within that same bounded retry budget. When a
+recovery model is configured, its native reasoning parameters are used;
+`OPENROUTER_FALLBACK_REASONING_EFFORT` is only the fallback policy for a
+deployment without a recovery model.
 
 If both external attempts fail, or their output fails a mandatory quality
 gate, the two public institution-generation routes use a provider-free server
