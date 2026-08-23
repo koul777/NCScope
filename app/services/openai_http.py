@@ -462,6 +462,18 @@ def post_chat_completions_with_retries(
                             recovered_payload[
                                 "_ncscope_openrouter_timeout_recovery_used"
                             ] = True
+                            recovered_payload[
+                                "_ncscope_openrouter_timeout_recovery_model"
+                            ] = str(
+                                recovery_model
+                                or payload.get("model")
+                                or ""
+                            ).strip()
+                            recovered_payload[
+                                "_ncscope_openrouter_timeout_recovery_reasoning_effort"
+                            ] = str(
+                                fallback_payload.get("reasoning_effort") or ""
+                            ).strip().casefold()
                             return recovered_payload
                         fallback_error = RuntimeError(
                             f"{error_prefix}_fallback_http_{fallback_status}"

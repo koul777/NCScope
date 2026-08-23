@@ -95,6 +95,47 @@ def test_openrouter_internal_reasoning_effort_overrides_primary_deployment_defau
     assert "_openrouter_internal_reasoning_effort" not in prepared
 
 
+def test_canonical_interview_methods_keep_standard_and_high_risk_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENROUTER_HIGH_RISK_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENROUTER_QUALITY_RETRY_REASONING_EFFORT", "high")
+    expected = {
+        "경험면접": "medium",
+        "상황면접": "medium",
+        "발표면접": "high",
+        "토론면접": "high",
+        "인바스켓면접": "high",
+        "직무지식면접": "medium",
+        "창의적 문제해결력면접": "high",
+    }
+
+    for method, effort in expected.items():
+        resolved, _reason = openrouter_reasoning_effort(
+            interview_methods=[method],
+            target_count=1,
+            follow_up_count=3,
+            stage="primary",
+        )
+        assert resolved == effort, method
+
+    complex_effort, complex_reason = openrouter_reasoning_effort(
+        interview_methods=["경험면접"],
+        target_count=3,
+        follow_up_count=4,
+        stage="primary",
+    )
+    retry_effort, retry_reason = openrouter_reasoning_effort(
+        interview_methods=["경험면접"],
+        target_count=1,
+        follow_up_count=3,
+        stage="quality_retry",
+    )
+    assert (complex_effort, complex_reason) == ("high", "complex_question_plan")
+    assert (retry_effort, retry_reason) == ("high", "quality_retry")
+
+
 def _candidate(slot: int, variant: int) -> dict:
     scenarios = (
         "월별 지출 증빙과 원장 합계가 맞지 않는 사건",
@@ -706,6 +747,57 @@ def test_openrouter_quality_retry_uses_high_profile_only_after_primary_failure(
     assert result["provider_reasoning_effort"] == "high"
     assert result["provider_reasoning_stage"] == "quality_retry"
     assert result["provider_reasoning_reason"] == "quality_retry"
+
+
+def test_openrouter_timeout_fallback_metadata_reflects_actual_recovery_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+    monkeypatch.setenv("OPENROUTER_PRIMARY_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENAI_STRATEGY_CANDIDATE_MULTIPLIER", "1")
+
+    def recovered_chat(**kwargs):
+        calls.append(kwargs)
+        content = {
+            "interview_questions": [_candidate(slot=0, variant=2)],
+            "ncs_link": [],
+        }
+        return {
+            "_ncscope_openrouter_timeout_recovery_used": True,
+            "_ncscope_openrouter_timeout_recovery_model": "openai/gpt-oss-20b",
+            "_ncscope_openrouter_timeout_recovery_reasoning_effort": "",
+            "choices": [
+                {"message": {"content": json.dumps(content, ensure_ascii=False)}}
+            ],
+        }
+
+    monkeypatch.setattr(
+        jd_strategy,
+        "post_chat_completions_with_retries",
+        recovered_chat,
+    )
+    result = jd_strategy.build_strategy_with_openai(
+        jd_text="자료 오류",
+        notice_text="공공기관 채용",
+        strengths="",
+        region="",
+        ncs_matches=[],
+        ncs_ksa=[],
+        api_key_override="sk-or-v1-test",
+        generation_provider="openrouter",
+        target_count_override=1,
+        interview_methods=["경험면접"],
+        max_model_requests=1,
+    )
+
+    assert len(calls) == 1
+    assert result["provider_timeout_recovery_used"] is True
+    assert result["provider_timeout_recovery_model"] == "openai/gpt-oss-20b"
+    assert result["provider_generation_model"] == "openai/gpt-oss-20b"
+    assert result["provider_reasoning_effort"] == "native_default"
+    assert result["provider_reasoning_stage"] == "transport_fallback"
+    assert result["provider_reasoning_reason"] == "timeout_recovery"
+    assert not any(str(key).startswith("_ncscope_") for key in result)
 
 
 def test_openrouter_invalid_max_output_uses_one_bounded_medium_correction(

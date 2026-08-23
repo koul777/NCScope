@@ -5837,6 +5837,24 @@ def build_strategy_with_openai(
         timeout_recovery_used = any(
             recovered for _index, _data, recovered in response_sets
         )
+        timeout_recovery_model = ""
+        timeout_recovery_reasoning_effort = ""
+        for _index, response_data, recovered in sorted(
+            response_sets,
+            key=lambda item: item[0],
+        ):
+            if not recovered or not isinstance(response_data, dict):
+                continue
+            timeout_recovery_model = str(
+                response_data.get("_ncscope_openrouter_timeout_recovery_model") or ""
+            ).strip()
+            timeout_recovery_reasoning_effort = str(
+                response_data.get(
+                    "_ncscope_openrouter_timeout_recovery_reasoning_effort"
+                )
+                or ""
+            ).strip().casefold()
+            break
         for request_variant_index, data, _recovered in sorted(
             response_sets,
             key=lambda item: item[0],
@@ -5997,6 +6015,14 @@ def build_strategy_with_openai(
                 continue
             question.pop("_candidate_slot", None)
             question.pop("_candidate_variant", None)
+        if timeout_recovery_used:
+            selected_response["_ncscope_openrouter_timeout_recovery_used"] = True
+            selected_response["_ncscope_openrouter_timeout_recovery_model"] = (
+                timeout_recovery_model
+            )
+            selected_response[
+                "_ncscope_openrouter_timeout_recovery_reasoning_effort"
+            ] = timeout_recovery_reasoning_effort
         return selected_response
 
     try:
@@ -6197,6 +6223,15 @@ def build_strategy_with_openai(
     obj["ncs_candidates_raw"] = ncs_matches
     obj["ncs_ksa_used"] = ncs_ksa or []
     obj["ncs_context_used"] = ncs_context or {}
+    transport_recovery_used = bool(
+        obj.pop("_ncscope_openrouter_timeout_recovery_used", False)
+    )
+    transport_recovery_model = str(
+        obj.pop("_ncscope_openrouter_timeout_recovery_model", "") or ""
+    ).strip()
+    transport_recovery_effort = str(
+        obj.pop("_ncscope_openrouter_timeout_recovery_reasoning_effort", "") or ""
+    ).strip().casefold()
     obj["provider_generation_request_count"] = model_request_count
     obj["provider_generation_request_limit"] = max_model_requests
     obj["transport_attempt_limit_per_generation_request"] = transport_max_attempts
@@ -6211,6 +6246,21 @@ def build_strategy_with_openai(
     obj["provider_reasoning_reason"] = (
         retry_reasoning_reason if recovered_with_slim_retry else primary_reasoning_reason
     )
+    obj["provider_timeout_recovery_used"] = transport_recovery_used
+    obj["provider_timeout_recovery_model"] = transport_recovery_model
+    obj["provider_timeout_recovery_reasoning_effort"] = transport_recovery_effort
+    if transport_recovery_used:
+        # The transport layer may have switched to a server-owned recovery
+        # model or a lower-effort same-model request. Reflect the actual path
+        # in public diagnostics instead of claiming the primary profile ran.
+        obj["provider_generation_model"] = (
+            transport_recovery_model or obj["provider_generation_model"]
+        )
+        obj["provider_reasoning_effort"] = (
+            transport_recovery_effort or "native_default"
+        )
+        obj["provider_reasoning_stage"] = "transport_fallback"
+        obj["provider_reasoning_reason"] = "timeout_recovery"
     obj["provider_candidate_variant_count"] = candidate_variants
     candidate_selection = obj.get("question_candidate_selection")
     if isinstance(candidate_selection, dict):
