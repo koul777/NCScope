@@ -2544,14 +2544,14 @@ def _build_ncs_code_template_fallback_question(
         str(case_slot_signature or "").strip() or fallback_slot_id
     )
 
-    # The full notice/JD is retained in the request trace and review payload,
-    # but it must never be copied into candidate-facing fallback text.  OCR and
-    # provider failures can turn a recruitment sentence into a bogus context
-    # such as ``공고·직무기술서상 ... 채용한다.에서``.  The validated NCS unit
-    # label is already job-specific and is safe to compose into a question.
-    # Keep source-derived excerpts out of this renderer entirely; model-backed
-    # paths receive the full context separately and pass the common leak guard.
-    candidate_context = context_label
+    # The full notice/JD and official NCS labels are retained in the request
+    # trace and review payload, but neither belongs in candidate-facing
+    # fallback text. OCR/provider failures can turn recruitment boilerplate or
+    # a taxonomy label into a prompt that reads like an instruction. Model-
+    # backed paths receive validated job context through their own leak guard;
+    # the deterministic fallback stays generic and visibly degraded while the
+    # trace panel keeps the exact unit.
+    candidate_context = "해당 직무"
 
     if method == "상황면접":
         scenario_variants = (
@@ -2782,7 +2782,7 @@ def _build_ncs_code_template_fallback_question(
                 "결과에 대한 책임을 확인하고 재발을 막은 뒤",
             )[index % 5]
         question = (
-            f"{candidate_context} 업무를 수행하던 실제 상황에서 본인이 겪은 경험 사례 하나를 골라 {experience_angle} {candidate_surface_focus}에 따라 어떤 판단과 행동을 했는지 말씀해 주세요. "
+            f"{candidate_context}에서 업무를 수행하던 실제 상황 하나를 골라 {experience_angle} {candidate_surface_focus}에 따라 어떤 판단과 행동을 했는지 말씀해 주세요. "
             "그 결과를 문서·수치·기록·피드백으로 어떻게 확인했으며 이후 무엇을 개선했는지도 설명해 주세요."
         )
         follow_ups = [
