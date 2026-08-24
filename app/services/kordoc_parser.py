@@ -1483,8 +1483,8 @@ def _parse_with_remote_kordoc(
     if len(data) > _KORDOC_BRIDGE_MAX_BYTES:
         raise KordocParseError("document exceeds the Kordoc bridge upload limit")
     bridge_url = _safe_bridge_url()
-    bridge_secret = os.getenv("KORDOC_BRIDGE_SECRET", "").strip()
-    if not bridge_url or not bridge_secret:
+    bridge_secret = os.getenv("KORDOC_BRIDGE_SECRET", "").strip().lstrip("\ufeff").strip()
+    if not bridge_url or not bridge_secret or not bridge_secret.isascii():
         raise KordocParseError("Kordoc runtime is unavailable")
 
     safe_filename = str(filename or "").replace("\r", " ").replace("\n", " ")[:240]
@@ -1505,7 +1505,7 @@ def _parse_with_remote_kordoc(
             response = client.post(bridge_url, content=data, headers=headers)
     except httpx.TimeoutException as exc:
         raise KordocParseError("Kordoc bridge timed out") from exc
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, UnicodeError) as exc:
         raise KordocParseError("Kordoc bridge is unavailable") from exc
 
     if response.status_code != 200:

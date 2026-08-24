@@ -7,8 +7,7 @@
       "includeFiles": "{app/**,scripts/kordoc_parse.mjs,STRUCTURED_INTERVIEW_GUIDE.md,ncs_sclass_codes_with_code_no.csv}"
     },
     "api/kordoc-parse.js": {
-      "maxDuration": 120,
-      "memory": 2048
+      "maxDuration": 120
     }
   },
   "env": {

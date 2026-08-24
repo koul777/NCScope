@@ -49,7 +49,9 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setattr(kordoc_parser.httpx, "Client", FakeClient)
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
-    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "test-shared-secret")
+    # PowerShell can prepend a UTF-8 BOM when a value is piped to the Vercel CLI.
+    # It must never leak into the HTTP header value.
+    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "\ufefftest-shared-secret")
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
 
     result = kordoc_parser.parse_with_kordoc(b"%PDF-sanitized", filename="직무기술서.pdf")
