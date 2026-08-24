@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import json
 import io
 import zipfile
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.services import kordoc_parser
 
@@ -55,7 +55,7 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     # PowerShell can prepend a UTF-8 BOM when a value is piped to the Vercel CLI.
     # It must never leak into the HTTP header value.
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "\ufefftest-shared-secret")
-    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
 
     result = kordoc_parser.parse_with_kordoc(b"%PDF-sanitized", filename="직무기술서.pdf")
@@ -69,7 +69,7 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     assert result["parser_version"] == "4.9.1"
 
 
-def test_vercel_bridge_derives_an_isolated_secret_from_review_signing_key(
+def test_vercel_bridge_signs_each_request_with_ed25519(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
@@ -100,20 +100,26 @@ def test_vercel_bridge_derives_an_isolated_secret_from_review_signing_key(
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setattr(kordoc_parser.httpx, "Client", FakeClient)
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
-    monkeypatch.setenv("REVIEW_SESSION_SIGNING_KEY", "stable-review-key")
+    private_key_bytes = bytes(range(32))
+    encoded_private_key = base64.urlsafe_b64encode(private_key_bytes).decode("ascii").rstrip("=")
+    monkeypatch.setenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", encoded_private_key)
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "different-dedicated-key")
 
     kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
 
-    expected = base64.urlsafe_b64encode(
-        hmac.new(
-            b"stable-review-key",
-            b"ncscope:kordoc-bridge:v1",
-            hashlib.sha256,
-        ).digest()
-    ).decode("ascii").rstrip("=")
-    assert calls[-1]["headers"]["x-ncscope-kordoc-secret"] == expected
-    assert expected not in {"stable-review-key", "different-dedicated-key"}
+    headers = calls[-1]["headers"]
+    assert "x-ncscope-kordoc-secret" not in headers
+    message = "\n".join(
+        (
+            headers["x-ncscope-kordoc-timestamp"],
+            hashlib.sha256(b"document").hexdigest(),
+            headers["x-ncscope-filename-b64"],
+            "0",
+        )
+    ).encode("ascii")
+    signature_text = headers["x-ncscope-kordoc-signature"]
+    signature = base64.urlsafe_b64decode(signature_text + "=" * (-len(signature_text) % 4))
+    Ed25519PrivateKey.from_private_bytes(private_key_bytes).public_key().verify(signature, message)
 
 
 def test_vercel_bridge_refuses_to_run_without_shared_secret(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,7 +127,7 @@ def test_vercel_bridge_refuses_to_run_without_shared_secret(monkeypatch: pytest.
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
     monkeypatch.delenv("KORDOC_BRIDGE_SECRET", raising=False)
-    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
 
     with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable") as caught:
         kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
@@ -134,7 +140,7 @@ def test_vercel_bridge_refuses_non_ascii_header_secret(monkeypatch: pytest.Monke
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "not-ascii-비밀")
-    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
 
     with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):
@@ -145,7 +151,7 @@ def test_external_insecure_bridge_url_is_not_accepted(monkeypatch: pytest.Monkey
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("KORDOC_BRIDGE_URL", "http://example.com/api/kordoc-parse")
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "test-shared-secret")
-    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("VERCEL_URL", raising=False)
 
     with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):

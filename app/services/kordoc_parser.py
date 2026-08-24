@@ -11,18 +11,19 @@ import base64
 import csv
 import hashlib
 import html
-import hmac
 import json
 import os
 import re
 import shutil
 import subprocess
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 class KordocParseError(RuntimeError):
@@ -36,7 +37,6 @@ class _LocalKordocUnavailable(KordocParseError):
 _KORDOC_PARSER_VERSION = "4.9.1"
 _KORDOC_BRIDGE_MAX_BYTES = 4 * 1024 * 1024
 _KORDOC_BRIDGE_PATH = "/api/kordoc-parse"
-_KORDOC_BRIDGE_KEY_CONTEXT = b"ncscope:kordoc-bridge:v1"
 _SAFE_PARSER_NAMES = {
     "kordoc",
     "plain_text",
@@ -1477,17 +1477,41 @@ def _safe_bridge_url() -> str:
 def _normalized_bridge_secret() -> str:
     """Return an ASCII-only shared secret safe for an HTTP header."""
 
-    review_signing_key = os.getenv("REVIEW_SESSION_SIGNING_KEY", "")
-    if review_signing_key and review_signing_key.strip():
-        derived = hmac.new(
-            review_signing_key.encode("utf-8"),
-            _KORDOC_BRIDGE_KEY_CONTEXT,
-            hashlib.sha256,
-        ).digest()
-        return base64.urlsafe_b64encode(derived).decode("ascii").rstrip("=")
-
     value = os.getenv("KORDOC_BRIDGE_SECRET", "").strip().lstrip("\ufeff").strip()
     return value if value.isascii() else ""
+
+
+def _bridge_signature_headers(
+    data: bytes,
+    *,
+    encoded_filename: str,
+    ocr: bool,
+) -> dict[str, str]:
+    """Sign one bridge request without sharing the private key with Node."""
+
+    encoded_private_key = (
+        os.getenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", "").strip().lstrip("\ufeff").strip()
+    )
+    if not encoded_private_key or not encoded_private_key.isascii():
+        return {}
+    try:
+        padding = "=" * (-len(encoded_private_key) % 4)
+        private_key_bytes = base64.urlsafe_b64decode(encoded_private_key + padding)
+        if len(private_key_bytes) != 32:
+            raise ValueError("invalid Ed25519 private key length")
+        private_key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
+    except (TypeError, ValueError) as exc:
+        raise KordocParseError("Kordoc runtime is unavailable") from exc
+
+    timestamp = str(int(time.time()))
+    body_sha256 = hashlib.sha256(data).hexdigest()
+    ocr_flag = "1" if ocr else "0"
+    message = "\n".join((timestamp, body_sha256, encoded_filename, ocr_flag)).encode("ascii")
+    signature = base64.urlsafe_b64encode(private_key.sign(message)).decode("ascii").rstrip("=")
+    return {
+        "x-ncscope-kordoc-timestamp": timestamp,
+        "x-ncscope-kordoc-signature": signature,
+    }
 
 
 def _parse_with_remote_kordoc(
@@ -1502,19 +1526,29 @@ def _parse_with_remote_kordoc(
     if len(data) > _KORDOC_BRIDGE_MAX_BYTES:
         raise KordocParseError("document exceeds the Kordoc bridge upload limit")
     bridge_url = _safe_bridge_url()
-    bridge_secret = _normalized_bridge_secret()
-    if not bridge_url or not bridge_secret:
+    if not bridge_url:
         raise KordocParseError("Kordoc runtime is unavailable")
 
     safe_filename = str(filename or "").replace("\r", " ").replace("\n", " ")[:240]
     encoded_filename = base64.urlsafe_b64encode(safe_filename.encode("utf-8")).decode("ascii").rstrip("=")
+    signature_headers = _bridge_signature_headers(
+        data,
+        encoded_filename=encoded_filename,
+        ocr=ocr,
+    )
+    bridge_secret = _normalized_bridge_secret()
+    if not signature_headers and not bridge_secret:
+        raise KordocParseError("Kordoc runtime is unavailable")
     headers = {
         "content-type": "application/octet-stream",
         "accept": "application/json",
-        "x-ncscope-kordoc-secret": bridge_secret,
         "x-ncscope-filename-b64": encoded_filename,
         "x-ncscope-ocr": "1" if ocr else "0",
     }
+    if signature_headers:
+        headers.update(signature_headers)
+    elif bridge_secret:
+        headers["x-ncscope-kordoc-secret"] = bridge_secret
     try:
         with httpx.Client(
             timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
