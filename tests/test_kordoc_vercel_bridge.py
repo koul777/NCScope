@@ -78,6 +78,16 @@ def test_vercel_bridge_refuses_to_run_without_shared_secret(monkeypatch: pytest.
     assert "vercel" not in str(caught.value).casefold()
 
 
+def test_vercel_bridge_refuses_non_ascii_header_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
+    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "not-ascii-비밀")
+    monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
+
+    with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):
+        kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
+
+
 def test_external_insecure_bridge_url_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("KORDOC_BRIDGE_URL", "http://example.com/api/kordoc-parse")

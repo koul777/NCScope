@@ -1471,6 +1471,13 @@ def _safe_bridge_url() -> str:
     return urlunsplit((parts.scheme, parts.netloc, _KORDOC_BRIDGE_PATH, "", ""))
 
 
+def _normalized_bridge_secret() -> str:
+    """Return an ASCII-only shared secret safe for an HTTP header."""
+
+    value = os.getenv("KORDOC_BRIDGE_SECRET", "").strip().lstrip("\ufeff").strip()
+    return value if value.isascii() else ""
+
+
 def _parse_with_remote_kordoc(
     data: bytes,
     *,
@@ -1483,8 +1490,8 @@ def _parse_with_remote_kordoc(
     if len(data) > _KORDOC_BRIDGE_MAX_BYTES:
         raise KordocParseError("document exceeds the Kordoc bridge upload limit")
     bridge_url = _safe_bridge_url()
-    bridge_secret = os.getenv("KORDOC_BRIDGE_SECRET", "").strip().lstrip("\ufeff").strip()
-    if not bridge_url or not bridge_secret or not bridge_secret.isascii():
+    bridge_secret = _normalized_bridge_secret()
+    if not bridge_url or not bridge_secret:
         raise KordocParseError("Kordoc runtime is unavailable")
 
     safe_filename = str(filename or "").replace("\r", " ").replace("\n", " ")[:240]
