@@ -3544,11 +3544,13 @@ def _generation_job_context_text(
         ("공고문", notice_text),
         ("면접평가항목", evaluation_text),
     )
-    parts = [
-        f"[{label}]{re.sub(r'\s+', ' ', str(value or '').strip())[:1800]}"
-        for label, value in layers
-        if str(value or "").strip()
-    ]
+    parts: list[str] = []
+    for label, value in layers:
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            continue
+        compact_value = re.sub(r"\s+", " ", raw_value)[:1800]
+        parts.append(f"[{label}]{compact_value}")
     return "\n".join(parts)[:6000]
 
 
