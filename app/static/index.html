@@ -391,13 +391,16 @@
             </select>
             <div id="reviewNcsDetailHelp" class="sub" style="margin-top:4px;">문서에 명시된 자동 추출 후보 중 1개를 선택합니다. 직접 후보가 없고 여러 공식 능력단위가 한 세분류로 정확히 수렴하면, 자동 확정하지 않고 별도 검토 제안으로 표시합니다.</div>
             <div id="reviewNcsMappingNotice" class="mapping-review-notice" role="status" aria-live="polite" hidden></div>
-            <label for="reviewAbilityUnits">확정할 요구능력단위</label>
-            <textarea id="reviewAbilityUnits" rows="4" aria-describedby="reviewAbilityUnitsHelp reviewAbilityEvidence" placeholder="직무기술서 표에서 추출한 요구능력단위를 한 줄에 하나씩 확인하세요."></textarea>
-            <div id="reviewAbilityUnitsHelp" class="sub" style="margin-top:4px;">값이 있으면 선택한 세분류의 공식 능력단위명과 전부 정확히 일치할 때만 KSA를 조회합니다. 표에 요구능력단위가 없으면 비워 둘 수 있습니다.</div>
+            <label for="reviewAbilityUnits">문서에서 추출한 요구능력단위 (참고)</label>
+            <textarea id="reviewAbilityUnits" rows="4" readonly aria-describedby="reviewAbilityUnitsHelp reviewAbilityEvidence" placeholder="직무기술서 표에서 추출한 요구능력단위가 여기에 표시됩니다."></textarea>
+            <div id="reviewAbilityUnitsHelp" class="sub" style="margin-top:4px;">추출값은 세분류 확정을 막지 않는 검토 근거입니다. 아래 공식 목록에서 선택한 정확 일치 능력단위만 KSA 심화에 사용합니다.</div>
             <details id="reviewAbilityEvidence" class="coordinate-evidence" style="display:none;">
               <summary id="reviewAbilityEvidenceSummary">표 위치 근거</summary>
               <div id="reviewAbilityEvidenceList" class="coordinate-evidence-list"></div>
             </details>
+            <label for="reviewOfficialAbilityUnits">질문에 사용할 공식 능력단위 (선택)</label>
+            <select id="reviewOfficialAbilityUnits" class="dropdown" multiple size="6" aria-describedby="reviewOfficialAbilityUnitsStatus"></select>
+            <div id="reviewOfficialAbilityUnitsStatus" class="sub" role="status" aria-live="polite" style="margin-top:4px;">세분류를 선택하면 공식 능력단위를 불러옵니다. 선택하지 않으면 확정 세분류 전체 범위에서 KSA를 조회합니다.</div>
             <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
           </div>
 
@@ -662,6 +665,8 @@
     const reviewNcsDetail = document.getElementById('reviewNcsDetail');
     const reviewNcsMappingNotice = document.getElementById('reviewNcsMappingNotice');
     const reviewAbilityUnits = document.getElementById('reviewAbilityUnits');
+    const reviewOfficialAbilityUnits = document.getElementById('reviewOfficialAbilityUnits');
+    const reviewOfficialAbilityUnitsStatus = document.getElementById('reviewOfficialAbilityUnitsStatus');
     const reviewAbilityEvidence = document.getElementById('reviewAbilityEvidence');
     const reviewAbilityEvidenceSummary = document.getElementById('reviewAbilityEvidenceSummary');
     const reviewAbilityEvidenceList = document.getElementById('reviewAbilityEvidenceList');
@@ -842,6 +847,7 @@
     let noticeReviewConfirmed = false;
     let jdParsing = false;
     let noticeParsing = false;
+    let reviewAbilityRequestId = 0;
 
     function formatBinaryMiB(bytes) {
       return `${(Number(bytes || 0) / (1024 * 1024)).toFixed(1)}MiB`;
@@ -1850,6 +1856,109 @@
       return [...new Set((Array.isArray(values) ? values : []).map(value => String(value || '').trim()).filter(Boolean))];
     }
 
+    function selectedReviewedOfficialAbilityUnits() {
+      return Array.from(reviewOfficialAbilityUnits?.selectedOptions || [])
+        .map(option => String(option.value || '').trim())
+        .filter(Boolean);
+    }
+
+    function populateReviewedOfficialAbilityUnits(items, extractedNames = []) {
+      if (!reviewOfficialAbilityUnits) return { optionCount: 0, selectedCount: 0, unmatchedCount: 0, ambiguousCount: 0 };
+      const extractedKeys = new Set(
+        (Array.isArray(extractedNames) ? extractedNames : [])
+          .map(normalizeNcsReviewKey)
+          .filter(Boolean)
+      );
+      const matchedExtractedKeys = new Set();
+      const rowsByName = new Map();
+      reviewOfficialAbilityUnits.replaceChildren();
+      (Array.isArray(items) ? items : []).forEach((item) => {
+        const name = String(item?.compeUnitName || '').trim();
+        const nameKey = normalizeNcsReviewKey(name);
+        if (!name || !nameKey) return;
+        const rows = rowsByName.get(nameKey) || [];
+        rows.push(item);
+        rowsByName.set(nameKey, rows);
+      });
+      let ambiguousCount = 0;
+      rowsByName.forEach((rows, nameKey) => {
+        const baseCodes = new Set(
+          rows.map(item => String(item?.ncsClCd || '').trim().match(/^(\d{10})(?:_|$)/)?.[1] || '')
+            .filter(Boolean)
+        );
+        if (baseCodes.size !== 1) {
+          ambiguousCount += 1;
+          return;
+        }
+        const item = rows[0];
+        const name = String(item?.compeUnitName || '').trim();
+        const option = document.createElement('option');
+        const code = String(item?.ncsClCd || '').trim();
+        const level = String(item?.compeUnitLevel || '').trim();
+        option.value = name;
+        option.textContent = `${name}${code ? ` · ${code}` : ''}${level ? ` · Lv.${level}` : ''}`;
+        option.selected = extractedKeys.has(nameKey);
+        if (option.selected) matchedExtractedKeys.add(nameKey);
+        reviewOfficialAbilityUnits.appendChild(option);
+      });
+      return {
+        optionCount: reviewOfficialAbilityUnits.children.length,
+        selectedCount: matchedExtractedKeys.size,
+        unmatchedCount: [...extractedKeys].filter(key => !matchedExtractedKeys.has(key)).length,
+        ambiguousCount,
+      };
+    }
+
+    async function loadReviewedOfficialAbilityUnits(fields, detail) {
+      const requestId = ++reviewAbilityRequestId;
+      const reviewedDetail = String(detail || '').trim();
+      const extractedNames = abilityUnitsForReviewedDetail(fields, reviewedDetail);
+      if (!reviewOfficialAbilityUnits || !reviewOfficialAbilityUnitsStatus) return;
+      reviewOfficialAbilityUnits.replaceChildren();
+      if (!reviewedDetail) {
+        reviewOfficialAbilityUnits.disabled = true;
+        reviewOfficialAbilityUnitsStatus.textContent = '세분류를 먼저 선택해 주세요.';
+        return;
+      }
+      reviewOfficialAbilityUnits.disabled = true;
+      reviewOfficialAbilityUnitsStatus.textContent = '선택한 세분류의 공식 능력단위를 불러오는 중...';
+      try {
+        const q = encodeURIComponent(reviewedDetail);
+        const response = await fetch(`/api/ncs/units/options?q=${q}&limit=500`);
+        const data = await readApiResponse(response);
+        if (!response.ok) throw new Error(apiErrorMessage(data, '공식 능력단위 조회 실패'));
+        if (requestId !== reviewAbilityRequestId) return;
+        const exactItems = String(data.source || '') === 'ncs-mcp'
+          ? (Array.isArray(data.items) ? data.items : []).filter(
+            item => normalizeNcsReviewKey(item?.ncsSubdCdnm) === normalizeNcsReviewKey(reviewedDetail)
+          )
+          : [];
+        const summary = populateReviewedOfficialAbilityUnits(exactItems, extractedNames);
+        reviewOfficialAbilityUnits.disabled = summary.optionCount === 0;
+        const ambiguity = summary.ambiguousCount
+          ? ` · 코드가 하나로 확정되지 않는 공식명 ${summary.ambiguousCount}개 제외`
+          : '';
+        if (!summary.optionCount) {
+          reviewOfficialAbilityUnitsStatus.textContent = `공식 세분류 정확 일치 목록을 확인하지 못했습니다${ambiguity}. 세분류 확정은 가능하지만 능력단위 심화는 적용하지 않습니다.`;
+        } else if (summary.selectedCount) {
+          const unmatched = summary.unmatchedCount
+            ? ` · 미일치 추출값 ${summary.unmatchedCount}개는 제외`
+            : '';
+          reviewOfficialAbilityUnitsStatus.textContent = `공식 ${summary.optionCount}개 중 문서 추출값과 정확히 일치한 ${summary.selectedCount}개를 선택했습니다${unmatched}${ambiguity}. 필요하면 선택을 조정하세요.`;
+        } else {
+          const unmatched = summary.unmatchedCount
+            ? ` 문서 추출값 ${summary.unmatchedCount}개는 공식명과 정확히 일치하지 않아 자동 선택하지 않았습니다.`
+            : '';
+          reviewOfficialAbilityUnitsStatus.textContent = `공식 능력단위 ${summary.optionCount}개${ambiguity}.${unmatched} 선택하지 않으면 세분류 전체 범위에서 KSA를 조회합니다.`;
+        }
+      } catch (error) {
+        if (requestId !== reviewAbilityRequestId) return;
+        reviewOfficialAbilityUnits.replaceChildren();
+        reviewOfficialAbilityUnits.disabled = true;
+        reviewOfficialAbilityUnitsStatus.textContent = `능력단위 목록 조회 보류: ${String(error?.message || error)} 세분류 확정은 계속할 수 있습니다.`;
+      }
+    }
+
     function positionedAbilityItemsForReviewedDetail(fields, detail) {
       const detailKey = normalizeNcsReviewKey(detail);
       const positioned = Array.isArray(fields?.positioned_items) ? fields.positioned_items : [];
@@ -1969,6 +2078,14 @@
       reviewQualifications.value = '';
       reviewPreferences.value = '';
       reviewAbilityUnits.value = '';
+      reviewAbilityRequestId += 1;
+      if (reviewOfficialAbilityUnits) {
+        reviewOfficialAbilityUnits.replaceChildren();
+        reviewOfficialAbilityUnits.disabled = true;
+      }
+      if (reviewOfficialAbilityUnitsStatus) {
+        reviewOfficialAbilityUnitsStatus.textContent = '세분류를 선택하면 공식 능력단위를 불러옵니다. 선택하지 않으면 확정 세분류 전체 범위에서 KSA를 조회합니다.';
+      }
       setReviewedNcsDetailOptions([]);
       renderNcsMappingNotice({});
       renderAbilityCoordinateEvidence({}, '');
@@ -2129,6 +2246,11 @@
         mergeTextareaValue(preferenceText, (fields.preferences || []).join('\n'));
         markNoticeReviewDirty('직무기술서에서 가져온 보완 텍스트가 있습니다. 질문 생성에 포함하려면 아래 적용 버튼을 누르세요.');
         jdReviewPayload = data;
+        jdReviewPayload.fields = jdReviewPayload.fields || {};
+        jdReviewPayload.fields.extracted_ability_units = Array.isArray(fields.ability_units)
+          ? [...fields.ability_units]
+          : [];
+        await loadReviewedOfficialAbilityUnits(fields, reviewNcsDetail.value);
         renderQuestionPlanRows();
         const detailCount = reviewedCandidates.length;
         const suggestionCount = convergenceSuggestions.length;
@@ -2459,7 +2581,8 @@
       jdReviewPayload.fields.qualifications = reviewQualifications.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       jdReviewPayload.fields.preferences = reviewPreferences.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       jdReviewPayload.fields.ncs_detail_candidates = currentReviewedDetails();
-      jdReviewPayload.fields.ability_units = reviewAbilityUnits.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
+      jdReviewPayload.fields.extracted_ability_units = reviewAbilityUnits.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
+      jdReviewPayload.fields.ability_units = selectedReviewedOfficialAbilityUnits();
       renderQuestionPlanRows();
       const boundaryIssue = textBoundaryIssue();
       if (boundaryIssue) {
@@ -2474,7 +2597,10 @@
       }
       jdReviewPayload.review_confirmed = true;
       reviewConfirmed = true;
-      jdReviewStatus.textContent = '확정됨 · NCS DB 조회 가능';
+      const selectedAbilityCount = jdReviewPayload.fields.ability_units.length;
+      jdReviewStatus.textContent = selectedAbilityCount
+        ? `세분류 확정됨 · 공식 능력단위 ${selectedAbilityCount}개로 KSA 심화`
+        : '세분류 확정됨 · 세분류 전체 KSA 범위 사용';
       document.getElementById('btnConfirmReview').textContent = '검토 확정 완료';
       document.getElementById('btnConfirmReview').style.background = '#15803d';
       refreshRunButtonState();
@@ -2571,7 +2697,7 @@
       generationApiKey.value = '';
       setApiKeyVisibility(false);
     });
-    reviewNcsDetail.addEventListener('change', () => {
+    reviewNcsDetail.addEventListener('change', async () => {
       reviewConfirmed = false;
       if (jdReviewPayload?.fields && reviewAbilityUnits) {
         reviewAbilityUnits.value = abilityUnitsForReviewedDetail(
@@ -2579,6 +2705,7 @@
           reviewNcsDetail.value,
         ).join('\n');
         renderAbilityCoordinateEvidence(jdReviewPayload.fields, reviewNcsDetail.value);
+        await loadReviewedOfficialAbilityUnits(jdReviewPayload.fields, reviewNcsDetail.value);
       }
       renderQuestionPlanRows();
       refreshRunButtonState();
@@ -2586,6 +2713,15 @@
     });
     reviewAbilityUnits?.addEventListener('input', () => {
       reviewConfirmed = false;
+      refreshRunButtonState();
+      updateWorkflowMenu();
+    });
+    reviewOfficialAbilityUnits?.addEventListener('change', () => {
+      reviewConfirmed = false;
+      const selectedCount = selectedReviewedOfficialAbilityUnits().length;
+      reviewOfficialAbilityUnitsStatus.textContent = selectedCount
+        ? `공식 능력단위 ${selectedCount}개 선택 · 검토 확정 후 해당 KSA만 사용합니다.`
+        : '선택 없음 · 검토 확정 후 세분류 전체 범위에서 KSA를 조회합니다.';
       refreshRunButtonState();
       updateWorkflowMenu();
     });

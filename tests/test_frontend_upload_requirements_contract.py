@@ -101,6 +101,70 @@ console.log('convergence suggestion behavior ok');
     assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
 
 
+def test_detail_first_official_ability_selection_executes_in_node() -> None:
+    _, script = _page()
+    start = script.index("function selectedReviewedOfficialAbilityUnits()")
+    end = script.index("function positionedAbilityItemsForReviewedDetail(fields, detail)")
+    functions = script[start:end]
+    harness = """
+const makeSelect = () => ({
+  children: [],
+  disabled: false,
+  replaceChildren() { this.children = []; },
+  appendChild(child) { this.children.push(child); },
+  get selectedOptions() { return this.children.filter(child => child.selected); },
+});
+const document = { createElement: () => ({ value: '', textContent: '', selected: false }) };
+const reviewOfficialAbilityUnits = makeSelect();
+const reviewOfficialAbilityUnitsStatus = { textContent: '' };
+let reviewAbilityRequestId = 0;
+const normalizeNcsReviewKey = value => String(value || '').toLowerCase().replace(/[\\s\\-_/|(),.·・]+/g, '');
+const abilityUnitsForReviewedDetail = () => ['Document Writing', 'Unknown Extracted'];
+const readApiResponse = async response => response.payload;
+const apiErrorMessage = (_payload, fallback) => fallback;
+let fetchPayload = {
+  source: 'ncs-mcp',
+  items: [
+    { compeUnitName: 'Document Writing', ncsClCd: '0201010101_24v1', compeUnitLevel: '3', ncsSubdCdnm: 'Office Admin' },
+    { compeUnitName: 'Ambiguous Name', ncsClCd: '0201010102_24v1', compeUnitLevel: '3', ncsSubdCdnm: 'Office Admin' },
+    { compeUnitName: 'Ambiguous Name', ncsClCd: '0201010199_24v1', compeUnitLevel: '3', ncsSubdCdnm: 'Office Admin' },
+    { compeUnitName: 'Cross Detail', ncsClCd: '9999999999_24v1', compeUnitLevel: '2', ncsSubdCdnm: 'Other' },
+  ],
+};
+const fetch = async () => ({ ok: true, payload: fetchPayload });
+""" + functions + """
+(async () => {
+  await loadReviewedOfficialAbilityUnits({}, 'Office Admin');
+  if (reviewOfficialAbilityUnits.children.length !== 1) {
+    throw new Error('cross-detail or ambiguous official units were not filtered');
+  }
+  if (JSON.stringify(selectedReviewedOfficialAbilityUnits()) !== JSON.stringify(['Document Writing'])) {
+    throw new Error('only exact extracted official names should be preselected');
+  }
+  if (!reviewOfficialAbilityUnitsStatus.textContent.includes('1')) {
+    throw new Error('selection status did not expose exact and unmatched counts');
+  }
+  if (!reviewOfficialAbilityUnitsStatus.textContent.includes('코드가 하나로 확정되지 않는 공식명 1개 제외')) {
+    throw new Error('ambiguous official unit name exclusion was not disclosed');
+  }
+  fetchPayload = { source: 'ncs-mcp-suggest', items: [{ compeUnitName: 'Suggested' }] };
+  await loadReviewedOfficialAbilityUnits({}, 'Office Admin');
+  if (reviewOfficialAbilityUnits.children.length !== 0 || !reviewOfficialAbilityUnits.disabled) {
+    throw new Error('suggested units must not enter the exact ability selector');
+  }
+  console.log('detail-first official ability selection ok');
+})().catch(error => { console.error(error); process.exit(1); });
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=commonjs"],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
+
+
 def test_coordinate_rendering_behavior_executes_in_node() -> None:
     _, script = _page()
     start = script.index("function normalizeNcsReviewKey(value)")
@@ -392,7 +456,16 @@ def test_upload_review_uses_single_select_for_ncs_detail_and_single_method_selec
     assert "official_exact_scope_conflict" in script
     assert "ncs_detail_cell_blank_or_dash" in script
     assert "renderNcsMappingNotice({}, true);" in script
-    assert "jdReviewPayload.fields.ability_units = reviewAbilityUnits.value.split(/\\n+/)" in script
+    assert 'id="reviewOfficialAbilityUnits"' in html
+    assert 'id="reviewOfficialAbilityUnitsStatus"' in html
+    assert "function selectedReviewedOfficialAbilityUnits()" in script
+    assert "function populateReviewedOfficialAbilityUnits(items, extractedNames = [])" in script
+    assert "async function loadReviewedOfficialAbilityUnits(fields, detail)" in script
+    assert "String(data.source || '') === 'ncs-mcp'" in script
+    assert "normalizeNcsReviewKey(item?.ncsSubdCdnm) === normalizeNcsReviewKey(reviewedDetail)" in script
+    assert "jdReviewPayload.fields.extracted_ability_units = reviewAbilityUnits.value.split(/\\n+/)" in script
+    assert "jdReviewPayload.fields.ability_units = selectedReviewedOfficialAbilityUnits();" in script
+    assert "reviewOfficialAbilityUnits?.addEventListener('change'" in script
 
     assert 'id="reviewAbilityEvidence"' in html
     assert 'id="reviewAbilityEvidenceSummary"' in html

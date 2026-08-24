@@ -118,10 +118,10 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8015
 ## 주요 흐름
 
 1. 공고문과 NCS 직무기술서 업로드
-2. 문서 파서가 표 좌표와 함께 추출한 세분류·요구능력단위 검토·확정
-3. NCS 세분류 1개와 면접형태 1개 선택
-4. 검토한 요구능력단위를 공식 NCS 능력단위명에 정확 일치시킨 뒤 KSA 조회 및 `evidence_id` 잠금
-5. OpenAI 질문 생성
+2. 문서 파서가 표 좌표와 함께 추출한 세분류 후보를 검토하고 세분류 1개 확정
+3. 추출 요구능력단위는 참고 근거로 확인하고, 필요하면 확정 세분류의 공식 능력단위를 선택
+4. 능력단위를 선택했으면 그 정확 일치 범위만, 선택하지 않았으면 확정 세분류 전체 범위에서 KSA 조회 및 `evidence_id` 잠금
+5. 면접형태 1개를 반영해 OpenAI 질문 생성
 6. 독립 OpenAI 품질검수
 7. 필요 시 실패 슬롯 재생성 및 최종 검수
 8. 통과 문항만 표시·복사·다운로드
@@ -137,9 +137,10 @@ precision/recall, 문서 단위 세분류 완전일치율, `현행 공식/구버
 `Strict pipeline-ready`는 세분류 추출 성능이 아니라 **세분류부터 능력단위 exact와
 KSA 조회까지 한 번에 끝난 비율**입니다. 이 값을 세분류 정확도나 세분류 자동처리율로
 해석하지 않습니다. 현재 공개 생성 경로는 안전을 위해 검토한 능력단위가 공식명과
-정확히 일치할 때만 KSA 질문 생성을 허용합니다. 다음 제품 단계에서는 세분류를 먼저
-확정하고, 문서에 명확한 능력단위는 자동 선택하되 나머지는 확정 세분류의 공식
-능력단위 후보를 사용자가 선택하는 흐름으로 분리합니다.
+정확히 일치할 때만 해당 능력단위로 KSA 범위를 좁힙니다. 화면은 세분류를 먼저
+확정하고, 문서 추출값과 공식명이 정확히 일치하는 능력단위만 선택 후보로 연결합니다.
+일치하지 않는 추출값은 세분류 확정을 막지 않고 진단으로 남기며, 사용자는 확정
+세분류의 공식 능력단위를 직접 선택하거나 선택 없이 세분류 전체 KSA를 사용할 수 있습니다.
 
 사람 골드 정확도는 기존 튜닝 표본과 분리한 NCS 공정채용 사이트 신규 직무기술서를
 두 명 이상이 독립 검수하고 불일치를 조정한 뒤에만 발표합니다. 아래 에이전트 검토
@@ -174,10 +175,13 @@ fallback으로만 지원합니다. Kordoc 실행이 불가능해
 명시되지 않은 경우도 파싱 실패와 분리합니다.
 
 검토가 끝나면 Vercel 앱은 DB 파일을 직접 열지 않고 `NCS_MCP_URL`의 `ncs_search`로
-확정 세분류의 공식 능력단위를 조회합니다. 검토한 요구능력단위명은 공백·목록번호·NCS
-코드 같은 표시 장식만 제거한 뒤 공식 능력단위명과 정규화 정확 일치해야 합니다. 하나라도
-일치하지 않으면 `422 ncs_required_ability_unit_mismatch`로 중단하며 유사 능력단위로
-자동 대체하지 않습니다. 일치한 능력단위 코드에 대해서만 `ncs_unit_detail`을
+확정 세분류의 공식 능력단위를 조회합니다. 화면의 능력단위 선택지는 정확 세분류 조회
+결과만 표시하며 비정밀 추천 결과는 섞지 않습니다. 문서 추출값은 공백·목록번호·NCS
+코드 같은 표시 장식만 제거한 뒤 공식 능력단위명과 정규화 정확 일치할 때만 미리
+선택됩니다. 미일치 추출값은 선택·KSA 대상에서 제외되지만 세분류 확정은 계속됩니다.
+API에서 검토 능력단위를 직접 보낸 경우 하나라도 일치하지 않으면
+`422 ncs_required_ability_unit_mismatch`로 중단하며 유사 능력단위로 자동 대체하지
+않습니다. 선택한 능력단위 코드에 대해서만 `ncs_unit_detail`을
 `include=["elements", "criteria", "ksa"]`, `text_version="raw"`로 호출하고, 그 응답의
 K/S/A 행만 `factorSource=ncs-mcp`, `ksaStatus=official` 근거로 사용합니다. 성공 응답은
 `required_ability_units_reviewed`, `required_ability_unit_lock_applied` 및 각 능력단위의
@@ -212,6 +216,11 @@ python scripts/collect_alio_documents.py --start-date 2011-01-01 --limit 0 --kee
 source-only 블라인드 세트는 최신 파서 출력 없이 세 명의 에이전트가 원문 표만 판정한 뒤
 한 번 비교했습니다. 이 기준표는 사람 검토나 골드 데이터가 아니며, 결과도 그 한계를
 명시합니다.
+
+릴리스 판정은 운영 코퍼스의 세분류 지표와 홀드아웃의 세분류 코드 precision/recall,
+문서 단위 세분류 완전일치만 사용합니다. 능력단위 범위·코드와 KSA 지표는
+`downstream_advisory`에 계속 기록하지만 세분류 코어 릴리스를 막지 않습니다. 다만
+기준표 provenance, 해시, 건수, 범위, 분모 무결성은 이전과 같이 fail-closed입니다.
 
 동결 결과는 `tests/fixtures/stored_jd_final_blind_{reference,freeze,freeze_addendum,result,comparison_ledger}.json`
 에 있습니다. 결과 JSON은 점수·게이트·벤치마크 원본의 실제 해시를 검증하는 생성기로만
@@ -316,6 +325,42 @@ python scripts/benchmark_ncs_recruitment_live.py `
   --skip-postings 20 `
   --page-limit 8
 ```
+
+#### 공정채용 신규 사람 골드셋 준비
+
+사람 골드는 기존 튜닝 문서와 겹치지 않는 신규 공고를 사용합니다. 일반 실전 진단
+보고서는 계속 HMAC 식별자와 집계만 남깁니다. 골드 검수용 원문이 필요할 때만
+`--private-gold-source-dir`를 명시하면 다운로드 문서와 `case_id` source index를
+Git에서 제외되는 `tmp/` 아래에 별도로 보관합니다. 원래 파일명·공고명·자동 예측값은
+검수 양식에 넣지 않습니다.
+
+```powershell
+$env:NCS_RECRUITMENT_LIVE_DIGEST_KEY='<32바이트 이상의 비공개 임시키>'
+$env:NCS_MCP_URL='http://127.0.0.1:8766/mcp'
+
+# 신규 공고 진단과 동시에 비공개 검수 원문/source index 보관
+python scripts/benchmark_ncs_recruitment_live.py `
+  --max-postings 100 `
+  --page-limit 20 `
+  --private-gold-source-dir
+
+$benchmark = Get-ChildItem tmp/ncs_recruitment_live/ncs_recruitment_live_*.json |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+
+# Reviewer A/B 독립 양식, 조정 양식, do-not-tune 원장, 무결성 해시 생성
+python scripts/prepare_ncs_recruitment_goldset.py `
+  $benchmark.FullName `
+  tmp/ncs_recruitment_goldset/source_documents/source_index.local.csv `
+  --tuning-manifest tmp/private_tuning_document_hashes.txt
+```
+
+출력은 `reviewer_a.local.csv`, `reviewer_b.local.csv`, `adjudication.local.csv`,
+`do_not_tune.local.csv`, `goldset_review_manifest.local.json`, `integrity.local.json`입니다.
+두 리뷰어는 상대 답을 보지 않고 `mapping_state`, 공식 세분류명·코드와 원문 근거를
+기입합니다. 두 답을 모두 받은 뒤 불일치만 제3자가 조정하고, 조정 완료 전에는 모든
+항목이 `is_gold=false`입니다. 분할은 문서 SHA-256으로 결정되어 같은 내용이 validation과
+holdout에 동시에 들어가지 않으며, 튜닝 manifest와 해시가 겹치면 생성을 거부합니다.
 
 2026-08-25(KST) 현재 20개 공고·52개 직무기술서 실전 진단은 처리 실패 0건, 공고 선언
 합집합 기준 세분류 P 98.17/R 82.31, 공고 완전일치 60%(12/20)입니다. 이 수치는 같은

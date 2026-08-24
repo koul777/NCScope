@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import hashlib
 import importlib.util
 import io
 import ssl
@@ -9,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
+import pytest
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_ncs_recruitment_live.py"
@@ -209,6 +212,8 @@ def test_posting_mismatch_diagnostic_reports_set_relations_without_causal_claims
 
 def test_run_benchmark_and_write_reports_keep_private_values_out_of_reports(tmp_path, monkeypatch):
     mod = load_module()
+    monkeypatch.setattr(mod, "ROOT", tmp_path)
+    private_source_dir = tmp_path / "tmp" / "gold_source"
 
     @contextmanager
     def fake_session():
@@ -337,6 +342,7 @@ def test_run_benchmark_and_write_reports_keep_private_values_out_of_reports(tmp_
         search_units_fn=fake_search_units,
         get_ksa_fn=fake_get_ksa,
         sleep_func=lambda _seconds: None,
+        private_gold_source_dir=private_source_dir,
     )
 
     assert payload["summary"]["posting_count"] == 1
@@ -360,6 +366,7 @@ def test_run_benchmark_and_write_reports_keep_private_values_out_of_reports(tmp_
     assert payload["summary"]["passed"] is False
     assert "ksa_availability_below_threshold" in payload["summary"]["failures"]
     assert payload["summary"]["quality_thresholds"]["ksa_availability_pct"] == 100.0
+    assert payload["summary"]["privacy"]["private_gold_source_capture_enabled"] is True
     assert payload["cases"][0]["posting_query_ids"]
     assert len(payload["cases"][0]["case_id"]) == 64
     assert len(payload["cases"][0]["posting_id"]) == 64
@@ -369,6 +376,26 @@ def test_run_benchmark_and_write_reports_keep_private_values_out_of_reports(tmp_
     assert "SECRET POSTING" not in combined
     assert "SECRET LABEL" not in combined
     assert "경영기획" not in combined
+
+    source_index = private_source_dir / "source_index.local.csv"
+    source_rows = list(csv.DictReader(source_index.open(encoding="utf-8-sig")))
+    assert len(source_rows) == 1
+    assert source_rows[0]["case_id"] == payload["cases"][0]["case_id"]
+    assert source_rows[0]["document_sha256"] == hashlib.sha256(
+        b"%PDF-1.7\nsecret-bytes"
+    ).hexdigest()
+    captured_document = Path(source_rows[0]["local_document_path"])
+    assert captured_document.read_bytes() == b"%PDF-1.7\nsecret-bytes"
+    assert "SECRET POSTING" not in source_index.read_text(encoding="utf-8-sig")
+    assert "SECRET LABEL" not in source_index.read_text(encoding="utf-8-sig")
+
+
+def test_private_gold_source_capture_refuses_paths_outside_local_tmp(tmp_path, monkeypatch):
+    mod = load_module()
+    monkeypatch.setattr(mod, "ROOT", tmp_path)
+
+    with pytest.raises(mod.ConfigurationError, match="below tmp/ or .tmp/"):
+        mod.validate_private_gold_source_dir(tmp_path / "tracked-output")
 
 
 def test_coordinate_contract_validates_shape_instead_of_label_matching():

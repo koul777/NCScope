@@ -44,6 +44,7 @@ DETAIL_SOURCE_PATH = "/blind/bl04/selectJdsptList.do"
 DOWNLOAD_PATH = "/common/file/downloadFile.do"
 DEFAULT_PARSE_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_OUTPUT_DIR = Path("tmp") / "ncs_recruitment_live"
+DEFAULT_PRIVATE_GOLD_SOURCE_DIR = Path("tmp") / "ncs_recruitment_goldset" / "source_documents"
 DEFAULT_DIGEST_KEY_ENV = "NCS_RECRUITMENT_LIVE_DIGEST_KEY"
 DEFAULT_MAX_POSTINGS = 20
 DEFAULT_PAGE_LIMIT = 8
@@ -85,6 +86,31 @@ class ConfigurationError(RuntimeError):
 
 class SourceFetchError(RuntimeError):
     pass
+
+
+def validate_private_gold_source_dir(path: Path) -> Path:
+    """Keep raw evaluation documents in a local Git-ignored tree only."""
+
+    resolved = path.resolve()
+    allowed_roots = ((ROOT / "tmp").resolve(), (ROOT / ".tmp").resolve())
+    if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
+        raise ConfigurationError(
+            "private gold source capture must be written below tmp/ or .tmp/"
+        )
+    return resolved
+
+
+def write_private_gold_source_index(rows: list[dict[str, str]], output_dir: Path) -> Path:
+    output_dir = validate_private_gold_source_dir(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    index_path = output_dir / "source_index.local.csv"
+    fieldnames = ["case_id", "local_document_path", "document_sha256"]
+    with index_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in sorted(rows, key=lambda item: item["case_id"]):
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
+    return index_path
 
 
 def normalize_text(value: Any) -> str:
@@ -1147,6 +1173,7 @@ def run_benchmark(
     search_units_fn: Callable[[list[str], int], list[dict[str, Any]]] = search_units_by_detail,
     get_ksa_fn: Callable[[list[dict[str, Any]], int], list[dict[str, Any]]] = get_ksa_by_units,
     sleep_func: Callable[[float], None] = time.sleep,
+    private_gold_source_dir: Path | None = None,
 ) -> dict[str, Any]:
     if max_postings < 1 or max_pages < 1:
         raise ConfigurationError("max_postings and max_pages must be positive")
@@ -1175,6 +1202,14 @@ def run_benchmark(
     postings = source_postings[skip_postings : skip_postings + max_postings]
     cases: list[dict[str, Any]] = []
     posting_evidence: list[dict[str, Any]] = []
+    private_source_rows: list[dict[str, str]] = []
+    capture_dir = (
+        validate_private_gold_source_dir(private_gold_source_dir)
+        if private_gold_source_dir is not None
+        else None
+    )
+    if capture_dir is not None:
+        capture_dir.mkdir(parents=True, exist_ok=True)
 
     with use_ncs_mcp_request_session():
         for posting_index, posting in enumerate(postings, start=1):
@@ -1243,6 +1278,16 @@ def run_benchmark(
                         content_type=upload.content_type,
                         data=upload.data,
                     )
+                    if capture_dir is not None:
+                        source_path = capture_dir / upload.upload_filename
+                        source_path.write_bytes(upload.data)
+                        private_source_rows.append(
+                            {
+                                "case_id": case_id,
+                                "local_document_path": str(source_path.resolve()),
+                                "document_sha256": content_digest.hex(),
+                            }
+                        )
                     started = time.perf_counter()
                     parse_result = parse_client.parse_review(upload)
                     case["case_id"] = case_id
@@ -1360,6 +1405,8 @@ def run_benchmark(
         cases,
         posting_evidence=posting_evidence,
     )
+    if capture_dir is not None:
+        write_private_gold_source_index(private_source_rows, capture_dir)
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "posting_count": len(postings),
@@ -1379,6 +1426,8 @@ def run_benchmark(
             "raw_filenames_written": False,
             "raw_document_text_written": False,
             "raw_labels_written": False,
+            "normal_reports_exclude_private_gold_source_capture": True,
+            "private_gold_source_capture_enabled": capture_dir is not None,
         },
     }
     if expected_postings is not None and len(postings) != int(expected_postings):
@@ -1545,6 +1594,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument(
+        "--private-gold-source-dir",
+        nargs="?",
+        const=str(DEFAULT_PRIVATE_GOLD_SOURCE_DIR),
+        help=(
+            "retain downloaded documents and a case_id source index below tmp/ or .tmp/ "
+            "for independent human gold review"
+        ),
+    )
     parser.add_argument("--parse-base-url", default=DEFAULT_PARSE_BASE_URL)
     parser.add_argument("--allow-remote-parse-upload", action="store_true")
     parser.add_argument("--digest-key-env", default=DEFAULT_DIGEST_KEY_ENV)
@@ -1619,6 +1677,11 @@ def main(argv: list[str] | None = None) -> int:
                 min_posting_exact_pct=float(args.min_posting_exact_pct),
                 min_coordinate_shape_pct=float(args.min_coordinate_shape_pct),
                 min_ksa_availability_pct=float(args.min_ksa_availability_pct),
+                private_gold_source_dir=(
+                    Path(args.private_gold_source_dir)
+                    if args.private_gold_source_dir
+                    else None
+                ),
             )
         json_path, csv_path, md_path = write_reports(payload, Path(args.output_dir))
     except ConfigurationError:
@@ -1634,6 +1697,9 @@ def main(argv: list[str] | None = None) -> int:
     print(str(json_path))
     print(str(csv_path))
     print(str(md_path))
+    if args.private_gold_source_dir:
+        private_dir = validate_private_gold_source_dir(Path(args.private_gold_source_dir))
+        print(str(private_dir / "source_index.local.csv"))
     return 0 if payload["summary"].get("passed") else 1
 
 
