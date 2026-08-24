@@ -1,21 +1,20 @@
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <a href="./docs/media/ncscope-promo.mp4">
-        <img src="./docs/media/ncscope-promo.gif" alt="NCScope 31초 홍보 영상" width="480">
-      </a>
-    </td>
-    <td align="center" width="50%">
-      <a href="./docs/media/ncscope-explainer.mp4">
-        <img src="./docs/media/ncscope-explainer.gif" alt="NCScope 2분 3초 상세 설명 영상" width="480">
-      </a>
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><strong>▶ 31초 홍보 영상</strong><br>클릭하면 원본 MP4가 열립니다.</td>
-    <td align="center"><strong>▶ 2분 3초 상세 설명 영상</strong><br>클릭하면 원본 MP4가 열립니다.</td>
-  </tr>
-</table>
+<p align="center"><strong>▶ NCScope 32초 브랜드 홍보 영상</strong></p>
+<p align="center">
+  <a href="./docs/media/ncscope-promo.mp4">
+    <img src="./docs/media/ncscope-promo.gif" alt="NCScope 32초 브랜드 홍보 영상" width="960">
+  </a>
+</p>
+<p align="center">문제 제기 → 핵심 가치 → 실제 제품 하이라이트 → 실행 안내 · 클릭하면 원본 MP4가 열립니다.</p>
+
+<br>
+
+<p align="center"><strong>▶ NCScope 2분 3초 상세 설명 영상</strong></p>
+<p align="center">
+  <a href="./docs/media/ncscope-explainer.mp4">
+    <img src="./docs/media/ncscope-explainer.gif" alt="NCScope 2분 3초 상세 설명 영상" width="960">
+  </a>
+</p>
+<p align="center">문서 파싱부터 NCS 근거 추적 결과까지 실제 조작 전체 · 클릭하면 원본 MP4가 열립니다.</p>
 
 <p align="center"><a href="https://ncscope.vercel.app"><strong>NCScope 실행하기</strong></a></p>
 
@@ -27,9 +26,9 @@ NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 �
 
 ## 영상으로 보는 NCScope
 
-홍보·설명 영상은 별도 목업이 아니라 실제 NCScope 화면을 1920×1080으로 촬영했습니다. 공고문과 NCS 직무기술서를 [Kordoc](https://github.com/chrisryugj/kordoc) 4.9.1로 직접 구조화하고, 사람이 `프로젝트관리` 세분류를 확정한 뒤, 공개 면접기법별 작성 지침과 NCS KSA 기반 결과를 확인하는 전체 흐름입니다.
+두 영상의 목적과 편집 문법을 분리했습니다. 홍보 영상은 NCScope가 해결하는 문제와 핵심 가치를 실제 제품 하이라이트로 짧게 전달하는 브랜드 트레일러입니다. 상세 설명 영상은 공고문과 NCS 직무기술서를 [Kordoc](https://github.com/chrisryugj/kordoc) 4.9.1로 구조화하고, 사람이 `프로젝트관리` 세분류를 확정한 뒤, 면접기법별 작성 지침과 NCS KSA 기반 결과를 확인하는 실제 조작 흐름입니다.
 
-- [31초 홍보 영상](./docs/media/ncscope-promo.mp4): Kordoc 파싱 → 세분류 사람 확인 → 면접기법 가이드 → 결과 문항
+- [32초 브랜드 홍보 영상](./docs/media/ncscope-promo.mp4): 문제 제기 → 핵심 차별점 → 실제 제품 하이라이트 → 서비스 실행 안내
 - [2분 3초 상세 설명 영상](./docs/media/ncscope-explainer.mp4): 네 단계의 실제 조작과 근거 추적 화면 전체
 - 결과 장면은 비식별화한 안전한 예시 응답을 재생했으며 화면에도 `예시 결과 재생 · API 키 미사용`을 명시했습니다. 영상 제작 과정에서 API 키를 입력하거나 노출하지 않았습니다.
 

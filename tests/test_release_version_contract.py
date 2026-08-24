@@ -31,6 +31,12 @@ def test_release_version_is_consistent_across_product_surfaces() -> None:
     assert readme.index("docs/media/ncscope-explainer.gif") < readme.index(
         f"# NCScope {DISPLAY_VERSION}\n"
     )
+    readme_lead = readme[: readme.index(f"# NCScope {DISPLAY_VERSION}\n")]
+    assert "<table>" not in readme_lead
+    assert "<td" not in readme_lead
+    assert readme_lead.index("docs/media/ncscope-promo.gif") < readme_lead.index(
+        "docs/media/ncscope-explainer.gif"
+    )
     for relative_path in (
         "docs/media/ncscope-promo.gif",
         "docs/media/ncscope-promo.mp4",
