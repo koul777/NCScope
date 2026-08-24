@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
+from app.services.ai_question_quality_review import AI_QUALITY_DIMENSIONS
 
 
 REQUEST_KEY = "sk-request-scoped-precision-boundary-test"
@@ -99,6 +100,38 @@ def _patch_strategy_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
         "rerank_ncs_matches",
         lambda *_args, **_kwargs: ([_unit()], "mcp"),
     )
+    monkeypatch.setattr(
+        main,
+        "review_interview_questions_with_ai",
+        lambda **_kwargs: {
+            "status": "failed",
+            "reviewed_count": 1,
+            "scores": [
+                {
+                    "index": 1,
+                    **{
+                        dimension: (2 if dimension == "job_context_grounding" else 4)
+                        for dimension in AI_QUALITY_DIMENSIONS
+                    },
+                }
+            ],
+            "reason_codes": ["job_context_unsupported"],
+            "items": [
+                {
+                    "index": 1,
+                    "passed": False,
+                    "scores": {
+                        dimension: (2 if dimension == "job_context_grounding" else 4)
+                        for dimension in AI_QUALITY_DIMENSIONS
+                    },
+                    "reason_codes": ["job_context_unsupported"],
+                    "regeneration_guidance_codes": ["ground_in_job_duty"],
+                }
+            ],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
 
 
 def _from_text_payload() -> dict[str, Any]:
@@ -124,7 +157,7 @@ def _from_text_payload() -> dict[str, Any]:
 @pytest.mark.parametrize(
     "path", ["/api/questions/generate-from-text", "/api/jd/strategy/upload"]
 )
-def test_primary_public_routes_replace_unsupported_precision_with_server_fallback(
+def test_primary_public_routes_reject_unsupported_precision_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -164,11 +197,10 @@ def test_primary_public_routes_replace_unsupported_precision_with_server_fallbac
                 },
             )
 
-    assert response.status_code == 200
-    strategy = response.json()["strategy"]
-    assert strategy["provider_fallback_used"] is True
-    assert strategy["question_release_status"] == "human_review_required"
-    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
+    assert "strategy" not in response.json()
+    assert "server_ksa_fallback" not in response.text
     assert "기준연도" not in response.text
     assert "분자" not in response.text
     assert REQUEST_KEY not in response.text
@@ -222,7 +254,7 @@ def test_auxiliary_public_routes_reject_unsupported_precision_generically(
         response = client.post(path, json=payload)
 
     assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "openai_api_generation_failed"
+    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
     assert "기준연도" not in response.text
     assert "분자" not in response.text
     assert REQUEST_KEY not in response.text

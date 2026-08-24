@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.kordoc_parser import _loads_kordoc_json, structure_job_description, structure_job_notice
 
 
@@ -65,6 +67,126 @@ def test_structure_job_description_merges_detail_from_kordoc_table_blocks() -> N
     assert result["fields"]["ncs_detail_candidate_evidence"][0]["source"] == "kordoc"
     assert "사무행정" in result["fields"]["ncs_detail_candidate_evidence"][0]["snippet"]
     assert result["fields"]["duties"] == ["문서 접수 및 보고자료 작성"]
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "세분류명",
+        "NCS 세분류명",
+        "세분류(직무명)",
+        "세분류(직무)",
+    ],
+)
+def test_structure_job_description_extracts_plain_text_detail_aliases(label: str) -> None:
+    result = structure_job_description(
+        {"markdown": f"{label}: 프로젝트관리\n담당업무: 사업 일정 및 이해관계자 관리"},
+        filename="plain-text-jd.txt",
+    )
+
+    assert result["fields"]["ncs_detail_candidates"] == ["프로젝트관리"]
+    evidence = result["fields"]["ncs_detail_candidate_evidence"][0]
+    assert evidence["source"] == "kordoc"
+    assert "프로젝트관리" in evidence["snippet"]
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("010101 프로젝트관리", "프로젝트관리"),
+        ("010101프로젝트관리", "프로젝트관리"),
+        ("(010101) 프로젝트관리", "프로젝트관리"),
+        ("01-01-01 프로젝트관리", "프로젝트관리"),
+        ("01.01.01 프로젝트관리", "프로젝트관리"),
+        ("[02020302] 사무행정", "사무행정"),
+        ("02020302사무행정", "사무행정"),
+        ("01010101-01 인사", "인사"),
+        ("01010101-01인사", "인사"),
+        ("010101:프로젝트관리", "프로젝트관리"),
+        ("010101QM/QC관리", "QM/QC관리"),
+        ("010101 3D프린터개발", "3D프린터개발"),
+        ("1903113D프린터개발", "3D프린터개발"),
+        # A two-digit table ordinal remains supported and is not mistaken for
+        # a six-to-ten-digit NCS classification code.
+        ("01. 프로젝트관리", "프로젝트관리"),
+    ],
+)
+def test_structure_job_description_strips_full_ncs_code_prefix(
+    raw_value: str,
+    expected: str,
+) -> None:
+    result = structure_job_description(
+        {"markdown": f"NCS 세분류명: {raw_value}"},
+        filename="coded-jd.txt",
+    )
+
+    assert result["fields"]["ncs_detail_candidates"] == [expected]
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [
+        "3D프린터개발",
+        "CO₂배출관리",
+        "2024채용관리",
+        "123456비공식직무",
+    ],
+)
+def test_structure_job_description_preserves_digit_leading_non_code_names(
+    raw_value: str,
+) -> None:
+    result = structure_job_description(
+        {"markdown": f"NCS 세분류명: {raw_value}"},
+        filename="digit-leading-jd.txt",
+    )
+
+    assert result["fields"]["ncs_detail_candidates"] == [raw_value]
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [
+        "010101",
+        "(010101)",
+        "01-01-01",
+        "NCS 01010101",
+    ],
+)
+def test_structure_job_description_rejects_code_only_detail_values(raw_value: str) -> None:
+    result = structure_job_description(
+        {"markdown": f"NCS 세분류명: {raw_value}"},
+        filename="code-only-jd.txt",
+    )
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+
+
+def test_structure_job_description_cleans_codes_from_kordoc_table_blocks() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {"text": "NCS 세분류명"},
+                        {"text": "010101 프로젝트관리"},
+                        {"text": "(02020302) 사무행정"},
+                        {"text": "01. 총무"},
+                        {"text": "010101"},
+                    ]
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="kordoc-block-jd.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "프로젝트관리",
+        "사무행정",
+        "총무",
+    ]
 
 
 def test_structure_job_description_recovers_aks_electric_jd_from_flattened_pdf_text() -> None:
@@ -333,6 +455,81 @@ def test_structure_job_description_filters_detail_label_noise() -> None:
     assert result["fields"]["ncs_detail_candidates"] == ["원자력발전설비운영"]
 
 
+def test_structure_job_description_filters_job_definition_header_from_detail_values() -> None:
+    markdown = """
+| 세분류 | 직무정의 | 경영기획 | 사무행정 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["경영기획", "사무행정"]
+
+
+def test_structure_job_description_filters_alio_flattened_neighbor_cell_noise() -> None:
+    markdown = """
+| 세분류 | 02 영상촬영 | 회계.감사 | 공단 소개 | 공단 주요 사업 | NCS기반 채용전형 절차 | 요구 능력 단위 | 요건 | 교육요건 | 서류접수 → 면접시험 | 공고문 참조 | 제한없음 | www.ncs.go.kr | 능력단위명칭 | 기술 명 NCS 참고 | 태도 명 \\ NCS 참고 | 핵심책무 | 직무 설명 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="alio-jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["영상촬영", "회계.감사"]
+
+
+def test_structure_job_description_stops_flattened_detail_row_at_next_section() -> None:
+    markdown = """
+| 세분류 | 펀드운용 | 대체투자 | 직업공통능력 | 문제해결능력 | 의사소통능력 |
+| 세분류 | 경영기획 | 능력단위명칭 | 사업환경 분석 | 경영방침 수립 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="flattened-jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "펀드운용",
+        "대체투자",
+        "경영기획",
+    ]
+
+
+def test_structure_job_description_extracts_abbreviated_detail_row_only_in_classification_table() -> None:
+    markdown = """
+<table>
+<tr><th colspan="2">채용분야</th><th colspan="3">일반행정</th></tr>
+<tr><td rowspan="4">분류체계</td><td>대</td><td>02.경영·회계·사무</td></tr>
+<tr><td>중</td><td>01.기획사무</td><td>02.총무·인사</td></tr>
+<tr><td>소</td><td>02.홍보·광고</td><td>03.일반사무</td></tr>
+<tr><td>세</td><td>02.PR/광고</td><td>02.사무행정</td></tr>
+<tr><td>능력단위</td><td>07.광고 집행 관리</td><td>01.문서작성</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="abbreviated.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["PR", "광고", "사무행정"]
+    assert result["fields"]["ncs_detail_source"] == "explicit"
+
+
+def test_structure_job_description_does_not_treat_standalone_se_as_detail_label() -> None:
+    markdown = """
+| 세 | 사무행정 |
+| --- | --- |
+| 담당업무 | 문서 작성 및 자료 정리 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="ordinary-table.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+
+
+def test_structure_job_description_filters_combined_basic_competency_cell() -> None:
+    markdown = """
+| 세분류 | 펀드운용 | 문제해결능력, 의사소통능력, 디지털능력, 자기관리능력, 직업윤리 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="basic-competency-jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["펀드운용"]
+
+
 def test_structure_job_description_cleans_detail_candidate_punctuation() -> None:
     markdown = """
 | 세분류 | 영상의학 (특화분류) | 임상병리 (특화분류) | 간호업무 보조/ | 재원환자 관리, |
@@ -409,6 +606,143 @@ def test_structure_job_description_splits_comma_and_slash_detail_candidates() ->
         "한식조리",
         "양식조리",
     ]
+
+
+def test_structure_job_description_preserves_official_acronym_slash_detail() -> None:
+    markdown = """
+<table>
+<tr><td rowspan="2">NCS<br>분류체계</td><td colspan="5">대분류 중분류 소분류 세분류</td></tr>
+<tr><td colspan="2">02.경영·회계·사무</td><td>04.생산·품질관리</td><td>02.품질관리</td><td>01.QM/QC관리</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="quality.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["QM/QC관리"]
+    assert "QM" not in result["fields"]["ncs_detail_candidates"]
+    assert "QC관리" not in result["fields"]["ncs_detail_candidates"]
+
+
+def test_structure_job_description_resolves_merged_hierarchy_cells_to_last_detail_column() -> None:
+    markdown = """
+<table>
+<tr><th>채용분야</th><th colspan="5">기후대응 환경생태분야 전문연구원</th></tr>
+<tr><td rowspan="5">NCS<br>분류체계</td><td colspan="5">대분류 중분류 소분류 세분류</td></tr>
+<tr><td colspan="2" rowspan="2">14.건설</td><td rowspan="2">05.조경</td><td rowspan="2">01.조경</td><td>02.조경시공</td></tr>
+<tr><td>03.조경관리</td></tr>
+<tr><td colspan="2" rowspan="2">23.환경․에너지․안전</td><td rowspan="2">03.자연환경</td><td rowspan="2">01.생태복원⋅관리</td><td>01.생태복원</td></tr>
+<tr><td>02.생태관리</td></tr>
+<tr><td>중점수행분야</td><td colspan="5">도로 비탈면 생태복원 분야</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="ecology.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "조경시공",
+        "조경관리",
+        "생태복원",
+        "생태관리",
+    ]
+    assert "조경" not in result["fields"]["ncs_detail_candidates"]
+    assert "생태복원⋅관리" not in result["fields"]["ncs_detail_candidates"]
+
+
+def test_structure_job_description_accepts_detail_job_header_with_rowspans() -> None:
+    markdown = """
+<table>
+<tr><th rowspan="2">모집분야</th><th rowspan="2">운전</th><th colspan="2" rowspan="2">분류체계</th><th>대분류</th><th>중분류</th><th>소분류</th><th>세분류(직무)</th></tr>
+<tr><td>09. 운전·운송</td><td>01. 자동차운전·운송</td><td>01. 자동차운전·운송</td><td>01. 여객운송</td></tr>
+<tr><td>주요사업</td><td colspan="7">항만시설 관리와 운영</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="driver.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["여객운송"]
+    assert result["fields"]["ncs_detail_absence_saw_detail_header"] is False
+
+
+def test_structure_job_description_accepts_detail_job_name_header() -> None:
+    markdown = """
+<table>
+<tr><td>NCS 분류체계</td><td>대분류</td><td>중분류</td><td>소분류</td><td>세분류(직무명)</td></tr>
+<tr><td></td><td>02. 경영·회계·사무</td><td>02. 총무·인사</td><td>03. 일반사무</td><td>02. 사무행정</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="office.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["사무행정"]
+
+
+def test_structure_job_description_rejects_ability_unit_list_mislabeled_as_detail() -> None:
+    markdown = """
+<table>
+<tr><td colspan="4">■ NCS 분류체계</td></tr>
+<tr><td>대분류</td><td>중분류</td><td>소분류</td><td>세분류</td></tr>
+<tr><td>02. 경영·회계·사무</td><td>03. 일반사무</td><td>02. 사무행정</td><td>02. 문서 관리<br>03. 자료 관리<br>07. 사무행정 업무 관리</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="records.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "ncs_detail_candidate_filtered"
+
+
+def test_structure_job_description_does_not_promote_information_technology_small_category() -> None:
+    markdown = """
+<table>
+<tr><td rowspan="6">NCS<br>분류체계</td><td colspan="5">대분류 중분류 소분류 세분류</td></tr>
+<tr><td colspan="2" rowspan="4">20. 정보통신</td><td rowspan="4">01. 정보기술</td><td>01. 정보기술전략·계획</td><td>05. 빅데이터분석</td></tr>
+<tr><td rowspan="2">02. 정보기술개발</td><td>03. 임베디드SW엔지니어링</td></tr>
+<tr><td>17. AIoT운영플랫폼 구축</td></tr>
+<tr><td>07. 인공지능</td><td>03. 인공지능모델링</td></tr>
+<tr><td colspan="2">14. 건설</td><td>01. 건설공사관리</td><td>04. 스마트건설관리</td><td>02. 스마트건설정보관리</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="ai.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "빅데이터분석",
+        "임베디드SW엔지니어링",
+        "AIoT운영플랫폼 구축",
+        "인공지능모델링",
+        "스마트건설정보관리",
+    ]
+    assert "정보기술전략·계획" not in result["fields"]["ncs_detail_candidates"]
+    assert "스마트건설관리" not in result["fields"]["ncs_detail_candidates"]
+
+
+def test_structure_job_description_rejects_collapsed_four_level_hierarchy_cell() -> None:
+    markdown = """
+<table>
+<tr><td rowspan="4">NCS<br>분류체계</td><td>대분류</td><td colspan="4" rowspan="4">02. 경영·회계·사무 20. 정보통신<br>01. 기획사무 02. 총무·인사 01. 정보기술<br>01. 경영 03. 일반 07. 인공지능<br>01. 경영기획 02. 사무행정 07. 생성형AI엔지니어링</td></tr>
+<tr><td>중분류</td></tr>
+<tr><td>소분류</td></tr>
+<tr><td>세분류</td></tr>
+<tr><td>요건</td><td colspan="5">공고문 참고</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="collapsed.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_saw_detail_header"] is True
+
+
+def test_structure_job_description_rejects_ncs_detail_description_heading() -> None:
+    markdown = """
+<table>
+<tr><th colspan="3">NCS 세분류 직무 설명</th></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="heading.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
 
 
 def test_structure_job_description_does_not_promote_small_category_when_detail_cell_is_blank() -> None:
@@ -673,11 +1007,40 @@ def test_structure_job_description_marks_multi_role_healthcare_document_without_
 
     assert result["fields"]["ncs_detail_candidates"] == []
     assert result["fields"]["ncs_detail_absence_reason"] == "multi_role_healthcare_document_without_explicit_ncs_detail"
+    state = result["fields"]["ncs_detail_absence_state"]
+    assert "multi_role_healthcare_markers_without_ncs_detail" in state
+    assert "healthcare_marker_count=8" in state
+    assert "강원대학교병원" in result["fields"]["ncs_detail_absence_evidence"]
+
+
+def test_structure_job_description_does_not_treat_ability_unit_as_detail_classification() -> None:
+    markdown = """
+# 직무설명자료
+| 항목 | 내용 |
+| --- | --- |
+| 직무내용 | 환자 예약과 검사 업무를 지원한다. |
+| 능력단위 | 방사선 검사 업무, 환자 교육 및 관리, 장비 관리 |
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="hospital.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "job_document_without_explicit_ncs_detail"
     assert (
         result["fields"]["ncs_detail_absence_state"]
-        == "multi_role_healthcare_markers_without_ncs_detail"
+        == "job_document_markers_without_ncs_classification"
     )
-    assert "강원대학교병원" in result["fields"]["ncs_detail_absence_evidence"]
+
+
+def test_structure_job_description_uses_job_description_filename_for_sparse_no_detail_state() -> None:
+    result = structure_job_description(
+        {"markdown": "단기 업무 지원"},
+        filename="붙임3_직무기술서.hwp",
+    )
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_reason"] == "job_document_without_explicit_ncs_detail"
+    assert "직무기술서.hwp" in result["fields"]["ncs_detail_absence_evidence"]
 
 
 def test_structure_job_description_does_not_infer_ambiguous_power_plant_detail() -> None:

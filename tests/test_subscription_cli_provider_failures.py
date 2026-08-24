@@ -19,9 +19,10 @@ def test_status_rejects_personal_subscription_cli_providers(provider: str) -> No
 
     assert response.status_code == 400
     detail = response.json()["detail"]
-    assert "openai_api" in detail
-    assert "openrouter_api" in detail
-    assert "personal Codex and Claude Code subscription logins are disabled" in detail
+    assert detail["code"] == "generation_provider_unsupported"
+    assert detail["provider"] == provider
+    assert "openai_api" in detail["message"]
+    assert detail["retryable"] is False
 
 
 @pytest.mark.parametrize("provider", ["codex", "codex_cli", "claude", "claude_code"])

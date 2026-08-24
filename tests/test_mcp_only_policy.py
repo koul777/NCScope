@@ -20,10 +20,28 @@ REQUEST_OPENAI_KEY = "sk-test-request-scoped-key"
 SERVER_OPENAI_KEY = "sk-test-server-env-must-be-ignored"
 
 
+@pytest.fixture(autouse=True)
+def _stub_independent_ai_quality_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main,
+        "review_interview_questions_with_ai",
+        lambda **kwargs: {
+            "status": "passed",
+            "reviewed_count": len(kwargs.get("questions") or []),
+            "scores": [],
+            "reason_codes": [],
+            "items": [],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
+
+
 def _openai_model_strategy(
     unit: dict,
     ksa: dict,
     methods: tuple[str, ...] = ("경험면접", "상황면접", "발표면접"),
+    follow_up_count: int = 3,
 ) -> dict:
     competency = str(unit["compeUnitName"])
     focus = str(ksa["factorName"])
@@ -76,6 +94,7 @@ def _openai_model_strategy(
                 "앞서 정한 적용 범위에 예외를 요구하는 부서가 생겼다면 어느 기준으로 수용 여부를 정하겠습니까?",
                 "말씀한 산출물이 최종안에 반영된 결과를 어떤 승인 기록이나 전후 변화로 확인했습니까?",
                 "같은 상황이 반복된다면 방금 설명한 검토 순서에서 무엇을 먼저 바꾸겠습니까?",
+                "그 개선이 실제로 작동했는지는 어떤 기록으로 확인하시겠습니까?",
             ],
             "evaluation_points": [
                 "상황과 담당 역할의 구체성",
@@ -91,6 +110,7 @@ def _openai_model_strategy(
                 "앞서 선택한 기준 때문에 제외되는 대상이 생겼다면 어느 조건에서 예외를 인정하겠습니까?",
                 "제시한 산출물에서 판단 근거가 빠졌다는 검토 의견이 오면 무엇을 보완하겠습니까?",
                 "그 결정이 권한을 벗어난다는 사실을 알게 되면 누구에게 어떤 근거로 보고하겠습니까?",
+                "실행 뒤 예상과 다른 결과가 나오면 어떤 조건에서 결정을 수정하시겠습니까?",
             ],
             "evaluation_points": [
                 "핵심 사실과 자료 확인의 정확성",
@@ -106,6 +126,7 @@ def _openai_model_strategy(
                 "앞서 선택한 대안의 전제가 틀렸다는 반증이 나오면 어느 조건에서 권고를 바꾸겠습니까?",
                 "제시한 실행 산출물에서 누락된 이해관계자가 있다면 누구이며 어떻게 반영하겠습니까?",
                 "그 권고의 성과를 확인할 지표와 보고 시점은 무엇입니까?",
+                "질의응답에서 핵심 전제가 흔들리면 발표 결론을 어떻게 조정하시겠습니까?",
             ],
             "evaluation_points": [
                 "자료 분석 근거의 정확성",
@@ -121,6 +142,7 @@ def _openai_model_strategy(
                 "그 확인 결과 앞서 정한 합의 범위에 한쪽의 핵심 위험이 남는 것으로 나왔다면 어떤 예외 조건을 두겠습니까?",
                 "제시한 공동안에서 책임 주체가 빠져 있다면 누구의 역할을 어떻게 보완하겠습니까?",
                 "합의안의 실행 결과를 어느 기록으로 점검하겠습니까?",
+                "실행 중 새로운 쟁점이 생기면 어떤 기준으로 다시 합의하시겠습니까?",
             ],
             "evaluation_points": [
                 "대안별 장단점 분석의 균형성",
@@ -146,6 +168,7 @@ def _openai_model_strategy(
                 "ncs_detail": str(unit["ncsSubdCdnm"]),
                 "ksa_refs": [focus],
                 **drafts[method],
+                "follow_ups": list(drafts[method]["follow_ups"][:follow_up_count]),
             }
             for method in methods
         ]
@@ -235,6 +258,203 @@ def test_parse_review_returns_detail_candidates(mocker):
     assert resp.json()["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
 
 
+def test_parse_review_accepts_direct_hwp_with_kordoc(mocker):
+    parse = mocker.patch("app.main.parse_with_kordoc", return_value={"markdown": JD_TEXT})
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("job-description.hwp", b"hwp-binary", "application/x-hwp")},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
+    parse.assert_called_once()
+
+
+def test_parse_review_recovers_hwp_table_terms_after_partial_kordoc_success(mocker):
+    flat_text = """
+    NCS 분류체계
+    대분류
+    중분류
+    소분류
+    세분류(직무)
+    02. 경영·회계·사무
+    02. 총무·인사
+    03. 일반사무
+    02. 사무행정
+    주요사업
+    """
+    mocker.patch(
+        "app.main.parse_with_kordoc",
+        return_value={
+            "markdown": "담당업무: 문서 접수와 기록물 관리",
+            "metadata": {"filename": "job-description.hwp"},
+        },
+    )
+    extract = mocker.patch("app.main.extract_hwp_text", return_value=flat_text)
+    search = mocker.patch(
+        "app.main.search_units_by_detail",
+        return_value=[{"ncsSubdCdnm": "사무행정", "ncsClCd": "0202030201_25v3"}],
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("job-description.hwp", b"hwp-binary", "application/x-hwp")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["fields"]["ncs_detail_candidates"] == ["사무행정"]
+    assert response.json()["fields"]["ncs_detail_source"] == "hwp_text_mcp_exact"
+    extract.assert_called_once()
+    search.assert_called_once()
+    assert "사무행정" in search.call_args.args[0]
+    assert search.call_args.kwargs == {"max_units": 200}
+
+
+def test_parse_review_recovers_official_pdf_detail_from_mixed_no_mapping_zip(mocker):
+    no_mapping_text = """
+    NCS 분류체계
+    세분류(NCS 미개발) 공학적방벽특성평가
+    해당직무는 현재 NCS 분류체계상 Mapping 가능한 직무(세분류)가 없어,
+    별도 분석을 통해 내용 도출
+    """
+    explicit_text = """
+    NCS 분류체계
+    대분류
+    중분류
+    소분류
+    세분류(직무)
+    02. 경영·회계·사무
+    02. 총무·인사
+    03. 일반사무
+    02. 사무행정
+    주요사업
+    """
+    data = _zip_bytes(
+        {
+            "research_no_mapping.pdf": b"pdf-one",
+            "administration_with_ncs.pdf": b"pdf-two",
+        }
+    )
+    mocker.patch(
+        "app.main.parse_with_kordoc",
+        side_effect=main.KordocParseError("node unavailable"),
+    )
+    extract = mocker.patch(
+        "app.main.extract_pdf_text",
+        side_effect=[no_mapping_text, explicit_text],
+    )
+    structural = mocker.patch(
+        "app.main.extract_sclass_from_pdf_bytes",
+        side_effect=[
+            {"detail_candidates": ["공학적방벽특성평가"], "detail_table_found": True},
+            {"detail_candidates": ["사무행정"], "detail_table_found": True},
+        ],
+    )
+    search = mocker.patch(
+        "app.main.search_units_by_detail",
+        return_value=[{"ncsSubdCdnm": "사무행정", "ncsClCd": "0202030201_25v3"}],
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("mixed-jobs.zip", data, "application/zip")},
+        )
+
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    assert fields["ncs_detail_candidates"] == ["사무행정"]
+    assert fields["ncs_detail_source"] == "pdf_text_mcp_exact"
+    assert fields["ncs_detail_absence_declared_no_mapping"] is False
+    assert extract.call_count == 2
+    assert structural.call_count == 2
+    search.assert_called_once()
+    assert "사무행정" in search.call_args.args[0]
+    assert search.call_args.kwargs == {"max_units": 200}
+
+
+def test_flattened_multi_document_recovery_scales_mcp_unit_budget(mocker):
+    terms = [
+        "경영기획",
+        "경영평가",
+        "총무",
+        "사무행정",
+        "문헌정보관리",
+        "산업안전관리공통직무",
+    ]
+    parsed = {
+        "markdown": "",
+        "metadata": {"classification_terms": terms},
+    }
+    fields = {
+        "ncs_detail_candidates": [],
+        "ncs_detail_absence_reason": "no_ncs_mapping_declared",
+        "ncs_detail_absence_declared_no_mapping": True,
+    }
+    search = mocker.patch(
+        "app.main.search_units_by_detail",
+        return_value=[{"ncsSubdCdnm": term, "ncsClCd": f"code-{index}"} for index, term in enumerate(terms)],
+    )
+
+    main._recover_hangul_fallback_detail_candidates(parsed, fields)
+
+    assert fields["ncs_detail_candidates"] == terms
+    assert fields["ncs_detail_source"] == "pdf_text_mcp_exact"
+    assert fields["ncs_detail_absence_declared_no_mapping"] is False
+    search.assert_called_once_with(terms, max_units=240)
+
+
+def test_parse_review_keeps_kordoc_result_when_optional_hwp_reader_crashes(mocker):
+    mocker.patch("app.main.parse_with_kordoc", return_value={"markdown": JD_TEXT})
+    mocker.patch("app.main.extract_hwp_text", side_effect=RuntimeError("bad ole crc"))
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("job-description.hwp", b"hwp-binary", "application/x-hwp")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["fields"]["ncs_detail_candidates"] == ["경영기획"]
+    assert "bad ole crc" not in response.text
+
+
+def test_parse_review_recovers_direct_hwp_without_node_runtime(mocker):
+    flat_text = """
+    NCS 분류체계
+    대분류
+    중분류
+    소분류
+    세분류(직무)
+    02. 경영·회계·사무
+    02. 총무·인사
+    03. 일반사무
+    02. 사무행정
+    주요사업
+    """
+    mocker.patch("app.main.parse_with_kordoc", side_effect=main.KordocParseError("node unavailable"))
+    extract = mocker.patch("app.main.extract_hwp_text", return_value=flat_text)
+    search = mocker.patch(
+        "app.main.search_units_by_detail",
+        return_value=[{"ncsSubdCdnm": "사무행정", "ncsClCd": "0202030201_25v3"}],
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("job-description.hwp", b"hwp-binary", "application/x-hwp")},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["fields"]["ncs_detail_candidates"] == ["사무행정"]
+    assert resp.json()["fields"]["ncs_detail_source"] == "hwp_text_mcp_exact"
+    extract.assert_called_once()
+    search.assert_called_once()
+
+
 def test_parse_review_accepts_zip_with_supported_jd_text():
     data = _zip_bytes({"job_description.txt": JD_TEXT})
 
@@ -248,6 +468,23 @@ def test_parse_review_accepts_zip_with_supported_jd_text():
     assert resp.status_code == 200
     assert body["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
     assert "ZIP member: job_description.txt" in body["document"]["markdown"]
+
+
+def test_parse_review_accepts_zip_with_hwp_member(mocker):
+    data = _zip_bytes({"job_description.hwp": "hwp binary"})
+    parse = mocker.patch("app.main.parse_with_kordoc", return_value={"markdown": JD_TEXT})
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("jd.zip", data, "application/zip")},
+        )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
+    assert "ZIP member: job_description.hwp" in body["document"]["markdown"]
+    parse.assert_called_once()
 
 
 def test_parse_review_accepts_zip_with_supported_jd_image(mocker):
@@ -529,6 +766,84 @@ def test_mcp_only_returns_manual_suggestions_when_detail_has_no_exact_match(monk
     assert "exact competency units" in body["detail"]["message"]
 
 
+def test_mcp_only_fails_closed_when_authoritative_detail_lookup_is_unavailable(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    sentinel = "upstream socket disclosed detail"
+    mocker.patch(
+        "app.main.search_units_by_detail",
+        side_effect=main.NcsMcpError(sentinel),
+    )
+    hrdk_verified = mocker.patch("app.main.fetch_ncs_units_hrdk_by_verified_sclass")
+    hrdk_names = mocker.patch("app.main.fetch_ncs_units_hrdk_by_sclass_names")
+    hrdk_keywords = mocker.patch("app.main.fetch_ncs_units_hrdk_by_keywords")
+    local_map = mocker.patch("app.main.map_ncs")
+    review = _confirmed_review_payload({"ncs_detail_candidates": ["경영기획"]})
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
+        )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "ncs_mcp_unavailable"
+    assert detail["retryable"] is True
+    assert detail["lookup_terms"] == ["경영기획"]
+    assert sentinel not in response.text
+    assert REQUEST_OPENAI_KEY not in response.text
+    hrdk_verified.assert_not_called()
+    hrdk_names.assert_not_called()
+    hrdk_keywords.assert_not_called()
+    local_map.assert_not_called()
+
+
+def test_mcp_only_canonicalizes_split_official_detail_before_exact_lookup(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    mocker.patch(
+        "app.main.lookup_ncs_codes_by_sclass",
+        return_value=[
+            {
+                "sclass_name": "프로젝트관리",
+                "ncs_code_no": "010101",
+                "ncs_lclass_code": "01",
+                "ncs_mclass_code": "01",
+                "ncs_sclass_code": "01",
+                "confidence": 1.0,
+            }
+        ],
+    )
+    search = mocker.patch("app.main.search_units_by_detail", return_value=[])
+    mocker.patch("app.main.suggest_units_by_text", return_value=[])
+    review = _confirmed_review_payload(
+        {"ncs_detail_candidates": ["프로젝트 관리"]}
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
+        )
+
+    body = resp.json()
+    assert resp.status_code == 422
+    assert search.call_args.args[0] == ["프로젝트관리"]
+    assert body["detail"]["lookup_terms"] == ["프로젝트관리"]
+
+
 def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     # Public requests are single-detail. Bypass only that input boundary here
@@ -643,7 +958,7 @@ def test_mcp_only_upload_accepts_parenthetical_secretary_detail_without_manual_b
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     build_strategy = mocker.patch(
         "app.main.build_jd_strategy_with_openai",
-        return_value=_openai_model_strategy(unit, ksa),
+        return_value=_openai_model_strategy(unit, ksa, methods=("경험면접",)),
     )
     review = _confirmed_review_payload(
         {"ncs_detail_candidates": ["비서 (글로벌경영사무 지원)"]}
@@ -696,7 +1011,7 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     build_strategy = mocker.patch(
         "app.main.build_jd_strategy_with_openai",
-        return_value=_openai_model_strategy(unit, ksa),
+        return_value=_openai_model_strategy(unit, ksa, methods=("경험면접",)),
     )
     review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]})
     with TestClient(main.app) as client:
@@ -763,8 +1078,8 @@ def test_upload_requires_request_key_even_with_server_openai_env(monkeypatch, mo
         )
 
     assert resp.status_code == 400
-    assert resp.json()["detail"]["code"] == "openrouter_key_required"
-    assert resp.json()["detail"]["provider"] == "openrouter_api"
+    assert resp.json()["detail"]["code"] == "openai_api_key_required"
+    assert resp.json()["detail"]["provider"] == "openai_api"
     assert resp.json()["detail"]["retryable"] is False
     assert SERVER_OPENAI_KEY not in resp.text
     build_strategy.assert_not_called()
@@ -799,6 +1114,7 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
             unit,
             ksa,
             methods=("\ubc1c\ud45c\uba74\uc811",),
+            follow_up_count=4,
         ),
     )
     with TestClient(main.app) as client:
@@ -853,8 +1169,8 @@ def test_generate_from_text_requires_request_key_even_with_server_openai_env(mon
         )
 
     assert resp.status_code == 400
-    assert resp.json()["detail"]["code"] == "openrouter_key_required"
-    assert resp.json()["detail"]["provider"] == "openrouter_api"
+    assert resp.json()["detail"]["code"] == "openai_api_key_required"
+    assert resp.json()["detail"]["provider"] == "openai_api"
     assert resp.json()["detail"]["retryable"] is False
     assert SERVER_OPENAI_KEY not in resp.text
     build_strategy.assert_not_called()
@@ -885,7 +1201,7 @@ def test_generate_from_text_never_falls_back_to_server_openai_key(monkeypatch, m
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     build_strategy = mocker.patch(
         "app.main.build_jd_strategy_with_openai",
-        return_value=_openai_model_strategy(unit, ksa),
+        return_value=_openai_model_strategy(unit, ksa, methods=("경험면접",)),
     )
 
     with TestClient(main.app) as client:
@@ -917,7 +1233,7 @@ def test_generation_status_declares_request_scoped_key_contract(monkeypatch):
 
     assert status_resp.status_code == 200
     status = status_resp.json()
-    assert status["provider"] == "openrouter_api"
+    assert status["provider"] == "openai_api"
     assert status["auth_mode"] == "request_scoped_api_key"
     assert status["status"] == "key_required"
     assert status["available"] is True
@@ -958,7 +1274,12 @@ def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkey
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
     build_strategy = mocker.patch(
         "app.main.build_jd_strategy_with_openai",
-        return_value=_openai_model_strategy(unit, ksa),
+        return_value=_openai_model_strategy(
+            unit,
+            ksa,
+            methods=("경험면접",),
+            follow_up_count=5,
+        ),
     )
 
     with TestClient(main.app) as client:
@@ -1038,6 +1359,32 @@ def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
 
     assert calls == ["인사", "프로젝트관리"]
     assert [row["matchedDetailName"] for row in rows] == ["인사", "프로젝트관리"]
+
+
+def test_mcp_search_preserves_official_acronym_slash_detail(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls: list[str] = []
+
+    def fake_call_tool(_name, arguments):
+        query = arguments["query"]
+        calls.append(query)
+        return {
+            "results": [
+                {
+                    "id": "0204020101_14v1",
+                    "text": "품질전략수립",
+                    "path": {"small": "품질관리", "sub": "QM/QC관리"},
+                }
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail(["QM/QC관리"], max_units=5)
+
+    assert calls == ["QM/QC관리"]
+    assert [row["ncsClCd"] for row in rows] == ["0204020101_14v1"]
+    assert rows[0]["matchedDetailName"] == "QM/QC관리"
 
 
 def test_mcp_ksa_alias_fields_preserve_and_balance_knowledge_skill_attitude(mocker):
@@ -1189,6 +1536,94 @@ def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
     rows = ncs_mcp_client.search_units_by_detail(["일식· 복어・조리"])
 
     assert [row["ncsClCd"] for row in rows] == ["dot-match"]
+
+
+def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls = []
+    official_by_query = {
+        "프로젝트관리": "project-match",
+        "산학협력관리": "cooperation-match",
+        "시각디자인": "design-match",
+        "경영기획": "planning-match",
+    }
+
+    def fake_call_tool(name, arguments):
+        assert name == "ncs_search"
+        query = arguments["query"]
+        calls.append(query)
+        code = official_by_query.get(query)
+        if not code:
+            return {"results": []}
+        return {
+            "results": [
+                {
+                    "id": code,
+                    "text": f"{query} 능력단위",
+                    "path": {"small": "공식 소분류", "sub": query},
+                }
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    cases = [
+        ("프로젝트 관리", "프로젝트관리", "project-match"),
+        ("산학협력 관리", "산학협력관리", "cooperation-match"),
+        ("시각 디자인", "시각디자인", "design-match"),
+        ("경영 기획", "경영기획", "planning-match"),
+    ]
+    for source_label, official_label, expected_code in cases:
+        rows = ncs_mcp_client.search_units_by_detail([source_label], max_units=5)
+        assert [row["ncsClCd"] for row in rows] == [expected_code]
+        assert rows[0]["matchedDetailName"] == source_label
+        assert rows[0]["ncsSubdCdnm"] == official_label
+
+    assert calls == [
+        value
+        for source_label, official_label, _code in cases
+        for value in (source_label, official_label)
+    ]
+
+
+def test_mcp_search_retries_punctuation_and_ordinal_formatting_variants(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls = []
+    official_by_query = {
+        "회계감사": ("회계·감사", "accounting-audit"),
+        "영상촬영": ("영상촬영", "video"),
+    }
+
+    def fake_call_tool(name, arguments):
+        assert name == "ncs_search"
+        query = arguments["query"]
+        calls.append(query)
+        matched = official_by_query.get(query)
+        if not matched:
+            return {"results": []}
+        official, code = matched
+        return {
+            "results": [
+                {
+                    "id": code,
+                    "text": f"{official} 능력단위",
+                    "path": {"small": "공식 소분류", "sub": official},
+                }
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    punctuation = ncs_mcp_client.search_units_by_detail(["회계.감사"], max_units=5)
+    ordinal = ncs_mcp_client.search_units_by_detail(["02 영상촬영"], max_units=5)
+
+    assert [row["ncsClCd"] for row in punctuation] == ["accounting-audit"]
+    assert punctuation[0]["matchedDetailName"] == "회계.감사"
+    assert punctuation[0]["ncsSubdCdnm"] == "회계·감사"
+    assert [row["ncsClCd"] for row in ordinal] == ["video"]
+    assert ordinal[0]["matchedDetailName"] == "02 영상촬영"
+    assert ordinal[0]["ncsSubdCdnm"] == "영상촬영"
+    assert calls == ["회계.감사", "회계감사", "02 영상촬영", "02영상촬영", "영상촬영"]
 
 
 def test_mcp_search_resolves_safe_detail_alias(mocker):
@@ -1718,12 +2153,9 @@ def test_generate_by_ncs_code_stops_without_official_ksa(monkeypatch):
         )
 
     assert resp.status_code == 502
-    assert resp.json()["detail"] == {
-        "code": "openai_api_generation_failed",
-        "provider": "openai_api",
-        "message": "OpenAI API에서 질문을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
-        "retryable": True,
-    }
+    assert resp.json()["detail"]["code"] == "openai_api_quality_rejected"
+    assert resp.json()["detail"]["provider"] == "openai_api"
+    assert resp.json()["detail"]["retryable"] is True
 
 
 def test_generate_by_ncs_code_rejects_unverified_question_grounding(monkeypatch):
@@ -1759,7 +2191,7 @@ def test_generate_by_ncs_code_rejects_unverified_question_grounding(monkeypatch)
         )
 
     assert resp.status_code == 502
-    assert "unverified or invalid NCS KSA grounding" in resp.text
+    assert resp.json()["detail"]["code"] == "openai_api_quality_rejected"
 
 
 def test_generate_by_ncs_code_rejects_invalid_supported_method_shape(monkeypatch):
@@ -1795,7 +2227,7 @@ def test_generate_by_ncs_code_rejects_invalid_supported_method_shape(monkeypatch
         )
 
     assert resp.status_code == 502
-    assert "unverified or invalid NCS KSA grounding" in resp.text
+    assert resp.json()["detail"]["code"] == "openai_api_quality_rejected"
 
 
 def test_generate_by_ncs_code_rejects_string_boolean(monkeypatch):

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 from app.services import jd_strategy, openai_http
+from app.services.ai_question_quality_review import AI_QUALITY_DIMENSIONS
 
 
 REQUEST_KEY = "sk-request-scoped-boundary-secret"
@@ -50,7 +51,17 @@ def _model_strategy() -> dict[str, Any]:
                 "question_evidence_id": evidence_id,
                 "question_evidence_required": True,
                 "ksa_refs": [_ksa()["factorName"]],
-                "follow_ups": ["판단 기준은 무엇이었습니까?"],
+                "follow_ups": [
+                    "판단 기준은 무엇이었습니까?",
+                    "어떤 대안을 비교했습니까?",
+                    "결과를 어떤 기준으로 확인했습니까?",
+                ],
+                "evaluation_points": [
+                    "자료 출처를 구분하는지",
+                    "판단 기준이 구체적인지",
+                    "우선순위 결정과 직무가 연결되는지",
+                    "결과 검증 행동이 확인 가능한지",
+                ],
             }
         ],
         "question_quality_report": {"passed": True},
@@ -108,6 +119,53 @@ def _patch_generation_pipeline(
         "_run_runtime_question_quality_orchestration",
         lambda strategy, *args, **kwargs: strategy,
     )
+    def fake_audit(strategy: dict[str, Any], _ksa_rows: list[dict[str, Any]]) -> dict[str, Any]:
+        audited = dict(strategy)
+        rows = list(audited.get("interview_questions") or [])
+        audited["question_quality_report"] = {
+            "passed": True,
+            "summary": {"count_matches_plan": True},
+            "items": [
+                {"index": index, "ready": True, "issues": []}
+                for index, _row in enumerate(rows, start=1)
+            ],
+        }
+        audited["question_quality_orchestration"] = {
+            "status": "passed",
+            "items": [
+                {"index": index, "final_issues": []}
+                for index, _row in enumerate(rows, start=1)
+            ],
+        }
+        return audited
+
+    monkeypatch.setattr(main, "_audit_ai_authored_strategy_without_repair", fake_audit)
+    monkeypatch.setattr(
+        main,
+        "review_interview_questions_with_ai",
+        lambda **kwargs: {
+            "policy": "independent-ai-question-review-v1",
+            "status": "passed",
+            "reviewed_count": len(kwargs.get("questions") or []),
+            "scores": [
+                {"index": index, **{dimension: 5 for dimension in AI_QUALITY_DIMENSIONS}}
+                for index, _row in enumerate(kwargs.get("questions") or [], start=1)
+            ],
+            "reason_codes": [],
+            "items": [
+                {
+                    "index": index,
+                    "passed": True,
+                    "scores": {dimension: 5 for dimension in AI_QUALITY_DIMENSIONS},
+                    "reason_codes": [],
+                    "regeneration_guidance_codes": [],
+                }
+                for index, _row in enumerate(kwargs.get("questions") or [], start=1)
+            ],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
     monkeypatch.setattr(
         main,
         "_register_question_quality_evidence",
@@ -120,8 +178,8 @@ def _assert_key_required(response) -> None:
     assert response.status_code == 400
     detail = response.json()["detail"]
     assert set(detail) == {"code", "provider", "message", "retryable"}
-    assert detail["code"] == "openrouter_key_required"
-    assert detail["provider"] == "openrouter_api"
+    assert detail["code"] == "openai_api_key_required"
+    assert detail["provider"] == "openai_api"
     assert isinstance(detail["message"], str) and detail["message"]
     assert detail["retryable"] is False
     assert REQUEST_KEY not in response.text
@@ -147,7 +205,7 @@ def test_status_declares_request_key_required_without_receiving_a_credential(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["provider"] == "openrouter_api"
+    assert payload["provider"] == "openai_api"
     assert payload["auth_mode"] == "request_scoped_api_key"
     assert payload["status"] == "key_required"
     assert payload["authenticated"] is False
@@ -296,7 +354,7 @@ def test_settings_never_resolve_server_environment_as_generation_fallback(
     assert main.settings.openai_key_source("") == "missing"
 
 
-def test_provider_failure_uses_server_ksa_fallback_without_exposing_keys(
+def test_provider_failure_returns_no_questions_and_does_not_expose_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", SERVER_KEY)
@@ -315,19 +373,95 @@ def test_provider_failure_uses_server_ksa_fallback_without_exposing_keys(
             json=_generation_payload(),
         )
 
-    assert response.status_code == 200
-    strategy = response.json()["strategy"]
-    assert strategy["provider_fallback_used"] is True
-    assert strategy["degraded"] is True
-    assert strategy["question_release_status"] == "human_review_required"
-    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "openai_api_generation_failed"
+    assert "strategy" not in response.json()
+    assert "server_ksa_fallback" not in response.text
     assert "upstream failure" not in response.text
     assert "template_fallback" not in response.text
     assert REQUEST_KEY not in response.text
     assert SERVER_KEY not in response.text
 
 
-def test_unexpected_server_fallback_defect_is_not_misattributed_to_provider(
+@pytest.mark.parametrize(
+    "method",
+    [
+        "경험면접",
+        "상황면접",
+        "발표면접",
+        "토론면접",
+        "인바스켓면접",
+        "직무지식면접",
+        "창의적 문제해결력면접",
+    ],
+)
+@pytest.mark.parametrize("question_count", [1, 2, 3, 4, 5])
+def test_public_endpoint_releases_all_supported_methods_and_counts_only_after_ai_review(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    question_count: int,
+) -> None:
+    evidence_id = main.stable_ksa_evidence_id(_ksa())
+
+    def builder(**kwargs: Any) -> dict[str, Any]:
+        follow_up_count = int(kwargs["follow_up_count"])
+        return {
+            "interview_questions": [
+                {
+                    "question": f"담당 업무에서 서로 다른 근거를 비교해 결정한 사례 {index}를 설명해 주세요.",
+                    "question_source": "openai_api",
+                    "type": method,
+                    "ncsClCd": _unit()["ncsClCd"],
+                    "question_evidence_id": evidence_id,
+                    "question_focus": _ksa()["factorName"],
+                    "question_focus_source": "official_ksa",
+                    "ksa_refs": [_ksa()["factorName"]],
+                    "follow_ups": [
+                        f"그 답변에서 판단 근거 {follow_up_index}를 어떻게 확인했습니까?"
+                        for follow_up_index in range(1, follow_up_count + 1)
+                    ],
+                    "evaluation_points": [
+                        "비교한 근거의 구체성",
+                        "판단 과정의 일관성",
+                        "본인이 수행한 행동",
+                        "결과 확인 방법",
+                    ],
+                }
+                for index in range(1, int(kwargs["target_count_override"]) + 1)
+            ],
+            "provider_generation_model": "gpt-5.6-terra",
+            "provider_generation_request_count": 1,
+        }
+
+    _patch_generation_pipeline(monkeypatch, builder)
+    payload = _generation_payload(
+        interview_methods=[method],
+        question_plan={
+            "items": [
+                {
+                    "detail": _unit()["ncsSubdCdnm"],
+                    "enabled": True,
+                    "main_count": question_count,
+                    "follow_up_count": question_count,
+                }
+            ]
+        },
+    )
+
+    with TestClient(main.app, client=REMOTE_CLIENT) as client:
+        response = client.post("/api/questions/generate-from-text", json=payload)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    questions = body["strategy"]["interview_questions"]
+    assert len(questions) == question_count
+    assert all(question["type"] == method for question in questions)
+    assert all(len(question["follow_ups"]) == question_count for question in questions)
+    assert all(question["question_source"] == "openai_api" for question in questions)
+    assert body["strategy"]["ai_quality_review"]["status"] == "passed"
+
+
+def test_provider_failure_cannot_enter_a_server_question_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     secret = "sk-or-server-fallback-internal-secret"
@@ -335,11 +469,8 @@ def test_unexpected_server_fallback_defect_is_not_misattributed_to_provider(
     def provider_failure(**_kwargs: Any) -> dict[str, Any]:
         raise RuntimeError(f"provider failed with {secret}")
 
-    def fallback_failure(**_kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError(f"fallback defect with {secret}")
-
     _patch_generation_pipeline(monkeypatch, provider_failure)
-    monkeypatch.setattr(main, "build_server_ksa_fallback_strategy", fallback_failure)
+    assert not hasattr(main, "build_server_ksa_fallback_strategy")
 
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = client.post(
@@ -347,16 +478,10 @@ def test_unexpected_server_fallback_defect_is_not_misattributed_to_provider(
             json=_generation_payload(),
         )
 
-    assert response.status_code == 500
-    assert response.json()["detail"] == {
-        "code": "server_ksa_fallback_failed",
-        "provider": "server_ksa_fallback",
-        "message": "서버 KSA 대체 문항 구성 중 내부 오류가 발생했습니다.",
-        "retryable": True,
-    }
-    assert "openai_api_generation_failed" not in response.text
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "openai_api_generation_failed"
+    assert "server_ksa_fallback" not in response.text
     assert "provider failed" not in response.text
-    assert "fallback defect" not in response.text
     assert secret not in response.text
 
 
@@ -457,9 +582,7 @@ def test_openai_http_ignores_multi_endpoint_failover_configuration(
         "https://unapproved-a.example/v1,https://unapproved-b.example/v1",
     )
 
-    assert openai_http._openai_base_urls() == [
-        "https://approved-gateway.example/v1"
-    ]
+    assert openai_http._openai_base_urls() == ["https://api.openai.com/v1"]
 
 
 def test_openai_strategy_marks_freeform_provenance_and_requests_exact_evidence(
@@ -537,7 +660,7 @@ def test_openai_strategy_marks_freeform_provenance_and_requests_exact_evidence(
     "path",
     ["/api/questions/generate-from-text", "/api/jd/strategy/upload"],
 )
-def test_post_quality_deterministic_repair_is_replaced_by_server_ksa_fallback(
+def test_post_quality_deterministic_repair_cannot_replace_ai_authored_text(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -594,8 +717,8 @@ def test_post_quality_deterministic_repair_is_replaced_by_server_ksa_fallback(
 
     assert response.status_code == 200
     strategy = response.json()["strategy"]
-    assert strategy["provider_fallback_used"] is True
-    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
+    assert strategy["interview_questions"][0]["question_source"] == "openai_api"
+    assert strategy["ai_quality_review"]["status"] == "passed"
     assert "quality_orchestrator_repair" not in response.text
     assert REQUEST_KEY not in response.text
 
@@ -623,7 +746,7 @@ def test_post_quality_deterministic_repair_is_replaced_by_server_ksa_fallback(
         ),
     ],
 )
-def test_public_strategy_replaces_model_text_when_a_post_quality_gate_failed(
+def test_legacy_post_quality_metadata_cannot_replace_ai_reviewed_text(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     quality_report: dict[str, Any],
@@ -682,9 +805,9 @@ def test_public_strategy_replaces_model_text_when_a_post_quality_gate_failed(
 
     assert response.status_code == 200
     strategy = response.json()["strategy"]
-    assert strategy["provider_fallback_used"] is True
-    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
-    assert _model_strategy()["interview_questions"][0]["question"] not in response.text
+    assert strategy["interview_questions"][0]["question_source"] == "openai_api"
+    assert strategy["ai_quality_review"]["status"] == "passed"
+    assert _model_strategy()["interview_questions"][0]["question"] in response.text
     assert REQUEST_KEY not in response.text
 
 
@@ -699,7 +822,7 @@ def test_public_strategy_replaces_model_text_when_a_post_quality_gate_failed(
         },
     ],
 )
-def test_empty_model_output_is_replaced_by_server_ksa_fallback(
+def test_empty_model_output_returns_no_fallback_questions(
     monkeypatch: pytest.MonkeyPatch,
     builder_result: dict[str, Any],
 ) -> None:
@@ -711,10 +834,13 @@ def test_empty_model_output_is_replaced_by_server_ksa_fallback(
             json=_generation_payload(),
         )
 
-    assert response.status_code == 200
-    strategy = response.json()["strategy"]
-    assert strategy["provider_fallback_used"] is True
-    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] in {
+        "openai_api_generation_failed",
+        "openai_api_invalid_output",
+    }
+    assert "strategy" not in response.json()
+    assert "server_ksa_fallback" not in response.text
     assert "upstream detail" not in response.text
     assert "template_fallback" not in response.text
     assert REQUEST_KEY not in response.text

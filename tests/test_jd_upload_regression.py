@@ -15,6 +15,18 @@ def test_jd_strategy_upload_no_nameerror_regression(monkeypatch, mocker):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     mocker.patch("app.main.init_db", return_value=None)
     mocker.patch("app.main.start_auto_runner", return_value=None)
+    mocker.patch(
+        "app.main.review_interview_questions_with_ai",
+        side_effect=lambda **kwargs: {
+            "status": "passed",
+            "reviewed_count": len(kwargs.get("questions") or []),
+            "scores": [],
+            "reason_codes": [],
+            "items": [],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
     parse_upload = mocker.patch("app.main._parse_upload_document")
     mocker.patch("app.main.extract_small_categories_from_jd", return_value=[])
     mocker.patch("app.main.extract_detail_categories_from_jd", return_value=[])
@@ -67,38 +79,6 @@ def test_jd_strategy_upload_no_nameerror_regression(monkeypatch, mocker):
                         "자료 확인 근거의 타당성",
                         "실행 행동의 명확성",
                         "결과 점검과 개선의 연계성",
-                    ],
-                },
-                {
-                    "type": "상황면접",
-                    "question_source": "openai_api",
-                    "question": "총무 요청 두 건의 마감이 겹치고 담당 인력이 부족한 상황에서 어떻게 처리 순서를 정하겠습니까?",
-                    "follow_ups": [
-                        "먼저 확인할 사실과 규정은 무엇입니까?",
-                        "각 대안의 위험을 어떻게 비교하겠습니까?",
-                        "권한을 벗어나는 결정은 어떻게 보고하겠습니까?",
-                    ],
-                    "evaluation_points": [
-                        "핵심 사실과 규정 확인",
-                        "대안별 위험 비교",
-                        "실행 및 보고 순서",
-                        "후속 점검 계획",
-                    ],
-                },
-                {
-                    "type": "발표면접",
-                    "question_source": "openai_api",
-                    "question": "제시된 자산대장과 요청 일정표를 분석하여 총무 업무 우선순위와 실행 계획을 발표해 주세요.",
-                    "follow_ups": [
-                        "가장 중요하게 본 자료는 무엇입니까?",
-                        "대안별 기대효과와 위험은 무엇입니까?",
-                        "성과를 확인할 지표는 무엇입니까?",
-                    ],
-                    "evaluation_points": [
-                        "자료 분석의 정확성",
-                        "대안 비교의 논리성",
-                        "실행 계획의 구체성",
-                        "발표와 답변의 일관성",
                     ],
                 },
             ]

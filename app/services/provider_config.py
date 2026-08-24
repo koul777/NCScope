@@ -7,6 +7,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Iterator
 
+from app.services.openai_quality_config import DEFAULT_QUESTION_MODEL
+
 
 OPENAI_PROVIDER = "openai_api"
 OPENROUTER_PROVIDER = "openrouter_api"
@@ -34,7 +36,7 @@ _PROVIDER_ALIASES = {
     "openrouter": OPENROUTER_PROVIDER,
     OPENROUTER_PROVIDER: OPENROUTER_PROVIDER,
 }
-_REQUEST_PROVIDERS = frozenset({OPENAI_PROVIDER, OPENROUTER_PROVIDER})
+_REQUEST_PROVIDERS = frozenset({OPENAI_PROVIDER})
 
 _PROVIDER_CONFIGS: dict[str, dict[str, Any]] = {
     OPENAI_PROVIDER: {
@@ -43,11 +45,11 @@ _PROVIDER_CONFIGS: dict[str, dict[str, Any]] = {
         "key_label": "OpenAI API 키",
         "request_message": "OpenAI API 키를 입력해 주세요. 키는 생성 요청에만 사용됩니다.",
         "base_url": OPENAI_DEFAULT_BASE_URL,
-        "default_model": "gpt-5.6-sol",
+        "default_model": DEFAULT_QUESTION_MODEL,
         "auth_mode": "request_scoped_api_key",
         "requires_request_api_key": True,
         "credential_managed_by": "request",
-        "supports_custom_model": True,
+        "supports_custom_model": False,
         "local_only": False,
     },
     OPENROUTER_PROVIDER: {
@@ -93,7 +95,7 @@ def normalize_generation_provider(value: Any = "", *, default: str = OPENAI_PROV
     return _PROVIDER_ALIASES.get(raw, raw)
 
 
-def configured_generation_provider(default: str = OPENROUTER_PROVIDER) -> str:
+def configured_generation_provider(default: str = OPENAI_PROVIDER) -> str:
     provider = normalize_generation_provider(
         os.getenv("INTERVIEW_GENERATION_PROVIDER")
         or os.getenv("JD_STRATEGY_PROVIDER")
@@ -104,7 +106,7 @@ def configured_generation_provider(default: str = OPENROUTER_PROVIDER) -> str:
 
 
 def request_supported_generation_providers() -> tuple[str, ...]:
-    return (OPENROUTER_PROVIDER, OPENAI_PROVIDER)
+    return (OPENAI_PROVIDER,)
 
 
 def generation_provider_config(provider: Any = "") -> dict[str, Any]:
@@ -139,7 +141,7 @@ def detect_generation_provider_from_key(api_key: str) -> str:
     raise GenerationCredentialError(
         "generation_api_key_invalid",
         "",
-        "API 키는 OpenRouter sk-or- 또는 OpenAI sk- 형식이어야 합니다.",
+        "공개 질문 생성에는 OpenAI sk- 형식의 API 키가 필요합니다.",
     )
 
 
@@ -166,7 +168,7 @@ def resolve_generation_credential(
         raise GenerationCredentialError(
             "generation_provider_invalid",
             explicit_provider,
-            "generation_provider는 openai_api 또는 openrouter_api여야 합니다.",
+            "공개 질문 생성은 generation_provider=openai_api만 지원합니다.",
         )
     if len(supplied) > 1:
         raise GenerationCredentialError(
@@ -180,6 +182,12 @@ def resolve_generation_credential(
 
     key_field, api_key = supplied[0]
     detected_provider = detect_generation_provider_from_key(api_key)
+    if detected_provider not in _REQUEST_PROVIDERS:
+        raise GenerationCredentialError(
+            "generation_provider_invalid",
+            detected_provider,
+            "공개 질문 생성은 사용자 입력 OpenAI API 키만 지원합니다.",
+        )
     if key_field == "openrouter_api_key" and detected_provider != OPENROUTER_PROVIDER:
         raise GenerationCredentialError(
             "generation_provider_key_mismatch",
@@ -350,9 +358,9 @@ def provider_base_url(provider: Any) -> str:
     normalized = normalize_generation_provider(provider)
     if normalized == OPENROUTER_PROVIDER:
         return OPENROUTER_DEFAULT_BASE_URL
-    configured = str(os.getenv("OPENAI_BASE_URL") or "").strip().rstrip("/")
-    if configured.startswith("https://"):
-        return configured
+    # Public-institution mode sends request-scoped OpenAI keys only to the
+    # official OpenAI API host.  An environment typo or compatible third-party
+    # gateway must never receive a user's credential.
     return OPENAI_DEFAULT_BASE_URL
 
 

@@ -47,11 +47,15 @@ def _ksa(factor_name: str = "시장환경 분석", factor_no: str = "1") -> dict
     }
 
 
-def _model_strategy(*, evidence_id: str | None = None) -> dict[str, Any]:
+def _model_strategy(
+    *,
+    evidence_id: str | None = None,
+    question_text: str = "",
+) -> dict[str, Any]:
     if evidence_id is None:
         evidence_id = stable_ksa_evidence_id(_ksa())
     question: dict[str, Any] = {
-        "question": (
+        "question": question_text or (
             "신규 사업 검토 자료에서 수요 전망과 비용 추정이 충돌할 때, "
             "무엇을 먼저 검증하고 어떤 우선순위표를 제출하겠습니까?"
         ),
@@ -137,6 +141,7 @@ def _patch_pipeline(
     ksa_rows: list[dict[str, Any]] | None = None,
 ) -> None:
     rows = list(ksa_rows or [_ksa()])
+    review_state: dict[str, Any] = {"passed": True, "failed_indexes": []}
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.setattr(main, "_fetch_ncs_ksa_or_502", lambda **_kwargs: rows)
     monkeypatch.setattr(main, "rank_ksa_factors_by_query", lambda **_kwargs: rows)
@@ -161,20 +166,77 @@ def _patch_pipeline(
     )
     monkeypatch.setattr(main, "_register_question_quality_evidence", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "_record_audit_event", lambda *_args, **_kwargs: None)
+    def fake_audit(strategy: dict[str, Any], _ncs_ksa: list[dict[str, Any]]) -> dict[str, Any]:
+        if "generation_batching" not in strategy:
+            return _quality_result(strategy, passed=True)
+        audited = main._run_runtime_question_quality_orchestration(
+            strategy,
+            question_plan={},
+            interview_methods=[],
+            ncs_matches=[_unit()],
+            ncs_ksa=rows,
+        )
+        report = audited.get("question_quality_report")
+        review_state["passed"] = bool(
+            isinstance(report, dict) and report.get("passed") is True
+        )
+        report_items = list(report.get("items") or []) if isinstance(report, dict) else []
+        review_state["failed_indexes"] = [
+            int(item.get("index") or index)
+            for index, item in enumerate(report_items, start=1)
+            if isinstance(item, dict) and item.get("ready") is not True
+        ]
+        return audited
+
+    monkeypatch.setattr(main, "_audit_ai_authored_strategy_without_repair", fake_audit)
+    monkeypatch.setattr(
+        main,
+        "review_interview_questions_with_ai",
+        lambda **kwargs: {
+            "status": "passed" if review_state["passed"] else "rejected",
+            "reviewed_count": len(kwargs.get("questions") or []),
+            "scores": [],
+            "reason_codes": [] if review_state["passed"] else ["ksa_semantic_mismatch"],
+            "items": [
+                {
+                    "index": index,
+                    "passed": (
+                        review_state["passed"]
+                        or (
+                            bool(review_state["failed_indexes"])
+                            and index not in review_state["failed_indexes"]
+                        )
+                    ),
+                    "reason_codes": (
+                        [] if review_state["passed"] else ["ksa_semantic_mismatch"]
+                    ),
+                    "regeneration_guidance_codes": (
+                        [] if review_state["passed"] else ["rebuild_from_official_ksa"]
+                    ),
+                }
+                for index, _row in enumerate(kwargs.get("questions") or [], start=1)
+            ],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
 
 
 def _post_primary(client: TestClient, path: str):
     return _post_primary_with_payload(client, path, _generation_payload())
 
 
-def _assert_server_ksa_fallback(response) -> dict[str, Any]:
-    assert response.status_code == 200
-    strategy = response.json()["strategy"]
-    assert strategy["provider_fallback_used"] is True
-    assert strategy["degraded"] is True
-    assert strategy["question_release_status"] == "human_review_required"
-    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
-    return strategy
+def _assert_no_fallback_questions(response) -> dict[str, Any]:
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["code"] in {
+        "openai_api_generation_failed",
+        "openai_api_invalid_output",
+        "openai_api_quality_rejected",
+    }
+    assert "strategy" not in response.json()
+    assert "server_ksa_fallback" not in response.text
+    return detail
 
 
 def _post_primary_with_payload(
@@ -251,6 +313,228 @@ def _strategy_with_questions(questions: list[dict[str, Any]]) -> dict[str, Any]:
     return {"interview_questions": [dict(item) for item in questions]}
 
 
+def test_server_safety_blocks_candidate_visible_official_ncs_label() -> None:
+    evidence_id = stable_ksa_evidence_id(_ksa())
+    row = _model_strategy(evidence_id=evidence_id)["interview_questions"][0]
+    row.update(
+        {
+            "type": "상황면접",
+            "evidence_ids": [evidence_id],
+            "question": "시장환경 분석의 의미와 확인 기준을 설명해 주세요.",
+        }
+    )
+
+    findings = main._server_ai_question_safety_issues([row])
+
+    assert findings[0]["passed"] is False
+    assert "unsafe_metadata_exposure" in findings[0]["issues"]
+
+
+@pytest.mark.parametrize("requested_count", [1, 2, 3, 4, 5])
+def test_server_safety_requires_the_exact_requested_follow_up_count(
+    requested_count: int,
+) -> None:
+    evidence_id = stable_ksa_evidence_id(_ksa())
+    row = _model_strategy(evidence_id=evidence_id)["interview_questions"][0]
+    row.update(
+        {
+            "type": "상황면접",
+            "evidence_ids": [evidence_id],
+            "follow_ups": [
+                f"답변에서 확인할 후속 근거 {index}는 무엇입니까?"
+                for index in range(1, requested_count + 1)
+            ],
+        }
+    )
+    plan = {
+        "follow_up_count": requested_count,
+        "question_sequence": [
+            {"index": 1, "follow_up_count": requested_count}
+        ],
+    }
+
+    exact = main._server_ai_question_safety_issues(
+        [row],
+        question_plan=plan,
+    )
+    row["follow_ups"] = [*row["follow_ups"], "요청하지 않은 추가 질문입니다."]
+    mismatched = main._server_ai_question_safety_issues(
+        [row],
+        question_plan=plan,
+    )
+
+    assert "follow_up_count_mismatch" not in exact[0]["issues"]
+    assert "follow_up_count_mismatch" in mismatched[0]["issues"]
+
+
+def test_follow_up_count_mismatch_is_retryable_and_targets_only_that_slot() -> None:
+    rows = [
+        {"question": "첫 문항", "follow_ups": ["하나", "둘", "셋"]},
+        {"question": "둘째 문항", "follow_ups": ["하나", "둘"]},
+    ]
+    result = {
+        "interview_questions": rows,
+        "question_plan_used": {
+            "follow_up_count": 3,
+            "question_sequence": [
+                {"index": 1, "follow_up_count": 3},
+                {"index": 2, "follow_up_count": 3},
+            ],
+        },
+        "question_quality_orchestration": {
+            "status": "failed",
+            "items": [
+                {"index": 1, "final_issues": []},
+                {"index": 2, "final_issues": ["follow_up_count_mismatch"]},
+            ],
+        },
+    }
+
+    assert main._result_follow_up_count_mismatch_indexes(result) == [2]
+    assert "follow_up_count_mismatch" in main._institution_question_rejection_codes(result)
+    assert main._institution_hard_question_indexes(result) == [2]
+    assert "follow_up_count_mismatch" in main._INSTITUTION_RETRYABLE_QUALITY_CODES
+
+
+def test_quality_retry_regenerates_only_the_wrong_follow_up_count_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_calls: list[dict[str, Any]] = []
+    requested_count = 3
+    plan = {
+        "total_main_count": 2,
+        "follow_up_count": requested_count,
+        "question_sequence": [
+            {
+                "index": 1,
+                "detail": "인사",
+                "type": "상황면접",
+                "follow_up_count": requested_count,
+            },
+            {
+                "index": 2,
+                "detail": "인사",
+                "type": "상황면접",
+                "follow_up_count": requested_count,
+            },
+        ],
+    }
+
+    def planned_assignments(**kwargs: Any) -> tuple[dict[str, Any], list[tuple[int, str]]]:
+        runtime = copy.deepcopy(kwargs["question_plan"])
+        sequence = [
+            dict(item)
+            for item in (runtime.get("question_sequence") or [])
+            if isinstance(item, dict)
+        ]
+        for index, item in enumerate(sequence, start=1):
+            item["index"] = index
+            item.setdefault("type", "상황면접")
+            item.setdefault("follow_up_count", requested_count)
+        runtime["question_sequence"] = sequence
+        runtime["total_main_count"] = len(sequence)
+        runtime["follow_up_count"] = requested_count
+        return runtime, []
+
+    def question_row(
+        question: str,
+        evidence_label: str,
+        follow_up_count: int,
+    ) -> dict[str, Any]:
+        return {
+            "type": "상황면접",
+            "question": question,
+            "question_source": "openai_api",
+            "question_evidence_id": f"evidence-{evidence_label}",
+            "follow_ups": [
+                f"{evidence_label} 답변에서 확인할 후속 근거 {index}는 무엇입니까?"
+                for index in range(1, follow_up_count + 1)
+            ],
+            "evaluation_points": [f"{evidence_label} 판단 근거"],
+        }
+
+    initial_rows = [
+        question_row(
+            "부서별 교육 수요가 연간 예산을 초과한 상황에서 배분안을 어떻게 결정하시겠습니까?",
+            "교육 예산 배분",
+            requested_count,
+        ),
+        question_row(
+            "신규 입사자의 첫 주 업무 혼선이 반복된다면 어떤 지원부터 시작하시겠습니까?",
+            "신규 입사자 지원",
+            requested_count - 1,
+        ),
+    ]
+    regenerated_row = question_row(
+        "입사 3개월 뒤 조기 이탈 위험 신호가 확인된 구성원에게 어떤 후속 조치를 제안하시겠습니까?",
+        "적응 위험 후속 조치",
+        requested_count,
+    )
+
+    def builder(**kwargs: Any) -> dict[str, Any]:
+        build_calls.append(copy.deepcopy(kwargs))
+        if kwargs["question_plan"].get("targeted_retry"):
+            return {"interview_questions": [copy.deepcopy(regenerated_row)]}
+        return {"interview_questions": copy.deepcopy(initial_rows)}
+
+    def attach_evidence(
+        strategy: dict[str, Any],
+        _ncs_ksa: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        attached = copy.deepcopy(strategy)
+        for row in attached.get("interview_questions") or []:
+            evidence_id = str(row.get("question_evidence_id") or "")
+            row["evidence_ids"] = [evidence_id] if evidence_id else []
+        return main._attach_question_quality_report(attached)
+
+    monkeypatch.setenv("INSTITUTION_MODEL_REQUESTS_PER_BATCH", "1")
+    monkeypatch.setenv("INSTITUTION_QUALITY_RETRY_ENABLED", "true")
+    monkeypatch.setenv("INSTITUTION_GENERATION_BATCH_SIZE", "5")
+    monkeypatch.setattr(main, "_planned_question_evidence_assignments", planned_assignments)
+    monkeypatch.setattr(main, "build_jd_strategy_with_openai", builder)
+    monkeypatch.setattr(main, "_attach_ksa_evidence_to_strategy", attach_evidence)
+    monkeypatch.setattr(
+        main,
+        "review_interview_questions_with_ai",
+        lambda **kwargs: {
+            "status": "passed",
+            "reviewed_count": len(kwargs.get("questions") or []),
+            "items": [
+                {"index": index, "passed": True, "reason_codes": []}
+                for index, _row in enumerate(kwargs.get("questions") or [], start=1)
+            ],
+            "scores": [],
+            "reason_codes": [],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
+
+    result = asyncio.run(
+        main._generate_quality_gated_institution_strategy(
+            build_kwargs={
+                "generation_provider": "openai_api",
+                "api_key_override": REQUEST_KEY,
+                "follow_up_count": requested_count,
+            },
+            question_plan=plan,
+            interview_methods=["상황면접"],
+            ncs_matches=[],
+            ncs_ksa=[],
+            avoid_questions=[],
+            generation_offset=None,
+        )
+    )
+
+    assert len(build_calls) == 2
+    assert build_calls[1]["question_plan"]["targeted_retry_original_indexes"] == [2]
+    assert build_calls[1]["target_count_override"] == 1
+    assert [len(row["follow_ups"]) for row in result["interview_questions"]] == [3, 3]
+    assert result["interview_questions"][0]["question"] == initial_rows[0]["question"]
+    assert result["interview_questions"][1]["question"] == regenerated_row["question"]
+    assert "follow_up_count_mismatch" in result["model_quality_retry"]["trigger_codes"]
+
+
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
 def test_primary_endpoint_retries_one_failed_quality_candidate_then_returns_200(
     monkeypatch: pytest.MonkeyPatch,
@@ -261,7 +545,14 @@ def test_primary_endpoint_retries_one_failed_quality_candidate_then_returns_200(
 
     def builder(**kwargs: Any) -> dict[str, Any]:
         build_calls.append(copy.deepcopy(kwargs))
-        return _model_strategy()
+        return _model_strategy(
+            question_text=(
+                "새 사업의 시범운영 결과가 부서별로 다르게 나타났을 때, "
+                "어떤 기준으로 원인을 나누고 다음 실행안을 결정하겠습니까?"
+                if len(build_calls) == 2
+                else ""
+            )
+        )
 
     def quality(strategy: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         nonlocal quality_calls
@@ -281,6 +572,9 @@ def test_primary_endpoint_retries_one_failed_quality_candidate_then_returns_200(
         "max_model_requests",
         "transport_max_attempts",
         "question_plan",
+        "generation_model",
+        "avoid_questions",
+        "diversity_cycle",
     }
     first = {
         key: value
@@ -293,14 +587,20 @@ def test_primary_endpoint_retries_one_failed_quality_candidate_then_returns_200(
         if key not in retry_budget_fields
     }
     assert first == second
+    assert build_calls[0]["generation_model"] == "gpt-5.6-terra"
+    assert build_calls[1]["generation_model"] == "gpt-5.6-sol"
     assert build_calls[1]["question_plan"]["items"] == build_calls[0]["question_plan"]["items"]
     assert build_calls[1]["question_plan"]["selected_items"] == build_calls[0]["question_plan"]["selected_items"]
     assert build_calls[1]["question_plan"]["total_main_count"] == 1
     assert build_calls[1]["max_model_requests"] == 1
     assert build_calls[1]["transport_max_attempts"] == 1
     assert build_calls[0]["extra_context"] != build_calls[1]["extra_context"]
-    assert "question_quality_report_failed" in build_calls[1]["extra_context"]
-    assert "question_quality_orchestration_failed" in build_calls[1]["extra_context"]
+    assert "ai_quality_review_failed" in build_calls[1]["extra_context"]
+    assert _model_strategy()["interview_questions"][0]["question"] in build_calls[1]["extra_context"]
+    assert "최소 두 축을 바꾸세요" in build_calls[1]["extra_context"]
+    assert "required_scenario_frame" not in build_calls[1]["extra_context"]
+    assert "자료가 서로 달랐던 때" not in build_calls[1]["extra_context"]
+    assert "STAR" not in build_calls[1]["extra_context"]
     assert all(REQUEST_KEY not in str(call.get("extra_context") or "") for call in build_calls)
 
     metadata = response.json()["strategy"]["model_quality_retry"]
@@ -311,15 +611,26 @@ def test_primary_endpoint_retries_one_failed_quality_candidate_then_returns_200(
         "retry_count": 1,
         "attempt_count": 2,
         "outcome": "passed_after_retry",
-        "trigger_codes": [
-            "question_quality_orchestration_failed",
-            "question_quality_report_failed",
-        ],
+        "trigger_codes": ["ai_quality_review_failed"],
         "previous_candidate_count": 1,
         "evidence_lock_count": 1,
         "provider_generation_request_count": 0,
-        "provider_generation_request_limit": 3,
+        "provider_generation_request_limit": 2,
         "transport_attempt_limit_per_generation_request": 1,
+    }
+    orchestration = response.json()["strategy"]["ai_model_orchestration"]
+    assert orchestration["policy"] == "role-based-openai-models-diversity-v2"
+    assert orchestration["roles"]["question_authoring"]["model"] == "gpt-5.6-terra"
+    assert orchestration["roles"]["question_authoring"]["guide"] == {
+        "id": "ncs-interviewer-2020-kordoc-v1",
+        "mode": "authoring_advice_only",
+        "star": "experience_probe_guidance_not_gate",
+    }
+    assert orchestration["roles"]["quality_review"]["model"] == "gpt-5.6-sol"
+    assert orchestration["roles"]["quality_regeneration"] == {
+        "model": "gpt-5.6-sol",
+        "used": True,
+        "avoids_previous_drafts": True,
     }
     assert REQUEST_KEY not in response.text
 
@@ -358,14 +669,65 @@ def test_primary_endpoint_does_not_retry_when_first_candidate_passes(
         "previous_candidate_count": 0,
         "evidence_lock_count": 1,
         "provider_generation_request_count": 0,
-        "provider_generation_request_limit": 3,
+        "provider_generation_request_limit": 2,
         "transport_attempt_limit_per_generation_request": 1,
     }
+    orchestration = response.json()["strategy"]["ai_model_orchestration"]
+    assert orchestration["roles"]["question_authoring"]["model"] == "gpt-5.6-terra"
+    assert orchestration["roles"]["question_authoring"]["guide"]["mode"] == (
+        "authoring_advice_only"
+    )
+    assert orchestration["roles"]["quality_review"]["model"] == "gpt-5.6-sol"
+    assert orchestration["roles"]["quality_regeneration"]["used"] is False
     assert REQUEST_KEY not in response.text
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
-def test_transport_recovery_output_is_reviewable_without_outer_quality_retry(
+def test_primary_endpoint_strips_untrusted_provider_fields_from_public_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    leaked_api_key = "sk-provider-output-must-never-be-public"
+    leaked_exception = "provider-stack-trace-must-never-be-public"
+
+    def builder(**_kwargs: Any) -> dict[str, Any]:
+        strategy = _model_strategy()
+        strategy["api_key"] = leaked_api_key
+        strategy["provider_exception"] = leaked_exception
+        strategy["debug"] = {"raw_prompt": "private-model-prompt"}
+        question = strategy["interview_questions"][0]
+        question["api_key"] = leaked_api_key
+        question["provider_exception"] = leaked_exception
+        question["debug"] = {"raw_response": "private-model-response"}
+        return strategy
+
+    _patch_pipeline(monkeypatch, builder)
+    monkeypatch.setattr(
+        main,
+        "_run_runtime_question_quality_orchestration",
+        lambda strategy, **_kwargs: _quality_result(strategy, passed=True),
+    )
+
+    with TestClient(main.app, client=REMOTE_CLIENT) as client:
+        response = _post_primary(client, path)
+
+    assert response.status_code == 200
+    strategy = response.json()["strategy"]
+    question = strategy["interview_questions"][0]
+    assert "api_key" not in strategy
+    assert "provider_exception" not in strategy
+    assert "debug" not in strategy
+    assert "api_key" not in question
+    assert "provider_exception" not in question
+    assert "debug" not in question
+    assert leaked_api_key not in response.text
+    assert leaked_exception not in response.text
+    assert "private-model-prompt" not in response.text
+    assert "private-model-response" not in response.text
+
+
+@pytest.mark.parametrize("path", PRIMARY_PATHS)
+def test_provider_recovery_metadata_cannot_bypass_ai_quality_review(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -390,21 +752,13 @@ def test_transport_recovery_output_is_reviewable_without_outer_quality_retry(
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, path)
 
-    assert response.status_code == 200
-    assert len(build_calls) == 1
-    strategy = response.json()["strategy"]
-    assert strategy["question_release_status"] == "human_review_required"
-    retry = strategy["model_quality_retry"]
-    assert retry["attempted"] is False
-    assert retry["retry_count"] == 0
-    assert retry["attempt_count"] == 1
-    assert retry["outcome"] == "accepted_for_human_review"
-    assert "question_quality_report_failed" in retry["trigger_codes"]
+    _assert_no_fallback_questions(response)
+    assert len(build_calls) == 2
     assert REQUEST_KEY not in response.text
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
-def test_primary_endpoint_stops_after_one_quality_retry_and_uses_server_fallback(
+def test_primary_endpoint_stops_after_one_quality_retry_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -424,11 +778,71 @@ def test_primary_endpoint_stops_after_one_quality_retry_and_uses_server_fallback
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, path)
 
-    _assert_server_ksa_fallback(response)
+    _assert_no_fallback_questions(response)
     assert len(build_calls) == 2
     assert "question_quality_report_failed" not in response.text
     assert REQUEST_KEY not in response.text
     assert all(REQUEST_KEY not in str(call.get("extra_context") or "") for call in build_calls)
+
+
+@pytest.mark.parametrize("path", PRIMARY_PATHS)
+def test_primary_endpoint_rejects_near_paraphrase_after_quality_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    original = (
+        "신규 사업 검토 자료에서 수요 전망과 비용 추정이 충돌할 때, "
+        "무엇부터 검증하고 어떤 우선순위안을 제출하시겠습니까?"
+    )
+    paraphrase = (
+        "신규 사업 검토 자료에서 비용 추정과 수요 전망이 충돌할 때, "
+        "무엇부터 검증하고 어떤 우선순위표를 제출하시겠습니까?"
+    )
+    assert main.is_similar_question_text(original, paraphrase)
+
+    build_calls: list[dict[str, Any]] = []
+    quality_calls = 0
+
+    def builder(**kwargs: Any) -> dict[str, Any]:
+        build_calls.append(copy.deepcopy(kwargs))
+        question_text = original if len(build_calls) == 1 else paraphrase
+        return _model_strategy(question_text=question_text)
+
+    def quality(strategy: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        nonlocal quality_calls
+        quality_calls += 1
+        return _quality_result(strategy, passed=quality_calls == 2)
+
+    _patch_pipeline(monkeypatch, builder)
+    monkeypatch.setattr(main, "_run_runtime_question_quality_orchestration", quality)
+
+    with TestClient(main.app, client=REMOTE_CLIENT) as client:
+        response = _post_primary(client, path)
+
+    detail = _assert_no_fallback_questions(response)
+    assert detail["code"] == "openai_api_quality_rejected"
+    assert len(build_calls) == 2
+    assert original not in response.text
+    assert paraphrase not in response.text
+    assert REQUEST_KEY not in response.text
+
+
+def test_external_duplicate_safety_synthesizes_missing_orchestration() -> None:
+    previous = "사업 검토 자료가 충돌할 때 어떤 근거부터 확인하시겠습니까?"
+    repeated = "사업 검토 자료가 서로 충돌한다면 어떤 근거부터 확인하시겠습니까?"
+    assert main.is_similar_question_text(previous, repeated)
+
+    strategy = _model_strategy(question_text=repeated)
+    assert "question_quality_orchestration" not in strategy
+
+    checked = main._apply_external_question_duplicate_safety(strategy, [previous])
+
+    orchestration = checked["question_quality_orchestration"]
+    assert orchestration["policy"] == "external-question-duplicate-safety-v1"
+    assert orchestration["status"] == "failed"
+    assert orchestration["unresolved_count"] == 1
+    assert orchestration["history_duplicate_count"] == 1
+    assert orchestration["items"][0]["final_issues"] == ["duplicate_question"]
 
 
 def test_serverless_budget_disables_nested_and_quality_retries(
@@ -452,13 +866,13 @@ def test_serverless_budget_disables_nested_and_quality_retries(
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, "/api/questions/generate-from-text")
 
-    _assert_server_ksa_fallback(response)
+    _assert_no_fallback_questions(response)
     assert len(build_calls) == 1
     assert build_calls[0]["max_model_requests"] == 1
     assert build_calls[0]["transport_max_attempts"] == 1
 
 
-def test_serverless_openrouter_five_question_request_uses_parallel_micro_batches(
+def test_serverless_openai_five_question_request_uses_parallel_micro_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     build_calls: list[dict[str, Any]] = []
@@ -483,7 +897,9 @@ def test_serverless_openrouter_five_question_request_uses_parallel_micro_batches
             "interview_questions": [
                 {
                     "question": f"Model question {index}",
-                    "question_source": "openrouter_api",
+                    "question_source": "openai_api",
+                    "follow_ups": [f"Model follow-up {index}"],
+                    "evaluation_points": [f"Model evaluation {index}"],
                 }
                 for index in range(1, int(kwargs["target_count_override"]) + 1)
             ],
@@ -537,10 +953,31 @@ def test_serverless_openrouter_five_question_request_uses_parallel_micro_batches
     )
     monkeypatch.setattr(main, "_run_runtime_question_quality_orchestration", quality)
     monkeypatch.setattr(main, "_public_questions_precision_grounded", lambda _result: True)
+    monkeypatch.setattr(
+        main,
+        "_audit_ai_authored_strategy_without_repair",
+        lambda strategy, _ncs_ksa: quality(strategy),
+    )
+    monkeypatch.setattr(
+        main,
+        "review_interview_questions_with_ai",
+        lambda **kwargs: {
+            "status": "passed",
+            "reviewed_count": len(kwargs.get("questions") or []),
+            "items": [],
+            "scores": [],
+            "reason_codes": [],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
 
     result = asyncio.run(
         main._generate_quality_gated_institution_strategy(
-            build_kwargs={"generation_provider": "openrouter_api"},
+            build_kwargs={
+                "generation_provider": "openai_api",
+                "api_key_override": REQUEST_KEY,
+            },
             question_plan=runtime_plan,
             interview_methods=["경험면접"],
             ncs_matches=[],
@@ -561,7 +998,7 @@ def test_serverless_openrouter_five_question_request_uses_parallel_micro_batches
         "batch_question_counts": [1, 1, 1, 1, 1],
         "recovered_batch_count": 0,
     }
-    assert result["model_quality_retry"]["provider_generation_request_limit"] == 10
+    assert result["model_quality_retry"]["provider_generation_request_limit"] == 5
 
 
 def test_serverless_microbatch_recovers_only_invalid_provider_slot_once(
@@ -603,7 +1040,9 @@ def test_serverless_microbatch_recovers_only_invalid_provider_slot_once(
             "interview_questions": [
                 {
                     "question": f"Model question {original_index}",
-                    "question_source": "openrouter_api",
+                    "question_source": "openai_api",
+                    "follow_ups": [f"Model follow-up {original_index}"],
+                    "evaluation_points": [f"Model evaluation {original_index}"],
                 }
             ],
             "provider_generation_request_count": 1,
@@ -656,10 +1095,31 @@ def test_serverless_microbatch_recovers_only_invalid_provider_slot_once(
     )
     monkeypatch.setattr(main, "_run_runtime_question_quality_orchestration", quality)
     monkeypatch.setattr(main, "_public_questions_precision_grounded", lambda _result: True)
+    monkeypatch.setattr(
+        main,
+        "_audit_ai_authored_strategy_without_repair",
+        lambda strategy, _ncs_ksa: quality(strategy),
+    )
+    monkeypatch.setattr(
+        main,
+        "review_interview_questions_with_ai",
+        lambda **kwargs: {
+            "status": "passed",
+            "reviewed_count": len(kwargs.get("questions") or []),
+            "items": [],
+            "scores": [],
+            "reason_codes": [],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
 
     result = asyncio.run(
         main._generate_quality_gated_institution_strategy(
-            build_kwargs={"generation_provider": "openrouter_api"},
+            build_kwargs={
+                "generation_provider": "openai_api",
+                "api_key_override": REQUEST_KEY,
+            },
             question_plan=runtime_plan,
             interview_methods=["경험면접"],
             ncs_matches=[],
@@ -674,7 +1134,7 @@ def test_serverless_microbatch_recovers_only_invalid_provider_slot_once(
     recovery_call = next(
         call
         for call in calls
-        if call.get("max_model_requests") == 1
+        if "서버 배치 복구" in str(call.get("extra_context") or "")
         and call["question_plan"]["generation_batch_original_indexes"] == [3]
     )
     assert "서버 배치 복구" in recovery_call["extra_context"]
@@ -683,7 +1143,7 @@ def test_serverless_microbatch_recovers_only_invalid_provider_slot_once(
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
-def test_primary_endpoint_returns_evidence_grounded_model_draft_for_soft_review_findings(
+def test_primary_endpoint_rejects_natural_wording_review_failures(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -733,15 +1193,8 @@ def test_primary_endpoint_returns_evidence_grounded_model_draft_for_soft_review_
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, path)
 
-    assert response.status_code == 200
-    assert len(build_calls) == 1
-    strategy = response.json()["strategy"]
-    assert strategy["question_release_status"] == "human_review_required"
-    retry = strategy["model_quality_retry"]
-    assert retry["outcome"] == "accepted_for_human_review"
-    assert retry["attempted"] is False
-    assert retry["attempt_count"] == 1
-    assert "natural_wording" in retry["remaining_issue_codes"]
+    _assert_no_fallback_questions(response)
+    assert len(build_calls) == 2
     assert REQUEST_KEY not in response.text
 
 
@@ -757,7 +1210,7 @@ def test_primary_endpoint_returns_evidence_grounded_model_draft_for_soft_review_
         (None, "label_like_metadata_exposure"),
     ],
 )
-def test_primary_endpoint_replaces_unresolved_hard_quality_findings(
+def test_primary_endpoint_rejects_unresolved_quality_findings(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     hard_issue: str | None,
@@ -813,7 +1266,7 @@ def test_primary_endpoint_replaces_unresolved_hard_quality_findings(
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, path)
 
-    _assert_server_ksa_fallback(response)
+    _assert_no_fallback_questions(response)
     assert len(build_calls) == 2
     assert "accepted_for_human_review" not in response.text
     assert REQUEST_KEY not in response.text
@@ -1013,13 +1466,13 @@ def test_primary_endpoint_targeted_retry_rebuilds_only_failed_slot_and_revalidat
         "attempt_count": 2,
         "outcome": "passed_after_retry",
         "trigger_codes": [
+            "ai_quality_review_failed",
             "question_quality_orchestration_failed",
-            "question_quality_report_failed",
         ],
         "previous_candidate_count": 3,
         "evidence_lock_count": 3,
         "provider_generation_request_count": 0,
-        "provider_generation_request_limit": 3,
+        "provider_generation_request_limit": 2,
         "transport_attempt_limit_per_generation_request": 1,
         "retry_scope": "failed_questions",
         "retried_question_count": 1,
@@ -1030,7 +1483,7 @@ def test_primary_endpoint_targeted_retry_rebuilds_only_failed_slot_and_revalidat
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
-def test_primary_endpoint_returns_partial_safe_questions_after_targeted_retry_exhaustion(
+def test_primary_endpoint_returns_no_partial_questions_after_retry_exhaustion(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
@@ -1160,50 +1613,8 @@ def test_primary_endpoint_returns_partial_safe_questions_after_targeted_retry_ex
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary_with_payload(client, path, payload)
 
-    assert response.status_code == 200
+    _assert_no_fallback_questions(response)
     assert len(build_calls) == 2
-    strategy = response.json()["strategy"]
-    assert [item["question"] for item in strategy["interview_questions"]] == [
-        "원본 문항 1",
-        "원본 문항 3",
-    ]
-    assert strategy["question_release_status"] == "partial_human_review_required"
-    assert strategy["partial_generation"] == {
-        "policy": "hard-failure-isolation-v1",
-        "requested_question_count": 3,
-        "returned_question_count": 2,
-        "omitted_question_count": 1,
-        "omitted_indexes": [2],
-        "omission_reasons_by_index": {
-            "2": ["ksa_grounded", "full_quality_ksa_grounded"],
-        },
-    }
-    assert strategy["model_quality_retry"] == {
-        "policy": "institution-openai-quality-retry-v1",
-        "provider": "openai_api",
-        "attempted": True,
-        "retry_count": 1,
-        "attempt_count": 2,
-        "outcome": "partial_after_retry",
-        "trigger_codes": [
-            "question_quality_orchestration_failed",
-            "question_quality_report_failed",
-        ],
-        "remaining_codes": [
-            "question_quality_orchestration_failed",
-            "question_quality_report_failed",
-        ],
-        "remaining_issue_codes": ["ksa_grounded", "full_quality_ksa_grounded"],
-        "previous_candidate_count": 3,
-        "evidence_lock_count": 3,
-        "provider_generation_request_count": 0,
-        "provider_generation_request_limit": 3,
-        "transport_attempt_limit_per_generation_request": 1,
-        "retry_scope": "failed_questions",
-        "retried_question_count": 1,
-        "retried_indexes": [2],
-        "retry_evidence_lock_count": 1,
-    }
     assert REQUEST_KEY not in response.text
 
 
@@ -1487,7 +1898,7 @@ def test_primary_endpoint_targeted_retry_keeps_max_safe_question_order_and_timin
         "recovered_batch_count": 0,
     }
     assert strategy["model_quality_retry"]["provider_generation_request_count"] == 0
-    assert strategy["model_quality_retry"]["provider_generation_request_limit"] == 3
+    assert strategy["model_quality_retry"]["provider_generation_request_limit"] == 2
 
     timing = strategy["generation_timing"]
     assert timing["generation_attempt_count"] >= 2
@@ -1497,8 +1908,8 @@ def test_primary_endpoint_targeted_retry_keeps_max_safe_question_order_and_timin
 
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
-@pytest.mark.parametrize("failure_stage", ["provider", "empty", "postprocess"])
-def test_non_quality_failures_are_not_retried_before_server_fallback(
+@pytest.mark.parametrize("failure_stage", ["provider", "empty", "legacy_postprocess"])
+def test_non_quality_failures_are_not_retried_and_return_no_questions(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     failure_stage: str,
@@ -1520,7 +1931,7 @@ def test_non_quality_failures_are_not_retried_before_server_fallback(
         "_run_runtime_question_quality_orchestration",
         lambda strategy, **_kwargs: _quality_result(strategy, passed=True),
     )
-    if failure_stage == "postprocess":
+    if failure_stage == "legacy_postprocess":
         monkeypatch.setattr(
             main,
             "_adjust_generated_questions",
@@ -1532,7 +1943,11 @@ def test_non_quality_failures_are_not_retried_before_server_fallback(
     with TestClient(main.app, client=REMOTE_CLIENT) as client:
         response = _post_primary(client, path)
 
-    _assert_server_ksa_fallback(response)
+    if failure_stage == "legacy_postprocess":
+        assert response.status_code == 200
+        assert "server_ksa_fallback" not in response.text
+    else:
+        _assert_no_fallback_questions(response)
     assert build_count == 1
     assert "leaked" not in response.text
     assert REQUEST_KEY not in response.text
@@ -1555,7 +1970,15 @@ def test_retry_locks_each_server_validated_evidence_assignment(
     def builder(**kwargs: Any) -> dict[str, Any]:
         build_calls.append(copy.deepcopy(kwargs))
         evidence_id = second_id if change_assignment and len(build_calls) == 2 else first_id
-        return _model_strategy(evidence_id=evidence_id)
+        return _model_strategy(
+            evidence_id=evidence_id,
+            question_text=(
+                "신규 사업의 시범 결과가 지역별로 엇갈렸을 때, 원인을 어떻게 분류하고 "
+                "후속 조사 순서를 정하겠습니까?"
+                if len(build_calls) == 2
+                else ""
+            ),
+        )
 
     def quality(strategy: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         nonlocal quality_calls
@@ -1572,7 +1995,7 @@ def test_retry_locks_each_server_validated_evidence_assignment(
     assert first_id in build_calls[1]["extra_context"]
     assert REQUEST_KEY not in build_calls[1]["extra_context"]
     if change_assignment:
-        _assert_server_ksa_fallback(response)
+        _assert_no_fallback_questions(response)
         assert "evidence_assignment_changed" not in response.text
     else:
         assert response.status_code == 200

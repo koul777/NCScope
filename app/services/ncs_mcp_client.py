@@ -87,7 +87,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                     "params": {
                         "protocolVersion": MCP_PROTOCOL_VERSION,
                         "capabilities": {},
-                        "clientInfo": {"name": "ncscope", "version": "1.4.4"},
+                        "clientInfo": {"name": "ncscope", "version": "1.4.5"},
                     },
                 },
             )
@@ -175,7 +175,14 @@ def _split_detail_terms(values: list[str]) -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
     for value in values or []:
-        for part in re.split(r"[\n,;/|]+", str(value or "")):
+        protected_slash = "\ufff0"
+        split_value = re.sub(
+            r"(?<=[A-Za-z])/(?=[A-Za-z])",
+            protected_slash,
+            str(value or ""),
+        )
+        for part in re.split(r"[\n,;/|]+", split_value):
+            part = part.replace(protected_slash, "/")
             term = part.strip()
             key = _norm(term)
             if not term or not key or key in seen:
@@ -195,12 +202,48 @@ _DETAIL_QUERY_ALIASES_BY_KEY = {
     # 명시적으로 공식 이름에 연결한다. 일반적인 괄호 제거는
     # 특화분류/동명이인 오매칭을 만들 수 있어 허용하지 않는다.
     _norm("비서 (글로벌경영사무 지원)"): ("비서",),
+    # Some ALIO tables append an ability-unit ordinal inside the detail cell.
+    # Keep this observed mapping explicit rather than stripping arbitrary
+    # parentheses from every institution-specific label.
+    _norm("외식운영관리 (02.식자재관리)"): ("외식운영관리",),
 }
 
 
 def _detail_query_names(name: str) -> list[str]:
-    names = [str(name or "").strip()]
-    for alias in _DETAIL_QUERY_ALIASES_BY_KEY.get(_norm(name), ()):
+    base_name = str(name or "").strip()
+    names = [base_name]
+    known_aliases = tuple(_DETAIL_QUERY_ALIASES_BY_KEY.get(_norm(name), ()))
+    # PDF/HWP table cells frequently turn an in-cell line break into a space
+    # (e.g. ``시각\n디자인`` -> ``시각 디자인``).  NCS_MCP's search
+    # tokenization can return no exact classification for that transport form
+    # even though the official compact label exists. Retry only a formatting-
+    # equivalent simple label; exact path comparison below still prevents a
+    # semantically different classification from being accepted.
+    if re.fullmatch(r"[0-9A-Za-z가-힣\s·‧･ㆍ•∙⋅・\-]+", base_name):
+        compact_name = re.sub(r"\s+", "", base_name)
+        if compact_name and compact_name != base_name:
+            names.append(compact_name)
+    # Search tokenization also varies for punctuation-only formatting
+    # differences (``회계.감사`` vs official ``회계·감사``). The response is
+    # accepted only when its official detail path has the same strict
+    # normalized key as the original label, so this cannot promote a merely
+    # similar classification.
+    if not known_aliases:
+        punctuation_compact = re.sub(
+            r"[\s·‧･ㆍ•∙⋅・\-_/|(),.]+",
+            "",
+            base_name,
+        )
+        if punctuation_compact and punctuation_compact not in names:
+            names.append(punctuation_compact)
+        ordinal_stripped = re.sub(
+            r"^\d{1,2}(?:\s*[,.)：:\-]\s*|\s+)",
+            "",
+            base_name,
+        ).strip(" \\")
+        if ordinal_stripped and ordinal_stripped not in names:
+            names.append(ordinal_stripped)
+    for alias in known_aliases:
         alias = str(alias or "").strip()
         if alias and all(_norm(alias) != _norm(existing) for existing in names):
             names.append(alias)

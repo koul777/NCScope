@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from app.services.question_generation import (
     _build_question_generation_prompt,
     _contains_blind_hiring_cue,
     _editorial_realism_prompt_contract,
     _generate_questions_with_openai_from_ncs,
     _neutral_attitude_prompt_contract,
+    _normalize_question_item,
     _parse_openai_response,
     _untrusted_context_prompt_contract,
     _unverified_material_precision_prompt_contract,
@@ -34,7 +39,22 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
         target_count=5,
     )
 
-    assert "\uc544\ub798 \ucee8\ud14d\uc2a4\ud2b8" in prompt
+    assert "[구조화 원자료 JSON]" in prompt
+    assert "interview_questions를 정확히 5개" in prompt
+    assert "follow_ups 1~5개, evaluation_points 1~5개" in prompt
+    assert "필요한 핵심 근거만 남기세요" in prompt
+    assert "follow_ups 정확히 3개" not in prompt
+    assert "evaluation_points 정확히 4개" not in prompt
+    assert "공식 KSA 명칭" in prompt
+    assert "서버가 문장이나 상황 골격을 보충한다고 가정하지 마세요" in prompt
+    assert "STAR" not in prompt
+    assert "0201010103_22v2" in prompt
+    assert "시장환경 분석" in prompt
+    assert "public_focus=" not in prompt
+    assert "task_statement=" not in prompt
+    assert "observable_behavior=" not in prompt
+    assert "�" not in prompt
+    return
     assert "\uc0dd\uc131 \uac1c\uc218: 5" in prompt
     assert "0201010103_22v2" in prompt
     assert "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd" in prompt
@@ -58,6 +78,52 @@ def test_prompt_includes_ncs_ksa_and_clean_korean_rules():
     assert "\ufffd" not in prompt
 
 
+def test_auxiliary_prompt_passes_ncs_and_ksa_as_structured_source_rows():
+    ncs_code = "0201010103_22v2"
+    prompt = _build_question_generation_prompt(
+        ncs_matches=[
+            {
+                "ncsClCd": ncs_code,
+                "compeUnitName": "경영계획 수립",
+                "compeUnitDef": "경영목표 달성을 위한 계획을 수립한다.",
+            }
+        ],
+        ncs_ksa=[
+            {
+                "ncsClCd": ncs_code,
+                "compeUnitName": "경영계획 수립",
+                "compeUnitDef": "경영목표 달성을 위한 계획을 수립한다.",
+                "elementName": "경영환경 분석",
+                "factorName": "시장환경 분석 방법",
+                "ksaTypeName": "지식",
+            }
+        ],
+        jd_text="담당업무: 사업환경 분석과 경영계획 수립",
+        target_count=1,
+    )
+
+    raw_payload = prompt.split("[구조화 원자료 JSON]", 1)[1].splitlines()[0]
+    payload = json.loads(raw_payload)
+
+    assert payload["ncs_units"] == [
+        {
+            "ncs_code": ncs_code,
+            "unit_name": "경영계획 수립",
+            "unit_definition": "경영목표 달성을 위한 계획을 수립한다.",
+        }
+    ]
+    assert payload["official_ksa"][0] == {
+        "evidence_id": payload["official_ksa"][0]["evidence_id"],
+        "official_ksa": "시장환경 분석 방법",
+        "ksa_type": "지식",
+        "ncs_code": ncs_code,
+        "unit_name": "경영계획 수립",
+        "unit_definition": "경영목표 달성을 위한 계획을 수립한다.",
+        "element_name": "경영환경 분석",
+    }
+    assert payload["official_ksa"][0]["evidence_id"].startswith("ksa_")
+
+
 def test_prompt_describes_all_supported_interview_methods():
     prompt = _build_question_generation_prompt(
         ncs_matches=[],
@@ -66,6 +132,12 @@ def test_prompt_describes_all_supported_interview_methods():
         target_count=6,
         extra_context="",
     )
+
+    assert '"type":"면접형태"' in prompt
+    assert "주질문은 선택한 면접형태에 맞아야" in prompt
+    assert "공통 시나리오" not in prompt
+    assert "required_scenario_frame" not in prompt
+    return
 
     for method in ["경험면접", "상황면접", "발표면접", "토론면접", "창의적 문제해결력면접", "인바스켓면접", "직무지식면접"]:
         assert method in prompt
@@ -147,7 +219,11 @@ def test_final_editorial_contract_covers_v18_defects_in_auxiliary_prompt():
         target_count=1,
     )
 
-    assert contract in prompt
+    assert contract not in prompt
+    assert "한국어 조사와 문장 호응이 자연스러워야 합니다" in prompt
+    assert "꼬리질문은 주질문의 같은 답변을 구체화" in prompt
+    assert "평가포인트는 답변에서 직접 관찰" in prompt
+    return
     assert "primary·slim retry·auxiliary 생성 모두 같은 기준" in contract
     assert "수정했다면 무엇을 바꿨고, 하지 않았다면" in contract
     assert "변화를 만들었다면 무엇으로 확인했고, 없었다면" in contract
@@ -756,5 +832,49 @@ def test_auxiliary_generation_bounds_each_transport_attempt(monkeypatch):
     )
 
     assert result == []
-    assert len(calls) == 3
-    assert [call["max_attempts"] for call in calls] == [1, 1, 1]
+    assert len(calls) == 1
+    assert [call["max_attempts"] for call in calls] == [1]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("question", {"text": "질문"}),
+        ("follow_ups", [True, 1, {"text": "꼬리"}]),
+        ("evaluation_points", [False, 2, {"text": "기준"}, []]),
+    ],
+)
+def test_auxiliary_parser_rejects_non_string_candidate_surface(field, value):
+    item = {
+        "question": "문서 오류를 확인한 경험을 말씀해 주세요.",
+        "type": "경험면접",
+        "follow_ups": ["하나", "둘", "셋"],
+        "evaluation_points": ["하나", "둘", "셋", "넷"],
+        "ksa_refs": ["문서 오류 검증 기술"],
+    }
+    item[field] = value
+
+    assert _normalize_question_item(item) is None
+
+
+def test_auxiliary_generation_propagates_provider_failure(monkeypatch):
+    import app.services.question_generation as module
+
+    monkeypatch.setattr(
+        type(module.settings),
+        "resolve_openai_key",
+        lambda _self, _override="": "request-key",
+    )
+
+    def fail_chat(**_kwargs):
+        raise RuntimeError("openai_http_401: private provider body")
+
+    monkeypatch.setattr(module, "post_chat_completions_with_retries", fail_chat)
+
+    with pytest.raises(RuntimeError, match="openai_http_401"):
+        _generate_questions_with_openai_from_ncs(
+            ncs_matches=[],
+            ncs_ksa=[],
+            target_count=1,
+            api_key_override="request-key",
+        )

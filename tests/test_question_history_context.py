@@ -17,11 +17,60 @@ def test_quality_retry_context_keeps_ksa_freewriting_contract() -> None:
         original_context="",
     )
 
-    assert "index별 evidence_id에 잠긴 KSA의 의미" in context
-    assert "STAR 항목" in context and "고정해서 나열하지 마세요" in context
-    assert "꼬리질문은 같은 답변을 더 깊게 확인하되 시작말과 역할을 고정하지 말고" in context
+    assert "공식 KSA·능력단위·직무 맥락에서 문항 전체를 새로 작성" in context
+    assert "문장 골격이나 상황을 지정하지 않습니다" in context
+    assert "natural_wording,ksa_measurement_task" in context
+    assert "index별 evidence_id 잠금" in context
+    assert "STAR" not in context
+    assert "previous_drafts_to_avoid" in context
+    assert "이전의 기계적인 질문" in context
+    assert "최소 두 축을 바꾸세요" in context
     assert "수치·문서·피드백으로 확인한 결과가 모두 나오게" not in context
     assert "당시 맡은 역할·목표" not in context
+
+
+def test_blocking_retry_codes_exclude_legacy_editorial_report_noise() -> None:
+    result = {
+        "question_quality_report": {
+            "items": [
+                {
+                    "issues": ["natural_wording", "evaluation_points"],
+                    "realism_issue_codes": ["candidate_checklist"],
+                }
+            ]
+        },
+        "question_quality_orchestration": {
+            "items": [{"final_issues": ["duplicate_question"]}]
+        },
+        "ai_quality_review": {
+            "items": [
+                {
+                    "passed": False,
+                    "reason_codes": ["grammar_unnatural"],
+                    "regeneration_guidance_codes": ["fix_korean_grammar"],
+                },
+                {
+                    "passed": True,
+                    "reason_codes": ["mechanical_ksa_label"],
+                    "regeneration_guidance_codes": [],
+                },
+            ]
+        },
+    }
+
+    codes = main._institution_question_quality_issue_codes(
+        result,
+        blocking_only=True,
+    )
+
+    assert codes == [
+        "duplicate_question",
+        "grammar_unnatural",
+        "fix_korean_grammar",
+    ]
+    assert "natural_wording" not in codes
+    assert "field_realism_candidate_checklist" not in codes
+    assert "mechanical_ksa_label" not in codes
 
 
 def test_model_star_completion_does_not_create_false_history_duplicate() -> None:
@@ -62,6 +111,19 @@ def _configured_request_scoped_boundaries(monkeypatch):
     # public quality boundary has dedicated endpoint tests with production-like
     # evidence metadata.
     monkeypatch.setattr(main, "_require_official_ksa_result", lambda _result: None)
+    monkeypatch.setattr(
+        main,
+        "review_interview_questions_with_ai",
+        lambda **kwargs: {
+            "status": "passed",
+            "reviewed_count": len(kwargs.get("questions") or []),
+            "scores": [],
+            "reason_codes": [],
+            "items": [],
+            "model": "gpt-5.6-sol",
+            "provider": "openai_api",
+        },
+    )
 
 
 def _question(text: str, question_type: str = "면접질문") -> dict[str, object]:
@@ -74,8 +136,26 @@ def _question(text: str, question_type: str = "면접질문") -> dict[str, objec
         "question_focus_source": "official_ksa",
         "ksa_refs": [text],
         "question_source": "openai_api",
-        "follow_ups": [],
-        "eval_points": [],
+        # Keep history-only endpoint fixtures structurally valid so the
+        # production boundary can enforce AI-authored cardinality independently
+        # of the request-local deduplication behavior under test here.
+        "follow_ups": [
+            "provider follow-up one",
+            "provider follow-up two",
+            "provider follow-up three",
+        ],
+        "evaluation_points": [
+            "observable point one",
+            "observable point two",
+            "observable point three",
+            "observable point four",
+        ],
+        "eval_points": [
+            "observable point one",
+            "observable point two",
+            "observable point three",
+            "observable point four",
+        ],
     }
 
 
@@ -434,7 +514,7 @@ def test_generate_by_ncs_code_remaps_followups_after_avoid_filter(monkeypatch) -
     assert data["total_count"] == 3
 
 
-def test_generate_from_text_rejects_deterministic_repairs_across_history_cycles(
+def test_generate_from_text_rejects_low_quality_without_deterministic_repairs(
     monkeypatch,
 ) -> None:
     unit = {
@@ -496,6 +576,26 @@ def test_generate_from_text_rejects_deterministic_repairs_across_history_cycles(
     monkeypatch.setattr(main, "build_jd_strategy_with_openai", low_realism_model_strategy)
     monkeypatch.setattr(
         main,
+        "review_interview_questions_with_ai",
+        lambda **_kwargs: {
+            "status": "failed",
+            "reviewed_count": 1,
+            "scores": [],
+            "reason_codes": ["mechanical_ksa_label"],
+            "items": [
+                {
+                    "index": 1,
+                    "passed": False,
+                    "reason_codes": ["mechanical_ksa_label"],
+                    "regeneration_guidance_codes": ["remove_ksa_label_insertion"],
+                }
+            ],
+            "model": "gpt-5.4-mini",
+            "provider": "openai_api",
+        },
+    )
+    monkeypatch.setattr(
+        main,
         "_run_runtime_question_quality_orchestration",
         capture_orchestration_offset,
     )
@@ -512,37 +612,24 @@ def test_generate_from_text_rejects_deterministic_repairs_across_history_cycles(
         },
         "interview_methods": ["경험면접"],
     }
-    history: list[str] = []
-
     with TestClient(main.app) as client:
-        for cycle in range(25):
-            payload = {
+        response = client.post(
+            "/api/questions/generate-from-text",
+            json={
                 **base_payload,
-                "avoid_questions": list(history),
-                "generation_offset": cycle,
-            }
-            response = client.post("/api/questions/generate-from-text", json=payload)
-            assert response.status_code == 200
-            strategy = response.json()["strategy"]
-            assert strategy["provider_fallback_used"] is True
-            assert strategy["question_release_status"] == "human_review_required"
-            assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
-            assert "경험이 있으십니까" not in response.text
-            assert "template_fallback" not in response.text
-            history.append(f"이전 화면 질문 {cycle}")
+                "avoid_questions": ["이전 화면 질문"],
+                "generation_offset": 7,
+            },
+        )
 
-    # A valid model response that fails the final quality boundary receives one
-    # bounded full-set retry. Both attempts preserve the request's rotation
-    # offset; no third attempt is made.
-    assert captured_offsets == [cycle for cycle in range(25) for _ in range(2)]
-    assert len(captured_contexts) == 50
-    for cycle in range(1, 25):
-        primary_context = captured_contexts[cycle * 2]
-        retry_context = captured_contexts[(cycle * 2) + 1]
-        assert f"이전 화면 질문 {cycle - 1}" in primary_context
-        assert f"이전 화면 질문 {cycle - 1}" in retry_context
-        assert "[서버 품질 재생성 지침]" in retry_context
-        assert REQUEST_OPENAI_KEY not in retry_context
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
+    assert captured_offsets == []
+    assert len(captured_contexts) == 2
+    assert "이전 화면 질문" in captured_contexts[0]
+    assert all(REQUEST_OPENAI_KEY not in context for context in captured_contexts)
+    assert "결정론적으로 교체된 질문" not in response.text
+    assert "server_ksa_fallback" not in response.text
 
 
 def test_review_then_regenerate_uses_feedback_and_rotates_quality_run(monkeypatch) -> None:
@@ -575,15 +662,18 @@ def test_review_then_regenerate_uses_feedback_and_rotates_quality_run(monkeypatc
             if len(contexts) == 1
             else "이관 문서의 필수 항목 누락을 찾아 담당 부서와 보완한"
         )
-        return {
-            "interview_questions": [
-                _ready_openai_model_question(
-                    unit,
-                    ksa,
-                    scenario=scenario,
-                )
-            ]
-        }
+        question = _ready_openai_model_question(
+            unit,
+            ksa,
+            scenario=scenario,
+        )
+        if len(contexts) > 1:
+            question["question"] = (
+                "월간 운영회의를 앞두고 여러 부서의 실적 산정 기준이 달라 비교가 "
+                "어려웠던 경험을 말씀해 주세요. 공통 기준을 어떻게 정했고, 반대 "
+                "의견을 어떻게 조정했으며, 이후 보고 방식은 어떻게 달라졌습니까?"
+            )
+        return {"interview_questions": [question]}
 
     monkeypatch.setattr(main, "build_jd_strategy_with_openai", fake_strategy)
     payload = {
@@ -717,17 +807,15 @@ def test_generate_from_text_repair_exception_returns_sanitized_502_without_fallb
     with TestClient(main.app) as client:
         response = client.post("/api/questions/generate-from-text", json=payload)
 
-    assert repair_failures > 0
-    assert response.status_code == 200
-    strategy = response.json()["strategy"]
-    assert strategy["provider_fallback_used"] is True
-    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
-    assert repeated_question not in response.text
+    assert repair_failures == 0
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "openai_api_quality_rejected"
     assert "simulated item repair failure" not in response.text
     assert "template_fallback" not in response.text
+    assert "server_ksa_fallback" not in response.text
 
 
-def test_generate_from_text_surfaces_adjustment_failure_without_rule_fallback(
+def test_generate_from_text_bypasses_legacy_adjustment_without_rule_fallback(
     monkeypatch,
 ) -> None:
     code = "0202030203_25v3"
@@ -763,9 +851,14 @@ def test_generate_from_text_surfaces_adjustment_failure_without_rule_fallback(
                     "question_focus_source": "official_ksa",
                     "ksa_refs": [focus],
                     "question_source": "openai_api",
-                    "question": "문서 오류 검증 기술을 적용해 문제를 해결한 경험을 설명해 주세요.",
-                    "follow_ups": ["판단 기준은 무엇이었습니까?"],
-                    "evaluation_points": ["판단근거", "행동", "결과"],
+                    "question_evidence_id": main.stable_ksa_evidence_id(ksa),
+                    "question": "작성한 문서에서 서로 맞지 않는 내용을 찾아 바로잡았던 경험을 설명해 주세요.",
+                    "follow_ups": [
+                        "판단 기준은 무엇이었습니까?",
+                        "직접 확인한 자료는 무엇이었습니까?",
+                        "그 결과를 어떻게 확인했습니까?",
+                    ],
+                    "evaluation_points": ["판단근거", "행동", "결과", "검증"],
                 }
             ]
         }
@@ -798,7 +891,5 @@ def test_generate_from_text_surfaces_adjustment_failure_without_rule_fallback(
 
     assert builder_called is True
     assert response.status_code == 200
-    strategy = response.json()["strategy"]
-    assert strategy["provider_fallback_used"] is True
-    assert strategy["interview_questions"][0]["question_source"] == "server_ksa_fallback"
     assert "simulated adjustment defect" not in response.text
+    assert "server_ksa_fallback" not in response.text

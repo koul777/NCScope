@@ -2,7 +2,6 @@
 
 import copy
 import json
-import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,12 +18,12 @@ from app.services.provider_config import (
 )
 from app.services.openai_http import post_chat_completions_with_retries
 from app.services.openai_quality_config import (
-    DEFAULT_QUALITY_MODEL,
+    DEFAULT_QUESTION_MODEL,
     apply_quality_reasoning,
-    quality_candidate_multiplier,
-    quality_candidate_variants,
+    openai_role_model,
     quality_completion_budget,
 )
+from app.services.external_ai_privacy import sanitize_external_ai_source_text
 from app.services.question_candidate_selection import select_question_candidates
 from app.services.question_intent import (
     FOCUS_SCOPED_GENERAL_QUESTION_INTENTS,
@@ -34,7 +33,6 @@ from app.services.question_intent import (
 )
 from app.services.question_surface import (
     build_question_task_frame,
-    replace_official_ksa_surface,
     stable_ksa_evidence_id,
 )
 from app.settings import settings
@@ -44,62 +42,6 @@ _ENTRY_LEVEL_TRIGGER_RE = re.compile(
     r"(수행\s*경험|경험이\s*있다면|해본\s*경험|참여했던|담당했던|실무에서|업무를\s*수행|수립한\s*경험|운영한\s*경험)"
 )
 _ENTRY_LEVEL_ALREADY_RE = re.compile(r"(유사\s*사례|가정\s*상황|가정해|가정하여|가정하고)")
-
-_DEFAULT_FOLLOW_UPS = [
-    "그 상황에서 본인이 맡은 구체적인 역할과 판단 근거를 설명해 주세요.",
-    "가장 어려웠던 지점은 무엇이었고 어떻게 해결했습니까?",
-    "결과를 다시 평가한다면 어떤 점을 개선하시겠습니까?",
-]
-_DEFAULT_EVALUATION_POINTS = [
-    "상황과 목표를 구조적으로 설명하는가",
-    "판단 근거와 의사결정 기준이 명확한가",
-    "실행 과정과 협업 방식이 구체적인가",
-    "성과와 학습 내용을 사실에 기반해 제시하는가",
-]
-
-_METHOD_DEFAULT_FOLLOW_UPS = {
-    "경험면접": _DEFAULT_FOLLOW_UPS,
-    "상황면접": [
-        "먼저 확인해야 할 사실과 기준은 무엇입니까?",
-        "그 판단을 선택한 이유와 예상 위험요인은 무엇입니까?",
-        "결과가 기대와 다를 때 후속 조치는 어떻게 하겠습니까?",
-    ],
-    "발표면접": [
-        "진단에 활용할 핵심 근거자료는 무엇입니까?",
-        "질의응답에서 반대 의견이 나오면 어떤 근거로 답변하겠습니까?",
-        "대안 중 우선순위를 가장 높게 둘 방안과 이유는 무엇입니까?",
-    ],
-    "토론면접": [
-        "입장발표에서 제시할 핵심 근거는 무엇입니까?",
-        "반대 의견 중 수용할 수 있는 부분과 어려운 부분은 무엇입니까?",
-        "최종 합의안에 반드시 포함할 기준은 무엇입니까?",
-    ],
-    "창의적 문제해결력면접": [
-        "미래예측 관점에서 먼저 확인할 변화 신호는 무엇입니까?",
-        "원인 가설과 창의적 대안은 어떻게 검증하겠습니까?",
-        "실현가능성과 의사결정 기준, 리스크 보완책은 무엇입니까?",
-    ],
-    "인바스켓면접": [
-        "여러 문서와 요청을 어떤 기준으로 분류하겠습니까?",
-        "우선순위, 보고, 위임, 직접처리 판단은 어떻게 하겠습니까?",
-        "처리 이후 기록과 후속 점검은 어떻게 남기겠습니까?",
-    ],
-    "직무지식면접": [
-        "반드시 확인해야 할 절차와 기준은 무엇입니까?",
-        "예외상황에서는 어떤 기준으로 판단하겠습니까?",
-        "산출물 품질과 오류 예방은 어떻게 점검하겠습니까?",
-    ],
-}
-
-_METHOD_DEFAULT_EVALUATION_POINTS = {
-    "경험면접": _DEFAULT_EVALUATION_POINTS,
-    "상황면접": ["핵심 사실 확인", "판단 기준", "행동 순서", "위험요인 인식", "이해관계자 대응"],
-    "발표면접": ["자료 분석력", "논리적 구조화", "질의응답 대응", "대안의 실행가능성", "성과지표 설계"],
-    "토론면접": ["입장발표 근거", "경청과 상호작용", "갈등 조정", "최종 합의안 도출"],
-    "창의적 문제해결력면접": ["미래예측과 문제 정의", "창의적 사고와 대안 도출", "검증 방법", "실현가능성", "의사결정과 실행계획"],
-    "인바스켓면접": ["우선순위 판단", "문서·요청 분류", "보고·위임·직접처리 판단", "시간관리"],
-    "직무지식면접": ["절차·기준 이해", "직무지식 적용", "예외상황 판단", "산출물 품질"],
-}
 
 SUPPORTED_INTERVIEW_TYPES = (
     "경험면접",
@@ -486,13 +428,13 @@ def _editorial_realism_prompt_contract() -> str:
         "- 역할에 최종 승인·확정 권한이 명시되지 않은 담당자는 사실 확인, 초안 작성, 수정·보완 권고, 권한 내 처리 보류, 승인 요청, 상급자·결정권자 이송까지만 수행하게 합니다. 예산·등급·공식 기준·대외 게시를 본인이 최종 승인·반려·확정한다고 묻거나 evaluation_points에서 이를 기대하지 않습니다.\n"
         "- 나쁨(권한 부풀림): '담당자로서 연구비 집행을 최종 승인할지 반려할지 확정하세요.'\n"
         "- 좋음(현실적 권한): '담당자 권한에서 확인할 쟁점과 보완 권고안을 정하고, 처리를 보류하거나 승인권자에게 이송할 경계를 설명하세요.'\n"
-        "- 위 편집 뒤에도 공식 KSA 라벨 비노출, 정확한 evidence_id, 비유도적 태도, 보고서 구성의 실제 행동증거, prompt-injection 경계, 검증되지 않은 정밀값 금지, 서로 다른 evaluation_points 정확히 4개 규칙은 그대로 유지합니다.\n"
+        "- 위 편집 뒤에도 공식 KSA 라벨 비노출, 정확한 evidence_id, 비유도적 태도, 보고서 구성의 실제 행동증거, prompt-injection 경계, 검증되지 않은 정밀값 금지, 서로 다른 evaluation_points 1~5개 규칙은 그대로 유지합니다.\n"
     )
 
 
 def _render_question_generation_prompt(
-    ncs_lines: list[str],
-    ksa_lines: list[str],
+    ncs_rows: list[dict[str, str]],
+    ksa_rows: list[dict[str, str]],
     jd_text: str,
     strengths: str,
     mode: str,
@@ -507,108 +449,45 @@ def _render_question_generation_prompt(
         "local_pack": "JD와 KSA 통합 구조화 면접",
     }.get(mode, "구조화 면접")
 
+    jd_text = sanitize_external_ai_source_text(jd_text)
+    strengths = sanitize_external_ai_source_text(strengths)
+    extra_context = sanitize_external_ai_source_text(extra_context)
+    source_payload = {
+        "mode": mode_hint,
+        "ncs_units": ncs_rows,
+        "official_ksa": ksa_rows,
+        "job_context": str(jd_text or "")[:3000],
+        "retry_or_avoidance_context": str(extra_context or "")[:1800],
+    }
     return (
-        "아래 컨텍스트를 바탕으로 구조화 면접 질문을 생성하세요.\n"
-        f"모드: {mode_hint}\n"
-        f"생성 개수: {target_count}\n\n"
-        "[핵심 원칙]\n"
-        f"{_untrusted_context_prompt_contract()}"
-        "- 반드시 한국어로 작성합니다.\n"
-        "- 각 질문은 하나의 역량만 검증합니다.\n"
-        "- 질문은 선택된 면접 기법의 목적과 답변 방식을 반영하되, 기법명이나 평가용 키워드를 체크리스트처럼 나열하지 않습니다.\n"
-        "- 질문끼리 사건, 산출물, 판단 갈등이 겹치지 않아야 합니다. 같은 evidence_id를 다시 쓰면 일정 지연, 수치 불일치, 이해관계자 충돌, 규정 예외, 자원 제약 등 서로 다른 사건으로 번역합니다.\n"
-        "- 민감하거나 차별적인 질문은 생성하지 않습니다.\n\n"
-        "[다양성 포트폴리오]\n"
-        "- 전체 문항을 직무/능력단위, 상황, 난이도, KSA 유형, 질문 유형의 5개 축으로 먼저 배정한 뒤 작성합니다.\n"
-        "- 난이도는 기본(핵심 근거 1개 적용), 심화(상충 근거 비교), 고난도(불완전 정보·권한·시간 제약 아래 예외 판단)를 고르게 섞습니다.\n"
-        "- 상황 축은 수치·자료 불일치, 일정 압박, 이해관계자 충돌, 규정 예외, 자원 제약, 품질 위험을 순환하고 같은 사건 골격을 반복하지 않습니다.\n"
-        "- 소재 축은 협업·이해관계자 조정, 정책·규정 준수, 리스크·품질관리, 성과지표·검증, 이용자·형평성, 디지털·프로세스 개선, 자원·일정 조정, 조직학습·인수인계를 순환합니다.\n"
-        "- KSA 축은 가능한 범위에서 지식·기술·태도를 분산하고, 질문 유형 축은 선택된 면접기법을 균형 있게 배정합니다.\n"
-        "- 문장 표현만 바꾼 변형은 새 후보로 보지 않습니다. 사건 사실, 판단 갈등, 요구 산출물 중 최소 2개가 달라야 합니다.\n\n"
-        "[근거 추적과 의미 번역]\n"
-        "- 각 질문은 [KSA]에서 evidence_id 하나를 주 검증 근거로 선택합니다.\n"
-        "- NCS 능력단위·official_factor·public_focus·task_statement·observable_behavior는 평가위원용 내부 근거 메타데이터이자 의미 힌트입니다. 어떤 값도 완성된 질문 문구나 문장 골격으로 취급하지 않습니다.\n"
-        "- question, follow_ups 같은 지원자에게 보이는 문장에는 official_factor 또는 public_focus를 그대로 복사하거나 따옴표로 인용하지 않습니다. task_statement와 observable_behavior도 문장째 복사하지 않습니다.\n"
-        "- 대신 근거의 의미를 실제 문서·자료·수치·시점·이해관계자·상충 조건·의사결정·관찰 가능한 결과로 자유롭게 번역합니다. 질문만 읽어도 어떤 사건에서 무엇을 판단해야 하는지 알 수 있어야 합니다.\n"
-        "- 반사실 검사를 먼저 합니다. 배정된 KSA가 없는 유능한 일반 담당자도 같은 답을 할 수 있다면 단순 업무 관련 질문일 뿐이므로, 그 KSA만의 판단 근거·행동·산출물이 드러나도록 사건을 다시 설계합니다.\n"
-        "- 지식은 자료와 예외상황에서 그 지식만의 정의·적용 근거·범위·예외를 실제 판단에 사용하게 합니다. 법·규정은 적법 근거·목적·최소 범위, 지표는 포함 범위·중복 처리·측정 기간처럼 구별되는 적용 논리가 있어야 하며 일반 검토 순서로 대체하지 않습니다.\n"
-        "- 기술은 그 기술만의 구체 조치·변환·대조·작성 절차, 사용 자료나 도구, 도메인 산출물과 품질 확인을 드러냅니다. 일반 우선순위표만 만들게 해서는 안 됩니다.\n"
-        f"{_neutral_attitude_prompt_contract()}"
-        f"{_editorial_realism_prompt_contract()}"
-        "- 산출물의 이름만 바꿔 KSA와 연결하지 않습니다. 요구한 필드·구조·판정 규칙으로 배정 KSA를 구별할 수 있어야 합니다. 보고서 작성 요령 지식은 본문·주석·잠정값·증빙 처리 같은 구성 규칙을 적용하게 하며, 문서 처리 순서나 담당자 배정표로 대체하지 않습니다.\n"
-        "- 보고서 작성 요령이 required_factor이면 과제형 question 자체의 핵심 판단과 산출물에 ① 확정값과 잠정값 구분 ② 본문과 주석 배치 ③ 증빙 연결 중 최소 2개를 직접 적용하게 하세요. 단, 경험면접은 당시 실제 보고서 작성 행동과 관찰된 결과만 주질문에서 묻고, 실제 구성·증빙 근거는 답변 연동 follow_ups에서 확인합니다.\n"
-        "- 보고서 작성 요령의 두 필드는 같은 보고서 한 장의 구성요소이며 별도 산출물을 추가하라는 뜻이 아닙니다.\n"
-        "- 출력 전 내부 factor를 다른 KSA로 바꿔도 문항이 그대로 성립하는지 확인합니다. 성립하면 raw 라벨을 노출하지 않은 채 사건의 근거·행동·산출물을 다시 구체화합니다.\n"
-        "- 출력 직전 question만 따로 읽으세요. follow_ups와 evaluation_points를 지웠을 때 required KSA 없이도 답할 수 있다면 question의 핵심 판단·산출물을 다시 작성합니다.\n"
-        "- question_evidence_id에는 선택한 evidence_id를 그대로 넣습니다. question_focus_surface에는 같은 행의 public_focus를, question_focus와 ksa_refs[0]에는 같은 행의 official_factor를 넣어 내부 추적 사슬을 보존합니다.\n"
-        "- question_focus_surface, question_focus, ksa_refs는 지원자에게 읽어 주는 문장이 아니라 평가·감사 메타데이터입니다.\n\n"
-        "[KSA 자유작성 규칙]\n"
-        "- KSA는 문장 템플릿이 아니라 의미의 출발점입니다. 한 KSA에서 가장 구체적인 대상·행동·판단 "
-        "하나를 골라 JD의 실제 업무 맥락과 자연스럽게 연결하고, 그 초점에 맞는 질문을 자유롭게 쓰세요.\n"
-        "- 모든 질문에 상황·역할·행동·결과·개선을 고정해서 넣지 않습니다. KSA를 가장 잘 드러내는 "
-        "한 장면과 한 가지 관찰 결과만 주질문에 남기고 나머지는 답변에 따라 이어지는 꼬리질문으로 보냅니다.\n"
-        "- '해당 직무에서 ... 실제 상황 하나를 골라', '요구사항과 기준을 확인한 뒤', "
-        "'문서·수치·기록·피드백' 같은 공통 골격과 내부 surface 접미사를 반복하지 않습니다.\n\n"
-        "[현장형 질문 구성]\n"
-        "- 추상적인 '관련 경험', '판단 기준', '확인 절차'만 묻지 않습니다. 실제 기관에서 생길 법한 문서나 데이터와 하나의 난점 또는 상충 조건을 제시하고, 지원자의 결정·행동·산출물을 관찰합니다.\n"
-        "- 모든 요소를 한 문장에 억지로 넣지 말고 선택한 면접 기법에 필요한 자산만 사용합니다.\n"
-        "- 경험면접을 제외한 과제형 주질문에는 핵심 판단 하나와 반드시 제출·설명할 최소 산출물 하나만 둡니다. 경험면접은 실제 사건·역할·선택 또는 행동 하나·관찰된 결과만 묻습니다. 자료 검토, 판단, 설득, 기록, 사후관리를 한꺼번에 요구하지 말고 나머지는 follow_ups로 옮깁니다.\n"
-        "- 실제성을 높인다는 이유로 모든 질문에 숫자, 문서명, 이해관계자를 동시에 강제하지 않습니다. 근거의 의미와 면접 기법에 꼭 필요한 자산만 한두 개 고릅니다.\n"
-        "- 상황문에 정답 정책을 먼저 알려 주지 않습니다. '최소 정보만 제공하고 근거가 없으면 보류한다는 원칙에 따라 처리하라'처럼 올바른 선택을 완성해 주지 말고, 목적·권한·피해 위험이 충돌하는 사실을 주어 지원자가 적용 원칙과 처리 경계를 스스로 설명하게 합니다.\n"
-        f"{_unverified_material_precision_prompt_contract()}"
-        "- 경험면접: 구체적인 실제 사건, 당시 역할, 선택 또는 직접 행동 하나, 관찰된 결과만 주질문에서 답하게 합니다. 유급 실무만 요구하지 말고 학업·프로젝트·봉사 등 가장 가까운 실제 경험도 허용하되, 새 한 장짜리 산출물을 요구하거나 주질문부터 가정 상황으로 바꾸지 않습니다. STAR는 답변 구조이지 주질문 필수 단어 목록이 아닙니다.\n"
-        "- 상황면접: 충분한 사건 사실, 선택이 필요한 딜레마, 권한·시간 등 제약을 주고 첫 조치와 후속 순서, 위험 대응을 답하게 합니다. 과거 경험을 묻지 않습니다.\n"
-        "- 발표면접: 검토할 자료 묶음과 수치 이상 또는 이해관계 충돌을 주되, KSA에 가장 가까운 판단 family 하나만 발표하게 합니다. 자료는 최소 3행의 출처/항목/값을 포함한 실제 검토대상으로 구성하고, 자료가 없으면 임의의 정밀 수치를 만들지 않습니다. 자원 총량의 신뢰할 수 있는 숫자가 없으면 상대적 우선순위·범위·배분 원칙을 묻고 정확한 배분량이나 '수치화'를 요구하지 않습니다.\n"
-        "- 토론면접: 공통 사실을 중립적으로 주고 양립하기 어려운 두 제안과 영향을 받는 이해관계자를 제시해, 공동 판단 기준·예외·실행 책임이 있는 공동안을 만들게 합니다. 공통자료는 최소 3행의 출처/항목/값을 포함하고 어느 한 입장을 정답처럼 만들지 않습니다. 합의 자체를 강제하지 말고 합의가 어려우면 남은 쟁점과 결정권자 이송 기준을 제시하게 합니다.\n"
-        "- 창의적 문제해결력면접: 미래 변화 신호와 불명확한 문제, 현실 제약을 주고 문제 재정의·복수 대안·검증 방법·실행 결정을 답하게 합니다.\n"
-        "- 인바스켓면접: 도착 시각과 마감이 다른 여러 문서·요청, 선후 의존성, 보고·위임 권한을 주고 우선순위와 첫 조치를 답하게 합니다.\n"
-        "- 직무지식면접: 이름 있는 규정·서식·데이터와 예외 또는 오류를 주고 적용 결정, 산출물, 품질 검증을 답하게 합니다.\n"
-        "- 경험면접 이외의 기법은 과거 경험 유무를 묻지 않고 해당 과제 수행으로 판단·행동·산출물을 관찰합니다.\n"
-        "- evaluation_points는 현재 출력 계약의 최소치인 4개만 작성합니다. 질문과 답변에서 직접 볼 수 있는 행동만 평가하고, 주질문이나 follow_ups에서 요구하지 않은 숨은 기준을 추가하지 않습니다.\n"
-        "- 준비·발표·토론·질의응답 시간과 제출 방식은 question에 반복해서 쓰지 않습니다.\n\n"
-        "[답변 적응형 꼬리질문]\n"
-        "- 각 질문마다 follow_ups 3개를 포함합니다. 세 문항은 구체화, 판단 근거, 결과 확인·수정 경계로 깊어져야 합니다.\n"
-        "- 3개 중 최소 2개는 지원자의 실제 답변에 연결되는 적응형 문장으로 작성합니다. 가능하면 꼬리1은 '방금 …', 꼬리2는 '앞서 …'로 시작해 앞 답변의 자료·선택·누락·결과 중 하나를 다시 집어야 합니다. 다만 행동·승인·변화를 전제하지 말고 '수정했다면/하지 않았다면', '변화를 만들었다면/없었다면'처럼 두 갈래 조건을 문장 안에 명시합니다.\n"
-        "- 나머지 1개는 응답자 간 비교를 위한 표준화 질문일 수 있습니다. 단, '필요 시', '면접관 판단에 따라'처럼 답변 내용과 무관한 조건은 적응형으로 보지 않습니다.\n"
-        "- 금지: 꼬리질문 2개 이상을 독립적인 새 과제로 벌리거나, 주질문을 다른 말로 다시 묻거나, 답변 참조 없이 일반론으로 '어떻게 하겠습니까'만 반복하는 방식.\n"
-        "- follow_ups에도 직무명, official_factor, public_focus를 억지로 삽입하지 않습니다. 주질문의 사건과 답변을 자연스럽게 이어 갑니다.\n\n"
-        "[대조 예시]\n"
-        "- 나쁨(평가 라벨과 형식어 나열): '시장환경 분석·판단 기준에 따라 경영계획을 수립한 경험과 당시 상황, 본인 행동, 결과를 말해 주세요.'\n"
-        "- 좋음(경험면접): '수요 전망과 전년도 실적이 서로 다른 방향을 가리켰던 실제 사례나 가장 가까운 실제 사례를 말씀해 주세요. 당시 역할, 본인이 택한 판단 또는 행동 하나, 관찰된 결과는 무엇이었습니까?'\n"
-        "- 나쁨(추상 절차 복사): '문서 요구사항 확인 절차를 적용해 오류 위험을 관리하는 순서와 기준을 설명하세요.'\n"
-        "- 좋음(상황면접): '협약서 초안의 총사업비와 첨부 예산표 합계가 다르고 오늘 안에 결재를 올려야 합니다. 첫 확인 대상으로 삼을 근거 자료 하나와, 확인이 끝날 때까지 결재선에 남길 조치 메모를 제시하십시오.'\n"
-        "- 좋은 꼬리질문: '방금 말씀한 원자료에서도 금액이 일치하지 않는다면 어느 수치를 잠정 기준으로 삼고 그 이유를 어떻게 기록하시겠습니까?'\n\n"
-        "- 태도 문항은 위 [태도 문항 나쁨/좋음 대조]처럼 정답·자기희생·개인 책임을 주지 않고 선택과 검증 방식을 관찰합니다.\n\n"
-        "[기법 선택]\n"
-        "- 추가 컨텍스트에 선택 기법이 있으면 그 기법만 사용합니다.\n"
-        "- 선택 기법이 없으면 경험면접, 상황면접, 발표면접, 토론면접, 인바스켓면접, 직무지식면접을 우선 섞고, 복합 문제해결 문맥이 있으면 창의적 문제해결력면접도 포함합니다.\n\n"
-        "[출력 형식]\n"
-        "JSON 객체 하나만 출력:\n"
-        "{\n"
-        '  "interview_questions": [\n'
-        "    {\n"
-        '      "type": "경험면접|상황면접|발표면접|토론면접|창의적 문제해결력면접|인바스켓면접|직무지식면접",\n'
-        '      "competency": "능력단위명",\n'
-        '      "ncsClCd": "코드",\n'
-        '      "question": "주질문",\n'
-        '      "follow_ups": ["구체화", "판단 근거", "결과/교훈"],\n'
-        '      "evaluation_points": ["항목1", "항목2", "항목3", "항목4"],\n'
-        '      "question_evidence_id": "ksa_...",\n'
-        '      "question_focus_surface": "내부 자연어 업무 초점",\n'
-        '      "question_focus": "내부 주 검증 official_factor",\n'
-        '      "ksa_refs": ["KSA1", "KSA2"]\n'
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        "[NCS]\n"
-        f"{chr(10).join(ncs_lines) if ncs_lines else '- 없음'}\n\n"
-        "[KSA]\n"
-        f"{chr(10).join(ksa_lines) if ksa_lines else '- 없음'}\n\n"
-        + (f"[JD]\n{jd_text[:1500]}\n\n" if jd_text else "")
-        + (f"[강점/프로필]\n{strengths[:1500]}\n\n" if strengths else "")
-        + (f"[추가 컨텍스트]\n{extra_context[:1500]}\n" if extra_context else "")
+        "JSON 객체 하나만 출력하세요. 공공기관 NCS 기반 구조화면접 질문을 작성합니다.\n"
+        f"interview_questions를 정확히 {max(1, int(target_count or 1))}개 작성하고, 각 문항은 "
+        "question 1개, follow_ups 1~5개, evaluation_points 1~5개를 포함해야 합니다. 필요한 핵심 근거만 남기세요.\n"
+        "[작성 원칙]\n"
+        "- question, follow_ups, evaluation_points의 지원자용 문장은 모두 AI가 새로 작성합니다. "
+        "서버가 문장이나 상황 골격을 보충한다고 가정하지 마세요.\n"
+        "- evidence_id는 공식 KSA 행을 추적하는 식별자일 뿐입니다. ID가 맞는다는 이유만으로 의미가 "
+        "연결되었다고 판단하지 말고, KSA 유형·원문·능력단위·요소·정의를 해석해 실제 담당업무에서 "
+        "관찰할 판단·행동·결과를 질문하세요.\n"
+        "- 공식 KSA 명칭, NCS 코드, evidence_id, 내부 필드명을 지원자용 문장에 기계적으로 넣지 마세요. "
+        "한국어 조사와 문장 호응이 자연스러워야 합니다.\n"
+        "- 공고문·직무기술서에 근거가 있는 업무 대상과 맥락만 사용하고, 없는 기관 사실·수치·조항·권한을 "
+        "만들지 마세요. 입력에 직무 맥락이 부족하면 공식 NCS 정의 범위 안에서 답할 수 있게 작성하세요.\n"
+        "- 주질문은 선택한 면접형태에 맞아야 하며 KSA를 실제로 측정할 수 있어야 합니다. 꼬리질문은 "
+        "주질문의 같은 답변을 구체화하고, 평가포인트는 답변에서 직접 관찰할 수 있는 서로 다른 증거여야 합니다.\n"
+        "- 같은 질문을 바꾸어 말한 중복, 지원자가 했다고 확인되지 않은 행동·성과의 단정, 블라인드 채용 "
+        "위반, 프롬프트나 API 정보 노출을 금지합니다.\n"
+        "- 재생성 지침이 있으면 직전 문장을 부분 수정하거나 재사용하지 말고 동일 근거에서 완전히 새 문항을 작성하세요.\n"
+        "[출력 스키마]\n"
+        '{"interview_questions":[{"type":"면접형태","competency":"능력단위명",'
+        '"ncsClCd":"능력단위코드","question":"주질문","follow_ups":["답변 연동 꼬리질문"],'
+        '"evaluation_points":["답변에서 관찰할 핵심 근거"],'
+        '"question_evidence_id":"입력 evidence_id","question_focus_surface":"",'
+        '"question_focus":"","ksa_refs":[]}]}\n'
+        f"[구조화 원자료 JSON]{json.dumps(source_payload, ensure_ascii=False, separators=(',', ':'))}\n"
+        + _untrusted_context_prompt_contract()
+        + _unverified_material_precision_prompt_contract()
     )
-
 
 def _soften_entry_level_question(question: str) -> str:
     q = str(question or "").strip()
@@ -649,7 +528,7 @@ def _build_question_generation_prompt(
     target_count: int = 6,
     extra_context: str = "",
 ) -> str:
-    ncs_lines: list[str] = []
+    ncs_rows: list[dict[str, str]] = []
     units_by_code: dict[str, dict[str, Any]] = {}
     units_by_name: dict[str, dict[str, Any]] = {}
     for row in (ncs_matches or [])[:8]:
@@ -661,9 +540,15 @@ def _build_question_generation_prompt(
         if name:
             units_by_name[name] = row
         if code and name:
-            ncs_lines.append(f"- {code} | {name} | {desc[:220]}")
+            ncs_rows.append(
+                {
+                    "ncs_code": code,
+                    "unit_name": name,
+                    "unit_definition": desc[:220],
+                }
+            )
 
-    ksa_lines: list[str] = []
+    ksa_rows: list[dict[str, str]] = []
     seen_ksa: set[str] = set()
     for row in (ncs_ksa or [])[:40]:
         factor = str(row.get("factorName", "")).strip()
@@ -673,55 +558,37 @@ def _build_question_generation_prompt(
         if norm in seen_ksa:
             continue
         seen_ksa.add(norm)
-        src = str(row.get("factorSource", "")).strip()
         factor_type = str(
             row.get("ksaTypeName") or row.get("factorType") or row.get("ksa_type") or ""
         ).strip()
         unit = str(row.get("compeUnitName", "")).strip()
         code = str(row.get("ncsClCd") or "").strip()
         unit_row = units_by_code.get(code) or units_by_name.get(unit) or {}
-        criteria_raw = row.get("performanceCriteria") or row.get("performance_criteria") or []
-        if isinstance(criteria_raw, str):
-            criteria_raw = [criteria_raw]
-        criteria_hint = "; ".join(
-            str(value).strip()
-            for value in (criteria_raw if isinstance(criteria_raw, (list, tuple)) else [])
-            if str(value).strip()
-        )
-        frame = build_question_task_frame(
-            evidence_row=row,
-            factor_name=factor,
-            ksa_type=factor_type,
-            element_name=row.get("elementName") or row.get("element_name") or "",
-            competency_name=unit or unit_row.get("compeUnitName") or "",
-            competency_definition=row.get("compeUnitDef") or unit_row.get("compeUnitDef") or "",
-        )
-        ksa_lines.append(
-            "- "
-            f"evidence_id={frame['evidence_id']} | official_factor={factor} | "
-            f"public_focus={frame['task_object']} | task_statement={frame['task_statement']} | "
-            f"observable_behavior={frame['observable_behavior']} | type={factor_type or '미분류'} | "
-            f"unit={unit} | element={row.get('elementName') or row.get('element_name') or ''} | "
-            f"performance_criteria={criteria_hint} | "
-            f"source={src}"
+        evidence_id = stable_ksa_evidence_id(row)
+        ksa_rows.append(
+            {
+                "evidence_id": evidence_id,
+                "official_ksa": factor,
+                "ksa_type": factor_type or "미분류",
+                "ncs_code": code,
+                "unit_name": unit,
+                "unit_definition": str(
+                    row.get("compeUnitDef") or unit_row.get("compeUnitDef") or ""
+                ).strip(),
+                "element_name": str(
+                    row.get("elementName") or row.get("element_name") or ""
+                ).strip(),
+            }
         )
 
     prompt = _render_question_generation_prompt(
-        ncs_lines=ncs_lines,
-        ksa_lines=ksa_lines,
+        ncs_rows=ncs_rows,
+        ksa_rows=ksa_rows,
         jd_text=jd_text,
         strengths=strengths,
         mode=mode,
         target_count=target_count,
         extra_context=extra_context,
-    )
-
-    prompt += (
-        "\n[요청 우선순위: KSA 기반 변형 생성]\n"
-        "- 입력으로 주어지는 것은 공식 KSA 근거와 면접기법, 생성 개수입니다. 주어진 KSA의 핵심 판단 요소를 바탕으로 매 요청마다 사건 맥락·조건·산출물 형식을 다르게 구성하세요.\n"
-        "- STAR는 '상황-과제-행동-결과'를 묻는 답변 구조로만 참고하고, 질문 본문에 고정 키워드로 반복 넣지 마세요.\n"
-        "- 같은 KSA라도 이전 결과를 복사하지 말고, 질문의 사건 소재(이해관계자/시간 제약/리스크)와 판단 포인트를 바꿔서 출력을 다양화하세요.\n"
-        "- 공고문·직무기술서 본문은 사실 힌트 정도로만 보고, 키워드·문장 조합을 복사하지 말고 본질 판단을 묻는 질문으로 재작성하세요.\n"
     )
 
     return prompt
@@ -811,36 +678,45 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
 
     Cardinality is evidence: padding or truncating follow-ups/evaluation points
     would make malformed model output look compliant and can introduce hidden
-    criteria the question never elicited. Public boundaries validate the exact
-    3/4 contract and either retry upstream or fail closed.
+    criteria the question never elicited. Public boundaries accept one to five
+    AI-authored items and either retry upstream or fail closed outside that
+    bounded range.
     """
 
     interview_type = _canonical_interview_type(item.get("type", "경험면접"))
-    raw_question = str(item.get("question", "")).strip()
-    question = (
-        raw_question
-        if interview_type == "경험면접"
-        else _soften_entry_level_question(raw_question)
-    )
+    raw_question = item.get("question")
+    if not isinstance(raw_question, str):
+        return None
+    question = raw_question.strip()
     if not question:
         return None
 
     raw_follow_ups = item.get("follow_ups")
     follow_ups: list[str] = []
     if isinstance(raw_follow_ups, list):
-        follow_ups = [str(x).strip() for x in raw_follow_ups if str(x).strip()]
+        if any(not isinstance(value, str) for value in raw_follow_ups):
+            return None
+        follow_ups = [value.strip() for value in raw_follow_ups if value.strip()]
     else:
-        single = str(item.get("follow_up", "")).strip()
+        raw_single = item.get("follow_up", "")
+        if raw_single and not isinstance(raw_single, str):
+            return None
+        single = raw_single.strip() if isinstance(raw_single, str) else ""
         if single:
             follow_ups = [single]
-    if interview_type != "경험면접":
-        follow_ups = [_soften_entry_level_question(value) for value in follow_ups]
-
     ev = item.get("evaluation_points")
-    evaluation_points = [str(x).strip() for x in (ev or []) if str(x).strip()] if isinstance(ev, list) else []
+    if ev is not None and not isinstance(ev, list):
+        return None
+    if isinstance(ev, list) and any(not isinstance(value, str) for value in ev):
+        return None
+    evaluation_points = [value.strip() for value in (ev or []) if value.strip()]
 
     ksa = item.get("ksa_refs")
-    ksa_refs = [str(x).strip() for x in (ksa or []) if str(x).strip()] if isinstance(ksa, list) else []
+    if ksa is not None and not isinstance(ksa, list):
+        return None
+    if isinstance(ksa, list) and any(not isinstance(value, str) for value in ksa):
+        return None
+    ksa_refs = [value.strip() for value in (ksa or []) if value.strip()]
 
     if _contains_blind_hiring_cue(question, follow_ups, evaluation_points):
         return None
@@ -855,10 +731,9 @@ def _normalize_question_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "follow_up": follow_ups[0] if follow_ups else "",
         "ksa_refs": ksa_refs,
     }
-    # Preserve optional diversity/trace fields emitted by Ox Alpha.  The
-    # deterministic adjuster remains the source of truth, but carrying these
-    # hints into candidate selection lets it balance K/S/A types before the
-    # final evidence attachment pass.
+    # Preserve optional diversity/trace fields emitted by the provider. They
+    # are metadata hints only; no deterministic component may rewrite the
+    # candidate-facing sentences derived from them.
     for source_key, target_key in (
         ("ksa_type", "ksa_type"),
         ("ksaTypeName", "ksa_type"),
@@ -950,13 +825,7 @@ def _attach_candidate_surface_evidence(
     ncs_ksa: list[dict[str, Any]] | None,
     ncs_matches: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    """Link a model item to official evidence and repair only exposed fields.
-
-    The official factor stays in internal grounding fields.  If the model copied
-    that label into candidate-visible text, only those fields are rewritten with
-    the grammatical public task object; the model's scenario and main intent are
-    otherwise preserved.
-    """
+    """Link a model item to official evidence without changing AI wording."""
 
     out = dict(item or {})
     official_rows = [row for row in (ncs_ksa or []) if isinstance(row, dict)]
@@ -1046,48 +915,6 @@ def _attach_candidate_surface_evidence(
     if not primary_surface:
         return out
 
-    replacement_pairs: list[tuple[str, str]] = []
-    for row in official_rows:
-        raw_factor = str(row.get("factorName") or "").strip()
-        factor_key = re.sub(r"\s+", "", raw_factor).casefold()
-        if len(factor_key) < 4 or (row is not selected and factor_key not in declared_factors):
-            continue
-        row_frame = frame if row is selected else build_question_task_frame(
-            evidence_row=row,
-            factor_name=raw_factor,
-            ksa_type=row.get("ksaTypeName") or row.get("factorType") or row.get("ksa_type") or "",
-            element_name=row.get("elementName") or row.get("element_name") or "",
-            competency_name=row.get("compeUnitName") or unit_name,
-            competency_definition=row.get("compeUnitDef") or unit_row.get("compeUnitDef") or "",
-        )
-        public_surface = str(row_frame.get("task_object") or "").strip()
-        if public_surface and public_surface != raw_factor:
-            replacement_pairs.append((raw_factor, public_surface))
-
-    repaired_fields: list[str] = []
-
-    def _repair_text(value: Any, field_name: str) -> str:
-        text = str(value or "").strip()
-        repaired = text
-        for raw_factor, public_surface in replacement_pairs:
-            repaired, _ = replace_official_ksa_surface(repaired, raw_factor, public_surface)
-        if repaired != text:
-            repaired_fields.append(field_name)
-        return repaired
-
-    out["question"] = _repair_text(out.get("question"), "question")
-    out["follow_ups"] = [
-        _repair_text(value, "follow_ups")
-        for value in (out.get("follow_ups") or [])
-        if str(value or "").strip()
-    ]
-    if out["follow_ups"]:
-        out["follow_up"] = out["follow_ups"][0]
-    out["evaluation_points"] = [
-        _repair_text(value, "evaluation_points")
-        for value in (out.get("evaluation_points") or [])
-        if str(value or "").strip()
-    ]
     out["question_focus_surface"] = primary_surface
     out["question_task_frame"] = frame
     out["element_id"] = str(
@@ -1119,8 +946,6 @@ def _attach_candidate_surface_evidence(
         if not evidence_id
         else "provider_evidence_id_mismatch"
     )
-    if repaired_fields:
-        out["candidate_surface_repairs"] = sorted(set(repaired_fields))
     return out
 
 
@@ -1159,24 +984,10 @@ def _generate_questions_with_openai_from_ncs(
         max(15.0, min(240.0, timeout_sec)),
     )
 
-    try:
-        max_variants = int(str(os.getenv("OPENAI_QUESTION_VARIANT_ATTEMPTS", "3")).strip() or "3")
-    except Exception:
-        max_variants = 3
-    max_variants = max(1, min(3, max_variants))
-
-    candidate_multiplier = quality_candidate_multiplier(
-        "OPENAI_QUESTION_CANDIDATE_MULTIPLIER",
-        default=3.0,
-    )
-    candidate_goal = max(target_n, int(math.ceil(target_n * candidate_multiplier)))
-    variant_count = min(
-        max_variants,
-        quality_candidate_variants(
-            "OPENAI_QUESTION_CANDIDATE_MULTIPLIER",
-            default=3.0,
-        ),
-    )
+    # One draft call, one independent review, and at most one full regeneration
+    # keep the public pipeline within the four-stage semantic-call contract.
+    candidate_goal = target_n
+    variant_count = 1
 
     prompt = _build_question_generation_prompt(
         ncs_matches=ncs_matches,
@@ -1190,8 +1001,8 @@ def _generate_questions_with_openai_from_ncs(
 
     openai_model = str(
         generation_model
-        or os.getenv("OPENAI_QUESTION_MODEL", DEFAULT_QUALITY_MODEL)
-        or DEFAULT_QUALITY_MODEL
+        or openai_role_model("auxiliary_question_authoring")
+        or DEFAULT_QUESTION_MODEL
     ).strip()
     model = provider_model(generation_provider, openai_model)
     payload_base = {
@@ -1223,54 +1034,27 @@ def _generate_questions_with_openai_from_ncs(
     attempts: list[tuple[dict[str, Any], float]] = []
     p1 = copy.deepcopy(payload_base)
     p1["response_format"] = {"type": "json_object"}
-    p1["messages"][1]["content"] = (
-        str(p1["messages"][1]["content"])
-        + "\n\n후보 포트폴리오 A: 면접기법과 KSA 유형의 균형, 기본·심화 난이도 분산을 우선하세요."
-    )
     attempts.append((p1, timeout_sec))
-
-    p2 = copy.deepcopy(payload_base)
-    if not reasoning_effort:
-        p2["temperature"] = 0.92
-    p2["messages"][1]["content"] = (
-        str(p2["messages"][1]["content"])
-        + "\n\n후보 포트폴리오 B: 동일 KSA라도 사건 맥락, 권한·시간·자료 제약, 판단 트리거와 산출물을 A와 완전히 다르게 설계하세요. 심화·고난도를 우선하세요."
-    )
-    attempts.append((p2, min(240.0, timeout_sec + 20.0)))
-
-    p3 = copy.deepcopy(payload_base)
-    if not reasoning_effort:
-        p3["temperature"] = 0.72
-        p3["top_p"] = 0.95
-        p3["presence_penalty"] = 0.1
-    p3["messages"][1]["content"] = (
-        str(p3["messages"][1]["content"])
-        + "\n\n후보 포트폴리오 C: A·B에서 적게 다룬 직무/능력단위·KSA·면접기법·상황 축을 우선 보완하세요. 설명문 없이 유효한 JSON 객체 1개만 반환하세요."
-    )
-    attempts.append((p3, min(240.0, timeout_sec + 30.0)))
 
     def _request_variant(
         variant_index: int,
         payload: dict[str, Any],
         req_timeout: float,
     ) -> tuple[int, list[dict[str, Any]]]:
-        try:
-            data = post_chat_completions_with_retries(
-                payload=prepare_chat_payload(payload, generation_provider),
-                api_key=api_key,
-                # Portfolio B/C may receive a larger OpenAI budget. Re-apply
-                # the provider cap so OpenRouter never exceeds the serverless
-                # upstream deadline merely because it is a later variant.
-                timeout_sec=provider_timeout_sec(generation_provider, req_timeout),
-                # Each payload variant is one intentional semantic request.
-                # Do not multiply it with transport retries or the optional
-                # curl subprocess (which would expose the bearer token in a
-                # child-process command line on some operating systems).
-                max_attempts=1,
-                provider=generation_provider,
-            )
-        except Exception:
-            return variant_index, []
+        data = post_chat_completions_with_retries(
+            payload=prepare_chat_payload(payload, generation_provider),
+            api_key=api_key,
+            # Portfolio B/C may receive a larger OpenAI budget. Re-apply
+            # the provider cap so OpenRouter never exceeds the serverless
+            # upstream deadline merely because it is a later variant.
+            timeout_sec=provider_timeout_sec(generation_provider, req_timeout),
+            # Each payload variant is one intentional semantic request.
+            # Do not multiply it with transport retries or the optional
+            # curl subprocess (which would expose the bearer token in a
+            # child-process command line on some operating systems).
+            max_attempts=1,
+            provider=generation_provider,
+        )
 
         parsed = [
             _attach_candidate_surface_evidence(

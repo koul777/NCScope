@@ -8,6 +8,7 @@ the original block/page evidence before NCS lookup is started.
 from __future__ import annotations
 
 import base64
+import csv
 import html
 import json
 import os
@@ -67,6 +68,8 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
         "NCS세분류명",
         "NCS 세분류명",
         "직무 세분류",
+        "세분류(직무)",
+        "세분류(직무명)",
         "NCS분류체계 세분류",
         "NCS 분류체계 세분류",
         "세분류(특화분류)",
@@ -137,8 +140,10 @@ def _norm(value: Any) -> str:
     return re.sub(r"[\s:：·•\-_/()\[\]{}]+", "", text).lower()
 
 
-def _clean_text(value: Any) -> str:
-    text = unicodedata.normalize("NFKC", str(value or ""))
+def _clean_text(value: Any, *, normalize_nfkc: bool = True) -> str:
+    text = str(value or "")
+    if normalize_nfkc:
+        text = unicodedata.normalize("NFKC", text)
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
     text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
@@ -154,15 +159,15 @@ def _split_table_row(line: str) -> list[str]:
     if not raw.startswith("|"):
         return []
     raw = raw.strip("|")
-    return [_clean_text(part) for part in raw.split("|")]
+    return [_clean_text(part, normalize_nfkc=False) for part in raw.split("|")]
 
 
 def _is_separator_row(cells: list[str]) -> bool:
     return bool(cells) and all(not cell or re.fullmatch(r"[-: ]+", cell or "") for cell in cells)
 
 
-def _split_items(text: str) -> list[str]:
-    value = _clean_text(text)
+def _split_items(text: str, *, normalize_nfkc: bool = True) -> list[str]:
+    value = _clean_text(text, normalize_nfkc=normalize_nfkc)
     if not value:
         return []
     value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
@@ -185,6 +190,18 @@ def _section_for_label(label: str) -> str | None:
     if "세분류" in key and any(marker in key for marker in ("ncs", "특화분류", "소분류")):
         return "ncs_detail"
     return None
+
+
+def _is_abbreviated_detail_label(value: Any) -> bool:
+    """Recognize ``세`` only inside an already identified classification table.
+
+    Some public-institution HWP tables abbreviate the four hierarchy rows to
+    ``대/중/소/세``.  Treating ``세`` as a global alias would be unsafe because
+    it is an ordinary Korean syllable, so callers must first establish the
+    surrounding ``분류체계`` context.
+    """
+
+    return _norm(value) in {_norm("세"), _norm("세분")}
 
 
 def _section_prefix_for_text(value: str) -> tuple[str, str] | None:
@@ -276,12 +293,20 @@ def _looks_like_detail_candidate(value: str) -> bool:
         "세분류",
         "분류체계",
         "ncs분류체계",
+        "직무정의",
+        "직무 설명",
+        "핵심책무",
         "주요사업",
         "기관주요사업",
         "기관주요업무",
+        "공단 소개",
+        "공단 주요 사업",
+        "공단주요사업",
         "능력단위",
         "능력단위명",
+        "능력단위명칭",
         "능력단위코드",
+        "요구 능력 단위",
         "직무수행내용",
         "필요지식",
         "필요기술",
@@ -289,18 +314,58 @@ def _looks_like_detail_candidate(value: str) -> bool:
         "필요 역량",
         "직무수행태도",
         "관련자격",
+        "요건",
+        "교육요건",
+        "NCS기반 채용전형 절차",
+        "서류접수 → 면접시험",
+        "공고문 참조",
+        "제한없음",
+        "의사소통능력",
+        "수리능력",
+        "문제해결능력",
+        "자기개발능력",
+        "자원관리능력",
+        "대인관계능력",
+        "정보능력",
+        "기술능력",
+        "조직이해능력",
+        "직업윤리",
+        "디지털능력",
+        "자기관리능력",
     }
     if not key or key in {_norm(x) for x in non_values}:
         return False
     noise_fragments = {
         "개발전",
         "직무개요",
+        "직무정의",
+        "ncs세분류직무설명",
         "세부직무",
         "세부직무및직무수행내용",
         "직무수행내용",
         "ncs미개발",
     }
     if any(fragment in key for fragment in noise_fragments):
+        return False
+    if re.fullmatch(r"(?:지식|기술|태도)명\\*(?:ncs)?참고", key):
+        return False
+    if re.search(r"(?:https?://|www\.)", text, flags=re.IGNORECASE):
+        return False
+    basic_competency_keys = (
+        "의사소통능력",
+        "수리능력",
+        "문제해결능력",
+        "자기개발능력",
+        "자원관리능력",
+        "대인관계능력",
+        "정보능력",
+        "기술능력",
+        "조직이해능력",
+        "직업윤리",
+        "디지털능력",
+        "자기관리능력",
+    )
+    if sum(_norm(label) in key for label in basic_competency_keys) >= 2:
         return False
     if "미개발" in key:
         return False
@@ -334,6 +399,7 @@ def _is_non_ncs_table_label(value: str) -> bool:
         "담당업무",
         "직무내용",
         "직무 내용",
+        "직무정의",
         "직무수행내용",
         "직무 수행내용",
         "세부업무",
@@ -348,8 +414,49 @@ def _is_non_ncs_table_label(value: str) -> bool:
         "관련자격",
         "근무예정부서",
         "채용분야",
+        "공단 소개",
+        "공단 주요 사업",
+        "공단주요사업",
+        "NCS기반 채용전형 절차",
+        "전형방법",
+        "요건",
+        "교육요건",
+        "핵심책무",
+        "직무 설명",
     }
     return key in {_norm(label) for label in labels}
+
+
+def _is_detail_value_stop_label(value: str) -> bool:
+    """Return whether a flattened row has moved beyond the detail values."""
+
+    key = _norm(value)
+    labels = {
+        "능력단위",
+        "능력단위명",
+        "능력단위명칭",
+        "능력단위코드",
+        "요구 능력 단위",
+        "직무수행내용",
+        "주요업무",
+        "담당업무",
+        "필요지식",
+        "필요기술",
+        "직무수행태도",
+        "직업기초능력",
+        "직업공통능력",
+        "관련자격",
+        "공단 소개",
+        "공단 주요 사업",
+        "공단주요사업",
+        "NCS기반 채용전형 절차",
+        "전형방법",
+        "요건",
+        "교육요건",
+        "핵심책무",
+        "직무 설명",
+    }
+    return bool(key and key in {_norm(label) for label in labels})
 
 
 def _row_declares_no_ncs_mapping(cells: list[str]) -> bool:
@@ -486,6 +593,7 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
 
     for raw_table in re.findall(r"<table[^>]*>(.*?)</table>", str(markdown or ""), flags=re.IGNORECASE | re.DOTALL):
         header_sections: dict[int, str] = {}
+        classification_context = False
         for raw_row in re.findall(r"<tr[^>]*>(.*?)</tr>", raw_table, flags=re.IGNORECASE | re.DOTALL):
             cells = [
                 _clean_text(html.unescape(re.sub(r"<[^>]+>", " ", cell)))
@@ -494,6 +602,7 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
             if not any(cells):
                 continue
             row_text = " ".join(cells)
+            classification_context = classification_context or _row_contains_classification_marker(cells)
             if _row_has_ncs_classification_context(cells):
                 add_state("saw_ncs_table")
                 add_evidence(row_text)
@@ -516,6 +625,8 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
             if row_sections:
                 header_sections = row_sections
             label_index = next((i for i, cell in enumerate(cells) if _section_for_label(cell) == "ncs_detail"), -1)
+            if label_index < 0 and classification_context:
+                label_index = next((i for i, cell in enumerate(cells) if _is_abbreviated_detail_label(cell)), -1)
             if label_index >= 0:
                 add_state("saw_detail_header")
                 value_cells = cells[label_index + 1 :]
@@ -536,26 +647,26 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
                     note_detail_value(value, row_text)
 
     if base_reason == "multi_role_healthcare_document_without_explicit_ncs_detail":
-        healthcare_role_markers = (
-            "媛꾪샇吏?",
-            "?섎즺湲곗닠吏?",
-            "?쎈Т吏?",
-            "?낅Т?묐젰吏?",
-            "?꾩긽援먯닔",
-            "?꾩긽蹂묐━",
-            "?곸긽?섑븰",
-            "?섎즺?ы쉶蹂듭?",
-            "?섎Т湲곕줉",
-        )
         matched_healthcare_markers = [
             marker
-            for marker in healthcare_role_markers
+            for marker in (
+                "간호직",
+                "의료기술직",
+                "약무직",
+                "업무협력직",
+                "임상교수",
+                "임상병리",
+                "영상의학",
+                "의료사회복지",
+                "의무기록",
+            )
             if _norm(marker) and _norm(marker) in key
         ]
         if matched_healthcare_markers:
             add_state("multi_role_healthcare_markers_without_ncs_detail")
             add_state(f"healthcare_marker_count={len(matched_healthcare_markers)}")
             add_evidence("healthcare markers: " + ", ".join(matched_healthcare_markers[:8]))
+            add_evidence(text)
 
     if base_reason and not states:
         if base_reason == "translation_role_without_explicit_ncs_detail":
@@ -593,17 +704,161 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
     }
 
 
+def _is_full_ncs_code(value: Any) -> bool:
+    """Return whether *value* is only a complete NCS classification code.
+
+    Public-institution job descriptions use several equivalent renderings,
+    including ``01010101``, ``01-01-01-01`` and ``(01010101)``.  A two-digit
+    table ordinal such as ``01.`` is intentionally not a full code.
+    """
+
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    text = re.sub(r"^NCS\s*", "", text, flags=re.IGNORECASE).strip()
+    if not text or not re.fullmatch(r"[\d\s()[\]{}.,/_:\-]+", text):
+        return False
+    digit_count = len(re.sub(r"\D", "", text))
+    return 6 <= digit_count <= 10
+
+
+_OFFICIAL_NCS_SCLASS_CODES: frozenset[str] | None = None
+
+
+def _official_ncs_sclass_codes() -> frozenset[str]:
+    """Load the bundled six-digit NCS codes used to disambiguate joined text.
+
+    A separator-free value such as ``010101프로젝트관리`` is otherwise
+    indistinguishable from an ordinary digit-leading name.  Only a prefix
+    whose first six digits exist in the official catalog is safe to remove.
+    """
+
+    global _OFFICIAL_NCS_SCLASS_CODES
+    if _OFFICIAL_NCS_SCLASS_CODES is not None:
+        return _OFFICIAL_NCS_SCLASS_CODES
+
+    csv_path = Path(__file__).resolve().parents[2] / "ncs_sclass_codes_with_code_no.csv"
+    codes: set[str] = set()
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                code = str(row.get("NCS_CODE_NO") or "").strip()
+                if re.fullmatch(r"\d{6}", code):
+                    codes.add(code)
+    except (OSError, UnicodeError, csv.Error):
+        # Fail closed for the ambiguous no-separator case. Separated code
+        # prefixes continue to use the syntax-only behavior below.
+        codes.clear()
+    _OFFICIAL_NCS_SCLASS_CODES = frozenset(codes)
+    return _OFFICIAL_NCS_SCLASS_CODES
+
+
+def _is_official_joined_ncs_code(value: Any) -> bool:
+    if not _is_full_ncs_code(value):
+        return False
+    normalized = unicodedata.normalize("NFKC", str(value or "")).strip()
+    normalized = re.sub(r"^NCS\s*", "", normalized, flags=re.IGNORECASE).strip()
+    digits = re.sub(r"\D", "", normalized)
+    if len(digits) not in {6, 8, 10}:
+        return False
+    # Whitespace is safe inside a joined code only for the canonical
+    # two-digit grouping (``01 01 01직무명``). This prevents the leading
+    # digit of a real label such as ``3D프린터개발`` from being swallowed after
+    # an already separated ``010101 `` prefix.
+    if re.search(r"\s", normalized):
+        groups = re.findall(r"\d+", normalized)
+        if len(groups) < 2 or any(len(group) != 2 for group in groups):
+            return False
+    return digits[:6] in _official_ncs_sclass_codes()
+
+
+def _leading_official_sclass_boundary(value: str) -> int | None:
+    """Locate the end of a leading official six-digit base code."""
+
+    text = str(value or "")
+    digit_count = 0
+    for index, char in enumerate(text):
+        if char.isdecimal():
+            digit_count += 1
+        if digit_count != 6:
+            continue
+        prefix = text[: index + 1]
+        if _is_official_joined_ncs_code(prefix):
+            return index + 1
+        return None
+    return None
+
+
+def _strip_full_ncs_code_prefix(value: str) -> str:
+    """Remove a leading full NCS code without consuming the detail name."""
+
+    # Preserve the name exactly (for example the official ``CO₂`` spelling).
+    # ``_is_full_ncs_code`` applies NFKC only to the code fragment it checks.
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    boundaries: list[tuple[int, int]] = [
+        (match.start(), match.end())
+        for match in re.finditer(r"\s+|[.．:：/,_\-]+", text)
+    ]
+    # Kordoc occasionally drops the space after a parenthesized code.
+    boundaries.extend(
+        (match.start(), match.start())
+        for match in re.finditer(r"(?<=[)\]}）］】])(?=[A-Za-z가-힣])", text)
+    )
+    # Some PDF/HWP parsers concatenate a bare code and its label without any
+    # separator.  This split is ambiguous, so accept it only when the leading
+    # six-digit classification exists in the bundled official NCS catalog.
+    joined_boundaries = {
+        match.start()
+        for match in re.finditer(r"(?<=\d)(?=[A-Za-z가-힣])", text)
+    }
+    base_boundary = _leading_official_sclass_boundary(text)
+    if base_boundary is not None and re.search(
+        r"[A-Za-z가-힣]", text[base_boundary:]
+    ):
+        joined_boundaries.add(base_boundary)
+    boundaries.extend((position, position) for position in joined_boundaries)
+
+    matches: list[tuple[int, int, str]] = []
+    for start, end in boundaries:
+        prefix = text[:start].strip()
+        remainder = text[end:].strip()
+        if not remainder or not re.search(r"[A-Za-z가-힣]", remainder):
+            continue
+        if _is_full_ncs_code(prefix) and (
+            start not in joined_boundaries or _is_official_joined_ncs_code(prefix)
+        ):
+            digit_count = len(re.sub(r"\D", "", prefix))
+            matches.append((digit_count, end, remainder))
+    if not matches:
+        return text
+    # Prefer the longest valid code.  This keeps ``010101-01 직무명`` from
+    # stopping after the first six digits and leaving ``01 직무명`` behind.
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return matches[0][2]
+
+
 def _clean_detail_candidate_text(value: str) -> str:
-    text = _clean_text(value)
+    # Preserve official surface spelling such as ``CO₂``. Code recognition
+    # normalizes only the candidate prefix in ``_is_full_ncs_code``.
+    text = _clean_text(value, normalize_nfkc=False)
     text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"^\d{1,2}\s*[,.)：:\-]\s*", "", text)
+    if _is_full_ncs_code(text):
+        return ""
+    without_code = _strip_full_ncs_code_prefix(text)
+    if without_code != text:
+        text = without_code
+    else:
+        text = re.sub(r"^\d{1,2}(?:\s*[,，.．)）：:\-－]\s*|\s+)", "", text)
+    if _is_full_ncs_code(text):
+        return ""
     # A number at the end belongs to the next PDF table cell when Kordoc has
     # flattened adjacent numbered cells into one string (``총무 01.``).
     text = re.sub(r"\s+\d{1,2}\s*[.]\s*$", "", text)
     text = re.sub(r"\s*[\(（\[]\s*특화\s*분류\s*[\)）\]]\s*", "", text)
     text = re.sub(r"^[,;/|]+", "", text)
-    text = re.sub(r"[,;/|:：\-]+$", "", text)
-    return _clean_text(text)
+    text = re.sub(r"[,;/|:：\\\-]+$", "", text)
+    return _clean_text(text, normalize_nfkc=False)
 
 
 def _expand_composite_detail_candidate(value: str) -> list[str]:
@@ -611,10 +866,16 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
     if not text:
         return []
 
+    # A slash normally separates multiple detail labels, but it is also part
+    # of official NCS names such as ``QM/QC관리``.  Keep acronym-to-acronym
+    # slashes intact so an official label is not degraded into two false
+    # candidates (``QM`` and ``QC관리``).
+    protected_slash = "\ufff0"
+    split_text = re.sub(r"(?<=[A-Za-z])/(?=[A-Za-z])", protected_slash, text)
     separated = [
-        _clean_detail_candidate_text(part)
-        for part in re.split(r"\s*(?:[,，、;/|]+)\s*", text)
-        if _clean_detail_candidate_text(part)
+        _clean_detail_candidate_text(part.replace(protected_slash, "/"))
+        for part in re.split(r"\s*(?:[,，、;/|]+)\s*", split_text)
+        if _clean_detail_candidate_text(part.replace(protected_slash, "/"))
     ]
     if len(separated) > 1 and all(_looks_like_detail_candidate(part) for part in separated):
         return separated
@@ -643,6 +904,58 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
             expanded.append(part if part.endswith(suffix) else f"{part}{suffix}")
         return expanded or [text]
     return [text]
+
+
+def _html_table_grid(raw_table: str) -> list[tuple[list[str], set[int]]]:
+    """Expand simple Kordoc HTML tables into logical column coordinates.
+
+    Kordoc preserves ``rowspan`` and ``colspan`` in its markdown HTML.  A
+    regex that only reads visible cells shifts the NCS detail column whenever
+    parent hierarchy cells span rows or columns, which can promote a
+    ``소분류`` value to a false ``세분류`` candidate.  This small grid builder
+    retains those coordinates without introducing a full HTML dependency.
+    """
+
+    rows: list[tuple[list[str], set[int]]] = []
+    carry: dict[int, tuple[str, int]] = {}
+    for raw_row in re.findall(r"<tr[^>]*>(.*?)</tr>", raw_table, flags=re.IGNORECASE | re.DOTALL):
+        logical: dict[int, str] = {column: value for column, (value, _remaining) in carry.items()}
+        fresh_columns: set[int] = set()
+        next_carry: dict[int, tuple[str, int]] = {
+            column: (value, remaining - 1)
+            for column, (value, remaining) in carry.items()
+            if remaining > 1
+        }
+        column = 0
+        raw_cells = re.findall(
+            r"<t[dh](?P<attrs>[^>]*)>(?P<body>.*?)</t[dh]>",
+            raw_row,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        for attrs, body in raw_cells:
+            while column in logical:
+                column += 1
+            text = _clean_text(
+                html.unescape(re.sub(r"<[^>]+>", " ", body)),
+                normalize_nfkc=False,
+            )
+            colspan_match = re.search(r"\bcolspan\s*=\s*[\"']?(\d+)", attrs, flags=re.IGNORECASE)
+            rowspan_match = re.search(r"\browspan\s*=\s*[\"']?(\d+)", attrs, flags=re.IGNORECASE)
+            colspan = max(1, int(colspan_match.group(1))) if colspan_match else 1
+            rowspan = max(1, int(rowspan_match.group(1))) if rowspan_match else 1
+            for offset in range(colspan):
+                target = column + offset
+                logical[target] = text
+                fresh_columns.add(target)
+                if rowspan > 1:
+                    next_carry[target] = (text, rowspan - 1)
+            column += colspan
+        carry = next_carry
+        if not logical:
+            continue
+        width = max(logical) + 1
+        rows.append(([logical.get(index, "") for index in range(width)], fresh_columns))
+    return rows
 
 
 def _has_any_norm(text: str, terms: tuple[str, ...]) -> bool:
@@ -748,7 +1061,9 @@ def _ncs_detail_absence_reason(markdown: str) -> str:
             "필요기술",
         ),
     )
-    has_ncs_classification_markers = _has_any_norm(key, ("ncs", "세분류", "분류체계", "능력단위"))
+    # 기관 자체 업무 목록을 ``능력단위``라고 부르는 문서도 있다. 그 단어
+    # 하나만으로는 공식 4단계 NCS 분류나 세분류가 제시된 것으로 보지 않는다.
+    has_ncs_classification_markers = _has_any_norm(key, ("ncs", "세분류", "분류체계"))
     if has_job_document_markers and not has_ncs_classification_markers:
         return "job_document_without_explicit_ncs_detail"
     return ""
@@ -786,6 +1101,28 @@ def _evidence(text: str, block: dict[str, Any] | None = None, line: int = 0) -> 
     return result
 
 
+def _inline_ncs_detail_value(value: Any) -> str | None:
+    """Extract a value from an explicit plain-text NCS detail label.
+
+    Table extraction already recognizes every ``ncs_detail`` alias, while the
+    plain-text fallback historically recognized only ``세분류:``.  Keep this
+    path exact and colon-delimited so prose containing the word ``세분류`` is
+    never promoted as a candidate.
+    """
+
+    text = str(value or "").strip()
+    text = re.sub(r"^#{1,6}\s*", "", text)
+    text = re.sub(r"^(?:[-*•·‧○◦▪□■]\s*)+", "", text)
+    text = re.sub(r"^(?:\d{1,2}[.)]\s*)", "", text)
+    match = re.match(r"^(.*?)\s*[:：]\s*(.*)$", text, flags=re.DOTALL)
+    if match and _section_for_label(match.group(1)) == "ncs_detail":
+        # Match the label through normalized keys, but return the original
+        # value surface so compatibility characters in an official name are
+        # not rewritten (for example ``CO₂`` -> ``CO2``).
+        return match.group(2).strip()
+    return None
+
+
 def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     candidates: list[str] = []
     pipe_detail_index: int | None = None
@@ -800,37 +1137,36 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
                 value_cells = cells[label_index + 1 :]
                 if len(value_cells) > 1:
                     for value in value_cells:
-                        candidates.extend(_split_items(value))
+                        if _is_detail_value_stop_label(value):
+                            break
+                        candidates.extend(_split_items(value, normalize_nfkc=False))
                 else:
                     value = " ".join(value_cells)
                     value = re.sub(r"(?<!^)\s+(?=\d+\s*\.\s*)", "\n", value)
-                    candidates.extend(_split_items(value))
+                    candidates.extend(_split_items(value, normalize_nfkc=False))
                 continue
             if pipe_detail_index is not None and not any(_section_for_label(cell) for cell in cells):
                 value = cells[pipe_detail_index] if pipe_detail_index < len(cells) else cells[-1]
                 if _looks_like_detail_candidate(value):
-                    candidates.extend(_split_items(value))
+                    candidates.extend(_split_items(value, normalize_nfkc=False))
                 continue
-        if "세분류" not in line:
-            continue
-        match = re.search(r"세분류\s*[:：]\s*(.+)$", line)
-        if match:
-            candidates.extend(_split_items(match.group(1)))
+        inline_value = _inline_ncs_detail_value(line)
+        if inline_value is not None:
+            candidates.extend(_split_items(inline_value, normalize_nfkc=False))
     # Kordoc may retain an HTML table in markdown when colspan/rowspan is
     # meaningful. Parse the label/value rows as a second, lossless path.
     for raw_table in re.findall(r"<table[^>]*>(.*?)</table>", markdown, flags=re.IGNORECASE | re.DOTALL):
         detail_index: int | None = None
         header_sections: dict[int, str] = {}
-        for raw_row in re.findall(r"<tr[^>]*>(.*?)</tr>", raw_table, flags=re.IGNORECASE | re.DOTALL):
-            cells = [
-                _clean_text(html.unescape(re.sub(r"<[^>]+>", " ", cell)))
-                for cell in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", raw_row, flags=re.IGNORECASE | re.DOTALL)
-            ]
+        classification_context = False
+        for cells, fresh_columns in _html_table_grid(raw_table):
             if not any(cells):
                 continue
+            classification_context = classification_context or _row_contains_classification_marker(cells)
             if _row_declares_no_ncs_mapping(cells):
                 continue
             row_sections: dict[int, str] = {}
+            combined_hierarchy_indexes: list[int] = []
             for idx, cell in enumerate(cells):
                 section = _section_for_label(cell)
                 if not section:
@@ -838,27 +1174,59 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
                 target_idx = idx
                 key = _norm(cell)
                 if section == "ncs_detail" and "소분류" in key and "세분류" in key:
-                    target_idx = idx + 1
+                    # A combined hierarchy header is often one colspan cell
+                    # containing ``대분류 중분류 소분류 세분류``.  The detail
+                    # coordinate is the final logical column of that span.
+                    combined_hierarchy_indexes.append(idx)
+                    continue
                 row_sections[target_idx] = section
+            if combined_hierarchy_indexes:
+                row_sections[max(combined_hierarchy_indexes)] = "ncs_detail"
             if row_sections:
                 header_sections = row_sections
             label_index = next((i for i, cell in enumerate(cells) if _section_for_label(cell) == "ncs_detail"), -1)
+            if label_index < 0 and classification_context:
+                label_index = next((i for i, cell in enumerate(cells) if _is_abbreviated_detail_label(cell)), -1)
+                if label_index >= 0:
+                    row_sections[label_index] = "ncs_detail"
+                    header_sections = row_sections
             if label_index >= 0:
                 detail_index = next((idx for idx, section in row_sections.items() if section == "ncs_detail"), label_index)
-                value_cells = [cell for cell in cells[label_index + 1 :] if cell]
-                if len(value_cells) > 1:
-                    for value in value_cells:
-                        candidates.extend(_split_items(value))
-                else:
-                    value = " ".join(value_cells)
-                    value = re.sub(r"(?<!^)\s+(?=\d+\s*\.\s*)", "\n", value)
-                    candidates.extend(_split_items(value))
+                label_key = _norm(cells[label_index])
+                is_hierarchy_header = "소분류" in label_key and "세분류" in label_key
+                if not is_hierarchy_header:
+                    # Only a physically new cell can be the value for a fresh
+                    # ``세분류`` label.  Some PDF converters collapse all four
+                    # hierarchy levels into one value cell with ``rowspan=4``.
+                    # On the final label row that carried cell is not a real
+                    # detail value; accepting it promotes 대/중/소분류 text and
+                    # layout fragments as false details.
+                    value_cells = [
+                        cells[index]
+                        for index in sorted(fresh_columns)
+                        if index > label_index
+                        and index < len(cells)
+                        and cells[index]
+                        and _norm(cells[index]) != _norm(cells[label_index])
+                    ]
+                    if len(value_cells) > 1:
+                        for value in value_cells:
+                            if _is_detail_value_stop_label(value):
+                                break
+                            candidates.extend(_split_items(value, normalize_nfkc=False))
+                    else:
+                        value = " ".join(value_cells)
+                        value = re.sub(r"(?<!^)\s+(?=\d+\s*\.\s*)", "\n", value)
+                        candidates.extend(_split_items(value, normalize_nfkc=False))
                 continue
             if detail_index is None:
                 continue
             if any(_section_for_label(cell) for cell in cells):
                 break
-            if _is_non_ncs_table_label(cells[0]) and not _row_contains_classification_marker(cells):
+            fresh_cells = [cells[index] for index in sorted(fresh_columns) if index < len(cells)]
+            if any(_is_non_ncs_table_label(cell) for cell in fresh_cells) and not _row_contains_classification_marker(
+                fresh_cells
+            ):
                 break
             detail_value_indexes = [idx for idx, section in header_sections.items() if section == "ncs_detail"]
             if detail_value_indexes:
@@ -868,11 +1236,11 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
                     cell_idx = idx - shift if idx >= len(cells) else idx
                     value = cells[cell_idx] if 0 <= cell_idx < len(cells) else ""
                     if _looks_like_detail_candidate(value):
-                        candidates.extend(_split_items(value))
+                        candidates.extend(_split_items(value, normalize_nfkc=False))
                 continue
             value = cells[detail_index] if detail_index < len(cells) else cells[-1]
             if _looks_like_detail_candidate(value):
-                candidates.extend(_split_items(value))
+                candidates.extend(_split_items(value, normalize_nfkc=False))
     seen: set[str] = set()
     clean_candidates = []
     for item in candidates:
@@ -1087,10 +1455,14 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     markdown = str(parsed.get("markdown") or "")
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in _SECTION_ALIASES}
     current: str | None = None
-    diagnostic_lines: list[str] = [markdown] if markdown else []
+    # The filename is useful evidence when a sparse/partially parsed document
+    # still declares itself to be a 직무기술서. It must never create an NCS
+    # candidate, but it lets the review UI distinguish "no explicit detail"
+    # from an unclassified empty state.
+    diagnostic_lines: list[str] = [value for value in (filename, markdown) if value]
 
     def add(section: str, text: str, block: dict[str, Any] | None = None, line: int = 0) -> None:
-        for item in _split_items(text):
+        for item in _split_items(text, normalize_nfkc=section != "ncs_detail"):
             if not item:
                 continue
             if any(_norm(existing.get("text")) == _norm(item) for existing in sections[section]):
@@ -1174,16 +1546,28 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             table = block.get("table") if isinstance(block.get("table"), dict) else block
             rows = table.get("cells") if isinstance(table.get("cells"), list) else table.get("rows") or []
             if isinstance(rows, list):
+                classification_context = False
                 for row in rows:
                     row_cells = row if isinstance(row, list) else row.get("cells", []) if isinstance(row, dict) else []
-                    values = [_clean_text(_block_text(cell)) for cell in row_cells]
+                    values = [
+                        _clean_text(_block_text(cell), normalize_nfkc=False)
+                        for cell in row_cells
+                    ]
                     if any(values):
                         diagnostic_lines.append("| " + " | ".join(values) + " |")
+                    classification_context = classification_context or _row_contains_classification_marker(values)
                     if _row_declares_no_ncs_mapping(values):
                         continue
                     label_index = next((i for i, cell in enumerate(values) if _section_for_label(cell)), -1)
+                    abbreviated_detail = False
+                    if label_index < 0 and classification_context:
+                        label_index = next(
+                            (i for i, cell in enumerate(values) if _is_abbreviated_detail_label(cell)),
+                            -1,
+                        )
+                        abbreviated_detail = label_index >= 0
                     if label_index >= 0:
-                        section = _section_for_label(values[label_index])
+                        section = "ncs_detail" if abbreviated_detail else _section_for_label(values[label_index])
                         if section:
                             if section == "ncs_detail":
                                 # Preserve Kordoc's table-cell boundary. Joining
@@ -1191,6 +1575,8 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                                 # onto the previous label and splits multiline
                                 # parenthesized labels into false candidates.
                                 for value in values[label_index + 1 :]:
+                                    if _is_detail_value_stop_label(value):
+                                        break
                                     add(section, re.sub(r"\s+", " ", value), block=block)
                             else:
                                 add(section, " ".join(values[label_index + 1 :]), block=block)

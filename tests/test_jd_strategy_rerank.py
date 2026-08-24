@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.services import jd_strategy
 
 
@@ -139,7 +141,7 @@ def test_rerank_ncs_matches_fallback_on_invalid_ai(monkeypatch):
     assert all(row.get("rerank_method") == "keyword" for row in ranked)
 
 
-def test_ncs_code_template_fallback_rotates_question_methods(monkeypatch):
+def test_ncs_code_cannot_enable_template_fallback_by_environment(monkeypatch):
     monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")
     monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
     monkeypatch.setattr(jd_strategy, "_generate_questions_with_openai_from_ncs", lambda **kwargs: [])
@@ -160,19 +162,11 @@ def test_ncs_code_template_fallback_rotates_question_methods(monkeypatch):
         include_followups=True,
     )
 
-    question_types = [row["question_type"] for row in result["main_questions"]]
-    followup_sets = {tuple(row["follow_ups"]) for row in result["main_questions"]}
-
-    assert result["template_fallback_used"] is True
-    assert question_types[:5] == ["경험면접", "상황면접", "직무지식면접", "인바스켓면접", "발표면접"]
-    assert len(followup_sets) == 5
-    assert all(row["question_focus"] for row in result["main_questions"])
-    assert all(row["question_intent"] for row in result["main_questions"])
-    assert all(row["question_repeat_signature"] for row in result["main_questions"])
-    assert all(row["question_repeat_duplicate"] is False for row in result["main_questions"])
+    assert result["template_fallback_used"] is False
+    assert result["main_questions"] == []
 
 
-def test_sclass_template_topup_keeps_ksa_with_its_own_unit(monkeypatch):
+def test_sclass_does_not_top_up_empty_ai_output_with_templates(monkeypatch):
     units = [
         {"ncsClCd": "A", "compeUnitName": "A 능력단위", "ncsSclasCdnm": "테스트 세분류"},
         {"ncsClCd": "B", "compeUnitName": "B 능력단위", "ncsSclasCdnm": "테스트 세분류"},
@@ -213,16 +207,11 @@ def test_sclass_template_topup_keeps_ksa_with_its_own_unit(monkeypatch):
         include_followups=False,
     )
 
-    assert len(result["main_questions"]) == 5
-    for question in result["main_questions"]:
-        code = question["ncsClCd"]
-        assert question["question_focus"] in factors[code]
-        assert question["question_focus_source"] == "official_ksa"
-        assert question["ksa_refs"]
-        assert all(ref in factors[code] for ref in question["ksa_refs"])
+    assert result["main_questions"] == []
+    assert result["template_fallback_used"] is False
 
 
-def test_ncs_code_template_fallback_survives_missing_ksa_mcp(monkeypatch):
+def test_ncs_code_returns_no_questions_when_ksa_mcp_is_missing(monkeypatch):
     monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")
     monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
     monkeypatch.delenv("NCS_MCP_URL", raising=False)
@@ -240,12 +229,8 @@ def test_ncs_code_template_fallback_survives_missing_ksa_mcp(monkeypatch):
         include_followups=True,
     )
 
-    assert result["template_fallback_used"] is True
-    assert len(result["main_questions"]) == 3
-    assert all(row["question_focus"] for row in result["main_questions"])
-    assert all(row["question_focus_source"] == "synthetic_template" for row in result["main_questions"])
-    assert all(row["ksa_refs"] == [] for row in result["main_questions"])
-    assert all(row["question_repeat_signature"] for row in result["main_questions"])
+    assert result["template_fallback_used"] is False
+    assert result["main_questions"] == []
 
 
 def test_sclass_result_is_unavailable_when_any_unit_lacks_official_ksa(monkeypatch):
@@ -286,9 +271,8 @@ def test_sclass_result_is_unavailable_when_any_unit_lacks_official_ksa(monkeypat
         include_followups=False,
     )
 
-    assert [row["ncsClCd"] for row in result["main_questions"]] == ["A", "B"]
-    assert result["main_questions"][0]["question_focus_source"] == "official_ksa"
-    assert result["main_questions"][1]["question_focus_source"] == "synthetic_template"
+    assert result["main_questions"] == []
+    assert result["template_fallback_used"] is False
     assert result["ncs_ksa_available"] is False
 
 
@@ -344,6 +328,52 @@ def test_ncs_code_main_questions_attach_repeat_metadata(monkeypatch):
     assert questions[0]["question_repeat_signature"] == questions[1]["question_repeat_signature"]
     assert questions[0]["question_repeat_signature"].startswith("experience_behavior|경험면접|focus:")
     assert [q["question_repeat_duplicate"] for q in questions] == [False, True]
+
+
+@pytest.mark.parametrize("follow_up_count", [1, 4])
+def test_ncs_code_preserves_malformed_model_followups_without_server_copy(
+    monkeypatch,
+    follow_up_count,
+):
+    focus = "official model evidence"
+    model_follow_ups = [
+        f"Provider-authored follow-up {index}."
+        for index in range(1, follow_up_count + 1)
+    ]
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.setattr(
+        jd_strategy,
+        "fetch_ncs_ksa_by_units",
+        lambda **kwargs: [{"ncsClCd": "U1", "factorName": focus}],
+    )
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **kwargs: [
+            {
+                "type": "경험면접",
+                "ncsClCd": "U1",
+                "question_focus": focus,
+                "ksa_refs": [focus],
+                "question": "Describe one relevant decision and its observed result.",
+                "follow_ups": model_follow_ups,
+                "question_source": "openai_api",
+            }
+        ],
+    )
+
+    result = jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="U1",
+        competency_name="test unit",
+        target_count=1,
+        include_followups=True,
+    )
+
+    assert result["main_questions"][0]["follow_ups"] == model_follow_ups
+    assert [row["follow_up"] for row in result["follow_up_questions"]] == model_follow_ups
+    assert "당시 상황과 본인 역할" not in str(result)
+    assert "가장 어려웠던 지점" not in str(result)
+    assert "결과와 배운 점" not in str(result)
 
 
 def test_personalized_questions_preserve_generation_metadata(monkeypatch):

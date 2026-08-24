@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.0",
+  "source": {
+    "title": "2020년 NCS기반 능력중심 채용모델 면접관 기본·심화",
+    "publication_year": 2020,
+    "sha256": "1E896FFB9BD0B6C5D7E1B32F79D0F4CFD834E6CB4D7350CBF0960CE65BB72004",
+    "page_count": 44,
+    "parsed_with": "kordoc 4.9.1",
+    "parse_mode": "ocr=false",
+    "parse_summary": {
+      "markdown_chars": 74157,
+      "block_count": 196,
+      "outline_count": 34,
+      "warning_count": 2,
+      "needs_ocr": false
+    },
+    "covered_methods": [
+      "경험면접",
+      "상황면접",
+      "발표면접",
+      "토론면접"
+    ]
+  },
+  "usage": {
+    "mode": "authoring_advice_only",
+    "hard_gate": false,
+    "public_response_field": false,
+    "notes": "Kordoc 구조화 결과를 사람이 검토해 짧게 재서술한 작성 참고자료다. 원문을 런타임에 다시 파싱하거나 통과·탈락 기준으로 사용하지 않는다."
+  },
+  "general_guidance": [
+    "공식 NCS KSA와 실제 담당업무에 연결된 한 가지 평가 의도가 분명한 질문을 작성한다.",
+    "주질문은 모든 지원자에게 비교 가능한 공통 출발점을 주고, 꼬리질문은 방금 나온 답변의 행동 근거를 자연스럽게 더 확인한다.",
+    "한 번에 여러 질문을 겹치거나 정답을 유도하지 말고, 지원자가 자신의 판단과 행동을 설명할 수 있는 개방형 문장으로 묻는다.",
+    "평가포인트는 인상이나 성격이 아니라 답변에서 확인 가능한 판단 근거·행동·결과를 기록하도록 작성한다."
+  ],
+  "methods": {
+    "경험면접": {
+      "source_scope": "pdf",
+      "guidance": "목표 KSA가 필요했던 실제 과거 사례를 묻고, 지원자 본인의 역할·판단·행동과 결과를 답변에서 확인한다.",
+      "probe_guidance": "STAR는 면접관의 탐색 틀로만 사용한다. 주질문과 답변 연동 꼬리질문 전체에서 상황·과제 또는 역할·행동·결과가 자연스럽게 드러나면 충분하다."
+    },
+    "상황면접": {
+      "source_scope": "pdf",
+      "guidance": "목표 KSA가 필요한 현실적인 직무 상황을 제시하고, 지원자가 상황을 어떻게 이해하며 어떤 기준과 순서로 대응할지 묻는다.",
+      "probe_guidance": "정해진 모범답안을 암시하지 말고, 답변에 나타난 판단 근거·행동 의도·예상 위험을 이어서 확인한다."
+    },
+    "발표면접": {
+      "source_scope": "pdf",
+      "guidance": "직무 관련 자료나 쟁점을 해석해 핵심 판단과 근거를 발표하게 하고, 후속 질문으로 분석 과정과 선택 이유를 확인한다.",
+      "probe_guidance": "자료에 없는 수치나 과도한 산출물을 만들어 내게 하지 말고, 목표 KSA가 드러나는 발표 과제의 범위를 자유롭게 정한다."
+    },
+    "토론면접": {
+      "source_scope": "pdf",
+      "guidance": "공통 직무 과제에 대해 근거를 제시하고 다른 의견과 상호작용하는 과정을 통해 목표 KSA를 관찰한다.",
+      "probe_guidance": "특정 결론이나 합의를 강제하지 말고, 사실 검토·경청·입장 조정·의사결정 과정이 드러나게 한다."
+    },
+    "인바스켓면접": {
+      "source_scope": "ncscope_extension",
+      "guidance": "동시에 주어진 여러 직무 현안을 역할과 권한 안에서 어떻게 분류하고 우선 처리할지 묻는다.",
+      "probe_guidance": "답변에 나온 우선순위 근거와 보고·위임·직접 처리 판단을 이어서 확인한다."
+    },
+    "직무지식면접": {
+      "source_scope": "ncscope_extension",
+      "guidance": "공식 KSA의 지식을 구체적인 직무 문제에 어떻게 적용하는지, 그 근거와 예외·확인 방법을 묻는다.",
+      "probe_guidance": "지식 명칭을 암기식으로 되묻지 말고 실제 판단과 적용 과정이 드러나게 한다."
+    },
+    "창의적 문제해결력면접": {
+      "source_scope": "ncscope_extension",
+      "guidance": "직무 문제를 새롭게 정의하고 여러 해결 가능성을 탐색한 뒤 실행 가능성을 판단하도록 묻는다.",
+      "probe_guidance": "아이디어 수를 기계적으로 강제하지 말고 답변에 나온 가정·검증 방법·선택 근거를 이어서 확인한다."
+    }
+  }
+}

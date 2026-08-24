@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NCScope v1.4.4</title>
+  <title>NCScope v1.4.5</title>
   <style>
     :root {
       --bg:#f3f7fb;
@@ -227,10 +227,10 @@
         <div>
           <h1>NCScope</h1>
           <p>공공기관 채용공고문과 해당 NCS 기반 직무기술서를 함께 탑재해, 공고 맥락과 KSA 근거를 잇는 구조화면접 초안을 생성합니다.</p>
-          <div class="build-tag">Original interface · Kordoc parsing · Human Review · Local NCS DB evidence</div>
+          <div class="build-tag">Original interface · Local document parsing · Human Review · NCS MCP evidence</div>
         </div>
         <div class="hero-badges">
-          <span class="badge">v1.4.4</span>
+          <span class="badge">v1.4.5</span>
           <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
           <span class="badge">KSA 근거 추적</span>
@@ -267,7 +267,7 @@
                 <span id="noticeUploadState" class="document-state" role="status">선택 필요</span>
               </label>
               <p id="noticeFileHelp" class="document-purpose">담당업무·지원자격·우대사항·면접 평가항목을 질문 맥락에 반영합니다.</p>
-              <input id="noticeFile" type="file" accept=".pdf,.docx,.txt,.zip" required aria-describedby="noticeFileHelp uploadRequirementsNote" />
+              <input id="noticeFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.txt,.zip" required aria-describedby="noticeFileHelp uploadRequirementsNote" />
             </div>
             <div class="required-document">
               <label for="jdFile">
@@ -275,24 +275,24 @@
                 <span id="jdUploadState" class="document-state" role="status">선택 필요</span>
               </label>
               <p id="jdFileHelp" class="document-purpose">NCS 세분류와 KSA 근거를 확인해 구조화면접 질문의 평가 기준을 만듭니다.</p>
-              <input id="jdFile" type="file" accept=".pdf,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt" required aria-describedby="jdFileHelp uploadRequirementsNote" />
+              <input id="jdFile" type="file" accept=".pdf,.hwp,.hwpx,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt" required aria-describedby="jdFileHelp uploadRequirementsNote" />
             </div>
           </div>
-          <div id="uploadRequirementsNote" class="upload-requirements-note">공고문과 직무기술서는 서로 같은 채용 직무의 자료여야 합니다. 둘 중 하나라도 없으면 파일 업로드 방식의 질문 생성을 진행할 수 없습니다. HWP/HWPX는 PDF로 변환해 탑재하세요.</div>
+          <div id="uploadRequirementsNote" class="upload-requirements-note">공고문과 직무기술서는 서로 같은 채용 직무의 자료여야 합니다. 둘 중 하나라도 없으면 파일 업로드 방식의 질문 생성을 진행할 수 없습니다. PDF/HWP/HWPX/DOCX/TXT와 지원 문서를 담은 ZIP을 사용할 수 있습니다.</div>
         </section>
 
         <section id="generationProviderCard" class="provider-card" aria-labelledby="generationProviderName" aria-describedby="generationProviderMessage" aria-busy="true">
           <div class="provider-card-head">
             <div class="provider-card-title">
               <span>질문 생성 API</span>
-              <strong id="generationProviderName">OpenRouter · Ox Alpha</strong>
+              <strong id="generationProviderName">OpenAI API</strong>
             </div>
             <span id="generationProviderBadge" class="provider-status-pill" role="status" aria-live="polite">확인 중</span>
           </div>
-          <p id="generationProviderMessage" class="provider-message">Vercel 서버의 OpenRouter 키 연결 상태를 확인하고 있습니다.</p>
-          <div id="generationProviderModelNote" class="provider-model-note" role="status" aria-live="polite">OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구</div>
+          <p id="generationProviderMessage" class="provider-message">요청 단위 OpenAI API 키 사용 상태를 확인하고 있습니다.</p>
+          <div id="generationProviderModelNote" class="provider-model-note" role="status" aria-live="polite">OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성</div>
           <div class="provider-key-field">
-            <label id="generationApiKeyLabel" for="generationApiKey">개인 API 키 (선택)</label>
+            <label id="generationApiKeyLabel" for="generationApiKey">OpenAI API 키 (필수)</label>
             <div class="provider-key-row">
               <input
                 id="generationApiKey"
@@ -302,8 +302,8 @@
                 spellcheck="false"
                 data-lpignore="true"
                 data-1p-ignore="true"
-                placeholder="입력하지 않아도 됩니다 · 개인 키로 바꾸려면 입력"
-                aria-describedby="openRouterKeyHelp generationProviderKeyNote apiKeySecurityWarning generationProviderError"
+                placeholder="OpenAI sk-…"
+                aria-describedby="openAiKeyHelp generationProviderKeyNote apiKeySecurityWarning generationProviderError"
                 aria-errormessage="generationProviderError"
               />
               <button id="btnToggleApiKey" class="provider-key-action" type="button" aria-controls="generationApiKey" aria-pressed="false" aria-label="API 키 표시">표시</button>
@@ -311,11 +311,11 @@
               <button id="btnClearApiKey" class="provider-key-action" type="button" aria-controls="generationApiKey">지우기</button>
             </div>
           </div>
-          <div id="openRouterKeyHelp" class="provider-key-onboarding" role="note">
-            <span><strong>서버 키를 기본으로 사용합니다.</strong> 개인 키로 바꾸려는 경우에만 <code>sk-or-…</code> 형태의 키를 입력하세요.</span>
-            <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener noreferrer">OpenRouter 키 발급 ↗</a>
+          <div id="openAiKeyHelp" class="provider-key-onboarding" role="note">
+            <span><strong>사용자 키를 현재 생성 요청에만 사용합니다.</strong> <code>sk-…</code> 형태의 OpenAI API 키를 입력하세요.</span>
+            <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">OpenAI 키 관리 ↗</a>
           </div>
-          <div id="generationProviderKeyNote" class="provider-key-note">Vercel Production 서버 키가 연결되면 브라우저에 키를 입력하지 않아도 됩니다.</div>
+          <div id="generationProviderKeyNote" class="provider-key-note">키는 브라우저 저장소·쿠키·서버 데이터베이스에 저장하지 않습니다.</div>
           <div id="apiKeySecurityWarning" class="provider-security-warning" role="note">
             <strong>보안 경고</strong>
             키는 자동 감지한 공급자의 생성 요청에만 포함되어 이 서버를 거칩니다. HTTPS에서만 입력하세요. 브라우저 저장소·쿠키에는 저장하지 않으며, 공용 PC에서는 사용하지 마세요.
@@ -328,7 +328,7 @@
         <div class="workflow-menu" aria-label="검토 단계">
           <div id="flowApi" class="flow-step active">
             <strong>1. AI API 키</strong>
-            <span>사용자 OpenRouter 키 입력 대기</span>
+            <span>사용자 OpenAI 키 입력 대기</span>
           </div>
           <div id="flowJd" class="flow-step">
             <strong>2. NCS 직무기술서</strong>
@@ -346,7 +346,7 @@
 
         <div class="guardrail-box">
           <strong>운영 원칙</strong>
-          <span>Kordoc 문서 파싱 결과는 검토 후보로만 사용합니다. 직무기술서의 세분류는 사람이 확정한 값만 로컬 NCS DB 조회에 사용하고, 공고문은 부족한 담당업무·자격·우대·평가항목을 보완하는 용도입니다. 생성 결과는 공식 면접문항 확정안이 아니며, 블라인드 채용 기준과 기관 내부 기준에 따라 최종 검토해야 합니다.</span>
+          <span>문서 파싱 결과는 검토 후보로만 사용합니다. 직무기술서의 세분류는 공식 명칭과 형식상 정확히 같은 값 또는 사람이 확정한 값만 NCS MCP 조회에 사용하고, 공고문은 부족한 담당업무·자격·우대·평가항목을 보완하는 용도입니다.</span>
         </div>
 
         <div id="uploadBlock">
@@ -365,21 +365,21 @@
           </div>
           <div id="jdReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
-              <label style="margin:0;">Kordoc 자동 추출 검토</label>
+              <label style="margin:0;">문서 자동 추출 검토</label>
               <span id="jdReviewStatus" class="sub">파일을 분석합니다...</span>
             </div>
-            <p class="sub" style="margin:6px 0 10px;">자동 추출값을 확인한 뒤 확정해야 로컬 NCS DB 조회와 면접 질문 생성을 진행합니다.</p>
+            <p class="sub" style="margin:6px 0 10px;">자동 추출값을 확인한 뒤 확정해야 공식 NCS MCP 조회와 면접 질문 생성을 진행합니다.</p>
             <label for="reviewDuties">수행업무</label>
-            <textarea id="reviewDuties" rows="4" placeholder="Kordoc이 추출한 수행업무"></textarea>
+            <textarea id="reviewDuties" rows="4" placeholder="문서 파서가 추출한 수행업무"></textarea>
             <label for="reviewQualifications">지원자격</label>
-            <textarea id="reviewQualifications" rows="3" placeholder="Kordoc이 추출한 지원자격"></textarea>
+            <textarea id="reviewQualifications" rows="3" placeholder="문서 파서가 추출한 지원자격"></textarea>
             <label for="reviewPreferences">우대사항</label>
-            <textarea id="reviewPreferences" rows="2" placeholder="Kordoc이 추출한 우대사항"></textarea>
+            <textarea id="reviewPreferences" rows="2" placeholder="문서 파서가 추출한 우대사항"></textarea>
             <label for="reviewNcsDetail">확정할 세분류 1개</label>
             <select id="reviewNcsDetail" class="dropdown" aria-describedby="reviewNcsDetailHelp">
               <option value="">세분류 후보를 기다리는 중...</option>
             </select>
-            <div id="reviewNcsDetailHelp" class="sub" style="margin-top:4px;">Kordoc 후보 중 1개를 선택합니다. 후보가 없으면 재분석 또는 다른 파일 확인이 필요합니다.</div>
+            <div id="reviewNcsDetailHelp" class="sub" style="margin-top:4px;">자동 추출 후보 중 1개를 선택합니다. 후보가 없으면 재분석 또는 다른 파일 확인이 필요합니다.</div>
             <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
           </div>
 
@@ -423,12 +423,13 @@
             <select id="interviewMethodSelect" class="dropdown" aria-describedby="interviewMethodHelp">
               <option value="경험면접" selected>경험(행동)면접</option>
               <option value="상황면접">상황면접</option>
+              <option value="발표면접">발표면접</option>
               <option value="토론면접">토론면접</option>
               <option value="인바스켓면접">인바스켓면접</option>
               <option value="직무지식면접">직무지식면접</option>
               <option value="창의적 문제해결력면접">창의적 문제해결력면접</option>
             </select>
-            <div id="interviewMethodHelp" class="sub" style="margin-top:4px;">이번 실행에서 사용할 면접 형태 1개만 선택합니다.</div>
+            <div id="interviewMethodHelp" class="sub" style="margin-top:4px;">경험면접: 실제 과거 사례의 역할·판단·행동·결과를 묻습니다. STAR는 고정 문구가 아니라 답변 탐색 가이드로만 사용합니다.</div>
 
           </div>
 
@@ -656,6 +657,7 @@
     const defaultFollowCount = document.getElementById('defaultFollowCount');
     const questionPlanCapacity = document.getElementById('questionPlanCapacity');
     const interviewMethodSelect = document.getElementById('interviewMethodSelect');
+    const interviewMethodHelp = document.getElementById('interviewMethodHelp');
     const showAllGeneratedQuestions = document.getElementById('showAllGeneratedQuestions');
     const generatedQuestionsMaxItems = document.getElementById('generatedQuestionsMaxItems');
     const flowApi = document.getElementById('flowApi');
@@ -701,11 +703,21 @@
     const SUPPORTED_INTERVIEW_METHODS = Object.freeze([
       '경험면접',
       '상황면접',
+      '발표면접',
       '토론면접',
       '인바스켓면접',
       '직무지식면접',
       '창의적 문제해결력면접',
     ]);
+    const INTERVIEW_METHOD_AUTHORING_GUIDES = Object.freeze({
+      경험면접: '실제 과거 사례의 역할·판단·행동·결과를 묻습니다. STAR는 고정 문구가 아니라 답변 탐색 가이드로만 사용합니다.',
+      상황면접: '현실적인 직무 상황에서 지원자가 어떤 기준과 순서로 판단하고 행동할지 묻습니다.',
+      발표면접: '직무 관련 자료나 쟁점을 해석해 핵심 판단과 근거를 발표하고 후속 질문에 답하게 합니다.',
+      토론면접: '공통 직무 과제에 근거를 제시하고 다른 의견과 상호작용하는 과정을 관찰합니다.',
+      인바스켓면접: '동시에 주어진 여러 현안을 역할과 권한 안에서 분류하고 우선 처리하게 합니다.',
+      직무지식면접: '공식 KSA 지식을 구체적인 직무 문제에 적용하는 근거·예외·확인 방법을 묻습니다.',
+      '창의적 문제해결력면접': '직무 문제를 새롭게 정의하고 해결 가능성과 실행 가능성을 탐색하게 합니다.',
+    });
     const DEFAULT_GENERATION_MAX_MAIN_QUESTIONS = 5;
     const MAX_QUESTION_HISTORY_ITEMS = 50;
     const QUESTION_PAGE_SIZE = 5;
@@ -809,16 +821,8 @@
     let jdParsing = false;
     let noticeParsing = false;
 
-    const blockedUploadExtensions = new Set(['.hwp', '.hwpx']);
     function formatBinaryMiB(bytes) {
       return `${(Number(bytes || 0) / (1024 * 1024)).toFixed(1)}MiB`;
-    }
-
-    function isBlockedUploadFile(file) {
-      const name = String((file && file.name) || '').toLowerCase();
-      const dot = name.lastIndexOf('.');
-      if (dot === -1) return false;
-      return blockedUploadExtensions.has(name.slice(dot));
     }
 
     function uploadPayloadBoundaryState(nextField = '', nextFile = null) {
@@ -901,13 +905,6 @@
       }
     }
 
-    function setUploadFormatError(fileLabel) {
-      const msg = `${fileLabel}은(는) HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.`;
-      errorBox.style.display = 'block';
-      errorBox.textContent = `오류: ${msg}`;
-      raw.textContent = msg;
-    }
-
     function normSclassLabel(v) {
       return String(v || '').replace(/\s+/g, '').trim().toLowerCase();
     }
@@ -928,22 +925,16 @@
       openai_api: Object.freeze({
         label: 'OpenAI API · 요청 단위 키',
         shortLabel: 'OpenAI API',
-        modelNote: 'OpenAI · GPT-5.6 Sol · Max 추론',
-      }),
-      openrouter_api: Object.freeze({
-        label: 'OpenRouter · 요청 단위 키',
-        shortLabel: 'OpenRouter',
-        modelNote: 'OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구',
+        modelNote: 'OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성',
       }),
     });
     const AUTO_PROVIDER_CONFIG = Object.freeze({
-      label: 'OpenRouter · Ox Alpha',
-      shortLabel: 'OpenRouter',
-      modelNote: 'OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구',
+      label: 'OpenAI API · 요청 단위 키',
+      shortLabel: 'OpenAI API',
+      modelNote: 'OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성',
     });
     const GENERATION_PROVIDER_LABELS = {
       openai_api: GENERATION_PROVIDER_CONFIGS.openai_api.label,
-      openrouter_api: GENERATION_PROVIDER_CONFIGS.openrouter_api.label,
       model: 'OpenAI API 모델',
       codex_cli: 'Codex',
       claude_code: 'Claude Code',
@@ -955,7 +946,7 @@
 
     function detectedGenerationProvider(apiKey=currentGenerationApiKey()) {
       const key = String(apiKey || '').trim();
-      if (key.startsWith('sk-or-')) return 'openrouter_api';
+      if (key.startsWith('sk-or-')) return '';
       if (key.startsWith('sk-')) return 'openai_api';
       return '';
     }
@@ -972,26 +963,8 @@
       );
     }
 
-    function serverEnvApiStatusValid(status=generationProviderStatus, provider='openrouter_api') {
-      return Boolean(
-        status
-        && provider === 'openrouter_api'
-        && status.provider === provider
-        && status.status === 'configured'
-        && status.available === true
-        && status.authenticated === false
-        && status.credential_configured === true
-        && status.auth_mode === 'server_env_api_key'
-        && status.credential_managed_by === 'server_env'
-        && status.requires_request_api_key === false
-        && status.local_only === false
-      );
-    }
-
     function requestScopedApiStatusValid(status=generationProviderStatus, provider=detectedGenerationProvider()) {
-      const effectiveProvider = provider || (
-        status?.provider === 'openrouter_api' ? 'openrouter_api' : ''
-      );
+      const effectiveProvider = provider || 'openai_api';
       const requestScoped = Boolean(
         status
         && Boolean(effectiveProvider)
@@ -1005,7 +978,7 @@
         && status.requires_request_api_key === true
         && status.local_only === false
       );
-      return requestScoped || serverEnvApiStatusValid(status, effectiveProvider);
+      return requestScoped;
     }
 
     function generationCredentialPayload(apiKey) {
@@ -1017,22 +990,17 @@
     }
 
     function updateGenerationProviderCopy() {
-      const serverConfigured = serverEnvApiStatusValid();
-      const provider = detectedGenerationProvider() || (serverConfigured ? 'openrouter_api' : '');
+      const provider = detectedGenerationProvider() || 'openai_api';
       const config = generationProviderConfig(provider);
       generationProviderModelNote.textContent = config.modelNote;
-      generationApiKeyLabel.textContent = serverConfigured ? '개인 API 키 (선택)' : 'AI API 키';
-      generationApiKey.setAttribute('aria-label', serverConfigured ? '개인 API 키 (선택)' : 'AI API 키');
+      generationApiKeyLabel.textContent = 'OpenAI API 키 (필수)';
+      generationApiKey.setAttribute('aria-label', 'OpenAI API 키 (필수)');
       generationApiKey.placeholder = apiKeyTransportIsSecure()
-        ? (serverConfigured
-          ? '입력하지 않아도 됩니다 · 개인 키로 바꾸려면 입력'
-          : 'OpenRouter sk-or-… (OpenAI sk-…도 지원)')
+        ? 'OpenAI sk-…'
         : 'HTTPS 연결이 필요합니다';
-      generationProviderKeyNote.textContent = serverConfigured
-        ? 'Vercel Production 서버 키로 연결되어 브라우저에 키를 입력하지 않아도 됩니다.'
-        : (provider
-          ? `${config.shortLabel}로 자동 감지했습니다. 입력 키는 브라우저에 저장되지 않습니다.`
-          : '개인 키를 입력한 경우에만 현재 요청에 사용되며 브라우저에 저장되지 않습니다.');
+      generationProviderKeyNote.textContent = provider
+        ? `${config.shortLabel} 키는 현재 요청에만 사용되며 브라우저와 서버에 저장되지 않습니다.`
+        : 'OpenAI 키는 현재 요청에만 사용되며 브라우저와 서버에 저장되지 않습니다.';
     }
 
     function applyApiKeyTransportGuard() {
@@ -1053,15 +1021,13 @@
     }
 
     function requestScopedApiReady(status=generationProviderStatus) {
-      if (serverEnvApiStatusValid(status)) return true;
       if (!apiKeyTransportIsSecure()) return false;
       return requestScopedApiStatusValid(status) && Boolean(currentGenerationApiKey());
     }
 
     function generationProviderBlockReason() {
       const apiKey = currentGenerationApiKey();
-      const serverConfigured = serverEnvApiStatusValid();
-      const detectedProvider = detectedGenerationProvider(apiKey) || (serverConfigured ? 'openrouter_api' : '');
+      const detectedProvider = detectedGenerationProvider(apiKey);
       const config = generationProviderConfig(detectedProvider);
       if (apiKey && !apiKeyTransportIsSecure()) {
         return {
@@ -1084,22 +1050,18 @@
           message: `${config.shortLabel} 상태를 새로고침한 뒤 다시 시도해 주세요.`,
         };
       }
-      if (!apiKey && !serverConfigured) {
-        const serverModeExpected = generationProviderStatus?.provider === 'openrouter_api'
-          && generationProviderStatus?.server_key_enabled === true;
+      if (!apiKey) {
         return {
-          kind: serverModeExpected ? 'status' : 'key',
-          button: serverModeExpected ? '서버 키 설정 확인' : 'API 키 입력 후 생성',
-          message: serverModeExpected
-            ? String(generationProviderStatus?.message || 'Vercel Production 서버 키 설정을 확인해 주세요.')
-            : 'OpenRouter API 키(sk-or-…)를 입력하거나 서버 키 연결을 확인해 주세요.',
+          kind: 'key',
+          button: 'API 키 입력 후 생성',
+          message: 'OpenAI API 키(sk-…)를 입력해 주세요.',
         };
       }
       if (!detectedProvider) {
         return {
           kind: 'key',
           button: 'API 키 형식 확인',
-          message: 'OpenAI sk-… 또는 OpenRouter sk-or-… 형식의 API 키인지 확인해 주세요.',
+          message: 'OpenAI sk-… 형식의 API 키인지 확인해 주세요.',
         };
       }
       if (generationProviderStatus.provider !== detectedProvider) {
@@ -1129,11 +1091,10 @@
     }
 
     function renderGenerationProviderStatus() {
-      const serverConfigured = serverEnvApiStatusValid();
-      const detectedProvider = detectedGenerationProvider() || (serverConfigured ? 'openrouter_api' : '');
+      const detectedProvider = detectedGenerationProvider();
       const provider = String(generationProviderStatus?.provider || '');
       const providerState = String(generationProviderStatus?.status || '');
-      const config = generationProviderConfig(detectedProvider || 'openrouter_api');
+      const config = generationProviderConfig(detectedProvider || 'openai_api');
 
       updateGenerationProviderCopy();
       generationProviderCard.setAttribute('aria-busy', (generationProviderLoading || questionGenerationInFlight) ? 'true' : 'false');
@@ -1146,7 +1107,7 @@
 
       if (generationProviderLoading) {
         generationProviderName.textContent = config.label;
-        generationProviderMessage.textContent = `${config.shortLabel} 서버 키 연결 상태를 확인하고 있습니다.`;
+        generationProviderMessage.textContent = `${config.shortLabel} 요청 방식을 확인하고 있습니다.`;
         setGenerationProviderBadge('확인 중');
         updateWorkflowMenu();
         syncGenerationButtonState();
@@ -1158,15 +1119,11 @@
           generationApiKey.setAttribute('aria-invalid', 'true');
         }
         generationProviderName.textContent = AUTO_PROVIDER_CONFIG.label;
-        const serverModeExpected = generationProviderStatus?.provider === 'openrouter_api'
-          && generationProviderStatus?.server_key_enabled === true;
         generationProviderMessage.textContent = currentGenerationApiKey()
           ? 'API 키 형식을 인식하지 못했습니다. 접두어를 확인해 주세요.'
-          : (serverModeExpected
-            ? String(generationProviderStatus?.message || 'Vercel Production 서버 키 설정을 확인해 주세요.')
-            : '서버 키가 없으면 개인 키 하나를 입력해 공급자와 모델을 자동 감지할 수 있습니다.');
+          : '사용자 OpenAI API 키를 입력하면 현재 생성 요청에만 사용합니다.';
         setGenerationProviderBadge(
-          currentGenerationApiKey() ? '형식 확인' : (serverModeExpected ? '서버 설정 필요' : '키 입력 필요'),
+          currentGenerationApiKey() ? '형식 확인' : '키 입력 필요',
           'warn'
         );
         updateWorkflowMenu();
@@ -1191,13 +1148,8 @@
       );
 
       if (provider === detectedProvider) {
-        if (serverConfigured && !currentGenerationApiKey()) {
-          generationProviderMessage.textContent = 'Vercel 환경변수의 OpenRouter API 키로 Ox Alpha를 사용합니다. 브라우저 키 입력 없이 생성할 수 있습니다.';
-          setGenerationProviderBadge('요청 준비됨', 'good');
-        } else if (requestScopedApiReady()) {
-          generationProviderMessage.textContent = detectedProvider === 'openrouter_api'
-            ? 'OpenRouter · Ox Alpha로 자동 감지했습니다. 서버 제한 시간 안에 생성하고, 실패하면 공식 KSA 서버 문항으로 안전하게 전환합니다.'
-            : 'OpenAI 키로 자동 감지했습니다. 생성 요청을 보낼 준비가 되었습니다.';
+        if (requestScopedApiReady()) {
+          generationProviderMessage.textContent = 'OpenAI 키로 자동 감지했습니다. 생성 요청을 보낼 준비가 되었습니다.';
           setGenerationProviderBadge('요청 준비됨', 'good');
         } else if (requestScopedApiStatusValid()) {
           generationProviderMessage.textContent = `${config.modelNote}으로 자동 감지했습니다. 생성 요청을 보낼 준비가 되었습니다.`;
@@ -1217,7 +1169,7 @@
     }
 
     async function loadGenerationProviderStatus() {
-      const requestedProvider = detectedGenerationProvider() || 'openrouter_api';
+      const requestedProvider = detectedGenerationProvider() || 'openai_api';
       const config = generationProviderConfig(requestedProvider);
       const requestId = ++generationProviderRequestId;
       generationProviderLoading = true;
@@ -1257,7 +1209,7 @@
 
     function scheduleGenerationProviderDetection(immediate=false) {
       const detectedProvider = detectedGenerationProvider();
-      const probeProvider = detectedProvider || 'openrouter_api';
+      const probeProvider = detectedProvider || 'openai_api';
       const providerChanged = probeProvider !== lastDetectedGenerationProvider;
       if (generationProviderDetectionTimer) clearTimeout(generationProviderDetectionTimer);
       generationProviderDetectionTimer = 0;
@@ -1454,6 +1406,13 @@
       return [SUPPORTED_INTERVIEW_METHODS.includes(selected) ? selected : SUPPORTED_INTERVIEW_METHODS[0]];
     }
 
+    function renderInterviewMethodGuide() {
+      if (!interviewMethodHelp) return;
+      const method = collectInterviewMethods()[0];
+      const guide = INTERVIEW_METHOD_AUTHORING_GUIDES[method] || '';
+      interviewMethodHelp.textContent = `${method}: ${guide} 공통 면접 기본원칙과 선택한 면접기법의 지침이 AI 작성에만 반영되며 통과·탈락 규칙으로 쓰이지 않습니다.`;
+    }
+
     function refreshRunButtonState() {
       const mode = inputMode.value || 'upload';
       const isUpload = mode !== 'manual';
@@ -1534,9 +1493,8 @@
     }
 
     function updateWorkflowMenu() {
-      const serverConfigured = serverEnvApiStatusValid();
-      const detectedProvider = detectedGenerationProvider() || (serverConfigured ? 'openrouter_api' : '');
-      const providerConfig = generationProviderConfig(detectedProvider || 'openrouter_api');
+      const detectedProvider = detectedGenerationProvider();
+      const providerConfig = generationProviderConfig(detectedProvider || 'openai_api');
       if (generationProviderLoading) {
         setFlowStep(flowApi, 'active', `${providerConfig.shortLabel} 요청 방식 확인 중`);
       } else if (generationProviderLoadError) {
@@ -1554,14 +1512,12 @@
           providerDetail
         );
       } else if (!detectedProvider) {
-        const serverModeExpected = generationProviderStatus?.provider === 'openrouter_api'
-          && generationProviderStatus?.server_key_enabled === true;
         setFlowStep(
           flowApi,
           'active',
           currentGenerationApiKey()
             ? 'API 키 형식 확인 필요'
-            : (serverModeExpected ? 'Vercel 서버 키 설정 필요' : 'AI API 키 입력 대기')
+            : 'OpenAI API 키 입력 대기'
         );
       } else {
         setFlowStep(flowApi, 'active', `${providerConfig.shortLabel} 설정 확인 필요`);
@@ -1791,22 +1747,22 @@
 
     async function parseJdForReview(file) {
       jdReviewBlock.style.display = 'block';
-      jdReviewStatus.textContent = 'Kordoc 분석 중...';
+      jdReviewStatus.textContent = '문서 분석 중...';
       reviewConfirmed = false;
       jdReviewPayload = null;
       jdParsing = true;
       btnConfirmReview.disabled = true;
-      btnConfirmReview.textContent = 'Kordoc 분석 중...';
+      btnConfirmReview.textContent = '문서 분석 중...';
       btnConfirmReview.style.background = '#64748b';
       btn.disabled = true;
       btn.textContent = '직무기술서 분석 중...';
-      runHint.textContent = 'Kordoc이 직무기술서에서 세분류 후보와 검토 텍스트를 추출하고 있습니다.';
+      runHint.textContent = '문서 파서가 직무기술서에서 세분류 후보와 검토 텍스트를 추출하고 있습니다.';
       setReviewedNcsDetailOptions([]);
       errorBox.style.display = 'none';
       raw.textContent = `직무기술서 파싱 시작: ${file.name}`;
       startProgress(PARSE_PROGRESS_STEPS, {
-        label: 'Kordoc 문서 파싱 진행 중',
-        note: 'PDF/DOCX 문서는 표와 OCR 처리 때문에 시간이 걸릴 수 있습니다.',
+        label: '문서 파싱 진행 중',
+        note: 'PDF/HWP/HWPX/DOCX 문서는 표와 OCR 처리 때문에 시간이 걸릴 수 있습니다.',
       });
       updateWorkflowMenu();
       try {
@@ -1848,12 +1804,12 @@
       } catch (e) {
         const msg = String(e.message || e);
         setReviewedNcsDetailOptions([]);
-        jdReviewStatus.textContent = '자동 파싱 실패 · 파일/확장자 또는 Kordoc 설치를 확인하세요';
+        jdReviewStatus.textContent = '자동 파싱 실패 · 파일 형식과 내용을 확인하세요';
         errorBox.style.display = 'block';
         errorBox.textContent = `직무기술서 파싱 오류: ${msg}`;
         raw.textContent = `직무기술서 파싱 오류: ${msg}`;
         stopProgress('파싱 실패', '오류 내용을 확인한 뒤 파일을 다시 선택하거나 텍스트를 직접 입력하세요.');
-        console.warn('Kordoc 검토 파싱 실패:', e);
+        console.warn('직무기술서 검토 파싱 실패:', e);
         updateWorkflowMenu();
       } finally {
         jdParsing = false;
@@ -2020,7 +1976,7 @@
 
     btnConfirmReview.addEventListener('click', async () => {
       if (jdParsing) {
-        jdReviewStatus.textContent = 'Kordoc 분석 중입니다. 완료될 때까지 기다려 주세요.';
+        jdReviewStatus.textContent = '문서 분석 중입니다. 완료될 때까지 기다려 주세요.';
         return;
       }
       if (!jdReviewPayload) {
@@ -2067,12 +2023,6 @@
       const file = e.target.files[0];
       refreshRequiredDocumentStatus();
       if (file) {
-        if (isBlockedUploadFile(file)) {
-          setUploadFormatError('직무기술서 파일');
-          e.target.value = '';
-          refreshRequiredDocumentStatus();
-          return;
-        }
         const uploadBoundary = uploadPayloadBoundaryState('jd', file);
         if (uploadBoundary) {
           showClientBoundaryError(uploadBoundary);
@@ -2100,13 +2050,6 @@
       const file = e.target.files[0];
       refreshRequiredDocumentStatus();
       if (file) {
-        if (isBlockedUploadFile(file)) {
-          setUploadFormatError('공고문 파일');
-          noticeReviewPayload = null;
-          e.target.value = '';
-          refreshRequiredDocumentStatus();
-          return;
-        }
         const uploadBoundary = uploadPayloadBoundaryState('notice', file);
         if (uploadBoundary) {
           showClientBoundaryError(uploadBoundary);
@@ -2166,6 +2109,7 @@
       updateWorkflowMenu();
     });
     interviewMethodSelect?.addEventListener('change', () => {
+      renderInterviewMethodGuide();
       refreshRunButtonState();
       updateWorkflowMenu();
     });
@@ -2359,7 +2303,7 @@
     // 사람 검토·확정 후 실제 면접 질문 생성 실행
     document.getElementById('btnConfirmSclass').addEventListener('click', () => {
       if (!reviewConfirmed) {
-        jdReviewStatus.textContent = '먼저 Kordoc 추출 결과를 검토·확정해 주세요.';
+        jdReviewStatus.textContent = '먼저 문서 추출 결과를 검토·확정해 주세요.';
         jdReviewBlock.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return;
       }
@@ -2373,43 +2317,26 @@
       { t: 6.0, label: '결과 정리', pct: 90, note: '화면 표시용으로 결과를 정리합니다.' },
     ];
 
-    const OPENROUTER_PROGRESS_STEPS = [
-      { t: 0, label: '입력값 검증', pct: 10, note: '텍스트, NCS 코드, 요청 키를 확인합니다.' },
-      { t: 4, label: 'NCS/KSA 근거 구성', pct: 32, note: '질문에 사용할 공식 NCS/KSA 근거를 구성합니다.' },
-      { t: 15, label: 'Ox Alpha 질문 후보 생성', pct: 62, note: '일반 문항은 medium, 고위험 면접·품질 재검사는 high 추론으로 처리하고 실패 시 공식 KSA 서버 문항으로 자동복구합니다.' },
-      { t: 45, label: '중복 제거·품질 선별', pct: 84, note: '의미 중복을 제거하고 품질·다양성 기준으로 최종 문항을 고릅니다.' },
-    ];
-
     const PARSE_PROGRESS_STEPS = [
       { t: 0, label: '파일 업로드 준비', pct: 10, note: '선택한 직무기술서를 서버로 전달합니다.' },
-      { t: 0.8, label: 'Kordoc 문서 파싱', pct: 34, note: '본문, 표, 메타데이터를 추출하고 있습니다.' },
+      { t: 0.8, label: '직무기술서 파싱', pct: 34, note: '본문, 표, 메타데이터를 추출하고 있습니다.' },
       { t: 2.4, label: '세분류 후보 추출', pct: 64, note: '소분류가 아니라 세분류 후보를 정리합니다.' },
       { t: 4.8, label: '검토 화면 구성', pct: 86, note: '사람이 확인할 수행업무와 세분류를 채웁니다.' },
     ];
 
     const NOTICE_PROGRESS_STEPS = [
       { t: 0, label: '공고문 업로드 준비', pct: 12, note: '선택한 공고문 파일을 서버로 전달합니다.' },
-      { t: 0.8, label: 'Kordoc 공고문 파싱', pct: 42, note: '담당업무와 평가항목 후보를 찾고 있습니다.' },
+      { t: 0.8, label: '공고문 파싱', pct: 42, note: '담당업무와 평가항목 후보를 찾고 있습니다.' },
       { t: 2.4, label: '핵심 텍스트 정리', pct: 78, note: '검토 화면에 넣을 텍스트를 정리합니다.' },
     ];
 
     function generationProgressProfile(provider) {
-      if (provider === 'openrouter_api') {
-        return {
-          steps: OPENROUTER_PROGRESS_STEPS,
-          slowState: {
-            afterSeconds: 20,
-            label: 'Ox Alpha 응답 대기 중',
-            note: '고추론·품질 재검사 후에도 제한 예산 안에 응답하거나 공식 KSA 서버 문항으로 자동 전환합니다. 중복 제출하지 마세요.',
-          },
-        };
-      }
       return {
         steps: PROGRESS_STEPS,
         slowState: {
           afterSeconds: 30,
           label: 'OpenAI 응답 대기 중',
-          note: 'Max 추론과 후보 선별을 진행 중입니다. 중복 제출하지 말고 잠시 기다려 주세요.',
+          note: '질문 생성과 독립 AI 품질검수를 진행 중입니다. 중복 제출하지 말고 잠시 기다려 주세요.',
         },
       };
     }
@@ -2632,21 +2559,7 @@
         return fus;
       };
       const sourceLabels = {
-        openai_api: 'OpenAI API 초안 유지',
-        openai_api_quality_repaired_fields: 'OpenAI API 초안 유지 · 평가요소 보강',
-        openrouter_api: 'OpenRouter · Ox Alpha 초안 유지',
-        openrouter_api_quality_repaired_fields: 'OpenRouter · Ox Alpha 초안 유지 · 평가요소 보강',
-        codex_cli: 'Codex 초안 유지',
-        codex_cli_quality_repaired_fields: 'Codex 초안 유지 · 평가요소 보강',
-        claude_code: 'Claude Code 초안 유지',
-        claude_code_quality_repaired_fields: 'Claude Code 초안 유지 · 평가요소 보강',
-        model: 'OpenAI API 초안 유지',
-        model_main_template_followups: 'OpenAI API 주질문 유지 · 꼬리질문 보강',
-        model_main_repaired_followups: 'OpenAI API 주질문 유지 · 꼬리질문 품질 보강',
-        model_main_quality_repaired_fields: 'OpenAI API 초안 유지 · 평가요소 보강',
-        template_fallback: 'NCS 기준 재구성',
-        quality_orchestrator_repair: '품질검사 후 재구성',
-        rule_fallback: 'NCS 규칙 기반 생성',
+        openai_api: 'OpenAI API 작성',
       };
       const qualityReasonLabels = {
         no_model_question: 'AI 초안 없음',
@@ -2704,8 +2617,8 @@
         const source = String(q.question_source || '').trim();
         if (source) {
           const sourceEl = document.createElement('span');
-          sourceEl.className = ['template_fallback', 'quality_orchestrator_repair'].includes(source) ? 'pill warn' : 'pill good';
-          sourceEl.textContent = sourceLabels[source] || '품질검사 완료';
+          sourceEl.className = 'pill good';
+          sourceEl.textContent = sourceLabels[source] || source;
           head.appendChild(sourceEl);
         }
         box.appendChild(head);
@@ -3040,8 +2953,39 @@
       updateQNav();
     }
 
+    function isReleasedAiQuestion(item) {
+      const row = item && typeof item === 'object' ? item : {};
+      const ready = typeof row.ready === 'boolean'
+        ? row.ready
+        : Boolean(String(row.question || '').trim());
+      return Boolean(
+        ready
+        && String(row.question || '').trim()
+        && String(row.question_source || '').trim() === 'openai_api'
+        && row.degraded !== true
+        && row.human_review_required !== true
+        && row.review_required !== true
+      );
+    }
+
+    function releasedPayloadForDisplay(value) {
+      if (Array.isArray(value)) {
+        return value
+          .filter((item) => !(
+            item && typeof item === 'object' && Object.prototype.hasOwnProperty.call(item, 'question')
+          ) || isReleasedAiQuestion(item))
+          .map(releasedPayloadForDisplay);
+      }
+      if (value && typeof value === 'object') {
+        return Object.fromEntries(
+          Object.entries(value).map(([key, item]) => [key, releasedPayloadForDisplay(item)])
+        );
+      }
+      return value;
+    }
+
     function buildGeneratedQuestionsText(items) {
-      const rows = Array.isArray(items) ? items : [];
+      const rows = Array.isArray(items) ? items.filter(isReleasedAiQuestion) : [];
       if (!rows.length) {
         return '';
       }
@@ -3070,9 +3014,6 @@
         }
         lines.push(`${no}. [${code}] ${type} / ${competency} (${status})`);
         lines.push(`   ${question || '-'}${source ? ` (${source})` : ''}`);
-        if (!ready) {
-          lines.push('   [주의] 해당 슬롯은 생성되지 않았으며 텍스트 뷰는 추론 기반으로 보강합니다.');
-        }
         if (followUps.length) {
           for (const fu of followUps) {
             lines.push(`   - 꼬리질문: ${String(fu || '').trim()}`);
@@ -3176,6 +3117,7 @@
       detail_grounded: '세분류 근거 연결 부족',
       field_realism_instruction_injection_artifact: '외부 문서의 지시문이 질문 표면에 남음',
       field_realism_label_like_metadata_exposure: '내부 라벨·메타데이터가 질문 표면에 노출됨',
+      field_realism_candidate_visible_ncs_label: 'NCS·KSA 내부 라벨이 지원자 질문에 노출됨',
       unknown_quality_issue: '기타 필수 품질 검사 실패',
     };
 
@@ -3248,33 +3190,14 @@
       return parts.join(' ').trim();
     }
 
-    function partialGenerationNotice(strategy, questions) {
-      const partial = strategy && typeof strategy === 'object' && strategy.partial_generation && typeof strategy.partial_generation === 'object'
-        ? strategy.partial_generation
-        : null;
-      if (!partial) return '';
-      const requested = Number(partial.requested_question_count || 0);
-      const returned = Number(partial.returned_question_count || (Array.isArray(questions) ? questions.length : 0));
-      const omitted = Number(partial.omitted_question_count || 0);
-      const omittedIndexes = formatQuestionIndexes(partial.omitted_indexes || []);
-      const parts = [];
-      if (requested > 0 || returned > 0 || omitted > 0) {
-        parts.push(`요청 ${requested || '-'}개 중 ${returned || 0}개를 반환했고 ${omitted || 0}개는 제외되었습니다.`);
-      }
-      if (omittedIndexes) {
-        parts.push(`제외 슬롯: ${omittedIndexes}.`);
-      }
-      parts.push('반환된 문항은 사용할 수 있지만, 누락된 슬롯을 포함해 사람 검토가 필요합니다.');
-      return parts.join(' ').trim();
-    }
-
-    function renderQualityReport(report, operationalNotice = '', qualityControl = null) {
+    function renderQualityReport(report, operationalNotice = '', qualityControl = null, aiReview = null) {
       if (!qualitySummary) return;
       qualitySummary.innerHTML = '';
       const summary = report && typeof report === 'object' && report.summary && typeof report.summary === 'object'
         ? report.summary
         : null;
       const notice = String(operationalNotice || '').trim();
+      const authoritativeAiPass = Boolean(aiReview && aiReview.status === 'passed');
       if (!summary && !notice) {
         qualitySummary.style.display = 'none';
         return;
@@ -3285,8 +3208,8 @@
         span.textContent = text;
         qualitySummary.appendChild(span);
       };
-      if (summary) {
-        add(report.passed ? '품질 게이트 통과' : '품질 검토 필요', report.passed ? 'good' : 'warn');
+      if (summary && !authoritativeAiPass) {
+        if (report.passed) add('서버 안전검사 통과', 'good');
         add(`Ready ${summary.ready_count || 0}/${summary.question_count || 0}`);
         add(`평균 ${summary.average_score ?? '-'}`);
         if (summary.needs_review_count) add(`검토 ${summary.needs_review_count}`, 'warn');
@@ -3302,10 +3225,13 @@
           add(`#${no} 검토: ${issues || '품질 기준 미충족'}`, 'warn');
         });
       }
+      if (aiReview && aiReview.status === 'passed') {
+        add('AI 품질검수 통과', 'good');
+        add(`AI 검수 ${Number(aiReview.reviewed_count || 0)}개`);
+      }
       if (qualityControl && typeof qualityControl === 'object') {
         add(qualityControl.evidence_recorded ? '운영 증거 기록됨' : '운영 증거 저장 실패', qualityControl.evidence_recorded ? 'good' : 'warn');
-        if (qualityControl.review_required) add('사람 검토 필요', 'warn');
-        if (qualityControl.escalation_required) add('고위험 검토 이관', 'warn');
+        if (authoritativeAiPass) add('최종 사람 검토 권장');
       }
       if (notice) {
         const noticeEl = document.createElement('div');
@@ -3321,13 +3247,20 @@
       errorBox.textContent = '';
 
       const s = data.strategy || {};
+      const aiQualityReview = s.ai_quality_review && typeof s.ai_quality_review === 'object'
+        ? s.ai_quality_review
+        : null;
+      const aiQualityPassed = Boolean(aiQualityReview && aiQualityReview.status === 'passed');
       const questionMode = String(data.generated_questions_mode || s.generated_questions_mode || '').trim().toLowerCase();
       questionListMode = questionMode || 'preview';
-      const qList = questionMode === 'all'
+      const candidateQList = questionMode === 'all'
         ? (Array.isArray(data.generated_questions_all) ? data.generated_questions_all : [])
         : questionMode === 'custom_limit'
           ? (Array.isArray(data.generated_questions) ? data.generated_questions : [])
           : (Array.isArray(data.generated_questions) ? data.generated_questions : (Array.isArray(data.generated_questions_all) ? data.generated_questions_all : []));
+      const qList = aiQualityPassed
+        ? candidateQList.filter(isReleasedAiQuestion)
+        : [];
       const nextQualityControl = s.quality_control && typeof s.quality_control === 'object'
         ? s.quality_control
         : null;
@@ -3338,18 +3271,7 @@
       const orchestration = s.question_quality_orchestration && typeof s.question_quality_orchestration === 'object'
         ? s.question_quality_orchestration
         : null;
-      const qualityReportPassed = Boolean(
-        s.question_quality_report
-        && s.question_quality_report.passed === true
-      );
-      const recoveredFallbackSucceeded = Boolean(
-        s.error
-        && qList.length
-        && qualityReportPassed
-        && orchestration
-        && orchestration.status === 'passed'
-      );
-      if (s.error && !recoveredFallbackSucceeded) {
+      if (s.error) {
         errorBox.style.display = 'block';
         errorBox.textContent = `오류: ${s.error}`;
       }
@@ -3359,30 +3281,9 @@
       const retryAudit = s.model_quality_retry && typeof s.model_quality_retry === 'object'
         ? s.model_quality_retry
         : null;
-      const partialHumanReviewRequired = s.question_release_status === 'partial_human_review_required';
-      const serverKsaFallbackUsed = s.provider_fallback_used === true
-        && s.generation_mode === 'server_ksa_fallback';
-      const humanReviewRequired = partialHumanReviewRequired
-        || s.question_release_status === 'human_review_required'
-        || (retryAudit && retryAudit.outcome === 'accepted_for_human_review');
-      let orchestrationNotice = '';
-      if (partialHumanReviewRequired) {
-        orchestrationNotice = partialGenerationNotice(s, qList);
-      } else if (serverKsaFallbackUsed) {
-        orchestrationNotice = '외부 AI 응답을 사용할 수 없어, 확정된 공식 NCS KSA 근거로 서버가 대체 초안을 만들었습니다. 최종 사용 전에 면접 담당자가 검토하세요.';
-      } else if (humanReviewRequired) {
-        orchestrationNotice = 'NCS/KSA 근거와 안전 검사는 통과했지만 일부 표현 품질 항목이 남아 사람 검토가 필요합니다.';
-      } else if (orchestration && orchestration.status === 'passed') {
-        orchestrationNotice = `생성→KSA 실측성 검사→이전 문항 중복 검사→보정→최종 재검사를 완료했습니다. 보정 ${Number(orchestration.repaired_count || 0)}건.`;
-      } else if (orchestration) {
-        const unresolved = Number(orchestration.unresolved_count || 0);
-        const reasons = [];
-        if (unresolved > 0) reasons.push(`미해결 문항 ${unresolved}건`);
-        if (operationalWarnings.includes('fallback_adjustment_degraded')) {
-          reasons.push('내부 후보 보정 단계 강등');
-        }
-        orchestrationNotice = `${reasons.join(', ') || '운영 품질 경고'}으로 사람 검토가 필요합니다.`;
-      }
+      const orchestrationNotice = aiQualityPassed
+        ? 'AI 작성 문항이 독립 AI의 현재 승인 기준을 통과했습니다. STAR와 면접기법 자료는 작성 가이드로만 사용했으며, 최종 사용 전 면접 담당자가 확인하세요.'
+        : '';
       const generationRequestNotice = retryAudit
         && Number.isFinite(Number(retryAudit.provider_generation_request_count))
         && Number.isFinite(Number(retryAudit.provider_generation_request_limit))
@@ -3392,31 +3293,28 @@
         data.operational_notice || s.operational_notice,
         orchestrationNotice,
         generationRequestNotice,
-        recoveredFallbackSucceeded
-          ? 'AI 생성에 실패했지만 공식 NCS KSA 기반 대체 초안이 품질 검사를 통과했습니다. 최종 사용 전에 질문을 검토하세요.'
-          : '',
       ].filter(Boolean);
 
       renderMeta(data);
-      renderQualityReport(s.question_quality_report, notices.join(' '), currentQualityControl);
+      renderQualityReport(
+        s.question_quality_report,
+        notices.join(' '),
+        aiQualityPassed ? currentQualityControl : null,
+        aiQualityReview
+      );
       renderPipelineDiag(data, qList);
-      const allQuestionsForTextExport = Array.isArray(data.generated_questions_all)
-        ? data.generated_questions_all
+      const allQuestionsForTextExport = aiQualityPassed && Array.isArray(data.generated_questions_all)
+        ? data.generated_questions_all.filter(isReleasedAiQuestion)
         : qList;
-      const generatedQuestionTextRows = Array.isArray(data.generated_question_text_rows)
-        ? data.generated_question_text_rows
+      const generatedQuestionTextRows = aiQualityPassed && Array.isArray(data.generated_question_text_rows)
+        ? data.generated_question_text_rows.filter(isReleasedAiQuestion)
         : [];
       const textExportRows = generatedQuestionTextRows.length
         ? generatedQuestionTextRows
         : allQuestionsForTextExport;
-      const renderedQuestions = qList.length ? qList : textExportRows;
-      const readyCount = Array.isArray(textExportRows)
-        ? textExportRows.filter((q) => {
-            const ready = typeof (q && q.ready) === 'boolean'
-              ? q.ready
-              : Boolean(String((q && q.question) || '').trim());
-            return ready;
-          }).length
+      const renderedQuestions = qList;
+      const readyCount = aiQualityPassed && Array.isArray(textExportRows)
+        ? textExportRows.length
         : 0;
       if (generatedQuestionsTextMeta) {
         const modeLabel = questionMode || 'preview';
@@ -3427,7 +3325,13 @@
       renderGeneratedQuestionsText(textExportRows);
       renderNcs(data.ncs_matches || []);
       renderKsa(data.ncs_ksa || []);
-      raw.textContent = JSON.stringify(data, null, 2);
+      raw.textContent = JSON.stringify(
+        aiQualityPassed
+          ? releasedPayloadForDisplay(data)
+          : { status: 'AI 품질검수 미통과', questions: [] },
+        null,
+        2
+      );
     }
 
     function populateNcsUnitSelect(items, selected=false) {
@@ -3482,10 +3386,10 @@
         if (!evalTextManual.value.trim()) {
           evalTextManual.value = (evalText.value || '').trim();
         }
-        selectedCount.textContent = `정확 매칭 없음 · 후보 ${suggestions.length}개 중 사람이 선택해야 합니다.`;
-        errorBox.textContent = `${partialText}정확한 NCS 세분류 매칭이 없습니다${termText}. 후보 NCS를 직접 확인·선택한 뒤 질문을 생성하세요.`;
+        selectedCount.textContent = `자동 확정 보류 · 후보 ${suggestions.length}개를 확인해 주세요.`;
+        errorBox.textContent = `${partialText}문서의 세분류 표기${termText}를 공식 NCS 세분류로 자동 확정하지 않았습니다. 후보 선택 화면으로 전환했으니 해당 능력단위를 확인해 주세요. 업로드 내용과 면접 설정은 그대로 유지됩니다.`;
       } else {
-        errorBox.textContent = `${partialText}정확한 NCS 세분류 매칭이 없습니다${termText}. 직접입력 모드에서 공식 NCS 코드를 검색·선택해야 합니다.`;
+        errorBox.textContent = `${partialText}문서의 세분류 표기${termText}를 공식 NCS 세분류로 자동 확정하지 않았습니다. 직접입력 모드에서 공식 세분류를 검색해 주세요. 업로드 내용과 면접 설정은 그대로 유지됩니다.`;
       }
       errorBox.style.display = 'block';
       errorBox.focus();
@@ -3506,24 +3410,15 @@
         'openai_api_content_restricted',
         'openai_api_request_rejected',
         'openai_api_upstream_unavailable',
-        'openrouter_api_generation_failed',
-        'openrouter_api_timeout',
-        'openrouter_api_unreachable',
-        'openrouter_api_invalid_output',
-        'openrouter_api_quality_rejected',
-        'openrouter_api_content_restricted',
-        'openrouter_api_request_rejected',
-        'openrouter_api_upstream_unavailable',
-        'openrouter_api_authentication_failed',
-        'openrouter_api_usage_limit_reached',
       ]);
       const providerName = generationProviderConfig(detectedGenerationProvider()).shortLabel;
-      const stageHint = modelFailureCodes.has(errorCode)
-        ? ` NCS 세분류 매칭과 KSA 조회는 완료되었으며, ${providerName} 질문 생성 단계에서 실패했습니다.`
-        : '';
+      const stageHint = errorCode === 'openai_api_quality_rejected'
+        ? ' NCS 세분류 매칭과 KSA 조회는 완료되었으며, 독립 AI 품질검수 또는 실패 문항 재생성 단계에서 통과하지 못했습니다.'
+        : modelFailureCodes.has(errorCode)
+          ? ` NCS 세분류 매칭과 KSA 조회는 완료되었으며, ${providerName} 질문 작성 또는 검수 요청 단계에서 실패했습니다.`
+          : '';
       const diagnosticsHint = [
         'openai_api_quality_rejected',
-        'openrouter_api_quality_rejected',
       ].includes(errorCode)
         ? qualityDiagnosticsNotice(payload.detail || {})
         : '';
@@ -3543,7 +3438,7 @@
       }
       populateNcsUnitSelect(data.items || [], false);
       if (data.source === 'ncs-mcp-suggest' && (data.items || []).length) {
-        selectedCount.textContent = `정확 매칭 없음 · 후보 ${(data.items || []).length}개 중 사람이 선택해야 합니다.`;
+        selectedCount.textContent = `자동 확정 보류 · 후보 ${(data.items || []).length}개를 확인해 주세요.`;
       }
     }
 
@@ -3581,8 +3476,7 @@
         syncGenerationButtonState();
         return;
       }
-      const requestGenerationProvider = detectedGenerationProvider()
-        || (serverEnvApiStatusValid() ? 'openrouter_api' : '');
+      const requestGenerationProvider = detectedGenerationProvider();
       const requestGenerationApiKey = currentGenerationApiKey();
       questionGenerationInFlight = true;
       try {
@@ -3603,15 +3497,9 @@
         if (mode === 'upload') {
           const file = jdFile.files && jdFile.files[0];
           if (!file) throw new Error('직무기술서 파일을 먼저 선택해 주세요.');
-          if (isBlockedUploadFile(file)) {
-            throw new Error('직무기술서 파일은 HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.');
-          }
           const nFile = noticeFile.files && noticeFile.files[0];
           if (!nFile) {
             throw new Error('공공기관 채용공고문 파일을 먼저 선택해 주세요. 공고문과 NCS 기반 직무기술서는 모두 필수입니다.');
-          }
-          if (isBlockedUploadFile(nFile)) {
-            throw new Error('공고문 파일은 HWP/HWPX 형식입니다. PDF로 변환 후 탑재해 주세요.');
           }
 
           const fd = new FormData();
@@ -3645,7 +3533,7 @@
           fd.append('question_plan_json', JSON.stringify({ items: questionPlanItems }));
           fd.append('interview_methods_json', JSON.stringify(interviewMethods));
           if (!reviewConfirmed || !jdReviewPayload) {
-            throw new Error('Kordoc 추출 결과를 검토·확정한 뒤 실행해 주세요.');
+            throw new Error('문서 추출 결과를 검토·확정한 뒤 실행해 주세요.');
           }
           fd.append('jd_review_json', JSON.stringify(jdReviewPayload));
           // 소분류 편집 결과 전달: 최종 목록 + 추가/삭제 delta

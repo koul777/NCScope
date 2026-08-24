@@ -179,7 +179,7 @@ def test_distinct_planning_skills_keep_distinct_observable_surfaces() -> None:
     assert len({schedule, budget, collection}) == 3
 
 
-def test_common_model_path_repairs_only_candidate_visible_ksa_copy() -> None:
+def test_common_model_path_preserves_ai_visible_text_and_attaches_evidence_metadata() -> None:
     row = _evidence_row()
     item = {
         "type": "토론면접",
@@ -214,20 +214,17 @@ def test_common_model_path_repairs_only_candidate_visible_ksa_copy() -> None:
             *repaired["evaluation_points"],
         ]
     )
-    assert FACTOR not in visible
-    assert TRUNCATED_FACTOR not in visible
-    assert PUBLIC_FOCUS in visible
+    assert visible == "\n".join(
+        [item["question"], *item["follow_ups"], *item["evaluation_points"]]
+    )
+    assert FACTOR in visible
     assert repaired["question_focus"] == FACTOR
     assert repaired["ksa_refs"] == [FACTOR]
     assert repaired["question_evidence_id"] == stable_ksa_evidence_id(row)
     assert repaired["provider_question_evidence_id"] == stable_ksa_evidence_id(row)
     assert repaired["question_evidence_assignment_valid"] is True
     assert repaired["question_evidence_assignment_reason"] == "exact_provider_evidence_id"
-    assert repaired["candidate_surface_repairs"] == [
-        "evaluation_points",
-        "follow_ups",
-        "question",
-    ]
+    assert "candidate_surface_repairs" not in repaired
 
 
 @pytest.mark.parametrize(
@@ -265,7 +262,7 @@ def test_common_model_path_does_not_launder_missing_or_forged_evidence_id(
         ],
     )
 
-    assert FACTOR not in repaired["question"]
+    assert repaired["question"] == item["question"]
     assert repaired["provider_question_evidence_id"] == provider_evidence_id
     assert repaired["question_evidence_id"] == provider_evidence_id
     assert repaired["question_task_frame"]["evidence_id"] == stable_ksa_evidence_id(row)

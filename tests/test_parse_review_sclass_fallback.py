@@ -3,6 +3,62 @@ from fastapi.testclient import TestClient
 import app.main as main
 
 
+def test_parse_review_canonicalizes_split_table_label_before_human_review(mocker):
+    mocker.patch(
+        "app.main._parse_upload_document",
+        return_value={"markdown": "NCS 세분류명: 프로젝트 관리", "blocks": []},
+    )
+    mocker.patch(
+        "app.main.structure_job_description",
+        return_value={
+            "document": {"markdown": "NCS 세분류명: 프로젝트 관리"},
+            "fields": {"ncs_detail_candidates": ["프로젝트 관리"]},
+        },
+    )
+    mocker.patch(
+        "app.main.lookup_ncs_codes_by_sclass",
+        return_value=[{"sclass_name": "프로젝트관리"}],
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("alio-jd.txt", b"job", "text/plain")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["fields"]["ncs_detail_candidates"] == ["프로젝트관리"]
+
+
+def test_parse_review_uses_real_kordoc_structure_for_alias_and_full_code(mocker):
+    """Exercise the public review boundary without replacing the JD structurer."""
+
+    mocker.patch(
+        "app.main._parse_upload_document",
+        return_value={
+            "markdown": "NCS 세분류명: (02010101) 프로젝트관리\n담당업무: 사업 일정 및 이해관계자 관리",
+            "blocks": [],
+        },
+    )
+    mocker.patch(
+        "app.main.lookup_ncs_codes_by_sclass",
+        return_value=[{"sclass_name": "프로젝트관리"}],
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("alio-coded-jd.txt", b"job", "text/plain")},
+        )
+
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    assert fields["ncs_detail_candidates"] == ["프로젝트관리"]
+    assert fields["ncs_detail_source"] == "explicit"
+    assert fields["ncs_detail_candidate_evidence"][0]["source"] == "kordoc"
+    assert "02010101" in fields["ncs_detail_candidate_evidence"][0]["snippet"]
+
+
 def test_parse_review_recovers_pdf_sclass_candidates_when_kordoc_is_empty(mocker):
     mocker.patch(
         "app.main._parse_upload_document",
@@ -139,3 +195,36 @@ def test_parse_review_does_not_promote_small_category_when_detail_table_has_no_m
     assert fields["ncs_detail_candidates"] == []
     assert fields["ncs_detail_source"] == "pdf_table_detail_empty"
     structural.assert_called_once()
+
+
+def test_parse_review_skips_pdf_recovery_when_document_declares_no_ncs_mapping(mocker):
+    mocker.patch(
+        "app.main._parse_upload_document",
+        return_value={"markdown": "NCS classification: not applicable", "blocks": []},
+    )
+    mocker.patch(
+        "app.main.structure_job_description",
+        return_value={
+            "document": {"markdown": "NCS classification: not applicable"},
+            "fields": {
+                "ncs_detail_candidates": [],
+                "ncs_detail_absence_state": "declared_no_mapping",
+                "ncs_detail_absence_declared_no_mapping": True,
+                "ncs_detail_absence_evidence": "not applicable",
+            },
+        },
+    )
+    structural = mocker.patch("app.main.extract_sclass_from_pdf_bytes")
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("declared-none.pdf", b"%PDF-test", "application/pdf")},
+        )
+
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    assert fields["ncs_detail_candidates"] == []
+    assert fields["ncs_detail_absence_state"] == "declared_no_mapping"
+    assert fields["ncs_detail_absence_declared_no_mapping"] is True
+    structural.assert_not_called()

@@ -99,7 +99,7 @@ def test_primary_strategy_uses_max_reasoning_and_three_choice_candidate_pool(
     assert result["question_candidate_selection"]["candidate_pool_count"] == 6
 
 
-def test_auxiliary_generation_builds_three_x_pool_before_selection(monkeypatch) -> None:
+def test_auxiliary_generation_uses_one_draft_before_independent_review(monkeypatch) -> None:
     calls: list[dict] = []
     monkeypatch.setenv("OPENAI_QUESTION_MODEL", "gpt-5.6-sol")
     monkeypatch.setenv("OPENAI_QUESTION_CANDIDATE_MULTIPLIER", "3")
@@ -139,12 +139,13 @@ def test_auxiliary_generation_builds_three_x_pool_before_selection(monkeypatch) 
         api_key_override="request-key",
     )
 
-    assert len(calls) == 3
+    assert len(calls) == 1
     assert all(payload["reasoning_effort"] == "max" for payload in calls)
     assert all("temperature" not in payload for payload in calls)
-    assert "직무/능력단위, 상황, 난이도, KSA 유형, 질문 유형" in calls[0]["messages"][1]["content"]
-    assert len(selected) == 2
-    assert all(row["candidate_pool_count"] == 6 for row in selected)
+    assert "interview_questions를 정확히 2개" in calls[0]["messages"][1]["content"]
+    assert len(selected) == 1
+    assert all(row["candidate_pool_count"] == 2 for row in selected)
+    assert all(row["provider_candidate_variant_count"] == 1 for row in selected)
     assert all(row["candidate_quality_score"] > 0 for row in selected)
     assert all(row["candidate_selection_score"] > 0 for row in selected)
     assert all(row["candidate_diversity_axes"] for row in selected)
@@ -196,7 +197,13 @@ def test_planned_sequence_assigns_all_five_diversity_dimensions() -> None:
 
     assert len(sequence) == 6
     assert {row["required_job_context"] for row in sequence} == {"Budget review"}
-    assert len({row["required_scenario_frame"] for row in sequence}) >= 3
-    assert len({row["required_difficulty"] for row in sequence}) == 3
-    assert {row["required_ksa_type"] for row in sequence} == {"지식", "기술", "태도"}
+    assert all("required_scenario_frame" not in row for row in sequence)
+    assert all("required_difficulty" not in row for row in sequence)
+    assert all("required_task_statement" not in row for row in sequence)
+    assert all("required_observable_behavior" not in row for row in sequence)
+    assert {row["required_ksa_type"] for row in sequence} == {
+        "Knowledge",
+        "Skill",
+        "Attitude",
+    }
     assert len({row["type"] for row in sequence}) == 3

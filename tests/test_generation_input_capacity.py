@@ -280,3 +280,51 @@ def test_legacy_ai_routes_reject_oversized_strengths_before_external_work(
                 json={"desired_job": "전기", "posting_id": "1", "strengths": "가" * 2001},
             )
     _assert_capacity_error(response, "strengths")
+
+
+def test_legacy_alio_strategy_uses_supported_builder_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posting = {
+        "posting_id": "posting-1",
+        "title": "행정직",
+        "institution_name": "공공기관",
+        "region": "서울",
+        "r6000": "R6000_MANAGEMENT",
+        "jd_text": "행정 기획 및 운영",
+    }
+    captured: dict[str, Any] = {}
+
+    def fake_builder(
+        desired_job: str,
+        strengths: str,
+        posting_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        captured.update(
+            desired_job=desired_job,
+            strengths=strengths,
+            posting_data=posting_data,
+        )
+        return {"job_title": desired_job}
+
+    monkeypatch.setitem(main._ALIO_CACHE, "posting-1", posting)
+    monkeypatch.setattr(main, "build_strategy_with_openai", fake_builder)
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/alio/strategy",
+            json={
+                "desired_job": "행정직",
+                "desired_region": "서울",
+                "strengths": "공공기관 행정 기획 경험",
+                "posting_id": "posting-1",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["strategy"] == {"job_title": "행정직"}
+    assert captured == {
+        "desired_job": "행정직",
+        "strengths": "공공기관 행정 기획 경험",
+        "posting_data": posting,
+    }

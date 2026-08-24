@@ -19,6 +19,8 @@ from html import unescape
 from urllib.parse import quote
 from collections import Counter
 from difflib import SequenceMatcher
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -39,11 +41,15 @@ from app.services.provider_config import (
     provider_timeout_sec,
 )
 from app.services.openai_quality_config import (
-    DEFAULT_QUALITY_MODEL,
+    DEFAULT_NCS_RERANK_MODEL,
+    DEFAULT_QUESTION_MODEL,
+    DEFAULT_QUALITY_REGENERATION_MODEL,
     apply_quality_reasoning,
+    openai_role_model,
     quality_candidate_variants,
     quality_completion_budget,
 )
+from app.services.external_ai_privacy import sanitize_external_ai_source_text
 from app.services.question_candidate_selection import select_question_candidates
 from app.services.question_generation import (
     _editorial_realism_prompt_contract,
@@ -2188,6 +2194,7 @@ def generate_personalized_interview_questions(
     job_posting: str = "",
     user_profile: str = "",
     target_count: int = 12,
+    extra_context: str = "",
     api_key_override: str = "",
     generation_model: str = "",
     generation_provider: str = "openai_api",
@@ -2201,12 +2208,12 @@ def generate_personalized_interview_questions(
     )
     generated = _generate_questions_with_openai_from_ncs(
         jd_text=job_posting,
-        strengths=user_profile,
+        strengths="",
         ncs_matches=ncs_matches,
         ncs_ksa=ncs_ksa,
         target_count=min(max(target_count, 1), 20),
         mode="personalized",
-        extra_context=f"user_profile={user_profile[:3000]}",
+        extra_context=str(extra_context or "").strip(),
         api_key_override=api_key_override,
         generation_model=generation_model,
         generation_provider=generation_provider,
@@ -2340,6 +2347,7 @@ def generate_diverse_interview_questions(
                 "question_evidence_required": bool(q.get("question_evidence_id")),
                 "follow_ups": follow_ups,
                 "follow_up": (follow_ups[0] if follow_ups else ""),
+                "evaluation_points": list(q.get("evaluation_points", []) or []),
                 "eval_points": list(q.get("evaluation_points", []) or []),
                 "ksa_refs": verified_refs,
                 "question_source": str(q.get("question_source") or generation_provider).strip(),
@@ -3166,7 +3174,9 @@ def generate_interview_questions_by_ncs_code(
             )
 
     desired_count = min(max(target_count, 1), 25)
-    allow_template_fallback = str(os.getenv("NCS_ALLOW_TEMPLATE_FALLBACK", "false")).strip().lower() in {"1", "true", "yes", "y"}
+    # Public generation is AI-only.  Keep the historical builder below solely
+    # for offline regression fixtures; no environment flag may reactivate it.
+    allow_template_fallback = False
     try:
         ai_topup_attempts = int(str(os.getenv("NCS_AI_TOPUP_ATTEMPTS", "4")).strip() or "4")
     except Exception:
@@ -3506,7 +3516,10 @@ def generate_interview_questions_by_ncs_code(
                     current_slots[replace_target] = missing_slot
             slot_presence = {slot: idx for idx, slot in enumerate(current_slots)}
 
-    generated = _apply_entry_level_policy_to_questions(generated)
+    # Candidate-facing wording remains exactly as authored by the model.
+    # Entry-level accessibility belongs in the generation prompt and the
+    # independent AI review, not in deterministic sentence rewriting.
+    generated = [dict(item) for item in generated if isinstance(item, dict)]
     grounded_generated: list[dict[str, Any]] = []
     for raw_question in generated:
         question = dict(raw_question)
@@ -3570,17 +3583,11 @@ def generate_interview_questions_by_ncs_code(
             else:
                 one = str(q.get("follow_up", "")).strip()
                 follow_ups = [one] if one else []
-            if len(follow_ups) < 3:
-                fallback_fus = [
-                    "당시 상황과 본인 역할을 구체적으로 설명해 주세요.",
-                    "가장 어려웠던 지점과 대응 방식을 말씀해 주세요.",
-                    "결과와 배운 점, 다음 개선 계획을 말씀해 주세요.",
-                ]
-                for f in fallback_fus:
-                    if len(follow_ups) >= 3:
-                        break
-                    follow_ups.append(f)
-            for j, fu in enumerate(follow_ups[:3], start=1):
+            # Preserve only provider-authored wording.  Cardinality is checked
+            # by the public AI quality boundary, which can request one fresh
+            # regeneration; this projection must never complete or truncate a
+            # malformed model result with server-written interview copy.
+            for j, fu in enumerate(follow_ups, start=1):
                 follow_up_questions.append(
                     {
                         "follow_up": fu,
@@ -4251,11 +4258,14 @@ def _ai_rerank_ncs_matches(
     if not net_ok:
         return []
 
-    model = provider_model(generation_provider, (
-        os.getenv("OPENAI_RERANK_MODEL", "").strip()
-        or os.getenv("OPENAI_MODEL", "").strip()
-        or "gpt-4o-mini"
-    ))
+    model = provider_model(
+        generation_provider,
+        (
+            openai_role_model("ncs_rerank")
+            if generation_provider != OPENROUTER_PROVIDER
+            else DEFAULT_NCS_RERANK_MODEL
+        ),
+    )
 
     candidates = []
     for it in ranked_items[:20]:
@@ -4272,6 +4282,10 @@ def _ai_rerank_ncs_matches(
     if len(candidates) < 2:
         return []
 
+    external_jd_text = sanitize_external_ai_source_text(
+        _repair_mojibake(jd_text or ""),
+        max_chars=1800,
+    )
     payload = {
         "model": model,
         "temperature": 0.0,
@@ -4288,7 +4302,7 @@ def _ai_rerank_ncs_matches(
                 "role": "user",
                 "content": (
                     "직무기술서와 후보 NCS를 보고 적합한 순서대로 ncsClCd를 정렬하세요.\n"
-                    f"JD:\n{_repair_mojibake(jd_text or '')[:1800]}\n\n"
+                    f"JD:\n{external_jd_text}\n\n"
                     f"Candidates:\n{json.dumps(candidates, ensure_ascii=False)}\n\n"
                     f"반드시 최대 {max(1, int(top_k or 8))}개 코드만 ordered_codes에 넣으세요."
                 ),
@@ -4657,6 +4671,41 @@ def _selected_method_prompt_contract(method_names: list[str] | None) -> str:
 
 def _structured_interview_guide_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "STRUCTURED_INTERVIEW_GUIDE.md"))
+
+
+def _ncs_interviewer_guide_path() -> str:
+    """Return the reviewed, repo-owned summary distilled from the Kordoc parse.
+
+    The source PDF is an offline refresh input. Production must not depend on
+    a desktop path or run a 44-page parse for every generation request.
+    """
+
+    return str(
+        Path(__file__).resolve().parents[1]
+        / "resources"
+        / "ncs_interviewer_guide_2020.json"
+    )
+
+
+@lru_cache(maxsize=1)
+def _load_ncs_interviewer_guide() -> dict[str, Any]:
+    """Load the curated Kordoc-derived guidance without making it a gate."""
+
+    try:
+        with open(_ncs_interviewer_guide_path(), "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, dict):
+            return {}
+        usage = payload.get("usage")
+        methods = payload.get("methods")
+        if not isinstance(usage, dict) or not isinstance(methods, dict):
+            return {}
+        if usage.get("hard_gate") is not False:
+            return {}
+        return payload
+    except (OSError, ValueError, TypeError):
+        # Missing advisory material must never make question generation fail.
+        return {}
 
 
 def _legacy_model_question_gate_contract() -> str:
@@ -5069,7 +5118,6 @@ def _planned_question_sequence_for_prompt(
     planned: list[dict[str, Any]] = []
     detail_offsets: dict[str, int] = {}
     factor_offsets_by_code: dict[str, int] = {}
-    scenario_offsets_by_method: dict[str, int] = {}
     for idx, row in enumerate(raw_sequence[:limit], start=1):
         detail = str(row.get("detail") or "").strip()
         if not detail:
@@ -5110,21 +5158,8 @@ def _planned_question_sequence_for_prompt(
             "index": idx,
             "detail": detail,
             "type": method,
-            "follow_up_count": max(0, min(5, int(row.get("follow_up_count", 3) or 0))),
-            "required_difficulty": _PLANNED_DIFFICULTY_AXES[
-                (idx - 1) % len(_PLANNED_DIFFICULTY_AXES)
-            ],
-            "required_question_angle": _PLANNED_QUESTION_ANGLES[
-                (idx - 1) % len(_PLANNED_QUESTION_ANGLES)
-            ],
-            "required_constraint_axis": _PLANNED_CONSTRAINT_AXES[
-                (idx - 1) % len(_PLANNED_CONSTRAINT_AXES)
-            ],
+            "follow_up_count": max(1, min(5, int(row.get("follow_up_count", 3) or 0))),
         }
-        scenario_offset = scenario_offsets_by_method.get(method, 0)
-        scenario_frame = _planned_scenario_frame_for_prompt(method, scenario_offset)
-        if method:
-            scenario_offsets_by_method[method] = scenario_offset + 1
         if unit:
             ncs_code = str(unit.get("ncsClCd", "")).strip()
             compe_unit_name = str(unit.get("compeUnitName", "")).strip()
@@ -5141,27 +5176,15 @@ def _planned_question_sequence_for_prompt(
                 required_factor,
                 ncs_ksa,
             )
-            task_frame = build_question_task_frame(
-                evidence_row=factor_row or None,
-                factor_name=required_factor,
-                ksa_type=(
-                    factor_row.get("ksaTypeName")
-                    or factor_row.get("factorType")
-                    or factor_row.get("ksa_type")
-                    or ""
-                ),
-                element_name=factor_row.get("elementName") or factor_row.get("element_name") or "",
-                competency_name=compe_unit_name,
-                competency_definition=str(unit.get("compeUnitDef", "")).strip(),
-                decision_dilemma=scenario_frame,
+            evidence_id = locked_evidence_id or (
+                stable_ksa_evidence_id(factor_row) if factor_row else ""
             )
-            scenario_frame = _planned_ksa_scenario_frame_for_prompt(
-                method,
-                scenario_offset,
-                job_context=required_context,
-                task_frame=task_frame,
-            )
-            surface_focus = task_frame["task_object"]
+            ksa_type = str(
+                factor_row.get("ksaTypeName")
+                or factor_row.get("factorType")
+                or factor_row.get("ksa_type")
+                or ""
+            ).strip()
             planned_item.update(
                 {
                     "ncsClCd": ncs_code,
@@ -5169,37 +5192,20 @@ def _planned_question_sequence_for_prompt(
                     "compeUnitDef": str(unit.get("compeUnitDef", "")).strip()[:240],
                     "ncsSubdCdnm": ncs_sub_detail,
                     "required_job_context": required_context,
-                    "evidence_id": task_frame.get("evidence_id", ""),
+                    "evidence_id": evidence_id,
                     "required_element_name": str(
                         factor_row.get("elementName")
                         or factor_row.get("element_name")
                         or ""
                     ).strip(),
                     "required_factorName": required_factor,
-                    "required_ksa_type": task_frame["ksa_type"],
-                    "required_surface_focus": surface_focus,
-                    "required_task_statement": task_frame["task_statement"],
-                    "required_observable_behavior": task_frame["observable_behavior"],
-                    "required_scenario_frame": scenario_frame,
-                    "required_question_example": _planned_question_example_for_prompt(
-                        method,
-                        required_context,
-                        surface_focus,
-                    ),
-                    "required_followup_focus_slot": _planned_followup_focus_slot_for_prompt(method),
-                    "required_followup_focus_example": _planned_followup_focus_example_for_prompt(
-                        method,
-                        required_context,
-                        surface_focus,
-                    ),
+                    "required_ksa_type": ksa_type,
                 }
             )
-        elif scenario_frame:
+        else:
             planned_item.update(
                 {
                     "required_job_context": detail,
-                    "required_scenario_frame": scenario_frame,
-                    "required_followup_focus_slot": _planned_followup_focus_slot_for_prompt(method),
                 }
             )
         planned.append(planned_item)
@@ -5219,7 +5225,47 @@ def _load_structured_interview_guide_summary(max_chars: int = 1400) -> str:
     return _fallback_structured_interview_guide_summary()
 
 
-def _experience_only_generation_prompt(
+_AI_AUTHORING_METHOD_GUIDES = {
+    "경험면접": "실제 과거 업무 사례에서 지원자의 역할·판단·행동과 확인 가능한 결과가 드러나게 질문합니다.",
+    "상황면접": "직무에서 일어날 수 있는 가상 상황을 제시하고 지원자가 어떤 기준으로 판단하고 행동할지 묻습니다.",
+    "발표면접": "직무 관련 자료나 쟁점을 해석해 핵심 판단과 근거를 논리적으로 설명하도록 질문합니다.",
+    "토론면접": "둘 이상의 방어 가능한 관점을 두고 근거를 검토하며 타인의 의견과 상호작용하는 과정을 묻습니다.",
+    "인바스켓면접": "동시에 주어진 여러 현안을 역할과 권한 안에서 어떻게 분류하고 우선 처리할지 묻습니다.",
+    "직무지식면접": "공식 KSA의 지식을 실제 직무 문제에 어떻게 적용하고 근거·예외·확인 방법을 설명하는지 묻습니다.",
+    "창의적 문제해결력면접": "직무 문제를 새롭게 정의하고 여러 해결 가능성을 탐색해 실행 가능성을 판단하도록 질문합니다.",
+}
+
+
+def _ai_authoring_method_guidance(method_names: list[str]) -> str:
+    selected = [
+        method
+        for method in _PROMPT_INTERVIEW_METHODS
+        if method in {str(value or "").strip() for value in method_names}
+    ]
+    guide = _load_ncs_interviewer_guide()
+    method_entries = guide.get("methods") if isinstance(guide, dict) else {}
+    general_guidance = guide.get("general_guidance") if isinstance(guide, dict) else []
+    lines = ["[면접 기본원칙 + 선택 면접기법 작성 지침 — 검증 규칙 아님]"]
+    if isinstance(general_guidance, list):
+        for item in general_guidance[:3]:
+            text = str(item or "").strip()
+            if text:
+                lines.append(f"- 공통: {text}")
+    for method in selected:
+        entry = method_entries.get(method) if isinstance(method_entries, dict) else None
+        guidance = ""
+        probe_guidance = ""
+        if isinstance(entry, dict):
+            guidance = str(entry.get("guidance") or "").strip()
+            probe_guidance = str(entry.get("probe_guidance") or "").strip()
+        lines.append(f"- {method}: {guidance or _AI_AUTHORING_METHOD_GUIDES[method]}")
+        if probe_guidance:
+            lines.append(f"- {method} 꼬리질문 참고: {probe_guidance}")
+    lines.append("- 위 설명은 방향만 제시합니다. 구체 사건·자료·산출물·질문 구조는 공식 KSA와 직무 맥락에 맞춰 자유롭게 정하세요.")
+    return "\n".join(lines) + "\n"
+
+
+def _ai_authored_generation_prompt(
     *,
     planned_sequence: list[dict[str, Any]],
     target_count: int,
@@ -5229,6 +5275,7 @@ def _experience_only_generation_prompt(
     duty_text: str,
     evaluation_text: str,
     extra_context: str,
+    diversity_cycle: int = 0,
 ) -> str:
     """Build a compact KSA-semantic prompt with model-owned wording."""
 
@@ -5250,68 +5297,58 @@ def _experience_only_generation_prompt(
                 "evidence_id": str(raw.get("evidence_id") or "").strip(),
                 "ksa_type": str(raw.get("required_ksa_type") or "").strip(),
                 "official_ksa": str(raw.get("required_factorName") or "").strip(),
-                "task_semantics": str(raw.get("required_task_statement") or "").strip(),
-                "observable_evidence": str(
-                    raw.get("required_observable_behavior") or ""
-                ).strip(),
             }
         )
 
     context = {
-        "notice": str(notice_text or "")[:900],
-        "jd": str(jd_text or "")[:900],
-        "duties": str(duty_text or "")[:1200],
-        "evaluation": str(evaluation_text or "")[:700],
+        "notice": sanitize_external_ai_source_text(notice_text, max_chars=900),
+        "jd": sanitize_external_ai_source_text(jd_text, max_chars=900),
+        "duties": sanitize_external_ai_source_text(duty_text, max_chars=1200),
+        "evaluation": sanitize_external_ai_source_text(evaluation_text, max_chars=700),
     }
-    retry_context = str(extra_context or "")[:1400]
+    selected_slot_methods = list(
+        dict.fromkeys(
+            str(slot.get("type") or "").strip()
+            for slot in slots
+            if str(slot.get("type") or "").strip()
+        )
+    )
+    method_guidance = _ai_authoring_method_guidance(selected_slot_methods)
+    orchestration_context = sanitize_external_ai_source_text(extra_context, max_chars=2200)
     return (
         "JSON만 출력하세요. 공공기관 NCS 기반 구조화면접 질문을 작성합니다.\n"
-        f"interview_questions를 정확히 {target_count}개, 입력 slot 순서대로 작성하세요. "
-        f"각 문항은 follow_ups를 정확히 {follow_up_count}개, evaluation_points를 정확히 4개 가집니다.\n"
-        "[KSA 기반 자유작성 계약]\n"
-        "- 각 slot의 evidence_id가 가리키는 KSA가 유일한 평가 근거입니다. official_ksa, "
-        "competency_definition, work_element, task_semantics, observable_evidence를 함께 해석하되 어느 필드도 완성 문장이나 "
-        "질문 템플릿으로 복사하지 마세요.\n"
-        "- AI가 question, follow_ups, evaluation_points의 문구를 직접 작성합니다. 서버가 뒤에서 STAR "
-        "문구나 공통 질문 골격을 덧붙인다고 가정하지 마세요.\n"
-        "- 공고·직무기술서에서 그 KSA가 실제로 쓰이는 업무 대상, 문서, 설비, 자료, 도구, 산출물, "
-        "이해관계자를 찾아 질문의 직무 맥락으로 사용하세요. 입력에 없는 기관 사실·수치·법 조항·사건은 "
-        "사실처럼 만들지 마세요.\n"
-        "- question은 slot의 type과 KSA에 맞는 자연스러운 한국어 1~2문장으로 작성합니다. 질문의 사건, "
-        "쟁점, 판단 또는 행동은 AI가 KSA와 채용 문맥을 읽고 직접 선택하세요.\n"
-        "- 경험면접은 실제 또는 가장 가까운 실제 사례에서 KSA를 가장 잘 보여 주는 판단·행동 하나를, "
-        "상황면접은 KSA가 필요한 구체 상황에서 판단과 대응을, 토론면접은 KSA와 연결된 서로 방어 가능한 "
-        "입장과 공동 판단 쟁점을, 발표면접은 제공 맥락을 분석해 설명할 핵심 과제를 묻습니다. 인바스켓·"
-        "직무지식·창의적 문제해결력면접도 해당 방식의 목적에 맞게 KSA를 직접 측정하세요.\n"
-        "- STAR는 경험면접 답변의 분석 틀일 뿐 질문 문구의 필수 순서가 아닙니다. 상황·역할·기준·행동·"
-        "결과·개선을 주질문에 모두 나열하지 말고, 어떤 면접형태에도 공통 시나리오나 산출물 목록을 "
-        "자동으로 붙이지 마세요.\n"
-        "- '해당 직무에서 업무를 수행하던 실제 상황 하나를 골라', '요구사항과 기준을 확인한 뒤', "
-        "'문서·수치·기록·피드백', '관련 행동 기준에 따라' 같은 공통 문구를 재사용하지 마세요. "
-        "NCS 코드, evidence_id, 공식 KSA 라벨, 내부 메타 용어도 지원자용 문장에 노출하지 마세요.\n"
-        "- follow_ups는 같은 답변을 더 깊게 확인하는 질문으로 자유롭게 작성하세요. 꼬리질문의 시작말, "
-        "순서, STAR 역할을 고정하지 마세요. 지원자가 하지 않았을 행동이나 성과를 사실로 전제하지 않고, "
-        "주질문을 다른 말로 반복하거나 별개의 새 사례를 요구하지 마세요.\n"
-        "- evaluation_points 네 개도 배정 KSA와 질문에서 실제로 들을 수 있는 판단·행동·근거·결과 중 "
-        "서로 다른 관찰 증거를 AI가 선택해 작성하세요. 질문하지 않은 숨은 기준이나 추상 평가어만 쓰지 마세요.\n"
-        "- 같은 detail의 여러 slot은 배정된 work_element, KSA 의미, type에 따라 서로 다른 업무 장면과 "
-        "관찰 초점을 사용해야 하며, 문장 골격만 바꾼 질문은 허용하지 않습니다.\n"
-        "[메타데이터 규칙]\n"
-        "- 각 출력 row의 type, competency, ncsClCd, question_evidence_id는 같은 slot 값을 "
-        "정확히 복사하세요. 내부 NCS/KSA 명칭은 서버가 evidence_id로 복구하므로 "
-        "question_focus_surface='', question_focus='', ksa_refs=[]로 출력하세요.\n"
+        f"interview_questions를 정확히 {target_count}개, 입력 slot 순서대로 작성하고 "
+        f"각 문항에는 follow_ups {follow_up_count}개를 정확히 넣고, 답변에서 실제로 관찰할 핵심 근거만 담은 evaluation_points 1~5개를 넣으세요.\n"
+        "[자유작성 계약]\n"
+        "- 각 slot에는 공식 KSA 원문·KSA 유형, 능력단위·정의·요소, 선택 면접형태, "
+        "직무 맥락과 잠긴 evidence_id만 제공됩니다. 이 근거를 해석해 question, follow_ups, "
+        "evaluation_points의 지원자용 문장을 모두 직접 작성하세요.\n"
+        "- KSA가 실제로 드러나는 사건·쟁점·판단·행동은 AI가 직무 맥락과 면접형태에 맞게 "
+        "선택합니다. 서버가 만든 상황이나 질문 템플릿은 없으며 공통 골격을 만들 필요도 없습니다.\n"
+        "- 최근 질문이 제공되면 실질적으로 같은 질문만 피하고, 새로운 장면·행동·표현은 공식 KSA와 선택 면접기법에 맞춰 자유롭게 정하세요.\n"
+        "- 주질문은 자연스러운 한국어로 KSA를 측정하고, 꼬리질문은 같은 답변을 심화하며, "
+        "평가포인트는 답변에서 관찰 가능한 서로 다른 증거여야 합니다. 같은 세트의 문항은 의미가 중복되지 않아야 합니다.\n"
+        "[STAR 작성 가이드 — 검증 규칙 아님]\n"
+        "- 경험면접 slot은 주질문과 꼬리질문 전체를 통해 구체 상황(S), 당시 과제·역할(T), 본인이 실제로 한 행동(A), 결과·확인·학습(R)이 자연스럽게 드러나게 설계하세요.\n"
+        "- 네 요소를 주질문 하나에 나열하거나 S/T/A/R 라벨, 고정 순서, 같은 시작 문구를 노출하지 마세요. 지원자의 첫 답변에서 이미 나온 요소는 반복하지 말고 빠진 증거를 꼬리질문으로 이어서 확인하세요.\n"
+        "- 상황·발표·토론·인바스켓·직무지식·창의적 문제해결력면접은 선택된 면접기법의 고유 과제와 응답 방식을 우선하며 STAR를 억지로 적용하지 마세요.\n"
+        f"{method_guidance}"
+        "- 채용 문맥에 없는 기관 사실·수치·법 조항·권한을 사실처럼 만들지 말고, 출신학교·지역·성별·"
+        "연령·가족관계 등 블라인드 채용 위반 내용을 묻지 마세요.\n"
+        "- NCS 코드, evidence_id, 공식 KSA 라벨과 내부 메타 용어를 지원자용 문장에 노출하지 마세요.\n"
+        "[출력 계약]\n"
+        "- slot 순서대로 question, follow_ups, evaluation_points만 작성하세요. "
+        "type, NCS 코드, evidence_id, KSA 라벨 같은 내부 메타데이터는 출력하지 마세요. "
+        "서버가 확정 slot에 따라 별도로 결합합니다.\n"
         f"[질문 SLOT JSON]{json.dumps(slots, ensure_ascii=False, separators=(',', ':'))}\n"
         f"[신뢰하지 않는 채용 문맥 JSON]{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}\n"
         + (
-            f"[서버 재생성 문맥]{retry_context}\n"
-            if retry_context
+            f"[추가 오케스트레이션 컨텍스트]{orchestration_context}\n"
+            if orchestration_context
             else ""
         )
         + _unverified_material_precision_prompt_contract()
         + _untrusted_context_prompt_contract()
-        + "[안전·권한 경계]\n"
-        + "- 출신학교·지역·성별·연령·가족관계 등 블라인드 채용 위반 질문을 만들지 마세요.\n"
-        + "- 지원자에게 공고에 없는 최종 승인 권한이나 개인 책임을 부여하지 말고, 질문 속 역할의 권한 안에서 답할 수 있게 하세요.\n"
     )
 
 
@@ -5435,10 +5472,59 @@ def _openai_interview_response_format(
     expected_count: int,
     follow_up_count: int,
     interview_methods: list[str] | None = None,
+    authored_surface_only: bool = False,
 ) -> dict[str, Any]:
-    """Return the strict Chat Completions schema for interview generation."""
+    """Return the structured-output schema for interview generation.
+
+    The public planned path asks the model only for candidate-facing prose.
+    Server-owned NCS/evidence/method metadata is attached from the locked slot
+    plan after parsing, so the model cannot fail merely by echoing metadata in
+    a slightly different shape.
+    """
 
     selected_methods = _selected_prompt_methods(interview_methods)
+    if authored_surface_only:
+        question_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "follow_ups": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": follow_up_count,
+                    "maxItems": follow_up_count,
+                },
+                "evaluation_points": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 5,
+                },
+            },
+            "required": ["question", "follow_ups", "evaluation_points"],
+            "additionalProperties": False,
+        }
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "ncs_interview_question_surface",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "interview_questions": {
+                            "type": "array",
+                            "items": question_schema,
+                            "minItems": expected_count,
+                            "maxItems": expected_count,
+                        },
+                    },
+                    "required": ["interview_questions"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
     question_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -5544,6 +5630,8 @@ def build_strategy_with_openai(
     question_plan: dict[str, Any] | None = None,
     interview_methods: list[str] | None = None,
     extra_context: str = "",
+    avoid_questions: list[str] | None = None,
+    diversity_cycle: int = 0,
     generation_provider: str = "",
     generation_model: str = "",
     max_model_requests: int = 2,
@@ -5591,22 +5679,28 @@ def build_strategy_with_openai(
         )
     strict_count = not bool(allow_partial_model_output)
     retry_target_count = target_count
-    follow_up_count = max(0, min(5, int(follow_up_count if follow_up_count is not None else 3)))
-    openai_primary_model = (
-        os.getenv("OPENAI_STRATEGY_MODEL", DEFAULT_QUALITY_MODEL)
-        or DEFAULT_QUALITY_MODEL
-    ).strip()
+    follow_up_count = max(1, min(5, int(follow_up_count if follow_up_count is not None else 3)))
     primary_model = provider_model(
         generation_provider,
-        str(generation_model or openai_primary_model).strip(),
+        (
+            openai_role_model(
+                "question_authoring",
+                explicit_model=generation_model,
+            )
+            if generation_provider != OPENROUTER_PROVIDER
+            else str(generation_model or DEFAULT_QUESTION_MODEL).strip()
+        ),
     )
     retry_model = provider_model(
         generation_provider,
-        str(
-            generation_model
-            or os.getenv("OPENAI_STRATEGY_RETRY_MODEL", primary_model)
-            or primary_model
-        ).strip(),
+        (
+            str(
+                os.getenv("OPENAI_STRATEGY_RETRY_MODEL", "").strip()
+                or openai_role_model("quality_regeneration")
+            )
+            if generation_provider != OPENROUTER_PROVIDER
+            else str(generation_model or DEFAULT_QUALITY_REGENERATION_MODEL).strip()
+        ),
     )
     force_fallback = (os.getenv("OPENAI_FORCE_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "y"})
     if not api_key:
@@ -5652,10 +5746,12 @@ def build_strategy_with_openai(
             )
         precheck_warning = detail
 
-    strengths = (strengths or "").strip()
-    duty_text = (duty_text or "").strip()
-    evaluation_text = (evaluation_text or "").strip()
-    extra_context = str(extra_context or "").strip()
+    jd_text = sanitize_external_ai_source_text(jd_text).strip()
+    notice_text = sanitize_external_ai_source_text(notice_text).strip()
+    strengths = sanitize_external_ai_source_text(strengths).strip()
+    duty_text = sanitize_external_ai_source_text(duty_text).strip()
+    evaluation_text = sanitize_external_ai_source_text(evaluation_text).strip()
+    extra_context = sanitize_external_ai_source_text(extra_context).strip()
     has_priority_context = bool(duty_text or evaluation_text)
     priority_rules = ""
     if has_priority_context:
@@ -5798,7 +5894,7 @@ def build_strategy_with_openai(
     )
     ksa_free_planned_generation = bool(planned_sequence)
     if ksa_free_planned_generation:
-        prompt = _experience_only_generation_prompt(
+        prompt = _ai_authored_generation_prompt(
             planned_sequence=planned_sequence,
             target_count=target_count,
             follow_up_count=follow_up_count,
@@ -5807,22 +5903,32 @@ def build_strategy_with_openai(
             duty_text=duty_text,
             evaluation_text=evaluation_text,
             extra_context=extra_context,
+            diversity_cycle=diversity_cycle,
         )
-    candidate_variants = quality_candidate_variants(
-        "OPENAI_STRATEGY_CANDIDATE_MULTIPLIER",
-        default=3.0,
+    # The public planned path keeps one complete authored set per request.
+    # Diversity comes from the rotating slot lens, recent-question avoidance,
+    # and the bounded quality regeneration. Asking for multiple full strict
+    # JSON choices made otherwise valid provider output much easier to reject.
+    candidate_variants = (
+        1
+        if ksa_free_planned_generation
+        else quality_candidate_variants(
+            "OPENAI_STRATEGY_CANDIDATE_MULTIPLIER",
+            default=3.0,
+        )
     )
     if generation_provider == OPENROUTER_PROVIDER:
         # Ox Alpha does not advertise multi-choice ``n``. Preserve the 2–3x
         # candidate pool with independent bounded requests instead.
         max_model_requests = max(max_model_requests, candidate_variants)
-    prompt += (
-        "\n\n[후보 풀 운영]\n"
-        f"- 서버는 같은 슬롯 계획에 대해 독립 후보 세트 {candidate_variants}개를 받아 "
-        "의미 중복을 제거하고 품질·다양성 점수로 최종 선별합니다.\n"
-        "- 각 응답 선택지는 모든 슬롯을 완결해야 하며, 익숙한 사건 골격을 반복하지 말고 "
-        "직무·상황·난이도·KSA·면접기법 축을 함께 점검하세요.\n"
-    )
+    if candidate_variants > 1:
+        prompt += (
+            "\n\n[후보 풀 운영]\n"
+            f"- 서버는 같은 슬롯 계획에 대해 독립 후보 세트 {candidate_variants}개를 받아 "
+            "의미 중복을 제거하고 품질·다양성 점수로 최종 선별합니다.\n"
+            "- 각 응답 선택지는 모든 슬롯을 완결해야 하며, 익숙한 사건 골격을 반복하지 말고 "
+            "직무·상황·난이도·KSA·면접기법 축을 함께 점검하세요.\n"
+        )
 
     payload = {
         "model": primary_model,
@@ -5831,13 +5937,15 @@ def build_strategy_with_openai(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.25,
-        "n": candidate_variants,
         "response_format": _openai_interview_response_format(
             expected_count=target_count,
             follow_up_count=follow_up_count,
             interview_methods=method_names,
+            authored_surface_only=ksa_free_planned_generation,
         ),
     }
+    if candidate_variants > 1:
+        payload["n"] = candidate_variants
     if generation_provider == OPENROUTER_PROVIDER:
         primary_reasoning_effort, primary_reasoning_reason = openrouter_reasoning_effort(
             interview_methods=method_names,
@@ -6032,12 +6140,61 @@ def build_strategy_with_openai(
                 continue
 
             cleaned_questions: list[dict[str, Any]] = []
+            allowed_question_keys = {
+                "type",
+                "competency",
+                "ncsClCd",
+                "question",
+                "follow_ups",
+                "evaluation_points",
+                "question_evidence_id",
+                "question_focus_surface",
+                "question_focus",
+                "ksa_refs",
+            }
             for question in generated_questions:
                 if not isinstance(question, dict):
                     continue
-                if not str(question.get("question") or "").strip():
+                if not ksa_free_planned_generation and set(question) - allowed_question_keys:
                     continue
-                cleaned_questions.append(dict(question))
+                required_string_keys = (
+                        "type",
+                        "competency",
+                        "ncsClCd",
+                        "question",
+                        "question_evidence_id",
+                        "question_focus_surface",
+                        "question_focus",
+                )
+                required_list_keys = ("follow_ups", "evaluation_points", "ksa_refs")
+                if any(
+                    key in question and not isinstance(question.get(key), str)
+                    for key in required_string_keys
+                ):
+                    continue
+                if not isinstance(question.get("question"), str) or not question["question"].strip():
+                    continue
+                if any(
+                    key in question
+                    and (
+                        not isinstance(question.get(key), list)
+                        or any(not isinstance(value, str) for value in question.get(key) or [])
+                    )
+                    for key in required_list_keys
+                ):
+                    continue
+                if ksa_free_planned_generation and (
+                    not isinstance(question.get("follow_ups"), list)
+                    or not 1 <= len(question["follow_ups"]) <= 5
+                    or not isinstance(question.get("evaluation_points"), list)
+                    or not 1 <= len(question["evaluation_points"]) <= 5
+                    or any(not value.strip() for value in question["follow_ups"])
+                    or any(not value.strip() for value in question["evaluation_points"])
+                ):
+                    continue
+                cleaned_questions.append(
+                    {key: question[key] for key in allowed_question_keys if key in question}
+                )
             if not cleaned_questions:
                 failure_codes.append("model_question_content_missing")
                 continue
@@ -6080,7 +6237,17 @@ def build_strategy_with_openai(
                 raise _OpenRouterTimeoutRecoveryOutputError(code)
             raise ValueError(code)
 
-        selected_response = dict(valid_responses[0])
+        # Do not project provider-authored top-level debug or exception fields
+        # into a public strategy response. Only the validated question DTO and
+        # server-owned selection metadata are retained below.
+        selected_response: dict[str, Any] = {
+            "_model_question_raw_count": int(
+                valid_responses[0].get("_model_question_raw_count") or 0
+            ),
+            "_model_question_count_mismatch": bool(
+                valid_responses[0].get("_model_question_count_mismatch")
+            ),
+        }
         first_questions = [
             dict(question)
             for question in valid_responses[0].get("interview_questions", [])
@@ -6096,6 +6263,7 @@ def build_strategy_with_openai(
             selected_questions, selection_metadata = select_question_candidates(
                 candidate_pool,
                 expected_count,
+                avoid_questions=avoid_questions,
             )
             if len(selected_questions) != expected_count:
                 raise ValueError("model_question_count_mismatch")
@@ -6135,6 +6303,26 @@ def build_strategy_with_openai(
                 continue
             question.pop("_candidate_slot", None)
             question.pop("_candidate_variant", None)
+        if ksa_free_planned_generation:
+            for slot_index, question in enumerate(
+                selected_response.get("interview_questions", [])
+            ):
+                if not isinstance(question, dict) or slot_index >= len(planned_sequence):
+                    continue
+                planned = planned_sequence[slot_index]
+                question["type"] = _canonical_interview_method_for_prompt(
+                    str(planned.get("type") or method_names[0])
+                )
+                question["competency"] = str(
+                    planned.get("compeUnitName") or ""
+                ).strip()
+                question["ncsClCd"] = str(planned.get("ncsClCd") or "").strip()
+                question["question_evidence_id"] = str(
+                    planned.get("evidence_id") or ""
+                ).strip()
+                question["question_focus_surface"] = ""
+                question["question_focus"] = ""
+                question["ksa_refs"] = []
         if timeout_recovery_used:
             selected_response["_ncscope_openrouter_timeout_recovery_used"] = True
             selected_response["_ncscope_openrouter_timeout_recovery_model"] = (
@@ -6201,7 +6389,7 @@ def build_strategy_with_openai(
             "규칙:\n"
             f"{_untrusted_context_prompt_contract()}"
             f"- interview_questions {retry_target_count}개 생성\n"
-            f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 {follow_up_count}개. 같은 답변과 배정 KSA를 더 깊게 확인하되 시작말·순서·역할을 고정하지 말 것\n"
+            f"- 각 항목: 주질문 1개 + follow_ups 꼬리질문 정확히 {follow_up_count}개. 같은 답변과 배정 KSA를 더 깊게 확인하되 시작말·순서·역할을 고정하지 말 것\n"
             f"- 선택 면접기법: {', '.join(method_names)}\n"
             f"{_gate_contract}"
             f"{custom_plan_rules}"
@@ -6222,7 +6410,7 @@ def build_strategy_with_openai(
             + (f"[avoid_questions]\n{extra_context[:1200]}\n" if extra_context else "")
         )
         if ksa_free_planned_generation:
-            slim_prompt = _experience_only_generation_prompt(
+            slim_prompt = _ai_authored_generation_prompt(
                 planned_sequence=planned_sequence,
                 target_count=retry_target_count,
                 follow_up_count=follow_up_count,
@@ -6239,14 +6427,16 @@ def build_strategy_with_openai(
                     )
                     if part
                 ),
+                diversity_cycle=diversity_cycle,
             )
-        slim_prompt += (
-            "\n\n[후보 풀 운영]\n"
-            f"- 독립 후보 세트 {candidate_variants}개 각각에서 정확히 "
-            f"{retry_target_count}개 슬롯을 완결하세요.\n"
-            "- 직무·상황·난이도·KSA·면접기법 축과 사건·판단·산출물의 중복을 "
-            "출력 전에 점검하세요.\n"
-        )
+        if candidate_variants > 1:
+            slim_prompt += (
+                "\n\n[후보 풀 운영]\n"
+                f"- 독립 후보 세트 {candidate_variants}개 각각에서 정확히 "
+                f"{retry_target_count}개 슬롯을 완결하세요.\n"
+                "- 직무·상황·난이도·KSA·면접기법 축과 사건·판단·산출물의 중복을 "
+                "출력 전에 점검하세요.\n"
+            )
         slim_payload = {
             "model": retry_model,
             "messages": [
@@ -6254,13 +6444,15 @@ def build_strategy_with_openai(
                 {"role": "user", "content": slim_prompt},
             ],
             "temperature": 0.2,
-            "n": candidate_variants,
             "response_format": _openai_interview_response_format(
                 expected_count=retry_target_count,
                 follow_up_count=follow_up_count,
                 interview_methods=method_names,
+                authored_surface_only=ksa_free_planned_generation,
             ),
         }
+        if candidate_variants > 1:
+            slim_payload["n"] = candidate_variants
         if generation_provider == OPENROUTER_PROVIDER:
             retry_reasoning_effort, retry_reasoning_reason = openrouter_reasoning_effort(
                 interview_methods=method_names,
@@ -6414,7 +6606,14 @@ def build_strategy_with_openai(
             "expected": target_count,
             "actual": q_raw_count,
         }
-    obj["interview_questions"] = _apply_entry_level_policy_to_questions(obj["interview_questions"])
+    # Do not rewrite model-authored questions after generation.  The legacy
+    # entry-level softener could damage Korean sentence agreement and made the
+    # public pipeline behave unlike an agent composing directly from NCS data.
+    obj["interview_questions"] = [
+        dict(item)
+        for item in obj["interview_questions"]
+        if isinstance(item, dict)
+    ]
     obj["interview_by_competency"] = _build_interview_by_competency_from_questions(obj["interview_questions"])
     if "ncs_link" not in obj or not isinstance(obj.get("ncs_link"), list):
         obj["ncs_link"] = [

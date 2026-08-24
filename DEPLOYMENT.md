@@ -1,26 +1,10 @@
 # NCScope Deployment
 
-`NCS_MCP` is the local read-only NCS DB search server used by NCScope. NCScope
-does not open the SQLite serving DB directly; it calls this server through
-`NCS_MCP_URL`.
+NCScope는 별도 `NCS_MCP` 서버에서 공식 NCS 능력단위와 KSA를 조회하고, 질문 생성과 독립 품질검수에는 사용자가 요청마다 입력한 OpenAI API 키만 사용합니다.
 
-The deployment has two processes:
+## 1. NCS_MCP 준비
 
-1. NCS_MCP with the compact read-only SQLite serving DB.
-2. NCScope FastAPI, which calls NCS_MCP and the selected generation API.
-
-Large data files and runtime artifacts belong outside the app repository, for
-example in Release assets or deployment storage.
-
-## 1. Prepare NCS_MCP
-
-Download the compact serving DB from the public GitHub Release:
-
-- Release URL: `https://github.com/koul777/NCScope/releases/tag/ncscope-db-v0.1.0-20260723`
-- Release tag: `ncscope-db-v0.1.0-20260723`
-- DB asset: `ncs_interview_serving_release.db`
-- Manifest asset: `ncs_interview_serving_release.json`
-- DB SHA-256: `F9BB59B8853E8F69DC4698028EC347ED9BD74D26133FBCEB031B05FD90F89B23`
+NCScope는 NCS SQLite DB를 직접 열지 않습니다. 읽기 전용 NCS_MCP를 실행하고 `NCS_MCP_URL`을 설정하세요.
 
 ```powershell
 $env:NCS_DB_PATH="C:\data\ncs_interview_serving_release.db"
@@ -28,306 +12,146 @@ $env:NCS_MCP_READ_ONLY="1"
 python -m ncs_mcp.server --transport streamable-http --host 0.0.0.0 --port 8778
 ```
 
-Required health condition:
+필수 상태는 `ncs_search`, `ncs_unit_detail`, 공식 KSA 반환이 모두 가능한 것입니다.
 
-- `ncs_search` is available.
-- `ncs_unit_detail` is available.
-- `ncs_unit_detail` returns official KSA rows.
+## 2. OpenAI BYOK 운영 계약
 
-## 2. Generation key mode
+- 공개 질문 생성은 `openai_api`만 지원합니다.
+- 사용자가 입력한 `sk-...` 키는 해당 POST 요청에서만 사용하며 DB, 파일, 브라우저 저장소에 저장하지 않습니다.
+- 공개 요청의 `generation_model` 재정의는 허용하지 않습니다. 배포에 승인된 Luna 재정렬, Terra 작성, Sol 검수·재생성 구성을 사용합니다.
+- 서버의 `OPENAI_API_KEY`를 읽거나 대신 사용하지 않습니다.
+- `sk-or-...` OpenRouter 키, 서버 공용키, Codex/Claude 구독 로그인은 공개 생성에 사용할 수 없습니다.
+- OpenAI 키의 전송 대상은 `https://api.openai.com/v1`로 고정합니다. `OPENAI_BASE_URL` 환경변수로 제3자 호환 게이트웨이에 우회할 수 없습니다.
+- 키를 query string으로 보내면 거절합니다. JSON body 또는 multipart form의 요청 키 필드만 사용합니다.
+- 운영 HTTPS를 강제하고 `/api/questions/*`, `/api/jd/strategy/upload`의 request body와 Authorization 헤더를 proxy, WAF, APM, tracing, 오류 리포트, replay 도구에 기록하지 마세요.
 
-The Vercel production deployment uses a **server-managed OpenRouter key**.
-Store `OPENROUTER_API_KEY` as a sensitive Production environment variable and
-set `OPENROUTER_ALLOW_SERVER_KEY=true`. Visitors can then generate without
-entering a key in the browser. The public UI and server pin the default path to
-OpenRouter `stealth/ox-alpha`; ordinary requests use medium reasoning and
-high-risk interview formats use high reasoning. The canonical public URL is
-`https://ncscope.vercel.app`. The encrypted Production secret is stored by
-Vercel, not read from the developer workstation, so the deployed service keeps
-working when that workstation is offline.
-
-The optional browser field remains a per-request override. A `sk-or-` prefix
-selects OpenRouter and another `sk-` prefix selects OpenAI. An override is sent
-as `generation_api_key` only for that request and is not persisted. Unknown
-prefixes and provider/key-prefix mismatches fail with HTTP 400 before any
-upstream request. Query-string keys are rejected, and neither server nor
-request keys may appear in logs, traces, error reports, or responses.
-
-`GET /api/generation-provider/status` never receives or verifies a key. A
-healthy response has these fields:
+`GET /api/generation-provider/status`는 키를 받거나 검증하지 않습니다. 정상 계약 예시는 다음과 같습니다.
 
 ```json
 {
-  "provider": "openrouter_api",
-  "auth_mode": "server_env_api_key",
-  "status": "configured",
+  "provider": "openai_api",
+  "auth_mode": "request_scoped_api_key",
+  "status": "key_required",
   "available": true,
   "authenticated": false,
-  "credential_configured": true,
-  "credential_managed_by": "server_env",
-  "requires_request_api_key": false,
-  "server_key_enabled": true,
-  "server_key_state": "configured",
-  "recovery_model": "openai/gpt-oss-20b",
-  "recovery_enabled": true,
-  "reasoning_profiles": {
-    "standard": "medium",
-    "high_risk": "high",
-    "quality_retry": "high"
-  },
-  "timeout_profiles_sec": {
-    "standard": 8,
-    "high_risk": 15
-  },
+  "credential_configured": false,
+  "credential_managed_by": "request",
+  "requires_request_api_key": true,
+  "supported_providers": ["openai_api"],
   "generation_limits": {
     "max_main_questions_per_request": 5,
     "max_follow_up_questions_per_main": 5,
     "max_ncs_details_per_request": 1,
     "max_interview_methods_per_request": 1,
     "request_budget_sec": 285
-  },
-  "local_only": false
+  }
 }
 ```
 
-The server key never reaches the browser and is read only in the NCScope
-server process before being forwarded to OpenRouter. An OpenRouter key can
-only be sent to the server-pinned
-`https://openrouter.ai/api/v1/chat/completions` endpoint and model
-`stealth/ox-alpha`; clients cannot override that URL or model. OpenAI keys keep
-the administrator-controlled `OPENAI_BASE_URL` and configured OpenAI model.
-Neither credential mode embeds a key in the JavaScript bundle. Optional
-request keys must not be saved to browser storage, files, DB, logs, traces,
-error reports, or responses. See `SECURITY.md` for the shared-key cost and
-abuse controls required for a public deployment.
+## 3. 질문 생성과 AI 품질검수
 
-Quality-first primary generation uses the pinned Ox Alpha model. Ordinary
-one-question requests use the bounded public `reasoning_effort=medium` setting;
-presentation, debate, in-basket, creative-problem-solving, and complex plans use
-`high`. The pipeline normally builds a 3x candidate pool before
-exact/semantic deduplication and quality selection across
-job/unit, scenario, difficulty, KSA, and question-method coverage. OpenAI uses
-up to three choices in one POST (`n=3`). Ox Alpha does not advertise `n`, so
-OpenRouter uses up to three independent single-choice POSTs with bounded
-parallelism instead. A failed OpenRouter variant does not discard the valid
-variants; responses record requested and received variant counts. The primary
-payload is pinned to `stealth/ox-alpha` and the method-aware reasoning profile, and
-capability-safe JSON-object output. A deployment may configure one server-owned
-`OPENROUTER_RECOVERY_MODEL`; that model is used only by bounded timeout or
-invalid-output recovery and cannot be selected by a browser request.
+공개 문항의 주질문, 꼬리질문, 평가포인트는 모두 OpenAI가 작성합니다. 서버는 공식 KSA `evidence_id`를 잠그고 메타데이터와 안전 경계만 확인하며 문장을 조립하거나 고치지 않습니다.
 
-Configure
-`OPENAI_STRATEGY_CANDIDATE_MULTIPLIER` and
-`OPENAI_QUESTION_CANDIDATE_MULTIPLIER` between `2` and `3`; setting either to
-`1` is the explicit lower-cost escape hatch. Per-path reasoning can be
-overridden with `OPENAI_STRATEGY_REASONING_EFFORT` or
-`OPENAI_QUESTION_REASONING_EFFORT` for OpenAI. The OpenRouter primary remains
-pinned to the Ox Alpha model; the public effort is method-aware for latency control. A
-configured recovery model uses its native reasoning parameters and is still
-routed only through the pinned OpenRouter origin.
-Optional vision OCR and NCS AI reranking are separately bounded stages.
+호출 순서는 다음 네 단계가 최대입니다.
 
-## 3. Run locally
+1. 초안 생성
+2. 별도 OpenAI 고추론 품질검수
+3. 실패 슬롯의 완전 신규 재생성
+4. 최종 OpenAI 품질검수
 
-Loopback HTTP is for local development only:
+검수는 한국어 자연스러움, 상황·행동·KSA 연결, KSA 측정 가능성, 직무 근거성, 면접기법 적합성, 꼬리질문 연계성, 평가포인트 관찰 가능성, KSA 명칭의 기계적 삽입 부재를 각각 1~5점으로 평가합니다. KSA 연결·측정성, 직무 근거, 면접기법, 평가 관찰성은 3점 이상을 요구하고, 한국어 자연스러움·꼬리질문 연계·비기계적 표현은 2점 이상을 허용합니다. 전체 평균 점수는 추가 탈락 조건이 아니며 실질 중복만 별도 차단합니다.
+
+검수 실패 뒤 재생성도 실패하면 질문 없이 HTTP 502 `openai_api_quality_rejected`, 네트워크 실패는 503 `openai_api_unreachable`, 전체 요청 시간 초과는 504 `openai_api_timeout`을 반환합니다. `server_ksa_fallback`, `template_fallback`, `human_review_required`, 부분 통과 문항은 공개하지 않습니다.
+
+성공 결과에는 다음 메타데이터가 포함됩니다.
+
+```json
+{
+  "ai_quality_review": {
+    "status": "passed",
+    "reviewed_count": 1,
+    "attempt_count": 1,
+    "scores": [],
+    "reason_codes": [],
+    "provider": "openai_api",
+    "model": "gpt-5.6-sol"
+  }
+}
+```
+
+모델은 역할별로 분리합니다. Luna는 NCS 후보 재정렬, Terra는 질문 초안 작성,
+Sol은 독립 품질검수와 실패 슬롯의 완전 재생성을 담당합니다. 한 요청의 OpenAI
+API 키만 공유하며, 질문 문장은 Terra 또는 재생성 시 Sol이 직접 작성합니다.
+
+`2020년 NCS기반 능력중심 채용모델 면접관 기본·심화` PDF는 Kordoc 4.9.1로
+오프라인 구조화·검토한 요약만 `app/resources/ncs_interviewer_guide_2020.json`에
+배포합니다. 경험·상황·발표·토론면접과 STAR의 취지를 작성 참고로만 프롬프트에
+주입하며, 원본 PDF 경로·원문·파싱 경고는 공개 응답에 포함하지 않습니다. 이
+참고자료가 없거나 손상되어도 내장된 짧은 기법 설명으로 생성은 계속되며, 품질
+통과 조건이나 NCS 근거 경계는 바뀌지 않습니다.
+
+## 4. 로컬 실행
 
 ```powershell
 pip install -r requirements.txt
 npm ci
 $env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
-$env:OPENAI_BASE_URL="https://api.openai.com/v1"
-$env:MAX_UPLOAD_MB="30"
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8015
 ```
 
-Open `http://127.0.0.1:8015`. To use a local server key, keep it in the ignored
-`.env` file with `OPENROUTER_ALLOW_SERVER_KEY=true`; do not put the value in
-source, shell commands, test fixtures, screenshots, tickets, or documentation.
-The optional browser field can still supply a one-request OpenRouter (`sk-or-`)
-or OpenAI (`sk-`) override.
+브라우저에서 `http://127.0.0.1:8015`를 열고 본인의 OpenAI API 키를 입력합니다. `.env`에 OpenAI 키를 넣어도 공개 생성의 대체 키로 사용되지 않습니다.
 
-You can inspect the non-authenticating provider contract without a key:
+## 5. Vercel Production
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8015/api/generation-provider/status
-```
-
-## 4. Docker and production HTTPS
-
-Build and run the internal app listener:
-
-```powershell
-docker build -t ncscope-app .
-docker run --rm -p 127.0.0.1:8015:8000 `
-  -e NCS_MCP_URL="http://host.docker.internal:8778/mcp" `
-  -e OPENAI_BASE_URL="https://api.openai.com/v1" `
-  -e MAX_UPLOAD_MB="30" `
-  ncscope-app
-```
-
-Do not bake a key into the image. If a server-managed key is used, inject it
-through the platform's encrypted runtime secret mechanism. Keep the FastAPI
-listener on a private network. Except for
-loopback development, expose NCScope only behind an institution-approved
-reverse proxy or load balancer that forces HTTPS, redirects or rejects HTTP,
-and uses an approved TLS policy.
-
-Because the key is in the request body, disable body capture and sensitive
-payload inspection/storage for `/api/questions/*` and
-`/api/jd/strategy/upload` in reverse-proxy logs, WAF diagnostics, APM, tracing,
-crash reporting, support dumps, and replay tools. Do not log `Authorization`
-headers on either upstream connection. Limit production administrators who can
-inspect process memory or proxy traffic.
-
-Current public Vercel profile, excluding the secret value:
+현재 공개 프로필은 다음과 같습니다.
 
 ```text
 NCSCOPE_LOAD_DOTENV=false
 NCS_MCP_URL=https://ncscope-ncs-mcp.vercel.app/api/mcp
-INTERVIEW_GENERATION_PROVIDER=openrouter_api
-OPENROUTER_ALLOW_SERVER_KEY=true
+INTERVIEW_GENERATION_PROVIDER=openai_api
 DATABASE_URL=sqlite:////tmp/ncscope.db
-OPENROUTER_PRIMARY_REASONING_EFFORT=medium
-OPENROUTER_TIMEOUT_SEC=8
-OPENROUTER_HIGH_RISK_REASONING_EFFORT=high
-OPENROUTER_QUALITY_RETRY_REASONING_EFFORT=high
-OPENROUTER_HIGH_RISK_TIMEOUT_SEC=15
-OPENROUTER_MAX_REASONING_RESERVE=6000
-OPENROUTER_RECOVERY_MODEL=openai/gpt-oss-20b
-OPENROUTER_RECOVERY_JSON_MODE=true
-OPENROUTER_FALLBACK_REASONING_EFFORT=medium
-OPENROUTER_FALLBACK_TIMEOUT_SEC=15
-OPENROUTER_INVALID_OUTPUT_RETRY_REASONING_EFFORT=medium
-OPENROUTER_INVALID_OUTPUT_RETRY_TIMEOUT_SEC=15
+MAX_UPLOAD_MB=4
+MAX_REQUEST_BODY_MB=4
+NCS_MCP_TIMEOUT_SEC=5
+NCS_MCP_KSA_CONCURRENCY=4
+KSA_RANK_MAX_UNITS=5
+OPENAI_HTTP_CURL_FALLBACK_ENABLED=false
+OPENAI_RERANK_MODEL=gpt-5.6-luna
+OPENAI_STRATEGY_MODEL=gpt-5.6-terra
+OPENAI_STRATEGY_RETRY_MODEL=gpt-5.6-sol
+OPENAI_QUESTION_MODEL=gpt-5.6-terra
+OPENAI_QUALITY_REGENERATION_MODEL=gpt-5.6-sol
 OPENAI_STRATEGY_CANDIDATE_MULTIPLIER=1
 OPENAI_QUESTION_CANDIDATE_MULTIPLIER=1
 OPENAI_QUESTION_VARIANT_ATTEMPTS=1
-OPENROUTER_CANDIDATE_CONCURRENCY=1
-INSTITUTION_MODEL_REQUESTS_PER_BATCH=2
+INSTITUTION_MODEL_REQUESTS_PER_BATCH=1
 INSTITUTION_QUALITY_RETRY_ENABLED=true
 INSTITUTION_GENERATION_BATCH_SIZE=5
 INSTITUTION_GENERATION_BATCH_CONCURRENCY=1
 GENERATION_REQUEST_BUDGET_SEC=285
 GENERATION_MAX_MAIN_QUESTIONS=5
-NCS_MCP_TIMEOUT_SEC=5
-NCS_MCP_KSA_CONCURRENCY=4
-KSA_RANK_MAX_UNITS=5
-MAX_UPLOAD_MB=4
-MAX_REQUEST_BODY_MB=4
-OPENAI_HTTP_CURL_FALLBACK_ENABLED=false
+OPENAI_QUALITY_REVIEW_MODEL=gpt-5.6-sol
+OPENAI_QUALITY_REVIEW_REASONING_EFFORT=high
+AI_QUALITY_REVIEW_TIMEOUT_SEC=70
 ```
 
-`INTERVIEW_GENERATION_PROVIDER` accepts `openrouter_api` or `openai_api` as the
-no-key/status default; the request key prefix is revalidated before generation.
-Store `OPENROUTER_API_KEY` separately as an encrypted runtime secret. The
-server key is read only when `OPENROUTER_ALLOW_SERVER_KEY=true` and must begin
-with `sk-or-`.
-`OPENAI_BASE_URL` names one approved OpenAI gateway, with no endpoint failover.
-The OpenRouter URL and model are fixed in server code. Keep the curl fallback
-off: some operating systems can expose its credentials in process execution
-data.
+`api/index.py`의 Vercel `maxDuration`은 300초이고 애플리케이션 요청 예산은 285초입니다. 외부 서비스가 느리더라도 서버 템플릿으로 문항을 복원하지 않습니다.
 
-Only enable admin/legacy endpoints in a private maintenance deployment:
+Vercel Python 함수는 Node/Kordoc 실행 파일을 보장하지 않습니다. PDF는 Python
+구조·텍스트 복구 경로를 사용하고, HWP 5/HWPX는 `olefile`/표준 XML 기반 로컬
+복구 경로를 사용합니다. HWP 원문은 외부 변환 API로 보내지 않습니다. 압축 해제
+총량, 섹션 수, 추출 글자 수, ZIP 멤버 수와 파일 크기에 상한을 적용하며, 평면화된
+NCS 분류표는 NCS MCP exact 세분류만 자동 후보로 공개합니다.
 
-```text
-ENABLE_ADMIN_ENDPOINTS=true
-ADMIN_TOKEN=<strong token>
-ENABLE_LEGACY_NCS_API=true
-```
+공공기관 운영 전에는 OpenAI의 데이터 처리 조건과 기관 내부의 개인정보·비공개자료 반출 정책을 별도로 확인해야 합니다. API 데이터는 기본적으로 모델 학습에 사용되지 않지만, 기본 abuse monitoring 로그에는 최대 30일 보존 조건이 적용될 수 있습니다. 필요한 기관은 OpenAI와 Zero Data Retention 또는 Modified Abuse Monitoring 자격 및 DPA를 검토하세요.
 
-## 5. Vercel serverless notes
-
-`api/index.py` exposes the FastAPI app as one stateless function. Its Vercel
-function `maxDuration` is 300 seconds, so the public profile uses a 285-second
-application request budget. Every NCS and OpenRouter timeout is clamped to the
-remaining shared budget, leaving 15 seconds for deterministic fallback and
-response serialization.
-
-The public profile gives ordinary Ox Alpha requests at most 8 seconds and
-high-risk high-reasoning requests at most 15 seconds. The 6,000-token reasoning
-reserve remains bounded by the shared request budget. If a request times out,
-the same OpenRouter origin may call the administrator-configured
-`OPENROUTER_RECOVERY_MODEL` (currently `openai/gpt-oss-20b`) for at most 15
-seconds. If Ox Alpha returns unusable JSON, the single quality correction uses
-the high reasoning profile within that same bounded retry budget. When a
-recovery model is configured, its native reasoning parameters are used;
-`OPENROUTER_FALLBACK_REASONING_EFFORT` is only the fallback policy for a
-deployment without a recovery model.
-
-If both external attempts fail, or their output fails a mandatory quality
-gate, the two public institution-generation routes use a provider-free server
-fallback. It may return a draft only when every locked plan slot maps to an
-exact official NCS KSA `evidence_id`; the result is marked
-`provider_fallback_used=true` and `human_review_required`. Provider exception
-text and credentials are never reflected. Missing official evidence remains
-fail-closed.
-
-One candidate and one provider batch are used because public generation accepts
-up to five main questions for one confirmed NCS detail and one interview method.
-The five slots are sent as one batch so the provider is not called once per
-question. Plans containing more than five main questions return HTTP 422
-`question_plan_capacity_exceeded` before Kordoc, NCS, or model work. Additional
-questions use the existing history/offset regeneration flow. A bounded quality
-regeneration is enabled, but it does not receive a fresh wall-clock allowance:
-it must fit inside the same 285-second request budget. Independent NCS KSA
-lookups use bounded concurrency and inspect at most five units.
-
-The browser exposes one interview-method dropdown and one confirmed NCS-detail
-dropdown per request. Direct API attempts containing multiple methods or
-multiple enabled detail plan items return HTTP 422 before NCS or model work.
-Successful question text is carried into the existing avoid/history payload,
-so a reviewer can repeatedly generate another non-duplicate question for the
-same single selection.
-
-The JD and notice parse-review endpoints both return signed, hash-bound review
-sessions. The browser submits those sessions with the same filenames and bytes,
-so generation reuses verified markdown instead of parsing either document a
-second time.
-This is an operational profile; local or longer-running deployments can restore
-the normal 3x pool and 24,000-token reserve.
-
-Vercel rejects request bodies above 4.5 MB. The deployment config therefore
-sets `MAX_UPLOAD_MB=4` and `MAX_REQUEST_BODY_MB=4`; larger JD files must be
-reduced before upload. `DATABASE_URL=sqlite:////tmp/ncscope.db` is ephemeral and
-must not be treated as durable review-session or audit storage. Use an external
-durable database if persistence across function instances is required.
-
-Keep the NCS MCP endpoint aligned with `NCS_MCP_URL` in the deployment profile.
-The target must pass MCP readiness with its NCS database loaded; if readiness
-reports `database_missing` or otherwise fails, NCS-grounded generation is
-blocked with an explicit service error. Add `OPENROUTER_API_KEY` as a sensitive
-Vercel Production variable and keep `OPENROUTER_ALLOW_SERVER_KEY=true`. A new
-deployment is required after changing either value. Never place the actual key
-in `vercel.json` or any committed file.
-
-## 6. Verification
+## 6. 검증
 
 ```powershell
-python -m pytest -q
-python -m py_compile app\main.py app\settings.py app\repository.py app\models.py app\services\jd_strategy.py app\services\ncs_mcp_client.py app\services\question_generation.py app\services\kordoc_parser.py app\services\external_api.py scripts\benchmark_alio_jd.py
+python -m py_compile app/main.py app/services/ai_question_quality_review.py app/services/hwp_text_fallback.py
+python -m json.tool vercel.json
+pytest -q tests/test_ai_question_quality_review.py tests/test_auxiliary_ai_quality_review.py tests/test_openai_byok_contract.py
+python scripts/verify_ncs_interviewer_guide_reference.py "C:\path\to\면접관+기본심화.pdf" --expected-metadata-json app/resources/ncs_interviewer_guide_2020.json
 ```
 
-Real-document benchmark:
-
-```powershell
-$env:NCS_MCP_URL="http://127.0.0.1:8778/mcp"
-python scripts\benchmark_alio_jd.py --limit 10 --include-ksa
-```
-
-Expected behavior:
-
-- Upload parsing returns reviewable Kordoc fields; generation requires confirmed,
-  hash-bound JD and notice review sessions in the browser workflow.
-- Plans above five main questions are rejected before any external work; the UI
-  displays the current total and disables submission at the same boundary.
-- NCS lookup uses confirmed detail classifications and official KSA rows from NCS_MCP.
-- Exact-match failure returns manual NCS suggestions instead of ungrounded questions.
-- In server-managed mode, generation works without a browser key; BYOK requests
-  may provide one non-empty `generation_api_key` in their body/form.
-- `sk-or-` routes only to fixed OpenRouter Ox Alpha, another `sk-` routes only to the configured OpenAI endpoint, and a provider/prefix mismatch is rejected before networking.
-- Provider status reports `configured` with `auth_mode=server_env_api_key` when
-  the Vercel secret is present, and never authenticates, stores, or echoes it.
-- Provider generation or final quality-gate failure returns a sanitized provider-specific error; an empty usable question list is never returned as HTTP 200.
-- Public generation accepts only genuine `openai_api` or `openrouter_api` question output. It never substitutes a deterministic/template result or another provider.
-- Responses, application/audit logs, and persistent storage contain no API key.
-- Generation metadata reports the selected provider/model plus bounded requested/received candidate counts without request text or credentials.
+실 OpenAI canary는 운영 승인된 테스트 키와 비민감 합성 문서로만 수행하세요. 배포 뒤에는 품질 재생성률, 최종 거부율, p50/p95 지연시간, fallback 반환 0건을 확인합니다.

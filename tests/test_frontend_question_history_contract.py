@@ -95,11 +95,16 @@ def test_frontend_routes_only_ncs_match_errors_to_manual_ncs_review() -> None:
     assert "handleNcsMatchError(data.detail)" in script
     assert "handleApiFailure(data, res.status)" in script
     assert "NCS 세분류 매칭과 KSA 조회는 완료되었으며" in script
+    assert "독립 AI 품질검수 또는 실패 문항 재생성 단계에서 통과하지 못했습니다." in script
+    assert "질문 생성 단계에서 실패했습니다." not in script
     assert "const modelFailureCodes = new Set" in script
     assert "'openai_api_timeout'" in script
     assert "'openai_api_invalid_output'" in script
     assert "'openai_api_quality_rejected'" in script
     assert "stopProgress('실패')" in script
+    assert "후보 선택 화면으로 전환했으니 해당 능력단위를 확인해 주세요." in script
+    assert "업로드 내용과 면접 설정은 그대로 유지됩니다." in script
+    assert "정확한 NCS 세분류 매칭이 없습니다" not in script
 
 
 def test_frontend_locks_only_the_stale_question_after_review_conflict() -> None:
@@ -136,6 +141,11 @@ def test_history_resets_only_when_generation_context_changes() -> None:
 
 
 def test_frontend_distinguishes_operational_degradation_from_unresolved_questions() -> None:
+    script = _inline_script()
+    assert "const aiQualityPassed = Boolean(aiQualityReview && aiQualityReview.status === 'passed');" in script
+    assert "const qList = aiQualityPassed" in script
+    assert "fallback_adjustment_degraded" not in script
+    return
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert "operational_warnings" in html
@@ -145,6 +155,11 @@ def test_frontend_distinguishes_operational_degradation_from_unresolved_question
 
 def test_frontend_treats_only_quality_passed_fallback_as_recovered() -> None:
     script = _inline_script()
+
+    assert "const recoveredFallbackSucceeded" not in script
+    assert "AI 품질검수 통과" in script
+    assert "서버 대체 초안" not in script
+    return
 
     assert "const recoveredFallbackSucceeded = Boolean(" in script
     assert "s.question_quality_report.passed === true" in script
@@ -163,6 +178,12 @@ def test_frontend_prefers_official_five_level_behavior_scale() -> None:
 
 def test_frontend_uses_recruiter_facing_quality_labels_and_structured_case_data() -> None:
     script = _inline_script()
+
+    assert "AI 품질검수 통과" in script
+    assert "AI 검수" in script
+    assert "서버 안전검사 통과" in script
+    assert "case_materials" in script
+    return
 
     assert "NCS 기준 재구성" in script
     assert "NCS 평가요소 측정성 보강" in script

@@ -24,7 +24,9 @@ def test_upload_mode_explains_both_required_documents_before_api_setup() -> None
     assert "1. 공공기관 채용공고문" in html
     assert "2. 해당 공고의 NCS 기반 직무기술서" in html
     assert "둘 중 하나라도 없으면 파일 업로드 방식의 질문 생성을 진행할 수 없습니다." in html
-    assert "HWP/HWPX는 PDF로 변환해 탑재하세요." in html
+    assert "PDF/HWP/HWPX/DOCX/TXT와 지원 문서를 담은 ZIP을 사용할 수 있습니다." in html
+    assert 'accept=".pdf,.hwp,.hwpx,.docx,.txt,.zip"' in html
+    assert 'accept=".pdf,.hwp,.hwpx,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt"' in html
 
 
 def test_required_document_inputs_are_single_accessible_controls() -> None:
@@ -116,6 +118,11 @@ def test_upload_review_uses_single_select_for_ncs_detail_and_single_method_selec
     assert 'name="interviewMethod"' not in html
     assert "const interviewMethodSelect = document.getElementById('interviewMethodSelect');" in script
     assert "const SUPPORTED_INTERVIEW_METHODS = Object.freeze([" in script
+    assert '<option value="발표면접">발표면접</option>' in html
+    assert "const INTERVIEW_METHOD_AUTHORING_GUIDES = Object.freeze({" in script
+    assert "function renderInterviewMethodGuide()" in script
+    assert "공통 면접 기본원칙과 선택한 면접기법의 지침이 AI 작성에만 반영" in script
+    assert "통과·탈락 규칙으로 쓰이지 않습니다" in script
     assert "const selected = String(interviewMethodSelect?.value || '').trim();" in script
     assert "return [SUPPORTED_INTERVIEW_METHODS.includes(selected) ? selected : SUPPORTED_INTERVIEW_METHODS[0]];" in script
 
@@ -134,16 +141,14 @@ def test_successful_generation_exposes_repeat_one_question_action() -> None:
     assert "avoid_questions: currentQuestionTexts()" in script
 
 
-def test_required_upload_ux_preserves_default_ox_alpha_key_contract() -> None:
+def test_required_upload_ux_uses_openai_byok_contract() -> None:
     html, script = _page()
-
-    assert "OpenRouter · Ox Alpha" in html
-    assert "OpenRouter · Ox Alpha · 고위험 high 추론·서버 KSA 자동복구" in html
-    assert "Vercel Production 서버 키가 연결되면 브라우저에 키를 입력하지 않아도 됩니다." in html
-    assert "serverEnvApiStatusValid" in script
-    assert "if (key.startsWith('sk-or-')) return 'openrouter_api'" in script
+    assert "OpenAI API 키 (필수)" in html
+    assert "OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성" in html
+    assert "OpenRouter · Ox Alpha" not in html
+    assert "serverEnvApiStatusValid" not in script
+    assert "openrouter_api" not in script
     assert "if (key.startsWith('sk-')) return 'openai_api'" in script
-    assert script.index("key.startsWith('sk-or-')") < script.index("key.startsWith('sk-')")
 
 
 def test_reviewed_notice_is_reused_without_a_second_generation_parse() -> None:

@@ -26,9 +26,9 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description, structure_job_notice
-from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units, search_units_by_detail, suggest_units_by_text
-from detail_gap_classifier import (
+from app.services.kordoc_parser import KordocParseError, parse_with_kordoc, structure_job_description, structure_job_notice  # noqa: E402
+from app.services.ncs_mcp_client import NcsMcpError, get_ksa_by_units, search_units_by_detail, suggest_units_by_text  # noqa: E402
+from detail_gap_classifier import (  # noqa: E402
     classify_unmatched_detail_gap,
     is_healthcare_specialized_detail,
     normalize_detail_key,
@@ -529,6 +529,8 @@ def benchmark_one(
     out_dir: Path,
     max_bytes: int,
     include_ksa: bool,
+    reuse_downloads: bool = False,
+    max_details_per_document: int = 50,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "idx": page.idx,
@@ -565,6 +567,8 @@ def benchmark_one(
         "detail_unmatched_count": 0,
         "detail_partial_match": False,
         "detail_unmatched_candidates": "",
+        "detail_diagnostics_evaluated_count": 0,
+        "detail_diagnostics_omitted_count": 0,
         "detail_diagnostics_skipped_reason": "",
         "mcp_error": "",
         "_detail_rows": [],
@@ -591,7 +595,21 @@ def benchmark_one(
         attachment = attachments[0]
         row["attachment"] = attachment.name
         out_path = out_dir / safe_filename(attachment.name, page.idx, 1)
-        row["bytes"] = download_attachment(client, attachment, out_path, page.url, max_bytes=max_bytes)
+        if reuse_downloads and out_path.is_file():
+            cached_size = out_path.stat().st_size
+            if cached_size <= 0 or cached_size > max_bytes:
+                raise RuntimeError(
+                    f"cached attachment exceeds limit: {cached_size} > {max_bytes}"
+                )
+            row["bytes"] = cached_size
+        else:
+            row["bytes"] = download_attachment(
+                client,
+                attachment,
+                out_path,
+                page.url,
+                max_bytes=max_bytes,
+            )
 
         start = time.perf_counter()
         parsed = parse_benchmark_document(out_path.read_bytes(), filename=attachment.name, max_bytes=max_bytes)
@@ -626,8 +644,15 @@ def benchmark_one(
         row["detail_candidates"] = "; ".join(details)
         row["detail_count"] = len(details)
         if details and row["mcp_configured"]:
+            detail_limit = max(1, min(200, int(max_details_per_document or 50)))
+            diagnostic_details = details[:detail_limit]
+            row["detail_diagnostics_evaluated_count"] = len(diagnostic_details)
+            row["detail_diagnostics_omitted_count"] = max(
+                0,
+                len(details) - len(diagnostic_details),
+            )
             try:
-                detail_rows, units = diagnose_detail_mcp_matches(details[:20])
+                detail_rows, units = diagnose_detail_mcp_matches(diagnostic_details)
             except NcsMcpError as exc:
                 row["mcp_error"] = str(exc)[:500]
                 detail_rows, units = [], []
@@ -723,6 +748,8 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         "detail_unmatched_count",
         "detail_partial_match",
         "detail_unmatched_candidates",
+        "detail_diagnostics_evaluated_count",
+        "detail_diagnostics_omitted_count",
         "detail_diagnostics_skipped_reason",
         "mcp_error",
         "url",
@@ -773,7 +800,6 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
             for detail_row in row.get("_detail_rows") or []:
                 writer.writerow({field: detail_row.get(field, "") for field in detail_fields})
 
-    ok = sum(1 for row in rows if row.get("status") == "ok")
     detail_no_mcp = sum(1 for row in rows if row.get("status") == "detail_no_mcp_match")
     mcp_error_count = sum(1 for row in rows if row.get("status") == "mcp_error")
     mcp_not_configured_count = sum(1 for row in rows if row.get("status") == "mcp_not_configured")
@@ -799,6 +825,14 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
     unit_name_resolved_count = sum(1 for row in rows if row.get("status") == "ok_unit_name_resolved")
     unit_name_detail_count = sum(int(row.get("detail_unit_name_match_count") or 0) for row in rows)
     unmatched_detail_count = sum(int(row.get("detail_unmatched_count") or 0) for row in rows)
+    evaluated_detail_count = sum(
+        int(row.get("detail_diagnostics_evaluated_count") or 0)
+        for row in rows
+    )
+    omitted_detail_count = sum(
+        int(row.get("detail_diagnostics_omitted_count") or 0)
+        for row in rows
+    )
     diagnostics_skipped_detail_count = sum(
         int(row.get("detail_count") or 0)
         for row in rows
@@ -858,6 +892,8 @@ def write_reports(rows: list[dict[str, Any]], report_dir: Path) -> tuple[Path, P
         f"- Unit-name recovered detail labels: {unit_name_detail_count}",
         f"- Documents with partial detail MCP matches: {partial_match_count}",
         f"- Unmatched detail candidates: {unmatched_detail_count}",
+        f"- Detail candidates evaluated by MCP: {evaluated_detail_count}",
+        f"- Detail candidates omitted from MCP diagnostics: {omitted_detail_count}",
         f"- Detail candidates with diagnostics skipped because MCP URL is not configured: {diagnostics_skipped_detail_count}",
         f"- Detail match diagnostic counts: {match_diagnostic_text}",
         f"- Parsed-no-detail category counts: {parsed_no_detail_category_text}",
@@ -900,6 +936,17 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=5, help="number of recent ALIO postings to inspect")
     parser.add_argument("--max-download-mb", type=int, default=20, help="per-attachment download limit")
     parser.add_argument("--include-ksa", action="store_true", help="also fetch official KSA for top MCP units")
+    parser.add_argument(
+        "--reuse-downloads",
+        action="store_true",
+        help="reuse attachment files already present in --out-dir",
+    )
+    parser.add_argument(
+        "--max-details-per-document",
+        type=int,
+        default=50,
+        help="maximum extracted detail labels to diagnose per attachment",
+    )
     parser.add_argument("--out-dir", default=".tmp/alio_jd_benchmark", help="temporary attachment output directory")
     parser.add_argument("--report-dir", default="reports", help="report output directory")
     args = parser.parse_args()
@@ -911,7 +958,20 @@ def main() -> int:
     with httpx.Client(timeout=45.0) as client:
         pages = discover_detail_pages(client, max(1, int(args.limit)))
         for page in pages:
-            rows.append(benchmark_one(client, page, out_dir, max_bytes=max_bytes, include_ksa=bool(args.include_ksa)))
+            rows.append(
+                benchmark_one(
+                    client,
+                    page,
+                    out_dir,
+                    max_bytes=max_bytes,
+                    include_ksa=bool(args.include_ksa),
+                    reuse_downloads=bool(args.reuse_downloads),
+                    max_details_per_document=max(
+                        1,
+                        int(args.max_details_per_document),
+                    ),
+                )
+            )
             time.sleep(0.3)
     md_path, csv_path, detail_csv_path = write_reports(rows, Path(args.report_dir))
     print(f"report={md_path}")

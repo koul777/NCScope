@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -418,8 +420,11 @@ def _split_candidate_blob(raw: str) -> list[tuple[str, bool]]:
     blob = re.sub(r"(?<!^)(?=\d{1,2}\s+[\uAC00-\uD7A3A-Za-z])", "\n", blob)
     blob = re.sub(r"(?<=[\uAC00-\uD7A3A-Za-z])(?=\d{1,2}\s*[\.\)\-]?\s*[\uAC00-\uD7A3A-Za-z])", "\n", blob)
 
+    protected_slash = "\ufff0"
+    blob = re.sub(r"(?<=[A-Za-z])/(?=[A-Za-z])", protected_slash, blob)
     out: list[tuple[str, bool]] = []
     for part in re.split(r"[\n,;/|]+", blob):
+        part = part.replace(protected_slash, "/")
         p = str(part).strip()
         if not p:
             continue
@@ -553,6 +558,127 @@ def extract_pdf_text_fallback(pdf_bytes: bytes, max_pages: int = 6) -> str:
     return "\n".join(lines).strip()
 
 
+def _pdf_sclass_page_limit() -> int:
+    """Bound multi-role JOB-ALIO PDF inspection without truncating normal JDs."""
+
+    try:
+        configured = int(str(os.getenv("PDF_SCLASS_MAX_PAGES", "24")).strip())
+    except (TypeError, ValueError):
+        configured = 24
+    return max(6, min(40, configured))
+
+
+def _is_full_pdf_ncs_code(value: Any) -> bool:
+    """Return whether a PDF cell is only a complete 6-10 digit NCS code."""
+
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    text = re.sub(r"^NCS\s*", "", text, flags=re.IGNORECASE).strip()
+    if not text or not re.fullmatch(r"[\d\s()[\]{}.,/_:\-]+", text):
+        return False
+    return 6 <= len(re.sub(r"\D", "", text)) <= 10
+
+
+_OFFICIAL_PDF_NCS_SCLASS_CODES: frozenset[str] | None = None
+
+
+def _official_pdf_ncs_sclass_codes() -> frozenset[str]:
+    """Return official six-digit prefixes for ambiguous joined PDF cells."""
+
+    global _OFFICIAL_PDF_NCS_SCLASS_CODES
+    if _OFFICIAL_PDF_NCS_SCLASS_CODES is not None:
+        return _OFFICIAL_PDF_NCS_SCLASS_CODES
+
+    csv_path = Path(__file__).resolve().parents[2] / "ncs_sclass_codes_with_code_no.csv"
+    codes: set[str] = set()
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                code = str(row.get("NCS_CODE_NO") or "").strip()
+                if re.fullmatch(r"\d{6}", code):
+                    codes.add(code)
+    except (OSError, UnicodeError, csv.Error):
+        codes.clear()
+    _OFFICIAL_PDF_NCS_SCLASS_CODES = frozenset(codes)
+    return _OFFICIAL_PDF_NCS_SCLASS_CODES
+
+
+def _is_official_joined_pdf_ncs_code(value: Any) -> bool:
+    if not _is_full_pdf_ncs_code(value):
+        return False
+    normalized = unicodedata.normalize("NFKC", str(value or "")).strip()
+    normalized = re.sub(r"^NCS\s*", "", normalized, flags=re.IGNORECASE).strip()
+    digits = re.sub(r"\D", "", normalized)
+    if len(digits) not in {6, 8, 10}:
+        return False
+    if re.search(r"\s", normalized):
+        groups = re.findall(r"\d+", normalized)
+        if len(groups) < 2 or any(len(group) != 2 for group in groups):
+            return False
+    return digits[:6] in _official_pdf_ncs_sclass_codes()
+
+
+def _leading_official_pdf_sclass_boundary(value: str) -> int | None:
+    """Locate the end of a leading official six-digit base code."""
+
+    text = str(value or "")
+    digit_count = 0
+    for index, char in enumerate(text):
+        if char.isdecimal():
+            digit_count += 1
+        if digit_count != 6:
+            continue
+        prefix = text[: index + 1]
+        if _is_official_joined_pdf_ncs_code(prefix):
+            return index + 1
+        return None
+    return None
+
+
+def _strip_full_pdf_ncs_code_prefix(value: str) -> str:
+    """Remove a complete NCS code prefix while preserving the detail name."""
+
+    # Normalize only candidate code fragments in ``_is_full_pdf_ncs_code``.
+    # Normalizing the whole cell would silently rewrite an official label such
+    # as ``CO₂배출관리`` to ``CO2배출관리``.
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    boundaries: list[tuple[int, int]] = [
+        (match.start(), match.end())
+        for match in re.finditer(r"\s+|[:：/／,_，\-－]+", text)
+    ]
+    boundaries.extend(
+        (match.start(), match.start())
+        for match in re.finditer(r"(?<=[)\]}）］】])(?=[A-Za-z가-힣])", text)
+    )
+    joined_boundaries = {
+        match.start()
+        for match in re.finditer(r"(?<=\d)(?=[A-Za-z가-힣])", text)
+    }
+    base_boundary = _leading_official_pdf_sclass_boundary(text)
+    if base_boundary is not None and re.search(
+        r"[A-Za-z가-힣]", text[base_boundary:]
+    ):
+        joined_boundaries.add(base_boundary)
+    boundaries.extend((position, position) for position in joined_boundaries)
+    matches: list[tuple[int, int, str]] = []
+    for start, end in boundaries:
+        prefix = text[:start].strip()
+        remainder = text[end:].strip()
+        if not remainder or not re.search(r"[A-Za-z가-힣]", remainder):
+            continue
+        if _is_full_pdf_ncs_code(prefix) and (
+            start not in joined_boundaries or _is_official_joined_pdf_ncs_code(prefix)
+        ):
+            matches.append((len(re.sub(r"\D", "", prefix)), end, remainder))
+    if not matches:
+        return text
+    # Prefer the longest prefix so ``010101-01 인사`` does not leave
+    # ``01 인사`` behind.
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return matches[0][2]
+
+
 def _clean_pdf_detail_cell(value: Any) -> list[str]:
     """Normalize one PDF 세분류 table cell without consulting 소분류 data."""
     text = re.sub(r"\s+", " ", str(value or "")).strip()
@@ -562,7 +688,17 @@ def _clean_pdf_detail_cell(value: Any) -> list[str]:
     parts = re.split(r"\s+(?=\d{1,2}\s*[.)])", text)
     out: list[str] = []
     for part in parts:
-        item = re.sub(r"^\d{1,2}\s*[.)]?\s*", "", part).strip(" .")
+        item = str(part or "").strip()
+        if _is_full_pdf_ncs_code(item):
+            continue
+        without_code = _strip_full_pdf_ncs_code_prefix(item)
+        if without_code != item:
+            item = without_code
+        else:
+            # A two-digit table ordinal remains supported, but an ordinary
+            # digit-leading name such as ``3D프린터개발`` is left intact.
+            item = re.sub(r"^\d{1,2}(?:\s*[,，.．)）：:\-－]\s*|\s+)", "", item)
+        item = item.strip(" .")
         if not item or item in {"-", "–", "—"}:
             continue
         if re.sub(r"\s+", "", item) in {
@@ -574,7 +710,36 @@ def _clean_pdf_detail_cell(value: Any) -> list[str]:
             "NCS미개발",
         }:
             continue
-        if item in {"대분류", "중분류", "소분류", "세분류", "분류체계"}:
+        if re.sub(r"\s+", "", item) in {
+            "대분류",
+            "중분류",
+            "소분류",
+            "세분류",
+            "분류체계",
+            "직무정의",
+            "직무설명",
+            "핵심책무",
+            "주요사업",
+            "기관주요사업",
+            "공단소개",
+            "공단주요사업",
+            "능력단위",
+            "능력단위명",
+            "능력단위명칭",
+            "능력단위코드",
+            "요구능력단위",
+            "요건",
+            "교육요건",
+            "NCS기반채용전형절차",
+            "서류접수→면접시험",
+            "공고문참조",
+            "제한없음",
+        }:
+            continue
+        compact = re.sub(r"\s+", "", item)
+        if re.fullmatch(r"(?:지식|기술|태도)명\\*(?:NCS)?참고", compact, flags=re.IGNORECASE):
+            continue
+        if re.search(r"(?:https?://|www\.)", item, flags=re.IGNORECASE):
             continue
         # Do not let a duty paragraph become a detail candidate.
         if len(item) > 80:
@@ -586,10 +751,30 @@ def _clean_pdf_detail_cell(value: Any) -> list[str]:
 
 def _is_detail_header_cell(value: Any) -> bool:
     """Recognize common NCS 세분류 header variants without prose matches."""
-    compact = re.sub(r"\s+", "", str(value or ""))
+    compact = re.sub(r"\s+", "", str(value or "")).strip(":：-").casefold()
     if not compact or len(compact) > 32:
         return False
-    return "세분류" in compact
+    # A substring check also treats document headings such as
+    # ``NCS 세분류 직무 설명`` as a column header.  If the following row is
+    # ``직무명 | ...``, that makes ``직무명`` look like an authoritative
+    # detail candidate.  Keep this list to actual column-label forms used by
+    # NCS job descriptions.
+    return compact in {
+        "세분류",
+        "세분류명",
+        "ncs세분류",
+        "ncs세분류명",
+        "직무세분류",
+        "세분류(직무)",
+        "세분류(직무명)",
+        "ncs분류체계세분류",
+        "세분류(특화분류)",
+        "ncs세분류(특화분류)",
+        "소분류세분류",
+        "소분류세분류(특화분류)",
+        "대분류중분류소분류세분류",
+        "ncs분류체계대분류중분류소분류세분류",
+    }
 
 
 def _extract_detail_candidates_from_tables(
@@ -605,18 +790,38 @@ def _extract_detail_candidates_from_tables(
     """
     stop_labels = {
         "능력단위",
+        "능력단위명",
+        "능력단위명칭",
+        "능력단위코드",
+        "요구능력단위",
         "직무수행내용",
+        "주요업무",
+        "담당업무",
         "필요지식",
         "필요기술",
         "직무수행태도",
         "직업기초능력",
+        "직업공통능력",
         "필요자격",
         "참고사이트",
+        "공단소개",
+        "공단주요사업",
+        "NCS기반채용전형절차",
+        "전형방법",
+        "요건",
+        "교육요건",
+        "핵심책무",
+        "직무설명",
     }
     all_collected: list[dict[str, Any]] = []
     for page_no, table in scope_tables:
         active_detail_index: int | None = None
-        for row in table[:16]:
+        # Header detection scans every extracted table row, so candidate
+        # extraction must do the same.  Public-institution PDFs often prepend
+        # more than 16 metadata rows before the NCS classification block; a
+        # shorter extraction window produced ``detail_table_found=True`` with
+        # an empty authoritative candidate list.
+        for row in table:
             if not row:
                 continue
             row_labels = {
@@ -651,6 +856,8 @@ def _extract_detail_candidates_from_tables(
             else:
                 continue
             for cell in value_cells:
+                if re.sub(r"\s+", "", str(cell or "")) in stop_labels:
+                    break
                 for label in _clean_pdf_detail_cell(cell):
                     all_collected.append(
                         {
@@ -688,7 +895,7 @@ def _has_detail_table_header(
 def extract_detail_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[str, Any]:
     """Return human-reviewable NCS 세분류 candidates from a PDF table."""
     _ = filename
-    parsed = _extract_pdf_content(pdf_bytes, max_pages=6)
+    parsed = _extract_pdf_content(pdf_bytes, max_pages=_pdf_sclass_page_limit())
     details = _extract_detail_candidates_from_tables(parsed["all_tables"])
     detail_table_found = _has_detail_table_header(parsed["all_tables"])
     return {
@@ -848,7 +1055,7 @@ def _extract_from_text_scope(text: str) -> tuple[list[dict[str, Any]], list[str]
 
 def extract_sclass_from_pdf_bytes(pdf_bytes: bytes, filename: str = "") -> dict[str, Any]:
     ncs_cats = _load_ncs_small_categories()
-    parsed = _extract_pdf_content(pdf_bytes, max_pages=6)
+    parsed = _extract_pdf_content(pdf_bytes, max_pages=_pdf_sclass_page_limit())
     scope_rows = parsed["scope_rows"]
     scope_tables = parsed["scope_tables"]
     all_lines = parsed["all_lines"]

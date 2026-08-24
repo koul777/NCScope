@@ -50,7 +50,9 @@ class Settings:
     ncs_mcp_url: str = os.getenv("NCS_MCP_URL", "")
     ncs_mcp_timeout: int = int(os.getenv("NCS_MCP_TIMEOUT_SEC", "45"))
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    # Generic/legacy OpenAI callers should align with the authoring role.
+    # Luna remains explicitly scoped to NCS candidate reranking.
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
 
     def public_inst_key(self) -> str:
         return (

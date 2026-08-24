@@ -23,7 +23,7 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     config = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
     environment = config["env"]
 
-    assert environment["INTERVIEW_GENERATION_PROVIDER"] == "openrouter_api"
+    assert environment["INTERVIEW_GENERATION_PROVIDER"] == "openai_api"
     assert environment["NCS_MCP_URL"] == "https://ncscope-ncs-mcp.vercel.app/api/mcp"
     assert environment["NCS_MCP_TIMEOUT_SEC"] == "5"
     assert environment["NCS_MCP_KSA_CONCURRENCY"] == "4"
@@ -31,26 +31,24 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["DATABASE_URL"] == "sqlite:////tmp/ncscope.db"
     assert environment["MAX_UPLOAD_MB"] == "4"
     assert environment["MAX_REQUEST_BODY_MB"] == "4"
-    assert environment["OPENROUTER_ALLOW_SERVER_KEY"] == "true"
-    assert environment["OPENROUTER_TIMEOUT_SEC"] == "8"
-    assert environment["OPENROUTER_HIGH_RISK_TIMEOUT_SEC"] == "15"
-    assert environment["OPENROUTER_FALLBACK_TIMEOUT_SEC"] == "15"
-    assert environment["OPENROUTER_RECOVERY_MODEL"] == "openai/gpt-oss-20b"
     assert environment["OPENAI_STRATEGY_CANDIDATE_MULTIPLIER"] == "1"
     assert environment["OPENAI_QUESTION_CANDIDATE_MULTIPLIER"] == "1"
     assert environment["OPENAI_QUESTION_VARIANT_ATTEMPTS"] == "1"
-    assert environment["OPENROUTER_CANDIDATE_CONCURRENCY"] == "1"
-    assert environment["INSTITUTION_MODEL_REQUESTS_PER_BATCH"] == "2"
+    assert environment["INSTITUTION_MODEL_REQUESTS_PER_BATCH"] == "1"
     assert environment["INSTITUTION_QUALITY_RETRY_ENABLED"] == "true"
     assert environment["INSTITUTION_GENERATION_BATCH_SIZE"] == "5"
     assert environment["INSTITUTION_GENERATION_BATCH_CONCURRENCY"] == "1"
     assert environment["GENERATION_REQUEST_BUDGET_SEC"] == "285"
     assert environment["GENERATION_MAX_MAIN_QUESTIONS"] == "5"
-    assert environment["OPENROUTER_PRIMARY_REASONING_EFFORT"] == "medium"
-    assert environment["OPENROUTER_HIGH_RISK_REASONING_EFFORT"] in {"high", "xhigh", "max"}
-    assert environment["OPENROUTER_QUALITY_RETRY_REASONING_EFFORT"] in {"high", "xhigh", "max"}
-    assert environment["OPENROUTER_INVALID_OUTPUT_RETRY_REASONING_EFFORT"] == "medium"
-    assert environment["OPENROUTER_INVALID_OUTPUT_RETRY_TIMEOUT_SEC"] == "15"
+    assert environment["OPENAI_RERANK_MODEL"] == "gpt-5.6-luna"
+    assert environment["OPENAI_STRATEGY_MODEL"] == "gpt-5.6-terra"
+    assert environment["OPENAI_STRATEGY_RETRY_MODEL"] == "gpt-5.6-sol"
+    assert environment["OPENAI_QUESTION_MODEL"] == "gpt-5.6-terra"
+    assert environment["OPENAI_QUALITY_REGENERATION_MODEL"] == "gpt-5.6-sol"
+    assert environment["OPENAI_QUALITY_REVIEW_MODEL"] == "gpt-5.6-sol"
+    assert environment["OPENAI_QUALITY_REVIEW_REASONING_EFFORT"] in {"high", "xhigh", "max"}
+    assert environment["AI_QUALITY_REVIEW_TIMEOUT_SEC"] == "70"
+    assert not any(key.startswith("OPENROUTER_") for key in environment)
     assert not any("api_key" in key.casefold() for key in environment)
 
 

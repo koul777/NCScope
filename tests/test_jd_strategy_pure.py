@@ -36,6 +36,44 @@ def test_structured_interview_guide_file_is_loaded():
     assert "직무지식면접" in summary
 
 
+def test_kordoc_interviewer_baseline_is_repo_owned_and_advisory_only():
+    guide_path = jd_strategy._ncs_interviewer_guide_path()
+    assert os.path.exists(guide_path)
+
+    guide = jd_strategy._load_ncs_interviewer_guide()
+
+    assert guide["source"]["parsed_with"] == "kordoc 4.9.1"
+    assert guide["source"]["page_count"] == 44
+    assert guide["source"]["sha256"] == (
+        "1E896FFB9BD0B6C5D7E1B32F79D0F4CFD834E6CB4D7350CBF0960CE65BB72004"
+    )
+    assert guide["usage"]["mode"] == "authoring_advice_only"
+    assert guide["usage"]["hard_gate"] is False
+    assert guide["usage"]["public_response_field"] is False
+    assert set(guide["source"]["covered_methods"]) == {
+        "경험면접",
+        "상황면접",
+        "발표면접",
+        "토론면접",
+    }
+
+
+def test_missing_kordoc_baseline_never_blocks_authoring(monkeypatch):
+    jd_strategy._load_ncs_interviewer_guide.cache_clear()
+    monkeypatch.setattr(
+        jd_strategy,
+        "_ncs_interviewer_guide_path",
+        lambda: "Z:/definitely-missing/ncs-interviewer-guide.json",
+    )
+    try:
+        guidance = jd_strategy._ai_authoring_method_guidance(["경험면접"])
+    finally:
+        jd_strategy._load_ncs_interviewer_guide.cache_clear()
+
+    assert "검증 규칙 아님" in guidance
+    assert jd_strategy._AI_AUTHORING_METHOD_GUIDES["경험면접"] in guidance
+
+
 def test_model_question_gate_contract_matches_quality_gate_terms():
     contract = _model_question_gate_contract()
 
@@ -80,8 +118,8 @@ def test_model_question_gate_contract_matches_quality_gate_terms():
     assert "question_evidence_id에는 배정된 evidence_id를 정확히 저장" in contract
 
 
-def test_experience_prompt_gives_ai_ksa_semantics_without_fixed_star_script() -> None:
-    prompt = jd_strategy._experience_only_generation_prompt(
+def test_experience_prompt_uses_star_as_guidance_without_fixed_script() -> None:
+    prompt = jd_strategy._ai_authored_generation_prompt(
         planned_sequence=[
             {
                 "index": 1,
@@ -106,10 +144,14 @@ def test_experience_prompt_gives_ai_ksa_semantics_without_fixed_star_script() ->
         extra_context="",
     )
 
-    assert "[KSA 기반 자유작성 계약]" in prompt
+    assert "[자유작성 계약]" in prompt
     assert '"official_ksa":"입사예정자의 조직적응 지원 태도"' in prompt
-    assert "AI가 question, follow_ups, evaluation_points의 문구를 직접 작성" in prompt
-    assert "꼬리질문의 시작말, 순서, STAR 역할을 고정하지 마세요" in prompt
+    assert '"task_semantics"' not in prompt
+    assert '"observable_evidence"' not in prompt
+    assert "question, follow_ups, evaluation_points의 지원자용 문장을 모두 직접 작성" in prompt
+    assert "[STAR 작성 가이드 — 검증 규칙 아님]" in prompt
+    assert "구체 상황(S), 당시 과제·역할(T), 본인이 실제로 한 행동(A), 결과·확인·학습(R)" in prompt
+    assert "S/T/A/R 라벨, 고정 순서" in prompt
     assert "경험면접 주질문 하나만 읽어도 S·T·A·R" not in prompt
     assert "꼬리1은 '방금 말씀하신'" not in prompt
     assert "수치·문서·피드백으로 확인한 결과가 모두 나오게" not in prompt
@@ -153,7 +195,7 @@ def test_experience_prompt_gives_ai_ksa_semantics_without_fixed_star_script() ->
 
 
 def test_ksa_free_prompt_uses_selected_debate_method_without_server_scenario() -> None:
-    prompt = jd_strategy._experience_only_generation_prompt(
+    prompt = jd_strategy._ai_authored_generation_prompt(
         planned_sequence=[
             {
                 "index": 1,
@@ -182,9 +224,143 @@ def test_ksa_free_prompt_uses_selected_debate_method_without_server_scenario() -
 
     assert '"type":"토론면접"' in prompt
     assert '"official_ksa":"채용 기준 수립 방법"' in prompt
-    assert "토론면접은 KSA와 연결된 서로 방어 가능한 입장과 공동 판단 쟁점" in prompt
     assert "서버가 만든 고정 갈등 사례" not in prompt
     assert "required_scenario_frame" not in prompt
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "경험면접",
+        "상황면접",
+        "발표면접",
+        "토론면접",
+        "인바스켓면접",
+        "직무지식면접",
+        "창의적 문제해결력면접",
+    ],
+)
+def test_all_public_method_prompts_receive_only_evidence_first_slot_fields(method: str) -> None:
+    prompt = jd_strategy._ai_authored_generation_prompt(
+        planned_sequence=[
+            {
+                "index": 1,
+                "type": method,
+                "detail": "인사",
+                "ncsClCd": "0202020103_25v1",
+                "compeUnitName": "입사자 적응 지원",
+                "compeUnitDef": "신규 입사자가 조직과 직무에 적응하도록 지원한다.",
+                "required_element_name": "입사자 적응 지원하기",
+                "evidence_id": "ksa_locked_001",
+                "required_ksa_type": "태도",
+                "required_factorName": "신규 입사자의 어려움을 파악하여 지원하려는 태도",
+                "required_task_statement": "서버가 만든 과업 문장",
+                "required_observable_behavior": "서버가 만든 관찰 행동",
+                "required_scenario_frame": "자료가 서로 달랐던 때",
+                "required_question_example": "서버 질문 예시",
+            }
+        ],
+        target_count=1,
+        follow_up_count=3,
+        notice_text="인사 운영 담당자 채용",
+        jd_text="신규 입사자 온보딩 운영",
+        duty_text="초기 적응 상태를 확인하고 필요한 지원을 연계한다.",
+        evaluation_text="구성원 지원 역량",
+        extra_context="",
+    )
+
+    slot_line = prompt.split("[질문 SLOT JSON]", 1)[1].splitlines()[0]
+    slots = json.loads(slot_line)
+    assert len(slots) == 1
+    assert set(slots[0]) == {
+        "index",
+        "type",
+        "detail",
+        "ncsClCd",
+        "competency",
+        "competency_definition",
+        "work_element",
+        "evidence_id",
+        "ksa_type",
+        "official_ksa",
+        }
+    assert slots[0]["type"] == method
+    for banned in (
+        "required_scenario_frame",
+        "required_task_statement",
+        "required_observable_behavior",
+        "required_question_example",
+        "자료가 서로 달랐던 때",
+    ):
+        assert banned not in prompt
+    assert "[면접 기본원칙 + 선택 면접기법 작성 지침 — 검증 규칙 아님]" in prompt
+    assert "공식 NCS KSA와 실제 담당업무" in prompt
+    assert jd_strategy._AI_AUTHORING_METHOD_GUIDES[method] not in prompt
+    guide_methods = jd_strategy._load_ncs_interviewer_guide()["methods"]
+    assert guide_methods[method]["guidance"] in prompt
+    for other_method, entry in guide_methods.items():
+        if other_method != method:
+            assert entry["guidance"] not in prompt
+    assert jd_strategy._SELECTED_METHOD_PROMPT_RULES[method].strip() not in prompt
+    assert "STAR" in prompt
+    assert "1E896FFB" not in prompt
+    assert "C:\\Users\\" not in prompt
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "경험면접",
+        "상황면접",
+        "발표면접",
+        "토론면접",
+        "인바스켓면접",
+        "직무지식면접",
+        "창의적 문제해결력면접",
+    ],
+)
+@pytest.mark.parametrize("question_count", range(1, 6))
+def test_public_prompt_supports_every_method_for_one_to_five_questions(
+    method: str,
+    question_count: int,
+) -> None:
+    planned = [
+        {
+            "index": index,
+            "type": method,
+            "detail": "프로젝트관리",
+            "ncsClCd": f"010101020{index}_25v1",
+            "compeUnitName": f"프로젝트관리 능력단위 {index}",
+            "compeUnitDef": "프로젝트 목표와 제약을 검토하여 실행을 관리한다.",
+            "required_element_name": f"프로젝트 요소 {index}",
+            "evidence_id": f"ksa_method_count_{index}",
+            "required_ksa_type": ("지식", "기술", "태도")[(index - 1) % 3],
+            "required_factorName": f"프로젝트 수행 근거 {index}",
+        }
+        for index in range(1, question_count + 1)
+    ]
+
+    prompt = jd_strategy._ai_authored_generation_prompt(
+        planned_sequence=planned,
+        target_count=question_count,
+        follow_up_count=3,
+        notice_text="프로젝트 수행 인력 채용",
+        jd_text="프로젝트 계획 수립과 실행 점검",
+        duty_text="일정·자원·위험 관리",
+        evaluation_text="직무 전문성과 문제 해결",
+        extra_context="",
+    )
+
+    slot_line = prompt.split("[질문 SLOT JSON]", 1)[1].splitlines()[0]
+    slots = json.loads(slot_line)
+    assert len(slots) == question_count
+    assert [slot["index"] for slot in slots] == list(range(1, question_count + 1))
+    assert {slot["type"] for slot in slots} == {method}
+    assert [slot["evidence_id"] for slot in slots] == [
+        f"ksa_method_count_{index}" for index in range(1, question_count + 1)
+    ]
+    assert f"interview_questions를 정확히 {question_count}개" in prompt
+    assert "follow_ups 3개" in prompt
 
 
 def test_experience_prompt_contract_keeps_star_internal_and_model_wording_free() -> None:
@@ -219,7 +395,28 @@ def test_planned_question_sequence_for_prompt_expands_detail_order_and_methods()
         {"index": 2, "detail": "인사", "type": "상황면접", "follow_up_count": 4},
         {"index": 3, "detail": "사무행정", "type": "경험면접", "follow_up_count": 5},
     ]
-    assert all(item["required_scenario_frame"] for item in result)
+    assert all(
+        {
+            "required_scenario_frame",
+            "required_followup_focus_slot",
+            "required_followup_focus_example",
+        }.isdisjoint(item)
+        for item in result
+    )
+
+
+def test_planned_question_sequence_clamps_impossible_zero_followups_to_one():
+    result = _planned_question_sequence_for_prompt(
+        {
+            "question_sequence": [
+                {"detail": "인사", "follow_up_count": 0},
+            ]
+        },
+        ["경험면접"],
+        1,
+    )
+
+    assert result[0]["follow_up_count"] == 1
 
 
 def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor():
@@ -267,25 +464,19 @@ def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor(
     assert result[0]["required_factorName"] == "Requirement Analysis"
     assert result[0]["required_ksa_type"] == "기술"
     assert result[0]["evidence_id"].startswith("ksa_")
-    assert result[0]["required_scenario_frame"]
-    assert result[0]["required_followup_focus_slot"] == 1
-    assert result[0]["required_surface_focus"] not in result[0]["required_followup_focus_example"]
-    assert "Requirement Analysis" not in result[0]["required_followup_focus_example"]
-    assert "꼬리1은 답변에서 빠진 상황·역할" in result[0]["required_followup_focus_example"]
-    assert "꼬리2는 배정 과업" in result[0]["required_followup_focus_example"]
-    assert result[0]["required_task_statement"] in result[0]["required_scenario_frame"]
-    assert "실제 경험 사건으로 설계" in result[0]["required_scenario_frame"]
+    assert "required_scenario_frame" not in result[0]
+    assert "required_followup_focus_slot" not in result[0]
+    assert "required_followup_focus_example" not in result[0]
     assert result[1]["ncsClCd"] == "U2"
     assert result[1]["compeUnitName"] == "Document Control"
     assert result[1]["required_job_context"] == "Document Control"
     assert result[1]["required_factorName"] == "Record Classification"
-    assert result[1]["required_scenario_frame"]
-    assert result[1]["required_followup_focus_slot"] == 1
-    assert result[1]["required_surface_focus"] not in result[1]["required_followup_focus_example"]
-    assert "Record Classification" not in result[1]["required_followup_focus_example"]
+    assert "required_scenario_frame" not in result[1]
+    assert "required_followup_focus_slot" not in result[1]
+    assert "required_followup_focus_example" not in result[1]
 
 
-def test_experience_scenarios_follow_each_assigned_project_ksa_instead_of_stock_events():
+def test_experience_slots_keep_official_ksa_without_server_scenarios():
     detail = "프로젝트관리"
     codes_and_factors = [
         ("0101010205_17v2", "프로젝트 인적자원관리", "승인된 변경에 대한 지식"),
@@ -327,26 +518,12 @@ def test_experience_scenarios_follow_each_assigned_project_ksa_instead_of_stock_
     assert [item["required_factorName"] for item in result] == [
         factor for _code, _unit, factor in codes_and_factors
     ]
-    assert all(
-        item["required_task_statement"] in item["required_scenario_frame"]
-        for item in result
-    )
-    assert all(
-        "배정 KSA를 가장 잘 드러내는 판단 또는 직접 행동 하나"
-        in item["required_scenario_frame"]
-        for item in result
-    )
-    assert all(
-        "나머지 증거는 답변 내용에 맞춰 후속 질문에서 확인"
-        in item["required_scenario_frame"]
-        for item in result
-    )
-    assert "현재 상황에 다시 써야 할 원칙" in result[2]["required_scenario_frame"]
-    assert "그대로 따르지 않을 조건" in result[2]["required_scenario_frame"]
-    assert "이해관계자 요청이 충돌한 상황에서 조정한 경험" not in result[2]["required_scenario_frame"]
+    assert all("required_scenario_frame" not in item for item in result)
+    assert all("required_question_example" not in item for item in result)
+    assert all("required_followup_focus_example" not in item for item in result)
 
 
-def test_planned_question_sequence_adds_scenario_frame_without_matched_unit():
+def test_planned_question_sequence_does_not_add_scenario_without_matched_unit():
     plan = {
         "question_sequence": [
             {"detail": "Unknown Detail"},
@@ -357,12 +534,12 @@ def test_planned_question_sequence_adds_scenario_frame_without_matched_unit():
     result = _planned_question_sequence_for_prompt(plan, ["상황면접"], 2, ncs_matches=[], ncs_ksa=[])
 
     assert [item["required_job_context"] for item in result] == ["Unknown Detail", "Unknown Detail"]
-    assert all(item["required_followup_focus_slot"] == 1 for item in result)
-    assert len({item["required_scenario_frame"] for item in result}) == 2
+    assert all("required_followup_focus_slot" not in item for item in result)
+    assert all("required_scenario_frame" not in item for item in result)
     assert all("required_factorName" not in item for item in result)
 
 
-def test_planned_question_sequence_for_prompt_sets_method_specific_followup_focus_slots():
+def test_planned_question_sequence_keeps_methods_without_server_followup_scripts():
     plan = {
         "question_sequence": [
             {"detail": "Office Admin"},
@@ -392,27 +569,17 @@ def test_planned_question_sequence_for_prompt_sets_method_specific_followup_focu
         ncs_ksa=ncs_ksa,
     )
 
-    assert result[0]["required_followup_focus_slot"] == 0
-    assert "발표에서 근거로 든 수치" in result[0]["required_followup_focus_example"]
-    assert result[0]["required_surface_focus"] not in result[0]["required_followup_focus_example"]
-    assert "Evidence Analysis" not in result[0]["required_followup_focus_example"]
-    assert result[1]["required_followup_focus_slot"] == 0
-    assert "지원자가 수용한 상대 입장" in result[1]["required_followup_focus_example"]
-    assert result[1]["required_surface_focus"] not in result[1]["required_followup_focus_example"]
-    assert "Position Rationale" not in result[1]["required_followup_focus_example"]
-    assert result[2]["required_followup_focus_slot"] == 1
-    assert "원인 가설이나 대안" in result[2]["required_followup_focus_example"]
-    assert result[2]["required_surface_focus"] not in result[2]["required_followup_focus_example"]
-    assert "Alternative Validation" not in result[2]["required_followup_focus_example"]
-    assert "Creative Unit" not in result[2]["required_followup_focus_example"]
-    assert result[3]["required_followup_focus_slot"] == 1
-    assert "지원자가 첫 조치로 고른 행동" in result[3]["required_followup_focus_example"]
-    assert result[3]["required_surface_focus"] not in result[3]["required_followup_focus_example"]
-    assert "Risk Control" not in result[3]["required_followup_focus_example"]
-    assert "Situation Unit" not in result[3]["required_followup_focus_example"]
+    assert [item["type"] for item in result] == [
+        "발표면접",
+        "토론면접",
+        "창의적 문제해결력면접",
+        "상황면접",
+    ]
+    assert all("required_followup_focus_slot" not in item for item in result)
+    assert all("required_followup_focus_example" not in item for item in result)
 
 
-def test_planned_question_sequence_for_prompt_includes_strict_method_examples():
+def test_planned_question_sequence_excludes_server_method_examples():
     plan = {
         "question_sequence": [
             {"detail": "Office Admin"},
@@ -436,27 +603,15 @@ def test_planned_question_sequence_for_prompt_includes_strict_method_examples():
         ncs_ksa=ncs_ksa,
     )
 
-    debate_question = result[0]["required_question_example"]
-    assert debate_question.startswith("설계 자산:")
-    assert "실제 운영 사건" in debate_question
-    assert "양립하기 어려운 두 입장" in debate_question
-    assert "확인할 사실" in debate_question
-    assert "합의 적용 범위" in debate_question
-    assert "토론시간" not in debate_question
-    assert "입장발표" not in debate_question
-    assert "Position Rationale" not in debate_question
-    assert result[0]["required_surface_focus"] not in debate_question
-    assert "Discussion Unit" not in debate_question
-
-    inbasket_followup = result[1]["required_followup_focus_example"]
-    assert "Document Priority" not in inbasket_followup
-    assert result[1]["required_surface_focus"] not in inbasket_followup
-    assert "Inbasket Unit" not in inbasket_followup
-    assert "지원자가 1순위로 둔 문서" in inbasket_followup
-    assert "보고·위임·직접처리 선택" in inbasket_followup
+    assert [item["required_factorName"] for item in result] == [
+        "Position Rationale",
+        "Document Priority",
+    ]
+    assert all("required_question_example" not in item for item in result)
+    assert all("required_followup_focus_example" not in item for item in result)
 
 
-def test_planned_question_sequence_rotates_factor_by_unit_occurrence_and_scenario_frame():
+def test_planned_question_sequence_rotates_factor_without_scenario_frame():
     plan = {
         "question_sequence": [
             {"detail": "Office Admin"},
@@ -485,7 +640,7 @@ def test_planned_question_sequence_rotates_factor_by_unit_occurrence_and_scenari
         "Schedule Planning",
         "Requirement Analysis",
     ]
-    assert len({item["required_scenario_frame"] for item in result}) == 3
+    assert all("required_scenario_frame" not in item for item in result)
 
 
 def test_method_design_briefs_are_distinct_and_never_interpolate_ncs_labels():
@@ -565,10 +720,11 @@ def test_presentation_prompt_contract_keeps_one_demand_family_and_one_output():
     assert "산출물은 반드시 그 핵심 판단을 기록" in contract
 
 
-def test_openai_prompt_preserves_evidence_metadata_but_forbids_surface_copy(monkeypatch):
+def test_openai_prompt_keeps_metadata_server_side_and_accepts_surface_only_output(monkeypatch):
     captured_payloads: list[dict] = []
 
     monkeypatch.delenv("OPENAI_FORCE_FALLBACK", raising=False)
+    monkeypatch.setenv("OPENAI_STRATEGY_CANDIDATE_MULTIPLIER", "3")
     monkeypatch.setattr(
         type(jd_strategy.settings),
         "resolve_openai_key",
@@ -584,9 +740,6 @@ def test_openai_prompt_preserves_evidence_metadata_but_forbids_surface_copy(monk
         content = {
             "interview_questions": [
                 {
-                    "type": "상황면접",
-                    "competency": "예산 실적 관리",
-                    "ncsClCd": "0201010107_16v2",
                     "question": (
                         "부서별 집행표와 회계 원장의 금액이 다르고 결산 마감이 오늘입니다. "
                         "어떤 자료를 먼저 대조하고 수정안을 어떻게 확정하겠습니까?"
@@ -602,13 +755,8 @@ def test_openai_prompt_preserves_evidence_metadata_but_forbids_surface_copy(monk
                         "수정 결정",
                         "완료 기록",
                     ],
-                    "question_evidence_id": "ksa-assigned",
-                    "question_focus_surface": "예산항목 간 비중 배분 확인 절차",
-                    "question_focus": "예산항목 간 비중 배분 능력",
-                    "ksa_refs": ["예산항목 간 비중 배분 능력"],
                 }
             ],
-            "ncs_link": [],
         }
         return {"choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}]}
 
@@ -651,22 +799,42 @@ def test_openai_prompt_preserves_evidence_metadata_but_forbids_surface_copy(monk
 
     assert result["interview_questions"][0]["question_source"] == "openai_api"
     assert len(captured_payloads) == 1
+    assert "n" not in captured_payloads[0]
     assert result["provider_generation_request_count"] == 1
     assert result["provider_generation_request_limit"] == 2
     assert result["transport_attempt_limit_per_generation_request"] == 1
     prompt = captured_payloads[0]["messages"][1]["content"]
-    assert "[KSA 기반 자유작성 계약]" in prompt
+    assert "[자유작성 계약]" in prompt
     assert '"type":"상황면접"' in prompt
     assert '"official_ksa":"예산항목 간 비중 배분 능력"' in prompt
-    assert "AI가 question, follow_ups, evaluation_points의 문구를 직접 작성" in prompt
-    assert "상황면접은 KSA가 필요한 구체 상황에서 판단과 대응" in prompt
-    assert "꼬리질문의 시작말, 순서, STAR 역할을 고정하지 마세요" in prompt
+    assert "question, follow_ups, evaluation_points의 지원자용 문장을 모두 직접 작성" in prompt
+    assert "slot 순서대로 question, follow_ups, evaluation_points만 작성" in prompt
+    assert "[STAR 작성 가이드 — 검증 규칙 아님]" in prompt
+    assert "STAR를 억지로 적용하지 마세요" in prompt
     assert "required_scenario_frame" not in prompt
+    assert "[후보 풀 운영]" not in prompt
     assert jd_strategy._editorial_realism_prompt_contract() not in prompt
-    type_schema = captured_payloads[0]["response_format"]["json_schema"]["schema"]["properties"][
+    question_schema = captured_payloads[0]["response_format"]["json_schema"]["schema"]["properties"][
         "interview_questions"
-    ]["items"]["properties"]["type"]
-    assert type_schema["enum"] == ["상황면접"]
+    ]["items"]
+    assert set(question_schema["properties"]) == {
+        "question",
+        "follow_ups",
+        "evaluation_points",
+    }
+    assert question_schema["required"] == [
+        "question",
+        "follow_ups",
+        "evaluation_points",
+    ]
+    assert "minLength" not in question_schema["properties"]["question"]
+    assert "minLength" not in question_schema["properties"]["follow_ups"]["items"]
+    assert "minLength" not in question_schema["properties"]["evaluation_points"]["items"]
+    question = result["interview_questions"][0]
+    assert question["type"] == "상황면접"
+    assert question["ncsClCd"] == "0201010107_16v2"
+    assert question["question_evidence_id"].startswith("ksa_")
+    assert question["ksa_refs"] == []
     assert "서버가 위치·필드·값을 검증한 material_registry" in prompt
     assert "완결형 가상 숫자" in prompt
     assert jd_strategy._unverified_material_precision_prompt_contract() in prompt
@@ -1147,9 +1315,16 @@ def test_openai_truncated_primary_response_recovers_with_slim_retry(
         content = {
             "interview_questions": [
                 {
+                    "type": "경험면접",
+                    "competency": "프로젝트관리",
+                    "ncsClCd": "0101010101_20v1",
                     "question": f"서로 다른 업무 사건 {index}에서 판단과 산출물을 설명해 주세요.",
-                    "follow_ups": [],
-                    "evaluation_points": [],
+                    "follow_ups": ["근거는 무엇입니까?", "어떤 행동을 했습니까?", "결과는 무엇입니까?"],
+                    "evaluation_points": ["상황", "근거", "행동", "결과"],
+                    "question_evidence_id": "",
+                    "question_focus_surface": "업무 판단",
+                    "question_focus": "업무 판단",
+                    "ksa_refs": ["업무 판단"],
                 }
                 for index in range(6)
             ],
