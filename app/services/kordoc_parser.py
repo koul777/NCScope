@@ -1547,7 +1547,7 @@ def _parse_with_remote_kordoc(
     }
     if signature_headers:
         headers.update(signature_headers)
-    elif bridge_secret:
+    if bridge_secret:
         headers["x-ncscope-kordoc-secret"] = bridge_secret
     try:
         with httpx.Client(
