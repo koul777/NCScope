@@ -1,8 +1,28 @@
-# NCScope v1.4.6
+<p align="center">
+  <a href="./docs/media/ncscope-promo.mp4">
+    <img src="./docs/media/ncscope-promo.gif" alt="NCScope 실제 제품 흐름 홍보 영상" width="960">
+  </a>
+</p>
+
+<p align="center">
+  <a href="./docs/media/ncscope-promo.mp4">▶ 31초 홍보 영상</a> ·
+  <a href="./docs/media/ncscope-explainer.mp4">▶ 2분 제품 설명 영상</a> ·
+  <a href="https://ncscope.vercel.app">NCScope 실행</a>
+</p>
+
+# NCScope v1.4.7
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 
 공개 서비스: **https://ncscope.vercel.app**
+
+## 영상으로 보는 NCScope
+
+홍보·설명 영상은 별도 목업이 아니라 실제 NCScope 화면을 1920×1080으로 촬영했습니다. 공고문과 NCS 직무기술서를 [Kordoc](https://github.com/chrisryugj/kordoc) 4.9.1로 직접 구조화하고, 사람이 `프로젝트관리` 세분류를 확정한 뒤, 공개 면접기법별 작성 지침과 NCS KSA 기반 결과를 확인하는 전체 흐름입니다.
+
+- [31초 홍보 영상](./docs/media/ncscope-promo.mp4): Kordoc 파싱 → 세분류 사람 확인 → 면접기법 가이드 → 결과 문항
+- [2분 3초 제품 설명 영상](./docs/media/ncscope-explainer.mp4): 네 단계의 실제 조작과 근거 추적 화면 전체
+- 결과 장면은 비식별화한 안전한 예시 응답을 재생했으며 화면에도 `예시 결과 재생 · API 키 미사용`을 명시했습니다. 영상 제작 과정에서 API 키를 입력하거나 노출하지 않았습니다.
 
 ## 현재 질문 생성 계약
 
@@ -22,11 +42,13 @@ NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 �
 `2020년 NCS기반 능력중심 채용모델 면접관 기본·심화` PDF는
 [Kordoc](https://github.com/chrisryugj/kordoc) 4.9.1로
 로컬 구조화한 뒤 사람이 검토해 `공통 면접 기본원칙 + 선택한 면접 종류별 작성 지침` 형태의 짧은 참고자료로 저장했습니다.
-경험·상황·발표·토론면접의 취지, 개방형 질문, 답변 연동 꼬리질문,
-관찰 가능한 평가 근거를 질문 작성 프롬프트에만 제공합니다. 경험면접의 STAR도
+원자료의 경험·상황·토론면접 취지와 NCScope가 지원하는 인바스켓·직무지식·창의적
+문제해결력면접의 지침, 개방형 질문, 답변 연동 꼬리질문, 관찰 가능한 평가 근거를
+질문 작성 프롬프트에만 제공합니다. 원자료가 다루는 발표면접은 참조 기록에만 남기고
+공개 선택지에서는 제외했습니다. 경험면접의 STAR도
 주질문과 꼬리질문 전체에서 행동증거를 탐색하는 가이드일 뿐 고정 문구나 통과
-조건이 아닙니다. 원본 PDF와 Kordoc은 Vercel 요청마다 실행되지 않으며, 이 자료는
-세분류 매칭·KSA 근거 확정·품질 점수·질문 공개 여부에 관여하지 않습니다.
+조건이 아닙니다. 면접관 가이드 원본 PDF는 Vercel 요청마다 다시 파싱하지 않으며,
+이 참고자료는 세분류 매칭·KSA 근거 확정·품질 점수·질문 공개 여부에 관여하지 않습니다.
 
 배포본에는 원문 대신 검토된 요약인
 `app/resources/ncs_interviewer_guide_2020.json`만 포함합니다. 원자료를 갱신할 때는
@@ -97,9 +119,12 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8015
 8. 통과 문항만 표시·복사·다운로드
 
 업로드는 PDF, HWP, HWPX, DOCX, TXT, 이미지와 이 문서들을 담은 ZIP을 지원합니다.
-Kordoc을 실행할 수 없는 Vercel Python 함수에서는 HWP 5/HWPX를 외부 변환 API로
-보내지 않고 로컬 텍스트 복구기로 읽습니다. 표 좌표가 사라진 HWP 분류표는
-대분류·중분류를 제거한 뒤 공식 NCS MCP exact 결과만 세분류 후보로 확정합니다.
+로컬은 Node/Kordoc을 직접 실행하고, Vercel은 같은 NCScope 배포의 인증된 비공개
+Node 함수에서 Kordoc 4.9.1을 자체 실행합니다. 문서를 외부 변환 API로 보내지 않으며
+`KORDOC_OFFLINE=1`로 외부 OCR·모델 다운로드를 막습니다. 운영 환경에는 저장소에
+기록하지 않은 `KORDOC_BRIDGE_SECRET`을 설정해야 합니다. Kordoc 실행이 불가능해
+대체 파서를 사용한 경우 응답과 화면에 실제 파서명을 표시하며, 표 좌표가 사라진
+분류표는 대분류·중분류를 제거한 뒤 공식 NCS MCP exact 결과만 세분류 후보로 확정합니다.
 
 ALIO 첨부 메타데이터 조회는 `POST /api/alio/attachments`를 사용합니다. 외부 파일을 자동으로 내려받아 모델에 전송하지 않으며, 사람이 같은 채용 건의 공고문과 직무기술서를 확인해 기존 업로드 흐름으로 넘깁니다.
 

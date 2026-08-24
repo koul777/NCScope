@@ -18,10 +18,31 @@ import subprocess
 import unicodedata
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+import httpx
 
 
 class KordocParseError(RuntimeError):
     """Raised when Kordoc cannot parse an uploaded document."""
+
+
+class _LocalKordocUnavailable(KordocParseError):
+    """Raised only when the local Node/Kordoc runtime cannot be started."""
+
+
+_KORDOC_PARSER_VERSION = "4.9.1"
+_KORDOC_BRIDGE_MAX_BYTES = 4 * 1024 * 1024
+_KORDOC_BRIDGE_PATH = "/api/kordoc-parse"
+_SAFE_PARSER_NAMES = {
+    "kordoc",
+    "plain_text",
+    "pdf_text_fallback",
+    "hwp_text_fallback",
+    "hwpx_text_fallback",
+    "mixed_document_parsers",
+    "unknown",
+}
 
 
 _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
@@ -1404,26 +1425,124 @@ def _loads_kordoc_json(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"value": parsed}
 
 
-def parse_with_kordoc(data: bytes, filename: str = "", ocr: bool = False) -> dict[str, Any]:
-    if not data:
-        raise KordocParseError("uploaded document is empty")
+def _kordoc_timeout_seconds() -> int:
+    timeout_raw = os.getenv("KORDOC_TIMEOUT_SEC", "120")
+    try:
+        return max(10, min(240, int(timeout_raw)))
+    except ValueError:
+        return 120
+
+
+def _stamp_kordoc_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Mark a successfully parsed document without exposing bridge internals."""
+
+    stamped = dict(result)
+    stamped["parser"] = "kordoc"
+    stamped["parser_version"] = _KORDOC_PARSER_VERSION
+    return stamped
+
+
+def _safe_bridge_url() -> str:
+    """Build the private bridge URL only from trusted deployment settings."""
+
+    explicit = os.getenv("KORDOC_BRIDGE_URL", "").strip()
+    candidate = explicit
+    if not candidate:
+        vercel_host = os.getenv("VERCEL_URL", "").strip()
+        if vercel_host:
+            candidate = f"https://{vercel_host.rstrip('/')}{_KORDOC_BRIDGE_PATH}"
+    if not candidate:
+        return ""
+
+    try:
+        parts = urlsplit(candidate)
+    except ValueError:
+        return ""
+    hostname = str(parts.hostname or "").strip().casefold()
+    local_host = hostname in {"127.0.0.1", "localhost", "::1"}
+    if parts.scheme not in ({"http", "https"} if local_host else {"https"}):
+        return ""
+    if not hostname or parts.username or parts.password or parts.query or parts.fragment:
+        return ""
+    if parts.path.rstrip("/") != _KORDOC_BRIDGE_PATH:
+        return ""
+    if not local_host and not re.fullmatch(r"[a-z0-9.-]+", hostname):
+        return ""
+    return urlunsplit((parts.scheme, parts.netloc, _KORDOC_BRIDGE_PATH, "", ""))
+
+
+def _parse_with_remote_kordoc(
+    data: bytes,
+    *,
+    filename: str,
+    ocr: bool,
+    timeout: int,
+) -> dict[str, Any]:
+    """Call the authenticated Kordoc function in this Vercel deployment."""
+
+    if len(data) > _KORDOC_BRIDGE_MAX_BYTES:
+        raise KordocParseError("document exceeds the Kordoc bridge upload limit")
+    bridge_url = _safe_bridge_url()
+    bridge_secret = os.getenv("KORDOC_BRIDGE_SECRET", "").strip()
+    if not bridge_url or not bridge_secret:
+        raise KordocParseError("Kordoc runtime is unavailable")
+
+    safe_filename = str(filename or "").replace("\r", " ").replace("\n", " ")[:240]
+    encoded_filename = base64.urlsafe_b64encode(safe_filename.encode("utf-8")).decode("ascii").rstrip("=")
+    headers = {
+        "content-type": "application/octet-stream",
+        "accept": "application/json",
+        "x-ncscope-kordoc-secret": bridge_secret,
+        "x-ncscope-filename-b64": encoded_filename,
+        "x-ncscope-ocr": "1" if ocr else "0",
+    }
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = client.post(bridge_url, content=data, headers=headers)
+    except httpx.TimeoutException as exc:
+        raise KordocParseError("Kordoc bridge timed out") from exc
+    except httpx.HTTPError as exc:
+        raise KordocParseError("Kordoc bridge is unavailable") from exc
+
+    if response.status_code != 200:
+        # Do not copy a serverless exception body into the Python response.
+        raise KordocParseError("Kordoc bridge rejected the document")
+    if len(response.content) > 4 * 1024 * 1024:
+        raise KordocParseError("Kordoc bridge response exceeded the safe limit")
+    try:
+        result = response.json()
+    except (TypeError, ValueError) as exc:
+        raise KordocParseError("Kordoc bridge returned invalid JSON") from exc
+    if not isinstance(result, dict) or result.get("success") is not True:
+        raise KordocParseError("Kordoc bridge could not parse the document")
+    if str(result.get("parser") or "") != "kordoc":
+        raise KordocParseError("Kordoc bridge returned invalid provenance")
+    return _stamp_kordoc_result(result)
+
+
+def _parse_with_local_kordoc(
+    data: bytes,
+    *,
+    filename: str,
+    ocr: bool,
+    timeout: int,
+) -> dict[str, Any]:
     node = shutil.which("node") or shutil.which("node.exe")
     script = Path(__file__).resolve().parents[2] / "scripts" / "kordoc_parse.mjs"
     if not node:
-        raise KordocParseError("Node.js is required for Kordoc parsing")
+        raise _LocalKordocUnavailable("local Kordoc runtime is unavailable")
     if not script.exists():
-        raise KordocParseError(f"Kordoc bridge not found: {script}")
+        raise _LocalKordocUnavailable("local Kordoc bridge is unavailable")
 
     payload = {
         "filename": filename,
         "dataBase64": base64.b64encode(data).decode("ascii"),
         "ocr": bool(ocr),
     }
-    timeout_raw = os.getenv("KORDOC_TIMEOUT_SEC", "120")
-    try:
-        timeout = max(10, int(timeout_raw))
-    except ValueError:
-        timeout = 120
     try:
         completed = subprocess.run(
             [node, str(script)],
@@ -1437,22 +1556,76 @@ def parse_with_kordoc(data: bytes, filename: str = "", ocr: bool = False) -> dic
     except subprocess.TimeoutExpired as exc:
         raise KordocParseError(f"Kordoc parsing timed out after {timeout}s") from exc
     except OSError as exc:
-        raise KordocParseError(f"Kordoc process could not start: {exc}") from exc
+        raise _LocalKordocUnavailable("local Kordoc process could not start") from exc
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()[-1200:]
-        raise KordocParseError(detail or f"Kordoc exited with code {completed.returncode}")
+        unavailable_markers = (
+            "err_module_not_found",
+            "cannot find package",
+            "cannot find module",
+            "module not found",
+        )
+        if any(marker in detail.casefold() for marker in unavailable_markers):
+            raise _LocalKordocUnavailable("local Kordoc module is unavailable")
+        raise KordocParseError("Kordoc could not parse the document")
     raw = completed.stdout.decode("utf-8", errors="replace").strip()
     try:
         result = _loads_kordoc_json(raw)
     except json.JSONDecodeError as exc:
-        raise KordocParseError(f"Kordoc returned invalid JSON: {raw[-500:]}") from exc
+        raise KordocParseError("Kordoc returned invalid JSON") from exc
     if not result.get("success", True):
-        raise KordocParseError(str(result.get("error") or "Kordoc failed to parse the document"))
-    return result
+        raise KordocParseError("Kordoc could not parse the document")
+    return _stamp_kordoc_result(result)
+
+
+def parse_with_kordoc(data: bytes, filename: str = "", ocr: bool = False) -> dict[str, Any]:
+    """Parse with local Kordoc first, using the Vercel bridge only if unavailable."""
+
+    if not data:
+        raise KordocParseError("uploaded document is empty")
+    timeout = _kordoc_timeout_seconds()
+    try:
+        return _parse_with_local_kordoc(
+            data,
+            filename=filename,
+            ocr=ocr,
+            timeout=timeout,
+        )
+    except _LocalKordocUnavailable:
+        if not (os.getenv("KORDOC_BRIDGE_URL", "").strip() or os.getenv("VERCEL_URL", "").strip()):
+            raise KordocParseError("Kordoc runtime is unavailable") from None
+        return _parse_with_remote_kordoc(
+            data,
+            filename=filename,
+            ocr=ocr,
+            timeout=timeout,
+        )
+
+
+def _parser_provenance(parsed: dict[str, Any]) -> dict[str, str]:
+    """Return a whitelisted parser label for public review payloads."""
+
+    metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
+    raw_parser = str(parsed.get("parser") or "").strip().casefold().replace("-", "_")
+    fallback = str(metadata.get("fallback") or "").strip().casefold().replace("-", "_")
+    fallback_map = {
+        "pdf_text": "pdf_text_fallback",
+        "hwp_text": "hwp_text_fallback",
+        "hwpx_text": "hwpx_text_fallback",
+    }
+    parser = fallback_map.get(fallback, raw_parser)
+    if parser not in _SAFE_PARSER_NAMES:
+        parser = "unknown"
+    provenance = {"parser": parser}
+    version = str(parsed.get("parser_version") or "").strip()
+    if parser == "kordoc" and re.fullmatch(r"\d+\.\d+\.\d+", version):
+        provenance["parser_version"] = version
+    return provenance
 
 
 def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dict[str, Any]:
     markdown = str(parsed.get("markdown") or "")
+    provenance = _parser_provenance(parsed)
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in _SECTION_ALIASES}
     current: str | None = None
     # The filename is useful evidence when a sparse/partially parsed document
@@ -1603,7 +1776,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     absence_diagnostics = {} if detail_candidates else _ncs_detail_absence_diagnostics("\n".join(diagnostic_lines))
     return {
         "filename": filename,
-        "parser": "kordoc",
+        **provenance,
         "review_required": True,
         "sections": sections,
         "fields": {
@@ -1757,6 +1930,7 @@ def structure_job_notice(parsed: dict[str, Any], filename: str = "") -> dict[str
 
     markdown = str(parsed.get("markdown") or "")
     jd_like = structure_job_description(parsed, filename=filename)
+    provenance = _parser_provenance(parsed)
     fields = jd_like.get("fields", {}) if isinstance(jd_like.get("fields"), dict) else {}
 
     duty_candidates = list(fields.get("duties") or []) + _extract_notice_windows(
@@ -1787,7 +1961,7 @@ def structure_job_notice(parsed: dict[str, Any], filename: str = "") -> dict[str
 
     return {
         "filename": filename,
-        "parser": "kordoc",
+        **provenance,
         "review_required": True,
         "fields": {
             "duty_text": dedup_join(duty_candidates),

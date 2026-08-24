@@ -200,7 +200,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                         "params": {
                             "protocolVersion": MCP_PROTOCOL_VERSION,
                             "capabilities": {},
-                            "clientInfo": {"name": "ncscope", "version": "1.4.6"},
+                            "clientInfo": {"name": "ncscope", "version": "1.4.7"},
                         },
                     },
                     timeout=request_timeout,

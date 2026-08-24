@@ -167,3 +167,14 @@ def test_reviewed_notice_is_reused_without_a_second_generation_parse() -> None:
     assert "review_session_id: data.review_session_id || ''" in script
     assert "review_confirmed: true" in script
     assert "fd.append('notice_review_json', JSON.stringify(noticeReviewPayload))" in script
+
+
+def test_document_review_surfaces_truthful_parser_provenance() -> None:
+    _, script = _page()
+
+    assert "function documentParserLabel(payload)" in script
+    assert "if (parser === 'kordoc')" in script
+    assert "pdf_text_fallback: 'PDF 대체 파서'" in script
+    assert "`${parserLabel} 분석 완료 · 검토 필요" in script
+    assert "parser: data.parser || 'unknown'" in script
+    assert "parser_version: data.parser_version || ''" in script

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NCScope v1.4.6</title>
+  <title>NCScope v1.4.7</title>
   <style>
     :root {
       --bg:#f3f7fb;
@@ -230,7 +230,7 @@
           <div class="build-tag">Original interface · Local document parsing · Human Review · NCS MCP evidence</div>
         </div>
         <div class="hero-badges">
-          <span class="badge">v1.4.6</span>
+          <span class="badge">v1.4.7</span>
           <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
           <span class="badge">KSA 근거 추적</span>
@@ -1743,6 +1743,21 @@
       updateWorkflowMenu();
     }
 
+    function documentParserLabel(payload) {
+      const data = payload && typeof payload === 'object' ? payload : {};
+      const parser = String(data.parser || '').trim();
+      const version = String(data.parser_version || '').trim();
+      if (parser === 'kordoc') return `Kordoc${version ? ` ${version}` : ''}`;
+      const labels = {
+        plain_text: '일반 텍스트 파서',
+        pdf_text_fallback: 'PDF 대체 파서',
+        hwp_text_fallback: 'HWP 대체 파서',
+        hwpx_text_fallback: 'HWPX 대체 파서',
+        mixed_document_parsers: '혼합 문서 파서',
+      };
+      return labels[parser] || '문서 파서';
+    }
+
     async function parseJdForReview(file) {
       jdReviewBlock.style.display = 'block';
       jdReviewStatus.textContent = '문서 분석 중...';
@@ -1782,15 +1797,18 @@
         jdReviewPayload = data;
         renderQuestionPlanRows();
         const detailCount = reviewedCandidates.length;
+        const parserLabel = documentParserLabel(data);
         jdReviewStatus.textContent = detailCount
-          ? `검토 필요 · 세분류 후보 ${detailCount}개`
-          : '검토 필요 · 세분류 후보가 없어 확정할 수 없습니다';
+          ? `${parserLabel} 분석 완료 · 검토 필요 · 세분류 후보 ${detailCount}개`
+          : `${parserLabel} 분석 완료 · 세분류 후보가 없어 확정할 수 없습니다`;
         btnConfirmReview.disabled = false;
         btnConfirmReview.textContent = '추출 결과 검토·확정';
         btnConfirmReview.style.background = '#0f766e';
         showRawText(JSON.stringify({
           status: '직무기술서 파싱 완료',
           filename: data.filename || file.name,
+          parser: data.parser || 'unknown',
+          parser_version: data.parser_version || '',
           ncs_detail_candidates: fields.ncs_detail_candidates || [],
           duties_count: (fields.duties || []).length,
           qualifications_count: (fields.qualifications || []).length,
@@ -1850,9 +1868,10 @@
         mergeTextareaValue(qualificationText, fields.qualification_text);
         mergeTextareaValue(preferenceText, fields.preference_text);
         mergeTextareaValue(evalText, fields.evaluation_text);
+        const parserLabel = documentParserLabel(data);
         noticeReviewStatus.textContent = (fields.duty_text || fields.qualification_text || fields.preference_text || fields.evaluation_text)
-          ? '검토 필요'
-          : '추출 후보 없음 · 공고문 원문과 직접 입력 내용을 확인하세요';
+          ? `${parserLabel} 분석 완료 · 검토 필요`
+          : `${parserLabel} 분석 완료 · 추출 후보 없음 · 공고문 원문과 직접 입력 내용을 확인하세요`;
         setNoticeConfirmButtons('공고문·보완 텍스트 검토·적용', '#005bac');
         if (noticeApplyHint) {
           noticeApplyHint.textContent = '추출된 공고문 텍스트를 확인·수정한 뒤 적용 버튼을 눌러야 질문 생성에 포함됩니다.';
@@ -1860,6 +1879,8 @@
         showRawText(JSON.stringify({
           status: '공고문 파싱 완료',
           filename: data.filename || file.name,
+          parser: data.parser || 'unknown',
+          parser_version: data.parser_version || '',
           duty_text_chars: (fields.duty_text || '').length,
           qualification_text_chars: (fields.qualification_text || '').length,
           preference_text_chars: (fields.preference_text || '').length,

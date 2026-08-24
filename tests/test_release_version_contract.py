@@ -7,8 +7,8 @@ from app.main import app
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "1.4.6"
-DISPLAY_VERSION = "v1.4.6"
+RELEASE_VERSION = "1.4.7"
+DISPLAY_VERSION = "v1.4.7"
 
 
 def test_release_version_is_consistent_across_product_surfaces() -> None:
@@ -24,7 +24,19 @@ def test_release_version_is_consistent_across_product_surfaces() -> None:
     assert package["version"] == RELEASE_VERSION
     assert package_lock["version"] == RELEASE_VERSION
     assert package_lock["packages"][""]["version"] == RELEASE_VERSION
-    assert readme.startswith(f"# NCScope {DISPLAY_VERSION}\n")
+    assert f"# NCScope {DISPLAY_VERSION}\n" in readme
+    assert readme.index("docs/media/ncscope-promo.gif") < readme.index(
+        f"# NCScope {DISPLAY_VERSION}\n"
+    )
+    for relative_path in (
+        "docs/media/ncscope-promo.gif",
+        "docs/media/ncscope-promo.mp4",
+        "docs/media/ncscope-explainer.mp4",
+        "docs/media/ncscope-poster.jpg",
+    ):
+        media = ROOT / relative_path
+        assert media.is_file()
+        assert media.stat().st_size > 100_000
     assert f"<title>NCScope {DISPLAY_VERSION}</title>" in frontend
     assert f">{DISPLAY_VERSION}</span>" in frontend
     assert f'"clientInfo": {{"name": "ncscope", "version": "{DISPLAY_VERSION[1:]}"}}' in mcp_client

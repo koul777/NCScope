@@ -85,8 +85,9 @@ API 키만 공유하며, 질문 문장은 Terra 또는 재생성 시 Sol이 직�
 
 `2020년 NCS기반 능력중심 채용모델 면접관 기본·심화` PDF는 Kordoc 4.9.1로
 오프라인 구조화·검토한 요약만 `app/resources/ncs_interviewer_guide_2020.json`에
-배포합니다. 경험·상황·발표·토론면접과 STAR의 취지를 작성 참고로만 프롬프트에
-주입하며, 원본 PDF 경로·원문·파싱 경고는 공개 응답에 포함하지 않습니다. 이
+배포합니다. 경험·상황·토론면접과 STAR의 취지를 작성 참고로만 프롬프트에
+주입하며, 원자료의 발표면접은 참조 기록에만 남기고 공개 선택지에서는 제외합니다.
+원본 PDF 경로·원문·파싱 경고는 공개 응답에 포함하지 않습니다. 이
 참고자료가 없거나 손상되어도 내장된 짧은 기법 설명으로 생성은 계속되며, 품질
 통과 조건이나 NCS 근거 경계는 바뀌지 않습니다.
 
@@ -112,6 +113,7 @@ INTERVIEW_GENERATION_PROVIDER=openai_api
 DATABASE_URL=sqlite:////tmp/ncscope.db
 MAX_UPLOAD_MB=4
 MAX_REQUEST_BODY_MB=4
+KORDOC_OFFLINE=1
 NCS_MCP_TIMEOUT_SEC=5
 NCS_MCP_KSA_CONCURRENCY=4
 KSA_RANK_MAX_UNITS=5
@@ -138,11 +140,23 @@ AI_QUALITY_REVIEW_TIMEOUT_SEC=70
 
 `api/index.py`의 Vercel `maxDuration`은 300초이고 애플리케이션 요청 예산은 285초입니다. 외부 서비스가 느리더라도 서버 템플릿으로 문항을 복원하지 않습니다.
 
-Vercel Python 함수는 Node/Kordoc 실행 파일을 보장하지 않습니다. PDF는 Python
-구조·텍스트 복구 경로를 사용하고, HWP 5/HWPX는 `olefile`/표준 XML 기반 로컬
-복구 경로를 사용합니다. HWP 원문은 외부 변환 API로 보내지 않습니다. 압축 해제
-총량, 섹션 수, 추출 글자 수, ZIP 멤버 수와 파일 크기에 상한을 적용하며, 평면화된
-NCS 분류표는 NCS MCP exact 세분류만 자동 후보로 공개합니다.
+Vercel에서는 Python 함수가 같은 배포의 `/api/kordoc-parse` Node 함수에 원문
+바이트를 전달해 Kordoc 4.9.1을 자체 실행합니다. 외부 문서 변환 API는 사용하지
+않고 `KORDOC_OFFLINE=1`로 외부 OCR·모델 다운로드를 차단합니다. 두 함수 사이의
+호출은 저장소에 기록하지 않은 동일한 공유 비밀로 인증해야 합니다.
+
+```powershell
+vercel env add KORDOC_BRIDGE_SECRET production
+vercel env add KORDOC_BRIDGE_SECRET preview
+```
+
+각 환경에는 충분히 긴 서로 다른 무작위 값을 대화형 입력으로 등록합니다. 값을
+`vercel.json`, README, 로그, 셸 명령 인자에 넣지 마십시오. 명시적인
+`KORDOC_BRIDGE_URL`이 없으면 Vercel의 `VERCEL_URL`에서 같은 배포 주소를 구성합니다.
+요청·응답은 Vercel 4.5MB 제한보다 작은 4MiB에서 먼저 차단하고, 실제 Kordoc 성공만
+`parser=kordoc`, `parser_version=4.9.1`로 기록합니다. Kordoc이 불가능해 PDF/HWP
+텍스트 복구를 사용하면 실제 대체 파서명을 응답과 화면에 표시합니다. ZIP은 구성원별
+파서·버전을 기록하며, 평면화된 NCS 분류표는 NCS MCP exact 세분류만 후보로 공개합니다.
 
 공공기관 운영 전에는 OpenAI의 데이터 처리 조건과 기관 내부의 개인정보·비공개자료 반출 정책을 별도로 확인해야 합니다. API 데이터는 기본적으로 모델 학습에 사용되지 않지만, 기본 abuse monitoring 로그에는 최대 30일 보존 조건이 적용될 수 있습니다. 필요한 기관은 OpenAI와 Zero Data Retention 또는 Modified Abuse Monitoring 자격 및 DPA를 검토하세요.
 
@@ -150,8 +164,9 @@ NCS 분류표는 NCS MCP exact 세분류만 자동 후보로 공개합니다.
 
 ```powershell
 python -m py_compile app/main.py app/services/ai_question_quality_review.py app/services/hwp_text_fallback.py
+node --check api/kordoc-parse.js
 python -m json.tool vercel.json
-pytest -q tests/test_ai_question_quality_review.py tests/test_auxiliary_ai_quality_review.py tests/test_openai_byok_contract.py
+pytest -q tests/test_ai_question_quality_review.py tests/test_auxiliary_ai_quality_review.py tests/test_openai_byok_contract.py tests/test_kordoc_vercel_bridge.py tests/test_vercel_deployment_contract.py
 python scripts/verify_ncs_interviewer_guide_reference.py "C:\path\to\면접관+기본심화.pdf" --expected-metadata-json app/resources/ncs_interviewer_guide_2020.json
 ```
 

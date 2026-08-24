@@ -384,7 +384,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="1.4.6", lifespan=_lifespan)
+app = FastAPI(title="NCScope", version="1.4.7", lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
 app.add_middleware(ExpensiveRequestLimitMiddleware)
@@ -5988,7 +5988,11 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
     name = str(filename or "")
     suffix = _suffix_of(name)
     if suffix == ".txt":
-        return {"markdown": data.decode("utf-8", errors="ignore"), "metadata": {"filename": name}}
+        return {
+            "markdown": data.decode("utf-8", errors="ignore"),
+            "metadata": {"filename": name},
+            "parser": "plain_text",
+        }
     try:
         parsed = parse_with_kordoc(
             data,
@@ -6035,6 +6039,7 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
                 )
                 return {
                     "markdown": text,
+                    "parser": f"{suffix[1:]}_text_fallback",
                     "metadata": {
                         "filename": name,
                         "fallback": f"{suffix[1:]}-text",
@@ -6077,6 +6082,7 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
                 local_terms = list(dict.fromkeys(local_terms))[:40]
                 return {
                     "markdown": text,
+                    "parser": "pdf_text_fallback",
                     "metadata": {
                         "filename": name,
                         "fallback": "pdf-text",
@@ -6147,7 +6153,15 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                     warnings.append(f"{member_label}: empty parse result")
                     continue
                 member_metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
-                member_record = {"filename": member_label, "suffix": suffix}
+                member_parser = str(parsed.get("parser") or "unknown").strip()
+                member_version = str(parsed.get("parser_version") or "").strip()
+                member_record = {
+                    "filename": member_label,
+                    "suffix": suffix,
+                    "parser": member_parser,
+                }
+                if member_parser == "kordoc" and member_version:
+                    member_record["parser_version"] = member_version
                 member_fallback = str(member_metadata.get("fallback") or "").strip()
                 if member_fallback:
                     member_record["fallback"] = member_fallback
@@ -6177,11 +6191,30 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
             status_code=422,
             detail=f"{label} ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT/image job-description files",
         )
-    return {
+    member_parsers = list(
+        dict.fromkeys(
+            str(member.get("parser") or "unknown").strip()
+            for member in members
+        )
+    )
+    archive_parser = member_parsers[0] if len(member_parsers) == 1 else "mixed_document_parsers"
+    archive_versions = list(
+        dict.fromkeys(
+            str(member.get("parser_version") or "").strip()
+            for member in members
+            if str(member.get("parser") or "").strip() == "kordoc"
+            and str(member.get("parser_version") or "").strip()
+        )
+    )
+    result = {
         "markdown": "\n\n---\n\n".join(chunks),
         "metadata": {"filename": name, "archive": True, "members": members},
         "warnings": warnings,
+        "parser": archive_parser,
     }
+    if archive_parser == "kordoc" and len(archive_versions) == 1:
+        result["parser_version"] = archive_versions[0]
+    return result
 
 
 def _sha256_bytes(data: bytes) -> str:

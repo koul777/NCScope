@@ -10,10 +10,22 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_vercel_fastapi_entrypoint_and_duration_are_production_safe() -> None:
     config = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
     function = config["functions"]["api/index.py"]
+    kordoc_function = config["functions"]["api/kordoc-parse.js"]
 
     assert function["maxDuration"] == 300
     assert "app/**" in function["includeFiles"]
-    assert config["routes"] == [{"src": "/(.*)", "dest": "api/index.py"}]
+    assert kordoc_function["maxDuration"] == 120
+    assert config["routes"] == [
+        {"src": "/api/kordoc-parse", "dest": "api/kordoc-parse.js"},
+        {"src": "/(.*)", "dest": "api/index.py"},
+    ]
+    bridge_source = (ROOT / "api" / "kordoc-parse.js").read_text(encoding="utf-8")
+    assert 'import("kordoc")' in bridge_source
+    assert 'process.env.KORDOC_OFFLINE = "1"' in bridge_source
+    assert "application/octet-stream" in bridge_source
+    assert "KORDOC_BRIDGE_SECRET" in bridge_source
+    assert "MAX_UPLOAD_BYTES = 4 * 1024 * 1024" in bridge_source
+    assert "MAX_RESPONSE_BYTES = 4 * 1024 * 1024" in bridge_source
     assert (ROOT / "api" / "index.py").read_text(encoding="utf-8").strip().endswith(
         '__all__ = ["app"]'
     )
@@ -32,6 +44,7 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["DATABASE_URL"] == "sqlite:////tmp/ncscope.db"
     assert environment["MAX_UPLOAD_MB"] == "4"
     assert environment["MAX_REQUEST_BODY_MB"] == "4"
+    assert environment["KORDOC_OFFLINE"] == "1"
     assert environment["OPENAI_STRATEGY_CANDIDATE_MULTIPLIER"] == "1"
     assert environment["OPENAI_QUESTION_CANDIDATE_MULTIPLIER"] == "1"
     assert environment["OPENAI_QUESTION_VARIANT_ATTEMPTS"] == "1"
@@ -51,6 +64,7 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["AI_QUALITY_REVIEW_TIMEOUT_SEC"] == "70"
     assert not any(key.startswith("OPENROUTER_") for key in environment)
     assert not any("api_key" in key.casefold() for key in environment)
+    assert "KORDOC_BRIDGE_SECRET" not in environment
 
 
 def test_vercel_upload_excludes_local_state_and_test_artifacts() -> None:

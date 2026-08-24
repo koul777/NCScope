@@ -37,6 +37,7 @@ def test_deployment_profile_values_are_synchronized_with_vercel_config() -> None
         "DATABASE_URL",
         "MAX_UPLOAD_MB",
         "MAX_REQUEST_BODY_MB",
+        "KORDOC_OFFLINE",
         "NCS_MCP_TIMEOUT_SEC",
         "NCS_MCP_KSA_CONCURRENCY",
         "KSA_RANK_MAX_UNITS",

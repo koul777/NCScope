@@ -5,6 +5,10 @@
     "api/index.py": {
       "maxDuration": 300,
       "includeFiles": "{app/**,scripts/kordoc_parse.mjs,STRUCTURED_INTERVIEW_GUIDE.md,ncs_sclass_codes_with_code_no.csv}"
+    },
+    "api/kordoc-parse.js": {
+      "maxDuration": 120,
+      "memory": 2048
     }
   },
   "env": {
@@ -14,6 +18,7 @@
     "DATABASE_URL": "sqlite:////tmp/ncscope.db",
     "MAX_UPLOAD_MB": "4",
     "MAX_REQUEST_BODY_MB": "4",
+    "KORDOC_OFFLINE": "1",
     "PDF_SCLASS_MAX_PAGES": "24",
     "NCS_MCP_TIMEOUT_SEC": "5",
     "NCS_MCP_KSA_CONCURRENCY": "4",
@@ -39,6 +44,10 @@
     "AI_QUALITY_REVIEW_TIMEOUT_SEC": "70"
   },
   "routes": [
+    {
+      "src": "/api/kordoc-parse",
+      "dest": "api/kordoc-parse.js"
+    },
     {
       "src": "/(.*)",
       "dest": "api/index.py"
