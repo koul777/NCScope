@@ -10,6 +10,10 @@ venv/
 NCS_DB.xlsx
 .coverage
 .tmp/
+# Local agent/runtime state and generated corpus artifacts must never be staged.
+.local/
+Microsoft/
+tmp/
 # Benchmark scripts write timestamped artifacts here. Curated reports that are
 # already tracked remain tracked; force-add a new report only when selected for
 # publication.
@@ -32,6 +36,13 @@ _*
 !app/data/*.json
 !app/resources/ncs_interviewer_guide_2020.json
 !app/services/codex_question_schema.json
+!tests/fixtures/stored_jd_holdout_reference.json
+!tests/fixtures/stored_jd_holdout_adjudications.json
+!tests/fixtures/stored_jd_final_blind_reference.json
+!tests/fixtures/stored_jd_final_blind_freeze.json
+!tests/fixtures/stored_jd_final_blind_freeze_addendum.json
+!tests/fixtures/stored_jd_final_blind_result.json
+!tests/fixtures/stored_jd_final_blind_comparison_ledger.json
 bench_*.json
 bench_pdfs/
 interview_questions.json

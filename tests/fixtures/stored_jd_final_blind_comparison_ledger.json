@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "freeze_sha256": "a031c53a37cab6c81c4dd9ff4c7f91b2022453d493cbb68d5ee69fb70f2e985c",
+      "comparison_id": "5c433fa10faad305ead15a37c1a61306f7bbf6f7137890edfe3c77f3e11b4ad8",
+      "comparison_sequence": 1,
+      "first_compared_at": "2026-08-24T15:59:33.915121+00:00",
+      "source_artifacts": {
+        "holdout_score_sha256": "dff6970b3904c4a67101ed59fed86d752987ed59fc548dadf8206e35e1318bd9",
+        "quality_gate_sha256": "4ab44ad7ee8d65b6ee83e21b9e61affc32f5f8583e8c725a481d72dad98ef73d",
+        "benchmark_csv_sha256": "fec51eaa23db90913d314bbe3a831098e13902b3d759431baa46979b58c79a05",
+        "benchmark_summary_sha256": "9eb87510a846f234ba370fd7ae024256a8b61244bacac5c830d0dc4a13f910b0"
+      },
+      "metrics_sha256": "7ee67558240f6e0eb6d9d50a419acdf68009e68a77c51640ff62954ac72d6ee1"
+    }
+  ]
+}

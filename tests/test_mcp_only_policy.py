@@ -573,6 +573,254 @@ def _confirmed_review_payload(fields: dict, confirmed: object = True, jd_text: s
     }
 
 
+def test_reviewed_ability_unit_names_keep_only_transport_normalization() -> None:
+    assert main._reviewed_ability_unit_names(
+        [
+            "02.경영·회계·사무 > 02.총무·인사 > 03.일반사무 > 02.사무행정 > 01.문서 작성",
+            "0202030202_22v3 문서 관리",
+            "요구능력단위: QM/QC관리",
+        ]
+    ) == ["문서 작성", "문서 관리", "QM/QC관리"]
+
+
+def test_detail_lookup_canonicalizes_only_verified_ordinal_unit_decoration() -> None:
+    assert main._canonicalize_detail_lookup_terms(
+        ["외식운영관리 (02.식자재관리)"]
+    ) == ["외식운영관리"]
+    assert main._canonicalize_detail_lookup_terms(
+        ["외식운영관리 (식자재관리)"]
+    ) == ["외식운영관리 (식자재관리)"]
+    assert main._canonicalize_detail_lookup_terms(
+        ["사무행정(기록물)"]
+    ) == ["사무행정(기록물)"]
+
+
+def test_lock_units_to_reviewed_ability_units_is_exact_and_ordered() -> None:
+    units = [
+        {"ncsClCd": "0202030202_22v3", "compeUnitName": "문서 관리"},
+        {"ncsClCd": "0202030201_22v3", "compeUnitName": "문서 작성"},
+        {"ncsClCd": "0202030203_22v3", "compeUnitName": "회의 운영"},
+    ]
+
+    locked, missing = main._lock_units_to_reviewed_ability_units(
+        units,
+        ["문서 작성", "문서관리", "자료 검색"],
+    )
+
+    assert [row["ncsClCd"] for row in locked] == [
+        "0202030201_22v3",
+        "0202030202_22v3",
+    ]
+    assert all(row["requiredAbilityUnitMatch"] == "exact" for row in locked)
+    assert missing == ["자료 검색"]
+
+
+def test_lock_units_to_reviewed_ability_units_rejects_cross_detail_name_collision() -> None:
+    units = [
+        {
+            "ncsClCd": "1402011101_24v1",
+            "compeUnitName": "품질관리",
+            "ncsSubdCdnm": "기계품질관리",
+        },
+        {
+            "ncsClCd": "1701010101_24v1",
+            "compeUnitName": "품질관리",
+            "ncsSubdCdnm": "섬유생산관리",
+        },
+    ]
+
+    locked, missing = main._lock_units_to_reviewed_ability_units(
+        units,
+        ["품질관리"],
+    )
+
+    assert locked == []
+    assert missing == ["품질관리"]
+
+
+def test_lock_units_to_reviewed_ability_units_rejects_same_detail_base_code_collision() -> None:
+    units = [
+        {"ncsClCd": "0202030201_22v3", "compeUnitName": "공통 능력"},
+        {"ncsClCd": "0202030202_22v3", "compeUnitName": "공통능력"},
+    ]
+
+    locked, missing = main._lock_units_to_reviewed_ability_units(
+        units,
+        ["공통 능력"],
+    )
+
+    assert locked == []
+    assert missing == ["공통 능력"]
+
+
+def test_lock_units_to_reviewed_ability_units_accepts_versions_of_same_base_code() -> None:
+    units = [
+        {"ncsClCd": "0202010110_19v2", "compeUnitName": "총무보안관리"},
+        {"ncsClCd": "0202010110_25v3", "compeUnitName": "총무보안관리"},
+    ]
+
+    locked, missing = main._lock_units_to_reviewed_ability_units(
+        units,
+        ["총무보안관리"],
+    )
+
+    assert [row["ncsClCd"] for row in locked] == [
+        "0202010110_19v2",
+        "0202010110_25v3",
+    ]
+    assert missing == []
+
+
+def test_every_current_catalog_cross_detail_name_collision_remains_unlocked() -> None:
+    ncs_mcp_client._official_details_by_name_key.cache_clear()
+    ncs_mcp_client._official_units_by_name_key.cache_clear()
+    rows_by_lock_key: dict[str, list[dict]] = {}
+    for catalog_rows in ncs_mcp_client._official_units_by_name_key().values():
+        for row in catalog_rows:
+            key = main._norm_detail_coverage_key(row.get("compeUnitName"))
+            if key:
+                rows_by_lock_key.setdefault(key, []).append(row)
+    collisions = [
+        list(rows)
+        for rows in rows_by_lock_key.values()
+        if len(
+            {
+                str(row.get("officialDetailCode") or "").strip()
+                for row in rows
+                if str(row.get("officialDetailCode") or "").strip()
+            }
+        )
+        > 1
+    ]
+
+    assert len(collisions) >= 190
+    for rows in collisions:
+        reviewed_name = str(rows[0]["compeUnitName"])
+        locked, missing = main._lock_units_to_reviewed_ability_units(
+            rows,
+            [reviewed_name],
+        )
+        assert locked == []
+        assert missing == [reviewed_name]
+
+
+def test_scope_unassigned_units_uses_unique_exact_detail_membership() -> None:
+    scoped, unresolved = (
+        main._scope_reviewed_ability_units_by_exact_detail_membership(
+            {
+                "PR": [
+                    {"ncsClCd": "0201020103_24v3", "compeUnitName": "언론 홍보"},
+                ],
+                "사무행정": [
+                    {"ncsClCd": "0202030201_22v3", "compeUnitName": "문서 작성"},
+                ],
+            },
+            ["문서작성", "언론홍보", "기관 자체 업무"],
+        )
+    )
+
+    assert scoped == {"사무행정": ["문서작성"], "PR": ["언론홍보"]}
+    assert unresolved == ["기관 자체 업무"]
+
+
+def test_scope_unassigned_units_rejects_cross_detail_name_collision() -> None:
+    scoped, unresolved = (
+        main._scope_reviewed_ability_units_by_exact_detail_membership(
+            {
+                "첫째": [{"ncsClCd": "0101010101_1v1", "compeUnitName": "공통 관리"}],
+                "둘째": [{"ncsClCd": "0202020201_1v1", "compeUnitName": "공통관리"}],
+            },
+            ["공통 관리"],
+        )
+    )
+
+    assert scoped == {}
+    assert unresolved == ["공통 관리"]
+
+
+def test_recover_required_unit_uses_exact_name_and_unit_code_detail_scope() -> None:
+    detail_units = [
+        {"ncsClCd": "0202030201_22v3", "compeUnitName": "문서 작성"},
+    ]
+    candidates = [
+        {
+            "ncsClCd": "0202030207_22v4",
+            "compeUnitName": "사무행정 업무 관리",
+            # The serving DB currently has a corrupt classification link for
+            # this row. Recovery must trust the code scope, not this path.
+            "ncsSubdCdnm": "자원봉사관리",
+        },
+        {
+            "ncsClCd": "0701020509_22v1",
+            "compeUnitName": "사무행정 업무 관리",
+            "ncsSubdCdnm": "자원봉사관리",
+        },
+    ]
+
+    recovered, missing = main._recover_code_scoped_reviewed_ability_units(
+        detail_units,
+        ["사무행정 업무관리"],
+        candidates,
+    )
+
+    assert [row["ncsClCd"] for row in recovered] == ["0202030207_22v4"]
+    assert recovered[0]["requiredAbilityUnitMatch"] == "exact_name_code_scope_recovery"
+    assert missing == []
+
+
+def test_recover_required_unit_rejects_wrong_code_scope_and_semantic_name() -> None:
+    detail_units = [
+        {"ncsClCd": "0202030201_22v3", "compeUnitName": "문서 작성"},
+    ]
+    candidates = [
+        {"ncsClCd": "0701020509_22v1", "compeUnitName": "사무행정 업무 관리"},
+        {"ncsClCd": "0202030207_22v4", "compeUnitName": "사무행정 지원"},
+    ]
+
+    recovered, missing = main._recover_code_scoped_reviewed_ability_units(
+        detail_units,
+        ["사무행정 업무 관리"],
+        candidates,
+    )
+
+    assert recovered == []
+    assert missing == ["사무행정 업무 관리"]
+
+
+def test_recover_required_unit_uses_unique_ordinal_for_small_current_name_change() -> None:
+    detail_units = [
+        {"ncsClCd": "0203020104_20v4", "compeUnitName": "결산처리"},
+        {"ncsClCd": "0203020105_20v4", "compeUnitName": "회계정보시스템 운용"},
+    ]
+
+    recovered, missing = main._recover_ordinal_scoped_reviewed_ability_units(
+        detail_units,
+        ["회계정보시스템"],
+        {main._norm_detail_coverage_key("회계정보시스템"): ["05"]},
+    )
+
+    assert [row["ncsClCd"] for row in recovered] == ["0203020105_20v4"]
+    assert recovered[0]["requiredAbilityUnitMatch"] == "ordinal_code_scope_current_name"
+    assert missing == []
+
+
+def test_recover_required_unit_rejects_ordinal_only_or_ambiguous_candidates() -> None:
+    detail_units = [
+        {"ncsClCd": "0203020105_20v4", "compeUnitName": "완전히 다른 이름"},
+        {"ncsClCd": "0101010105_20v1", "compeUnitName": "회계정보시스템 운용"},
+    ]
+    key = main._norm_detail_coverage_key("회계정보시스템")
+
+    recovered, missing = main._recover_ordinal_scoped_reviewed_ability_units(
+        detail_units,
+        ["회계정보시스템"],
+        {key: ["05"]},
+    )
+
+    assert recovered == []
+    assert missing == ["회계정보시스템"]
+
+
 def test_review_session_stores_only_hash_metadata_and_supports_retry():
     review = _confirmed_review_payload(
         {"ncs_detail_candidates": ["경영기획"]},
@@ -941,6 +1189,172 @@ def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
     assert "partial exact coverage" in body["detail"]["message"]
 
 
+def test_mcp_only_rejects_reviewed_ability_unit_outside_exact_detail_units(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    unit = {
+        "ncsClCd": "0202030201_22v3",
+        "compeUnitName": "문서 작성",
+        "ncsSubdCdnm": "사무행정",
+        "matchedDetailName": "사무행정",
+        "source": "ncs-mcp",
+    }
+    mocker.patch("app.main.search_units_by_detail", return_value=[unit])
+    rerank = mocker.patch("app.main.rerank_ncs_matches")
+    fetch_ksa = mocker.patch("app.main.fetch_ncs_ksa_by_units")
+    review = _confirmed_review_payload(
+        {
+            "ncs_detail_candidates": ["사무행정"],
+            "ability_units": ["존재하지 않는 능력단위"],
+        }
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
+        )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "ncs_required_ability_unit_mismatch"
+    assert detail["matched_ability_units"] == []
+    assert detail["unmatched_ability_units"] == ["존재하지 않는 능력단위"]
+    rerank.assert_not_called()
+    fetch_ksa.assert_not_called()
+
+
+def test_mcp_only_rejects_reviewed_ability_name_shared_by_selected_details(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    # Public requests normally enforce one active detail. Exercise the
+    # downstream invariant directly so future multi-detail support cannot mix
+    # KSA from two official codes that happen to share one unit label.
+    monkeypatch.setattr(main, "_enforce_question_plan_capacity", lambda _plan: None)
+    _patch_mcp_upload_common(mocker)
+    units = [
+        {
+            "ncsClCd": "1402011101_24v1",
+            "compeUnitName": "품질관리",
+            "ncsSubdCdnm": "기계품질관리",
+            "matchedDetailName": "기계품질관리",
+            "source": "ncs-mcp",
+        },
+        {
+            "ncsClCd": "1701010101_24v1",
+            "compeUnitName": "품질관리",
+            "ncsSubdCdnm": "섬유생산관리",
+            "matchedDetailName": "섬유생산관리",
+            "source": "ncs-mcp",
+        },
+    ]
+    mocker.patch("app.main.search_units_by_detail", return_value=units)
+    mocker.patch("app.main.exact_official_units_by_name", return_value=units)
+    mocker.patch("app.main.suggest_units_by_text", return_value=units)
+    rerank = mocker.patch("app.main.rerank_ncs_matches")
+    fetch_ksa = mocker.patch("app.main.fetch_ncs_ksa_by_units")
+    review = _confirmed_review_payload(
+        {
+            "ncs_detail_candidates": ["기계품질관리", "섬유생산관리"],
+            "ability_units": ["품질관리"],
+        }
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "question_plan_json": json.dumps(
+                    {
+                        "items": [
+                            {
+                                "detail": "기계품질관리",
+                                "enabled": True,
+                                "main_count": 1,
+                                "follow_up_count": 3,
+                            },
+                            {
+                                "detail": "섬유생산관리",
+                                "enabled": True,
+                                "main_count": 1,
+                                "follow_up_count": 3,
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
+        )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "ncs_required_ability_unit_mismatch"
+    assert detail["matched_ability_units"] == []
+    assert detail["unmatched_ability_units"] == ["품질관리"]
+    rerank.assert_not_called()
+    fetch_ksa.assert_not_called()
+
+
+def test_mcp_only_rejects_reviewed_ability_name_with_ambiguous_base_codes(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    units = [
+        {
+            "ncsClCd": "0202030201_22v3",
+            "compeUnitName": "공통 능력",
+            "ncsSubdCdnm": "사무행정",
+            "matchedDetailName": "사무행정",
+            "source": "ncs-mcp",
+        },
+        {
+            "ncsClCd": "0202030202_22v3",
+            "compeUnitName": "공통능력",
+            "ncsSubdCdnm": "사무행정",
+            "matchedDetailName": "사무행정",
+            "source": "ncs-mcp",
+        },
+    ]
+    mocker.patch("app.main.search_units_by_detail", return_value=units)
+    rerank = mocker.patch("app.main.rerank_ncs_matches")
+    fetch_ksa = mocker.patch("app.main.fetch_ncs_ksa_by_units")
+    review = _confirmed_review_payload(
+        {
+            "ncs_detail_candidates": ["사무행정"],
+            "ability_units": ["공통 능력"],
+        }
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
+        )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "ncs_required_ability_unit_mismatch"
+    assert detail["matched_ability_units"] == []
+    assert detail["unmatched_ability_units"] == ["공통 능력"]
+    rerank.assert_not_called()
+    fetch_ksa.assert_not_called()
+
+
 def test_mcp_only_upload_accepts_parenthetical_secretary_detail_without_manual_block(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -1034,7 +1448,10 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
         "ksaStatus": "official",
     }
     mocker.patch("app.main.search_units_by_detail", return_value=[unit])
-    rerank = mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
+    rerank = mocker.patch(
+        "app.main.rerank_ncs_matches",
+        side_effect=lambda **kwargs: (kwargs["ncs_items"], "rule"),
+    )
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
     rank_ksa = mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
     mocker.patch("app.main.build_ncs_context_pack", return_value={})
@@ -1042,7 +1459,12 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
         "app.main.build_jd_strategy_with_openai",
         return_value=_openai_model_strategy(unit, ksa, methods=("경험면접",)),
     )
-    review = _confirmed_review_payload({"ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"]})
+    review = _confirmed_review_payload(
+        {
+            "ncs_detail_candidates": ["\uacbd\uc601\uae30\ud68d"],
+            "ability_units": ["\uacbd\uc601\uacc4\ud68d \uc218\ub9bd"],
+        }
+    )
     with TestClient(main.app) as client:
         resp = client.post(
             "/api/jd/strategy/upload",
@@ -1080,6 +1502,9 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert "\uc2e4\ubb34\uacbd\ub825" in body["qualification_text_preview"]
     assert "\uc0ac\uc5c5\uad00\ub9ac" in body["preference_text_preview"]
     assert body["ncs_source"].startswith("ncs-mcp")
+    assert body["required_ability_units_reviewed"] == ["\uacbd\uc601\uacc4\ud68d \uc218\ub9bd"]
+    assert body["required_ability_unit_lock_applied"] is True
+    assert body["ncs_matches"][0]["requiredAbilityUnitMatch"] == "exact"
     assert body["ncs_ksa"][0]["factorSource"] == "ncs-mcp"
     assert body["ncs_ksa"][0]["ksaStatus"] == "official"
     question = body["strategy"]["interview_questions"][0]
@@ -1088,6 +1513,175 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert question["ksa_refs"] == ["\uc2dc\uc7a5\ud658\uacbd \ubd84\uc11d"]
     assert question["ksa_evidence"][0]["factorSource"] == "ncs-mcp"
     assert question["ksa_evidence"][0]["ksaStatus"] == "official"
+
+
+@pytest.mark.parametrize(
+    ("detail_name", "reviewed_name", "unit", "positioned_items", "catalog_rows", "match_mode"),
+    [
+        (
+            "회계·감사",
+            "회계정보시스템",
+            {
+                "ncsClCd": "0203020105_20v4",
+                "compeUnitName": "회계정보시스템 운용",
+                "ncsSubdCdnm": "회계·감사",
+                "score": 1.0,
+            },
+            [
+                {
+                    "section": "ability_units",
+                    "text": "회계정보시스템",
+                    "ability_unit_ordinal": "05",
+                }
+            ],
+            [],
+            "ordinal_code_scope_current_name",
+        ),
+        (
+            "사무행정",
+            "사무행정 업무 관리",
+            {
+                "ncsClCd": "0202030207_22v4",
+                "compeUnitName": "사무행정 업무 관리",
+                "ncsSubdCdnm": "자원봉사관리",
+                "score": 1.0,
+            },
+            [],
+            [
+                {
+                    "ncsClCd": "0202030207_22v4",
+                    "compeUnitName": "사무행정 업무 관리",
+                    "ncsSubdCdnm": "자원봉사관리",
+                }
+            ],
+            "exact_name_code_scope_recovery",
+        ),
+    ],
+)
+def test_recovered_required_unit_provenance_survives_endpoint_rerank(
+    monkeypatch,
+    mocker,
+    detail_name,
+    reviewed_name,
+    unit,
+    positioned_items,
+    catalog_rows,
+    match_mode,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _patch_mcp_upload_common(mocker)
+    seed_unit = {
+        "ncsClCd": f"{unit['ncsClCd'][:8]}01_1v1",
+        "compeUnitName": "범위 확인용 공식 능력단위",
+        "ncsSubdCdnm": detail_name,
+        "score": 1.0,
+    }
+    search_rows = [unit] if match_mode.startswith("ordinal_") else [seed_unit]
+    ksa = {
+        "ncsClCd": unit["ncsClCd"],
+        "compeUnitName": unit["compeUnitName"],
+        "factorName": "공식 지식 근거",
+        "elementName": "공식 능력단위요소",
+        "ksaTypeName": "지식",
+        "ksaNo": "K-01",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    mocker.patch("app.main.search_units_by_detail", return_value=search_rows)
+    mocker.patch("app.main.exact_official_units_by_name", return_value=catalog_rows)
+    reranked = {
+        key: value
+        for key, value in unit.items()
+        if key not in {"requiredAbilityUnitName", "requiredAbilityUnitMatch"}
+    }
+    mocker.patch("app.main.rerank_ncs_matches", return_value=([reranked], "rule"))
+    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
+    mocker.patch("app.main.build_ncs_context_pack", return_value={})
+    mocker.patch(
+        "app.main.build_jd_strategy_with_openai",
+        return_value=_openai_model_strategy(unit, ksa, methods=("경험면접",)),
+    )
+    review = _confirmed_review_payload(
+        {
+            "ncs_detail_candidates": [detail_name],
+            "ability_units": [reviewed_name],
+            "positioned_items": positioned_items,
+        }
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["required_ability_units_reviewed"] == [reviewed_name]
+    assert body["required_ability_unit_lock_applied"] is True
+    assert body["ncs_matches"][0]["requiredAbilityUnitName"] == reviewed_name
+    assert body["ncs_matches"][0]["requiredAbilityUnitMatch"] == match_mode
+
+
+def test_verified_detail_unit_decoration_uses_canonical_detail_at_endpoint(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _patch_mcp_upload_common(mocker)
+    unit = {
+        "ncsClCd": "0202030201_22v3",
+        "compeUnitName": "문서 작성",
+        "ncsSubdCdnm": "사무행정",
+        "score": 1.0,
+    }
+    ksa = {
+        "ncsClCd": unit["ncsClCd"],
+        "compeUnitName": unit["compeUnitName"],
+        "factorName": "문서 작성 지식",
+        "elementName": "문서 작성 계획",
+        "ksaTypeName": "지식",
+        "ksaNo": "K-01",
+        "factorSource": "ncs-mcp",
+        "ksaStatus": "official",
+    }
+    search = mocker.patch("app.main.search_units_by_detail", return_value=[unit])
+    mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
+    mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
+    mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
+    mocker.patch("app.main.build_ncs_context_pack", return_value={})
+    mocker.patch(
+        "app.main.build_jd_strategy_with_openai",
+        return_value=_openai_model_strategy(unit, ksa, methods=("경험면접",)),
+    )
+    review = _confirmed_review_payload(
+        {
+            "ncs_detail_candidates": ["사무행정 (01.문서 작성)"],
+            "ability_units": ["문서 작성"],
+        }
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/strategy/upload",
+            files=_upload_files(),
+            data={
+                "jd_review_json": json.dumps(review, ensure_ascii=False),
+                "openai_api_key": REQUEST_OPENAI_KEY,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    search.assert_called_once()
+    assert search.call_args.args[0] == ["사무행정"]
+    assert response.json()["ncs_matches"][0]["requiredAbilityUnitMatch"] == "exact"
 
 
 def test_upload_requires_request_key_even_with_server_openai_env(monkeypatch, mocker):
@@ -1346,12 +1940,12 @@ def test_mcp_search_matches_detail_not_small_category(mocker):
         return_value={
             "results": [
                 {
-                    "id": "small-only",
+                    "id": "0201010201_17v1",
                     "text": "\uc18c\ubd84\ub958\ub9cc \uc77c\uce58",
                     "path": {"small": "\uacbd\uc601\uae30\ud68d", "sub": "\uacbd\uc601\ubd84\uc11d"},
                 },
                 {
-                    "id": "sub-match",
+                    "id": "0201010101_22v3",
                     "text": "\uc138\ubd84\ub958 \uc77c\uce58",
                     "path": {"small": "\uae30\ud68d\uc0ac\ubb34", "sub": "\uacbd\uc601\uae30\ud68d"},
                 },
@@ -1361,7 +1955,7 @@ def test_mcp_search_matches_detail_not_small_category(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["\uacbd\uc601\uae30\ud68d"])
 
-    assert [row["ncsClCd"] for row in rows] == ["sub-match"]
+    assert [row["ncsClCd"] for row in rows] == ["0201010101_22v3"]
 
 
 def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
@@ -1554,7 +2148,7 @@ def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
         return_value={
             "results": [
                 {
-                    "id": "dot-match",
+                    "id": "1301010401_17v1",
                     "text": "일식 복어조리",
                     "path": {"small": "음식조리", "sub": "일식·복어조리"},
                 }
@@ -1564,17 +2158,17 @@ def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["일식· 복어・조리"])
 
-    assert [row["ncsClCd"] for row in rows] == ["dot-match"]
+    assert [row["ncsClCd"] for row in rows] == ["1301010401_17v1"]
 
 
 def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     calls = []
     official_by_query = {
-        "프로젝트관리": "project-match",
-        "산학협력관리": "cooperation-match",
-        "시각디자인": "design-match",
-        "경영기획": "planning-match",
+        "프로젝트관리": "0101010201_17v1",
+        "산학협력관리": "0101010301_17v1",
+        "시각디자인": "0802010101_17v1",
+        "경영기획": "0201010101_22v3",
     }
 
     def fake_call_tool(name, arguments):
@@ -1597,10 +2191,10 @@ def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
 
     cases = [
-        ("프로젝트 관리", "프로젝트관리", "project-match"),
-        ("산학협력 관리", "산학협력관리", "cooperation-match"),
-        ("시각 디자인", "시각디자인", "design-match"),
-        ("경영 기획", "경영기획", "planning-match"),
+        ("프로젝트 관리", "프로젝트관리", "0101010201_17v1"),
+        ("산학협력 관리", "산학협력관리", "0101010301_17v1"),
+        ("시각 디자인", "시각디자인", "0802010101_17v1"),
+        ("경영 기획", "경영기획", "0201010101_22v3"),
     ]
     for source_label, official_label, expected_code in cases:
         rows = ncs_mcp_client.search_units_by_detail([source_label], max_units=5)
@@ -1619,8 +2213,8 @@ def test_mcp_search_retries_punctuation_and_ordinal_formatting_variants(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     calls = []
     official_by_query = {
-        "회계감사": ("회계·감사", "accounting-audit"),
-        "영상촬영": ("영상촬영", "video"),
+        "회계감사": ("회계·감사", "0203020101_17v1"),
+        "영상촬영": ("영상촬영", "0803040201_17v1"),
     }
 
     def fake_call_tool(name, arguments):
@@ -1646,13 +2240,47 @@ def test_mcp_search_retries_punctuation_and_ordinal_formatting_variants(mocker):
     punctuation = ncs_mcp_client.search_units_by_detail(["회계.감사"], max_units=5)
     ordinal = ncs_mcp_client.search_units_by_detail(["02 영상촬영"], max_units=5)
 
-    assert [row["ncsClCd"] for row in punctuation] == ["accounting-audit"]
+    assert [row["ncsClCd"] for row in punctuation] == ["0203020101_17v1"]
     assert punctuation[0]["matchedDetailName"] == "회계.감사"
     assert punctuation[0]["ncsSubdCdnm"] == "회계·감사"
-    assert [row["ncsClCd"] for row in ordinal] == ["video"]
+    assert [row["ncsClCd"] for row in ordinal] == ["0803040201_17v1"]
     assert ordinal[0]["matchedDetailName"] == "02 영상촬영"
     assert ordinal[0]["ncsSubdCdnm"] == "영상촬영"
     assert calls == ["회계.감사", "회계감사", "02 영상촬영", "02영상촬영", "영상촬영"]
+
+
+def test_mcp_search_accepts_unicode_dot_leader_as_exact_format_variant(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    calls = []
+
+    def fake_call_tool(name, arguments):
+        assert name == "ncs_search"
+        query = arguments["query"]
+        calls.append(query)
+        if query != "회계감사":
+            return {"results": []}
+        return {
+            "results": [
+                {
+                    "id": "0203020101_25v1",
+                    "text": "전표관리",
+                    "path": {
+                        "major": "경영·회계·사무",
+                        "middle": "재무·회계",
+                        "small": "회계",
+                        "sub": "회계·감사",
+                    },
+                }
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail(["회계․감사"], max_units=5)
+
+    assert calls == ["회계․감사", "회계감사"]
+    assert rows[0]["matchedDetailName"] == "회계․감사"
+    assert rows[0]["ncsSubdCdnm"] == "회계·감사"
 
 
 def test_mcp_search_resolves_safe_detail_alias(mocker):
@@ -1665,7 +2293,7 @@ def test_mcp_search_resolves_safe_detail_alias(mocker):
             return {
                 "results": [
                     {
-                        "id": "alias-match",
+                        "id": "1403010301_17v1",
                         "text": "공사착공관리",
                         "path": {"small": "건축설계·감리", "sub": "건축공사감리"},
                     }
@@ -1678,7 +2306,7 @@ def test_mcp_search_resolves_safe_detail_alias(mocker):
     rows = ncs_mcp_client.search_units_by_detail(["건축감리"], max_units=5)
 
     assert calls == ["건축감리", "건축공사감리"]
-    assert [row["ncsClCd"] for row in rows] == ["alias-match"]
+    assert [row["ncsClCd"] for row in rows] == ["1403010301_17v1"]
     assert rows[0]["matchedDetailName"] == "건축감리"
     assert rows[0]["resolvedDetailName"] == "건축공사감리"
     assert rows[0]["detailQueryName"] == "건축공사감리"
@@ -1696,7 +2324,7 @@ def test_mcp_search_does_not_apply_alias_after_exact_detail_match(mocker):
         return {
             "results": [
                 {
-                    "id": "exact-match",
+                    "id": "1403010301_17v1",
                     "text": "건축감리 수행",
                     "path": {"small": "건축설계·감리", "sub": "건축감리"},
                 }
@@ -1708,7 +2336,7 @@ def test_mcp_search_does_not_apply_alias_after_exact_detail_match(mocker):
     rows = ncs_mcp_client.search_units_by_detail(["건축감리"], max_units=5)
 
     assert calls == ["건축감리"]
-    assert [row["ncsClCd"] for row in rows] == ["exact-match"]
+    assert [row["ncsClCd"] for row in rows] == ["1403010301_17v1"]
     assert rows[0]["matchedDetailName"] == "건축감리"
     assert rows[0]["resolvedDetailName"] == ""
     assert rows[0]["detailQueryName"] == ""
@@ -1790,7 +2418,7 @@ def test_mcp_suggest_units_by_text_keeps_non_exact_candidates(mocker):
         return_value={
             "results": [
                 {
-                    "id": "suggested-unit",
+                    "id": "2402010401_17v1",
                     "text": "\uc784\uc0c1\ubcd1\ub9ac \uad00\ub828 \uc9c8\ubcd1\uc9c4\ub2e8",
                     "path": {"small": "\ucd95\uc0b0\uc790\uc6d0\uac1c\ubc1c", "sub": "\uc218\uc758\uc11c\ube44\uc2a4"},
                     "score": 0.42,
@@ -1801,7 +2429,7 @@ def test_mcp_suggest_units_by_text_keeps_non_exact_candidates(mocker):
 
     rows = ncs_mcp_client.suggest_units_by_text(["\uc784\uc0c1\ubcd1\ub9ac"], max_units=5)
 
-    assert rows[0]["ncsClCd"] == "suggested-unit"
+    assert rows[0]["ncsClCd"] == "2402010401_17v1"
     assert rows[0]["source"] == "ncs-mcp-suggest"
     assert rows[0]["isExactDetailMatch"] is False
     assert rows[0]["isExactUnitNameMatch"] is False
@@ -1815,7 +2443,7 @@ def test_mcp_suggest_units_by_text_marks_exact_unit_name_match(mocker):
         return_value={
             "results": [
                 {
-                    "id": "unit-name-match",
+                    "id": "1203040201_17v1",
                     "text": "\uce74\uc9c0\ub178 \uace0\uac1d \uc9c0\uc6d0",
                     "path": {"small": "\uad00\uad11\ub808\uc800\uc11c\ube44\uc2a4", "sub": "\uce74\uc9c0\ub178\uc6b4\uc601\uad00\ub9ac"},
                     "score": 0.0,
@@ -1826,7 +2454,7 @@ def test_mcp_suggest_units_by_text_marks_exact_unit_name_match(mocker):
 
     rows = ncs_mcp_client.suggest_units_by_text(["\uce74\uc9c0\ub178 \uace0\uac1d \uc9c0\uc6d0"], max_units=5)
 
-    assert rows[0]["ncsClCd"] == "unit-name-match"
+    assert rows[0]["ncsClCd"] == "1203040201_17v1"
     assert rows[0]["isExactDetailMatch"] is False
     assert rows[0]["isExactUnitNameMatch"] is True
     assert rows[0]["canonicalDetailName"] == "\uce74\uc9c0\ub178\uc6b4\uc601\uad00\ub9ac"
@@ -2025,6 +2653,10 @@ def test_mcp_request_session_initializes_once_and_reuses_transport(monkeypatch):
 
     assert len(clients) == 1
     assert clients[0].closed is True
+    assert clients[0].kwargs == {
+        "follow_redirects": False,
+        "trust_env": False,
+    }
     assert [call["payload"]["method"] for call in calls] == [
         "initialize",
         "tools/list",

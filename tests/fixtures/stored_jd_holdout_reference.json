@@ -1,0 +1,2161 @@
+{
+  "schema_version": 1,
+  "reference_id": "stored-jd-agent-reviewed-a7537e95e7aaf451",
+  "reference_tier": "agent_source_evidence_review_v2_cross_adjudicated",
+  "reviewer_type": "agent_source_evidence_review",
+  "is_human_reviewed": false,
+  "is_gold": false,
+  "blind_completed_before_observed_comparison": true,
+  "record_count": 33,
+  "records_sha256": "a7537e95e7aaf451ca8d461eca3935a00fdc45d2d1bc032b70af9ec3aa0f1f20",
+  "source_batches": [
+    {
+      "batch": "blind_batch_a",
+      "record_count": 11,
+      "blind_records_sha256": "82a4d68d79a829e55fde01aa26ccbccd260a2df839e52b8245d0ee1d5b27b548"
+    },
+    {
+      "batch": "blind_batch_b",
+      "record_count": 11,
+      "blind_records_sha256": "62da808829786a0e0ed657de246fc2c6150d2f5aac78900c74ed46ad49a2cefe"
+    },
+    {
+      "batch": "blind_batch_c_hash_repaired",
+      "record_count": 11,
+      "blind_records_sha256": "14760b87a560e8bbe59704d8bf9306969293bcf454ca925da9f862083fa3965e"
+    }
+  ],
+  "source_adjudications": [
+    {
+      "adjudication": "stored_jd_holdout_adjudications",
+      "correction_count": 1,
+      "corrections_sha256": "2aa30487186d5f6fcae5838403af928f803adb6a8511f3acd8bff388d812c299"
+    }
+  ],
+  "records": [
+    {
+      "sha256": "0e3561152195ef1d1952777d602252e62071086f17bee7807fbcaeca1fea65cb",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "사무행정",
+        "시각 디자인"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "사무행정",
+          "current_official_name": "사무행정",
+          "code": "02020302"
+        },
+        {
+          "source_label": "시각 디자인",
+          "current_official_name": "시각디자인",
+          "code": "08020101"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "사무행정": [
+          "문서작성",
+          "문서관리",
+          "자료관리",
+          "사무행정 업무 관리",
+          "사무자동화 프로그램 활용"
+        ],
+        "시각 디자인": [
+          "프레젠테이션",
+          "디자인 제작 관리",
+          "디자인 자료화",
+          "시각 디자인 프로젝트 기획",
+          "시안 디자인 개발 기초",
+          "디자인 개발 완료"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "문서작성",
+          "current_official_name": "문서 작성",
+          "code": "0202030201_22v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "문서관리",
+          "current_official_name": "문서 관리",
+          "code": "0202030202_22v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "자료관리",
+          "current_official_name": "자료 관리",
+          "code": "0202030203_22v4"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "사무행정 업무 관리",
+          "current_official_name": "사무행정 업무 관리",
+          "code": "0202030207_22v4"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "사무자동화 프로그램 활용",
+          "current_official_name": "사무자동화 프로그램 활용",
+          "code": "0202030209_22v2"
+        },
+        {
+          "source_detail_label": "시각 디자인",
+          "source_unit_label": "프레젠테이션",
+          "current_official_name": "프레젠테이션",
+          "code": "0802010106_20v3"
+        },
+        {
+          "source_detail_label": "시각 디자인",
+          "source_unit_label": "디자인 제작 관리",
+          "current_official_name": "디자인 제작 관리",
+          "code": "0802010108_20v2"
+        },
+        {
+          "source_detail_label": "시각 디자인",
+          "source_unit_label": "디자인 자료화",
+          "current_official_name": "디자인 자료화",
+          "code": "0802010109_20v3"
+        },
+        {
+          "source_detail_label": "시각 디자인",
+          "source_unit_label": "시각 디자인 프로젝트 기획",
+          "current_official_name": "시각디자인 프로젝트 기획",
+          "code": "0802010111_20v3"
+        },
+        {
+          "source_detail_label": "시각 디자인",
+          "source_unit_label": "시안 디자인 개발 기초",
+          "current_official_name": "시안 디자인 개발 기초",
+          "code": "0802010119_20v3"
+        },
+        {
+          "source_detail_label": "시각 디자인",
+          "source_unit_label": "디자인 개발 완료",
+          "current_official_name": "디자인 개발 완료",
+          "code": "0802010123_20v4"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": null
+    },
+    {
+      "sha256": "0f29752ad34e4dffccb1bd3e5cb74d4268faa2e40496c79cbe27c515b30ed061",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "한식조리",
+        "양식조리",
+        "중식조리",
+        "일식조리"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "한식조리",
+          "current_official_name": "한식조리",
+          "code": "13010101"
+        },
+        {
+          "source_label": "양식조리",
+          "current_official_name": "양식조리",
+          "code": "13010102"
+        },
+        {
+          "source_label": "중식조리",
+          "current_official_name": "중식조리",
+          "code": "13010103"
+        },
+        {
+          "source_label": "일식조리",
+          "current_official_name": "일식조리",
+          "code": "13010104"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "한식조리": [],
+        "양식조리": [],
+        "중식조리": [],
+        "일식조리": []
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": null
+    },
+    {
+      "sha256": "17078dcc59ce0d192f46ebd7189f0e05f1963c8be2f7deb784e4a2db6f0d1e86",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "환경미화",
+        "보안"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "환경미화",
+          "current_official_name": "환경미화",
+          "code": "11020101"
+        },
+        {
+          "source_label": "보안",
+          "current_official_name": "보안",
+          "code": "11010101"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "환경미화": [
+          "청소현장현황파악",
+          "청소활동수행",
+          "청소품질검증",
+          "청소장비운용"
+        ],
+        "보안": [
+          "출입통제",
+          "순찰활동",
+          "사건사고대처"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "환경미화",
+          "source_unit_label": "청소현장현황파악",
+          "current_official_name": "청소현장현황파악",
+          "code": "1102010101_15v1"
+        },
+        {
+          "source_detail_label": "환경미화",
+          "source_unit_label": "청소활동수행",
+          "current_official_name": "청소활동수행",
+          "code": "1102010103_15v1"
+        },
+        {
+          "source_detail_label": "환경미화",
+          "source_unit_label": "청소품질검증",
+          "current_official_name": "청소품질검증",
+          "code": "1102010105_15v1"
+        },
+        {
+          "source_detail_label": "환경미화",
+          "source_unit_label": "청소장비운용",
+          "current_official_name": "청소장비운용",
+          "code": "1102010106_15v1"
+        },
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "출입통제",
+          "current_official_name": "출입통제",
+          "code": "1101010105_14v1"
+        },
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "순찰활동",
+          "current_official_name": "순찰활동",
+          "code": "1101010107_14v1"
+        },
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "사건사고대처",
+          "current_official_name": "사건사고대처",
+          "code": "1101010108_14v1"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": null
+    },
+    {
+      "sha256": "1a1c8cfb68c26dc61a728bef41ac07736de2c75ec749a54f6a90a3ae1cb21ee3",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "수송포장"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "수송포장",
+          "current_official_name": "수송포장",
+          "code": "09010103"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "수송포장": [
+          "포장작업 시 환경안전 준비",
+          "제품상태 확인",
+          "적정포장기기 선정",
+          "포장상태 확인",
+          "포장화물 관리",
+          "포장 작업장 주변 정리"
+        ]
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.98,
+      "unresolved_reason": "The six source ability-unit labels do not normalized-exact match any current official unit; they are retained as explicit source labels without codes."
+    },
+    {
+      "sha256": "3e0b2b599c01ba9c3452270ce224bc5ec39fac233b3e2c6ae95cbb626313c475",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "한식조리",
+        "양식조리",
+        "중식조리",
+        "일식조리"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "한식조리",
+          "current_official_name": "한식조리",
+          "code": "13010101"
+        },
+        {
+          "source_label": "양식조리",
+          "current_official_name": "양식조리",
+          "code": "13010102"
+        },
+        {
+          "source_label": "중식조리",
+          "current_official_name": "중식조리",
+          "code": "13010103"
+        },
+        {
+          "source_label": "일식조리",
+          "current_official_name": "일식조리",
+          "code": "13010104"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "한식조리": [],
+        "양식조리": [],
+        "중식조리": [],
+        "일식조리": []
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": null
+    },
+    {
+      "sha256": "44f1e7c3bb60571fb073c2bb94c7e32a3d1ab9f974fe5185794dfbc82cdcbff7",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "학예"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "학예",
+          "current_official_name": "학예",
+          "code": "08010401"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "학예": [
+          "문화재 수집",
+          "문화재 관리",
+          "문화재 조사",
+          "문화재 연구",
+          "문화재 전시",
+          "문화재 교육",
+          "문화재 교류",
+          "문화재 평가",
+          "문화재 정보서비스"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "학예",
+          "source_unit_label": "문화재 수집",
+          "current_official_name": "문화재 수집",
+          "code": "0801040101_20v2"
+        },
+        {
+          "source_detail_label": "학예",
+          "source_unit_label": "문화재 조사",
+          "current_official_name": "문화재 조사",
+          "code": "0801040103_20v2"
+        },
+        {
+          "source_detail_label": "학예",
+          "source_unit_label": "문화재 연구",
+          "current_official_name": "문화재 연구",
+          "code": "0801040104_20v2"
+        },
+        {
+          "source_detail_label": "학예",
+          "source_unit_label": "문화재 전시",
+          "current_official_name": "문화재 전시",
+          "code": "0801040105_20v2"
+        },
+        {
+          "source_detail_label": "학예",
+          "source_unit_label": "문화재 교육",
+          "current_official_name": "문화재 교육",
+          "code": "0801040106_20v2"
+        },
+        {
+          "source_detail_label": "학예",
+          "source_unit_label": "문화재 교류",
+          "current_official_name": "문화재 교류",
+          "code": "0801040107_20v2"
+        },
+        {
+          "source_detail_label": "학예",
+          "source_unit_label": "문화재 평가",
+          "current_official_name": "문화재 평가",
+          "code": "0801040108_20v2"
+        },
+        {
+          "source_detail_label": "학예",
+          "source_unit_label": "문화재 정보서비스",
+          "current_official_name": "문화재 정보서비스",
+          "code": "0801040111_20v2"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": "Source label '문화재 관리' is not a normalized-exact current unit (current ordinal 02 is '문화재 보존'), so no code was inferred."
+    },
+    {
+      "sha256": "45b92c93dbfb4da0a6963aa3eae37cf57515dffad504ac641e19c6eeb755b47e",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "보안",
+        "양약조제",
+        "연구지원 및 행정",
+        "임상병리사",
+        "병원안내"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "보안",
+          "current_official_name": "보안",
+          "code": "11010101"
+        },
+        {
+          "source_label": "병원안내",
+          "current_official_name": "병원안내",
+          "code": "06010202"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [
+        {
+          "label": "양약조제",
+          "classification": "source_legacy_or_non_current"
+        },
+        {
+          "label": "연구지원 및 행정",
+          "classification": "institution_extension_or_non_current"
+        },
+        {
+          "label": "임상병리사",
+          "classification": "source_legacy_or_non_current"
+        }
+      ],
+      "expected_ability_units_by_detail": {
+        "보안": [
+          "경비계획",
+          "출입통제",
+          "질서유지",
+          "순찰활동",
+          "사건사고대처",
+          "경비 관련법규 현장 적용",
+          "상황보고",
+          "위기조치 능력"
+        ],
+        "양약조제": [
+          "처방조제: 의약품 조제 및 감사",
+          "처방조제: 투약 및 복약설명",
+          "교육: 직무 교육"
+        ],
+        "연구지원 및 행정": [
+          "연구과제 행정관리",
+          "연구비 관리 및 정산 지원",
+          "연구 문서관리 및 공문서 행정지원"
+        ],
+        "임상병리사": [
+          "채혈실",
+          "응급검사실",
+          "자동화검사실",
+          "검경실",
+          "자동혈액검사실",
+          "미생물검사실",
+          "혈핵은행",
+          "분자검사실"
+        ],
+        "병원안내": [
+          "병원 이용안내",
+          "고객상담 및 민원응대",
+          "응급·위급상황 대응",
+          "통화 품질 및 데이터 관리",
+          "서비스 품질 및 윤리준수"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "경비계획",
+          "current_official_name": "경비계획",
+          "code": "1101010101_14v1"
+        },
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "출입통제",
+          "current_official_name": "출입통제",
+          "code": "1101010105_14v1"
+        },
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "질서유지",
+          "current_official_name": "질서유지",
+          "code": "1101010106_14v1"
+        },
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "순찰활동",
+          "current_official_name": "순찰활동",
+          "code": "1101010107_14v1"
+        },
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "사건사고대처",
+          "current_official_name": "사건사고대처",
+          "code": "1101010108_14v1"
+        },
+        {
+          "source_detail_label": "보안",
+          "source_unit_label": "경비 관련법규 현장 적용",
+          "current_official_name": "경비관련법규현장적용",
+          "code": "1101010112_16v2"
+        }
+      ],
+      "confidence": 0.96,
+      "unresolved_reason": "Three source detail labels and most institution-phrased ability labels are not in the current official catalogs. The pharmacy row's parenthetical grouping makes the exact unit boundaries less certain; the grouped source wording is preserved and no unrelated homonym was coded."
+    },
+    {
+      "sha256": "4d6ce3174c9748284439d32ee681d978e9433391664bd7eeadf68671fc946dfa",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.97,
+      "unresolved_reason": "The document uses institution-specific three-level job classification and internal unit-work tables rather than an explicit NCS detail/ability-unit hierarchy."
+    },
+    {
+      "sha256": "514bc3a999bbb53342e68560786db5587d02cd1540ced8943b2f6737326f8bdb",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "경영기획"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "경영기획",
+          "current_official_name": "경영기획",
+          "code": "02010101"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "경영기획": [
+          "사업환경 분석",
+          "신규사업기획",
+          "예산관리",
+          "경영실적분석"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "경영기획",
+          "source_unit_label": "사업환경 분석",
+          "source_code": "0201010101_22v2",
+          "current_official_name": "사업환경 분석",
+          "code": "0201010101_22v3"
+        },
+        {
+          "source_detail_label": "경영기획",
+          "source_unit_label": "신규사업기획",
+          "source_code": "0201010104_22v2",
+          "current_official_name": "신규사업 기획",
+          "code": "0201010104_22v2"
+        },
+        {
+          "source_detail_label": "경영기획",
+          "source_unit_label": "예산관리",
+          "source_code": "0201010106_22v2",
+          "current_official_name": "예산 관리",
+          "code": "0201010106_13v1"
+        },
+        {
+          "source_detail_label": "경영기획",
+          "source_unit_label": "경영실적분석",
+          "source_code": "0201010107_22v2",
+          "current_official_name": "경영실적 분석",
+          "code": "0201010107_22v2"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": "The document explicitly requires four versioned NCS learning units. Two source version strings differ from the current catalog versions; current exact-name catalog codes are recorded separately without rewriting the source evidence."
+    },
+    {
+      "sha256": "53e91b439547f4646d6219c477c9c953307740da0b2899329ffb49fdf5927b95",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "양의학치료"
+      ],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [
+        {
+          "label": "양의학치료",
+          "classification": "source_legacy_or_non_current"
+        }
+      ],
+      "expected_ability_units_by_detail": {
+        "양의학치료": []
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.88,
+      "unresolved_reason": "The four-level hierarchy is presented under '직무단위' rather than an explicitly labelled NCS/세분류 row. Its terminal value is preserved as an explicit source detail-like label, but it is absent from the current official catalog and receives no code."
+    },
+    {
+      "sha256": "592ea0410b05fa74cf90241bb6a62de081e2a7f1cb020689ca5363afcb6a3a8c",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "문화・관광・콘텐츠정책"
+      ],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [
+        {
+          "label": "문화・관광・콘텐츠정책",
+          "classification": "institution_extension_or_non_current"
+        }
+      ],
+      "expected_ability_units_by_detail": {
+        "문화・관광・콘텐츠정책": []
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.91,
+      "unresolved_reason": "The source explicitly provides a 세분류 column but merges its final value across 소분류/세분류; the value is retained as source-declared and left uncoded because it is absent from the current official catalog."
+    },
+    {
+      "sha256": "632fd7d65b9c1238bf594c6298d48d4449b577c2beb0a6e882ef5b5874b038b1",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "사무행정"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "사무행정",
+          "current_official_name": "사무행정",
+          "code": "02020302"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "사무행정": []
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": null
+    },
+    {
+      "sha256": "63cc67365fc7415d09a45c173493cba02b32cb62aaa4d388a9eceba89348dbad",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "물리치료"
+      ],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [
+        "물리치료"
+      ],
+      "expected_ability_units_by_detail": {
+        "물리치료": [
+          "해부학",
+          "생리학",
+          "운동치료",
+          "전기치료",
+          "광선치료",
+          "수치료",
+          "물리치료 검사 및 평가",
+          "정형계 물리치료",
+          "신경계 물리치료",
+          "심폐피부계 물리치료",
+          "보장구 의지",
+          "스포츠 물리치료",
+          "보건행정",
+          "물리치료실 및 병원 인증 및 각종 평가관리",
+          "통계 분석"
+        ]
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "The source explicitly declares 물리치료 and 15 ability-unit labels, but 물리치료 is absent from the current official detail catalog. No unrelated current global homonym is assigned a scoped code."
+    },
+    {
+      "sha256": "67aa0f3e57038c94c35e4bc1b283fb236356ec2166a770a95f5928c9c0482119",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "법무"
+      ],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [
+        "법무"
+      ],
+      "expected_ability_units_by_detail": {
+        "법무": [
+          "종합적으로 법률을 해석하고 법적 쟁점을 분석하는 능력",
+          "법적 문제의 합리적인 문제해결 및 대안 제시 능력"
+        ]
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "The source explicitly declares 법무, but the label is absent from the current official detail catalog; its two prose-form required ability labels are retained without codes."
+    },
+    {
+      "sha256": "70dd70eb435e48ac2e7de43c5dbd31fc9b54a92895457ef4cd311fe0fa98b07b",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "The document is an institution-specific 사무보조 duty description and does not declare an NCS detail or ability-unit hierarchy."
+    },
+    {
+      "sha256": "74400c8ac51f39470a0c80e4837570c89130a6cf70ed02b6ca1397452961dcbf",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "The one-page source contains a job title and duties only, not an explicit NCS detail."
+    },
+    {
+      "sha256": "75ac7dfb1f3bd970eb17dc831d86fdc632d768dc4243bbeddcfeeb79e6afaa47",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "공공조달관리",
+        "인사",
+        "자금",
+        "회계·감사",
+        "세무",
+        "총무",
+        "자산관리",
+        "사무행정",
+        "통계조사",
+        "연구개발"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "공공조달관리",
+          "current_official_name": "공공조달관리",
+          "code": "02020104"
+        },
+        {
+          "source_label": "인사",
+          "current_official_name": "인사",
+          "code": "02020201"
+        },
+        {
+          "source_label": "자금",
+          "current_official_name": "자금",
+          "code": "02030102"
+        },
+        {
+          "source_label": "회계·감사",
+          "current_official_name": "회계·감사",
+          "code": "02030201"
+        },
+        {
+          "source_label": "세무",
+          "current_official_name": "세무",
+          "code": "02030202"
+        },
+        {
+          "source_label": "총무",
+          "current_official_name": "총무",
+          "code": "02020101"
+        },
+        {
+          "source_label": "자산관리",
+          "current_official_name": "자산관리",
+          "code": "02020102"
+        },
+        {
+          "source_label": "사무행정",
+          "current_official_name": "사무행정",
+          "code": "02020302"
+        },
+        {
+          "source_label": "통계조사",
+          "current_official_name": "통계조사",
+          "code": "02010303"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [
+        "연구개발"
+      ],
+      "expected_ability_units_by_detail": {
+        "공공조달관리": [
+          "입찰실행 관리",
+          "계약일반관리",
+          "공공조달 법제도 활용",
+          "전자조달시스템 활용"
+        ],
+        "인사": [
+          "임금관리",
+          "급여지급",
+          "복리후생관리"
+        ],
+        "자금": [
+          "자금계획 수립",
+          "자금조달",
+          "자금운용",
+          "자금정보제공",
+          "재무위험관리",
+          "성과분석"
+        ],
+        "회계·감사": [
+          "전표관리",
+          "자금관리",
+          "결산처리",
+          "회계정보시스템운용",
+          "회계감사",
+          "재무제표작성"
+        ],
+        "세무": [
+          "적격증빙관리",
+          "원천징수",
+          "부가가치세 신고",
+          "종합소득세 신고",
+          "지방세 신고",
+          "기타 세무신고",
+          "세무조정 준비",
+          "법인세 신고"
+        ],
+        "총무": [
+          "비품관리",
+          "업무지원",
+          "총무문서관리",
+          "복리후생지원"
+        ],
+        "자산관리": [
+          "자산관리 목표수립",
+          "자산관리 계획수립",
+          "자산취득",
+          "자산처분"
+        ],
+        "사무행정": [
+          "문서관리",
+          "자료관리",
+          "사무환경조성",
+          "기록물관리(생산·분류·편철·이관·보존·폐기)",
+          "문서작성",
+          "사무행정 업무관리",
+          "사무자동화 프로그램 활용",
+          "회의운영",
+          "그룹웨어 활용"
+        ],
+        "통계조사": [
+          "자료처리",
+          "보고서작성"
+        ],
+        "연구개발": [
+          "문서작성",
+          "보고서작성",
+          "사무용 프로그램(엑셀, 한글, 파워포인트 등) 활용"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "공공조달관리",
+          "source_unit_label": "입찰실행 관리",
+          "current_official_name": "입찰실행 관리",
+          "code": "0202010403_25v1"
+        },
+        {
+          "source_detail_label": "공공조달관리",
+          "source_unit_label": "계약일반관리",
+          "current_official_name": "계약일반관리",
+          "code": "0202010404_25v1"
+        },
+        {
+          "source_detail_label": "공공조달관리",
+          "source_unit_label": "공공조달 법제도 활용",
+          "current_official_name": "공공조달 법제도 활용",
+          "code": "0202010407_25v1"
+        },
+        {
+          "source_detail_label": "공공조달관리",
+          "source_unit_label": "전자조달시스템 활용",
+          "current_official_name": "전자조달시스템 활용",
+          "code": "0202010408_25v1"
+        },
+        {
+          "source_detail_label": "인사",
+          "source_unit_label": "임금관리",
+          "current_official_name": "임금관리",
+          "code": "0202020108_23v4"
+        },
+        {
+          "source_detail_label": "인사",
+          "source_unit_label": "급여지급",
+          "current_official_name": "급여지급",
+          "code": "0202020109_23v5"
+        },
+        {
+          "source_detail_label": "인사",
+          "source_unit_label": "복리후생관리",
+          "current_official_name": "복리후생관리",
+          "code": "0202020110_23v4"
+        },
+        {
+          "source_detail_label": "자금",
+          "source_unit_label": "자금계획 수립",
+          "current_official_name": "자금계획 수립",
+          "code": "0203010201_20v3"
+        },
+        {
+          "source_detail_label": "자금",
+          "source_unit_label": "자금조달",
+          "current_official_name": "자금조달",
+          "code": "0203010202_20v3"
+        },
+        {
+          "source_detail_label": "자금",
+          "source_unit_label": "자금운용",
+          "current_official_name": "자금운용",
+          "code": "0203010204_20v3"
+        },
+        {
+          "source_detail_label": "자금",
+          "source_unit_label": "자금정보제공",
+          "current_official_name": "자금정보제공",
+          "code": "0203010205_20v3"
+        },
+        {
+          "source_detail_label": "자금",
+          "source_unit_label": "재무위험관리",
+          "current_official_name": "재무위험관리",
+          "code": "0203010206_20v3"
+        },
+        {
+          "source_detail_label": "자금",
+          "source_unit_label": "성과분석",
+          "current_official_name": "성과 분석",
+          "code": "0203010207_20v3"
+        },
+        {
+          "source_detail_label": "회계·감사",
+          "source_unit_label": "전표관리",
+          "current_official_name": "전표관리",
+          "code": "0203020101_20v4"
+        },
+        {
+          "source_detail_label": "회계·감사",
+          "source_unit_label": "자금관리",
+          "current_official_name": "자금관리",
+          "code": "0203020102_20v4"
+        },
+        {
+          "source_detail_label": "회계·감사",
+          "source_unit_label": "결산처리",
+          "current_official_name": "결산처리",
+          "code": "0203020104_23v5"
+        },
+        {
+          "source_detail_label": "회계·감사",
+          "source_unit_label": "회계정보시스템운용",
+          "current_official_name": "회계정보시스템 운용",
+          "code": "0203020105_20v4"
+        },
+        {
+          "source_detail_label": "회계·감사",
+          "source_unit_label": "회계감사",
+          "current_official_name": "회계감사",
+          "code": "0203020107_20v4"
+        },
+        {
+          "source_detail_label": "회계·감사",
+          "source_unit_label": "재무제표작성",
+          "current_official_name": "재무제표작성",
+          "code": "0203020112_23v5"
+        },
+        {
+          "source_detail_label": "세무",
+          "source_unit_label": "적격증빙관리",
+          "current_official_name": "적격증빙관리",
+          "code": "0203020201_23v6"
+        },
+        {
+          "source_detail_label": "세무",
+          "source_unit_label": "원천징수",
+          "current_official_name": "원천징수",
+          "code": "0203020204_23v6"
+        },
+        {
+          "source_detail_label": "세무",
+          "source_unit_label": "부가가치세 신고",
+          "current_official_name": "부가가치세 신고",
+          "code": "0203020205_23v6"
+        },
+        {
+          "source_detail_label": "세무",
+          "source_unit_label": "종합소득세 신고",
+          "current_official_name": "종합소득세 신고",
+          "code": "0203020206_23v6"
+        },
+        {
+          "source_detail_label": "세무",
+          "source_unit_label": "지방세 신고",
+          "current_official_name": "지방세 신고",
+          "code": "0203020208_23v6"
+        },
+        {
+          "source_detail_label": "세무",
+          "source_unit_label": "기타 세무신고",
+          "current_official_name": "기타 세무신고",
+          "code": "0203020209_23v5"
+        },
+        {
+          "source_detail_label": "세무",
+          "source_unit_label": "세무조정 준비",
+          "current_official_name": "세무조정 준비",
+          "code": "0203020213_23v6"
+        },
+        {
+          "source_detail_label": "세무",
+          "source_unit_label": "법인세 신고",
+          "current_official_name": "법인세 신고",
+          "code": "0203020214_23v6"
+        },
+        {
+          "source_detail_label": "총무",
+          "source_unit_label": "비품관리",
+          "current_official_name": "비품관리",
+          "code": "0202010104_25v3"
+        },
+        {
+          "source_detail_label": "총무",
+          "source_unit_label": "업무지원",
+          "current_official_name": "업무지원",
+          "code": "0202010107_25v3"
+        },
+        {
+          "source_detail_label": "총무",
+          "source_unit_label": "총무문서관리",
+          "current_official_name": "총무문서관리",
+          "code": "0202010108_25v3"
+        },
+        {
+          "source_detail_label": "총무",
+          "source_unit_label": "복리후생지원",
+          "current_official_name": "복리후생지원",
+          "code": "0202010109_25v3"
+        },
+        {
+          "source_detail_label": "자산관리",
+          "source_unit_label": "자산관리 목표수립",
+          "current_official_name": "자산관리 목표수립",
+          "code": "0202010201_25v2"
+        },
+        {
+          "source_detail_label": "자산관리",
+          "source_unit_label": "자산관리 계획수립",
+          "current_official_name": "자산관리 계획수립",
+          "code": "0202010202_25v2"
+        },
+        {
+          "source_detail_label": "자산관리",
+          "source_unit_label": "자산취득",
+          "current_official_name": "자산취득",
+          "code": "0202010203_25v3"
+        },
+        {
+          "source_detail_label": "자산관리",
+          "source_unit_label": "자산처분",
+          "current_official_name": "자산처분",
+          "code": "0202010207_25v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "문서관리",
+          "current_official_name": "문서 관리",
+          "code": "0202030202_22v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "자료관리",
+          "current_official_name": "자료 관리",
+          "code": "0202030203_22v4"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "사무환경조성",
+          "current_official_name": "사무환경 조성",
+          "code": "0202030208_22v4"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "문서작성",
+          "current_official_name": "문서 작성",
+          "code": "0202030201_22v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "사무행정 업무관리",
+          "current_official_name": "사무행정 업무 관리",
+          "code": "0202030207_22v4"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "사무자동화 프로그램 활용",
+          "current_official_name": "사무자동화 프로그램 활용",
+          "code": "0202030209_22v2"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "회의운영",
+          "current_official_name": "회의 운영",
+          "code": "0202030206_22v4"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "그룹웨어 활용",
+          "current_official_name": "그룹웨어 활용",
+          "code": "0202030210_22v2"
+        },
+        {
+          "source_detail_label": "통계조사",
+          "source_unit_label": "자료처리",
+          "current_official_name": "자료처리",
+          "code": "0201030305_18v2"
+        },
+        {
+          "source_detail_label": "통계조사",
+          "source_unit_label": "보고서작성",
+          "current_official_name": "보고서 작성",
+          "code": "0201030308_18v4"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": "연구개발 is explicitly marked 연구 자체개발 and is absent from the current official detail catalog. Exact scoped current codes are assigned only to the other current official detail/unit pairs; legacy or custom unit wording remains uncoded."
+    },
+    {
+      "sha256": "81265e860d5363900823b76966b7d34403c6317b36522c561e5bdc5964909c5a",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "All three ZIP members are institution-specific work descriptions without an explicit NCS detail or ability-unit row."
+    },
+    {
+      "sha256": "82d4a73df200c6da417b9258555dc3cb2b6cd796aaaafc958969c9aa91e903cf",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "평생교육프로그램 기획·개발·평가",
+        "평생교육프로그램 운영·상담·교수"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "평생교육프로그램 기획·개발·평가",
+          "current_official_name": "평생교육프로그램 기획·개발·평가",
+          "code": "04020201"
+        },
+        {
+          "source_label": "평생교육프로그램 운영·상담·교수",
+          "current_official_name": "평생교육프로그램 운영·상담·교수",
+          "code": "04020202"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "평생교육프로그램 기획·개발·평가": [],
+        "평생교육프로그램 운영·상담·교수": []
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": null
+    },
+    {
+      "sha256": "8d9c0d46d3866dbefc79ba50fbb2c3d314a050d896641673bf65e2e86c6aa610",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "The source contains an internal job title and task description only, not an explicit NCS detail."
+    },
+    {
+      "sha256": "95d28d14e5b132a1a7cc9dfea82f89f2bb9ff278fe6ca18e9ecf241635cf254d",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "건설공사공정관리",
+        "건설공사품질관리",
+        "건설공사환경관리",
+        "건설공사공무관리",
+        "유지관리",
+        "지역사회위생관리",
+        "식품가공연구개발",
+        "식품품질관리",
+        "축산식품가공",
+        "축산식품유통",
+        "사료생산",
+        "종축",
+        "한우사육"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "건설공사공정관리",
+          "current_official_name": "건설공사공정관리",
+          "code": "14010201"
+        },
+        {
+          "source_label": "건설공사품질관리",
+          "current_official_name": "건설공사품질관리",
+          "code": "14010202"
+        },
+        {
+          "source_label": "건설공사환경관리",
+          "current_official_name": "건설공사환경관리",
+          "code": "14010203"
+        },
+        {
+          "source_label": "건설공사공무관리",
+          "current_official_name": "건설공사공무관리",
+          "code": "14010204"
+        },
+        {
+          "source_label": "유지관리",
+          "current_official_name": "유지관리",
+          "code": "14010301"
+        },
+        {
+          "source_label": "지역사회위생관리",
+          "current_official_name": "지역사회위생관리",
+          "code": "06010205"
+        },
+        {
+          "source_label": "식품가공연구개발",
+          "current_official_name": "식품가공연구개발",
+          "code": "21010110"
+        },
+        {
+          "source_label": "식품품질관리",
+          "current_official_name": "식품품질관리",
+          "code": "21010111"
+        },
+        {
+          "source_label": "축산식품가공",
+          "current_official_name": "축산식품가공",
+          "code": "21010103"
+        },
+        {
+          "source_label": "축산식품유통",
+          "current_official_name": "축산식품유통",
+          "code": "21010303"
+        },
+        {
+          "source_label": "사료생산",
+          "current_official_name": "사료생산",
+          "code": "24020101"
+        },
+        {
+          "source_label": "종축",
+          "current_official_name": "종축",
+          "code": "24020102"
+        },
+        {
+          "source_label": "한우사육",
+          "current_official_name": "한우사육",
+          "code": "24020204"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "건설공사공정관리": [
+          "해당 공사 분석",
+          "공정관리 업무조정",
+          "공정관리 자료관리",
+          "진도관리",
+          "공정관리 성과분석"
+        ],
+        "건설공사품질관리": [
+          "품질관리 분석",
+          "품질관리 원가관리",
+          "품질관리 자료관리",
+          "기자재 품질관리",
+          "품질관리 점검"
+        ],
+        "건설공사환경관리": [
+          "공사환경 특성 파악",
+          "환경관련 규정 검토",
+          "환경관련 인·허가 이행",
+          "현장 환경 점검",
+          "환경관리비 관리",
+          "환경민원·사고 관리"
+        ],
+        "건설공사공무관리": [
+          "현장착공 관리",
+          "실행예산 관리",
+          "계약 관리",
+          "현장자원 관리",
+          "하도급 관리",
+          "공사원가 관리",
+          "현장준공 관리",
+          "하자관리"
+        ],
+        "유지관리": [
+          "유지관리 계획 수립",
+          "유지관리 행정업무 수행",
+          "유지관리 보수·보강 후 시설물 이력 정보관리"
+        ],
+        "지역사회위생관리": [
+          "식품위생관리",
+          "방역·소독관리"
+        ],
+        "식품가공연구개발": [
+          "공정설정",
+          "규격설정",
+          "식품가공연구개발 위생관리",
+          "재료안전성검사"
+        ],
+        "식품품질관리": [
+          "공정관리",
+          "공정설비 조건관리",
+          "법규관리",
+          "제품검사",
+          "식품안전 위기관리"
+        ],
+        "축산식품가공": [
+          "위생관리"
+        ],
+        "축산식품유통": [
+          "축산식품 인증관리",
+          "축산품유통 위생관리",
+          "축산품유통 소분 포장관리"
+        ],
+        "사료생산": [
+          "사료 시설관리",
+          "일반 사료제조",
+          "특수 사료제조",
+          "사료생산 환경 안전관리"
+        ],
+        "종축": [
+          "종축 사양관리",
+          "종축 질병예방"
+        ],
+        "한우사육": [
+          "한우 사료관리",
+          "한우 방역위생 관리",
+          "한우사육 시설장비관리",
+          "인증관리"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "건설공사공정관리",
+          "source_unit_label": "해당 공사 분석",
+          "current_official_name": "해당 공사 분석",
+          "code": "1401020101_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공정관리",
+          "source_unit_label": "공정관리 업무조정",
+          "current_official_name": "공정관리 업무조정",
+          "code": "1401020104_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공정관리",
+          "source_unit_label": "공정관리 자료관리",
+          "current_official_name": "공정관리 자료관리",
+          "code": "1401020105_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공정관리",
+          "source_unit_label": "진도관리",
+          "current_official_name": "진도관리",
+          "code": "1401020109_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공정관리",
+          "source_unit_label": "공정관리 성과분석",
+          "current_official_name": "공정관리 성과분석",
+          "code": "1401020110_25v3"
+        },
+        {
+          "source_detail_label": "건설공사품질관리",
+          "source_unit_label": "품질관리 분석",
+          "current_official_name": "품질관리 분석",
+          "code": "1401020201_25v3"
+        },
+        {
+          "source_detail_label": "건설공사품질관리",
+          "source_unit_label": "품질관리 원가관리",
+          "current_official_name": "품질관리 원가관리",
+          "code": "1401020205_25v3"
+        },
+        {
+          "source_detail_label": "건설공사품질관리",
+          "source_unit_label": "품질관리 자료관리",
+          "current_official_name": "품질관리 자료관리",
+          "code": "1401020206_25v3"
+        },
+        {
+          "source_detail_label": "건설공사품질관리",
+          "source_unit_label": "기자재 품질관리",
+          "current_official_name": "기자재 품질관리",
+          "code": "1401020207_25v3"
+        },
+        {
+          "source_detail_label": "건설공사품질관리",
+          "source_unit_label": "품질관리 점검",
+          "current_official_name": "품질관리 점검",
+          "code": "1401020208_25v3"
+        },
+        {
+          "source_detail_label": "건설공사환경관리",
+          "source_unit_label": "공사환경 특성 파악",
+          "current_official_name": "공사환경 특성 파악",
+          "code": "1401020301_25v3"
+        },
+        {
+          "source_detail_label": "건설공사환경관리",
+          "source_unit_label": "환경관련 규정 검토",
+          "current_official_name": "환경관련규정 검토",
+          "code": "1401020302_25v3"
+        },
+        {
+          "source_detail_label": "건설공사환경관리",
+          "source_unit_label": "환경관련 인·허가 이행",
+          "current_official_name": "환경관련 인·허가 이행",
+          "code": "1401020303_25v3"
+        },
+        {
+          "source_detail_label": "건설공사환경관리",
+          "source_unit_label": "현장 환경 점검",
+          "current_official_name": "현장 환경 점검",
+          "code": "1401020306_25v3"
+        },
+        {
+          "source_detail_label": "건설공사환경관리",
+          "source_unit_label": "환경관리비 관리",
+          "current_official_name": "환경관리비 관리",
+          "code": "1401020307_25v3"
+        },
+        {
+          "source_detail_label": "건설공사환경관리",
+          "source_unit_label": "환경민원·사고 관리",
+          "current_official_name": "환경민원·사고 관리",
+          "code": "1401020310_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공무관리",
+          "source_unit_label": "현장착공 관리",
+          "current_official_name": "현장착공 관리",
+          "code": "1401020401_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공무관리",
+          "source_unit_label": "실행예산 관리",
+          "current_official_name": "실행예산 관리",
+          "code": "1401020403_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공무관리",
+          "source_unit_label": "계약 관리",
+          "current_official_name": "계약 관리",
+          "code": "1401020404_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공무관리",
+          "source_unit_label": "현장자원 관리",
+          "current_official_name": "현장자원 관리",
+          "code": "1401020405_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공무관리",
+          "source_unit_label": "하도급 관리",
+          "current_official_name": "하도급 관리",
+          "code": "1401020406_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공무관리",
+          "source_unit_label": "공사원가 관리",
+          "current_official_name": "공사원가 관리",
+          "code": "1401020407_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공무관리",
+          "source_unit_label": "현장준공 관리",
+          "current_official_name": "현장준공 관리",
+          "code": "1401020408_25v3"
+        },
+        {
+          "source_detail_label": "건설공사공무관리",
+          "source_unit_label": "하자관리",
+          "current_official_name": "하자 관리",
+          "code": "1401020410_25v3"
+        },
+        {
+          "source_detail_label": "유지관리",
+          "source_unit_label": "유지관리 계획 수립",
+          "current_official_name": "유지관리 계획 수립",
+          "code": "1401030101_25v3"
+        },
+        {
+          "source_detail_label": "유지관리",
+          "source_unit_label": "유지관리 행정업무 수행",
+          "current_official_name": "유지관리 행정업무 수행",
+          "code": "1401030102_25v3"
+        },
+        {
+          "source_detail_label": "유지관리",
+          "source_unit_label": "유지관리 보수·보강 후 시설물 이력 정보관리",
+          "current_official_name": "유지관리 보수·보강 후 시설물 이력  정보관리",
+          "code": "1401030111_25v3"
+        },
+        {
+          "source_detail_label": "지역사회위생관리",
+          "source_unit_label": "식품위생관리",
+          "current_official_name": "식품 위생관리",
+          "code": "0601020501_20v2"
+        },
+        {
+          "source_detail_label": "지역사회위생관리",
+          "source_unit_label": "방역·소독관리",
+          "current_official_name": "방역·소독관리",
+          "code": "0601020508_20v2"
+        },
+        {
+          "source_detail_label": "식품가공연구개발",
+          "source_unit_label": "공정설정",
+          "current_official_name": "공정 설정",
+          "code": "2101011006_22v3"
+        },
+        {
+          "source_detail_label": "식품가공연구개발",
+          "source_unit_label": "규격설정",
+          "current_official_name": "규격 설정",
+          "code": "2101011007_22v3"
+        },
+        {
+          "source_detail_label": "식품가공연구개발",
+          "source_unit_label": "식품가공연구개발 위생관리",
+          "current_official_name": "식품가공연구개발 위생관리",
+          "code": "2101011011_22v2"
+        },
+        {
+          "source_detail_label": "식품가공연구개발",
+          "source_unit_label": "재료안전성검사",
+          "current_official_name": "재료안전성검사",
+          "code": "2101011015_22v2"
+        },
+        {
+          "source_detail_label": "식품품질관리",
+          "source_unit_label": "공정관리",
+          "current_official_name": "공정관리",
+          "code": "2101011102_20v3"
+        },
+        {
+          "source_detail_label": "식품품질관리",
+          "source_unit_label": "공정설비 조건관리",
+          "current_official_name": "공정설비 조건관리",
+          "code": "2101011103_20v2"
+        },
+        {
+          "source_detail_label": "식품품질관리",
+          "source_unit_label": "식품안전 위기관리",
+          "current_official_name": "식품안전 위기관리",
+          "code": "2101011109_20v3"
+        },
+        {
+          "source_detail_label": "축산식품유통",
+          "source_unit_label": "축산식품 인증관리",
+          "current_official_name": "축산식품 인증관리",
+          "code": "2101030303_25v2"
+        },
+        {
+          "source_detail_label": "사료생산",
+          "source_unit_label": "사료 시설관리",
+          "current_official_name": "사료 시설관리",
+          "code": "2402010115_16v2"
+        },
+        {
+          "source_detail_label": "사료생산",
+          "source_unit_label": "일반 사료제조",
+          "current_official_name": "일반 사료 제조",
+          "code": "2402010116_16v2"
+        },
+        {
+          "source_detail_label": "사료생산",
+          "source_unit_label": "특수 사료제조",
+          "current_official_name": "특수 사료 제조",
+          "code": "2402010117_16v2"
+        },
+        {
+          "source_detail_label": "사료생산",
+          "source_unit_label": "사료생산 환경 안전관리",
+          "current_official_name": "사료 생산 환경 안전 관리",
+          "code": "2402010118_16v2"
+        },
+        {
+          "source_detail_label": "종축",
+          "source_unit_label": "종축 사양관리",
+          "current_official_name": "종축 사양관리",
+          "code": "2402010206_21v2"
+        },
+        {
+          "source_detail_label": "종축",
+          "source_unit_label": "종축 질병예방",
+          "current_official_name": "종축 질병예방",
+          "code": "2402010222_21v3"
+        },
+        {
+          "source_detail_label": "한우사육",
+          "source_unit_label": "한우 사료관리",
+          "current_official_name": "한우 사료관리",
+          "code": "2402020404_20v3"
+        },
+        {
+          "source_detail_label": "한우사육",
+          "source_unit_label": "한우 방역위생 관리",
+          "current_official_name": "한우 방역위생관리",
+          "code": "2402020406_20v2"
+        },
+        {
+          "source_detail_label": "한우사육",
+          "source_unit_label": "한우사육 시설장비관리",
+          "current_official_name": "한우사육 시설장비관리",
+          "code": "2402020408_13v1"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": "Only the explicit NCS 세분류/능력단위명칭 table is used for the screening-field unit scopes. Institution job areas listed as 신규개발 and their prose-form sub-activities are not promoted to NCS detail or unit labels."
+    },
+    {
+      "sha256": "a2f4d72c31dd7176594d36ea6fc68d413ec4c38142acb97c3aea0c1411d76c82",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "정책연구"
+      ],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [
+        "정책연구"
+      ],
+      "expected_ability_units_by_detail": {
+        "정책연구": []
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "The source explicitly declares 정책연구 while also marking it as an NCS-undeveloped field. It is retained as a custom detail label and receives no current official code."
+    },
+    {
+      "sha256": "aec3b9a1f6e89731ec60a9e8c857ea61641c234f51488ce4bc43870f7639e62d",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "공동주택 시설관리",
+        "사무행정"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "사무행정",
+          "current_official_name": "사무행정",
+          "code": "02020302"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [
+        {
+          "label": "공동주택 시설관리",
+          "classification": "source_declared_self_developed"
+        }
+      ],
+      "expected_ability_units_by_detail": {
+        "공동주택 시설관리": [],
+        "사무행정": [
+          "문서작성",
+          "문서관리",
+          "사무행정회계처리",
+          "사무행정업무관리"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "문서작성",
+          "current_official_name": "문서 작성",
+          "code": "0202030201_22v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "문서관리",
+          "current_official_name": "문서 관리",
+          "code": "0202030202_22v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "사무행정업무관리",
+          "current_official_name": "사무행정 업무 관리",
+          "code": "0202030207_22v4"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": "사무행정회계처리는 원문에 명시되지만 현재 13,435개 공식 능력단위 카탈로그에 정규화 정확 일치가 없어 현행 코드를 부여하지 않음."
+    },
+    {
+      "sha256": "b7f5307c09f0af0602db0e4a0ace3585c8fcd99e299a5795223bd02fb2872d4a",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "여객운송",
+        "비서"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "여객운송",
+          "current_official_name": "여객운송",
+          "code": "09010101"
+        },
+        {
+          "source_label": "비서",
+          "current_official_name": "비서",
+          "code": "02020301"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "여객운송": [
+          "운행계획수립",
+          "운행 전후 차량 점검",
+          "승객 승･하차지원",
+          "차량운행",
+          "비상상황대처",
+          "운행결과 보고",
+          "운행결과평가",
+          "운행개선 관리"
+        ],
+        "비서": [
+          "경영진 지원업무",
+          "경영 환경 동향 분석",
+          "경영진 일정관리",
+          "출장관리",
+          "응대업무",
+          "보고업무",
+          "경영진 문서 작성관리",
+          "회의의전관리",
+          "비서 사무정보관리",
+          "경영진 예결산관리",
+          "글로벌 경영사무 지원"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "여객운송",
+          "source_unit_label": "운행계획수립",
+          "current_official_name": "운행계획수립",
+          "code": "0901010101_15v1"
+        },
+        {
+          "source_detail_label": "여객운송",
+          "source_unit_label": "운행 전후 차량 점검",
+          "current_official_name": "운행 전후 차량 점검",
+          "code": "0901010102_15v1"
+        },
+        {
+          "source_detail_label": "여객운송",
+          "source_unit_label": "승객 승･하차지원",
+          "current_official_name": "승객 승ㆍ하차지원",
+          "code": "0901010103_15v1"
+        },
+        {
+          "source_detail_label": "여객운송",
+          "source_unit_label": "차량운행",
+          "current_official_name": "차량운행",
+          "code": "0901010104_15v1"
+        },
+        {
+          "source_detail_label": "여객운송",
+          "source_unit_label": "비상상황대처",
+          "current_official_name": "비상상황대처",
+          "code": "0901010105_15v1"
+        },
+        {
+          "source_detail_label": "여객운송",
+          "source_unit_label": "운행결과 보고",
+          "current_official_name": "운행결과보고",
+          "code": "0901010106_15v1"
+        },
+        {
+          "source_detail_label": "여객운송",
+          "source_unit_label": "운행결과평가",
+          "current_official_name": "운행결과평가",
+          "code": "0901010107_15v1"
+        },
+        {
+          "source_detail_label": "여객운송",
+          "source_unit_label": "운행개선 관리",
+          "current_official_name": "운행개선관리",
+          "code": "0901010108_15v1"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "경영진 지원업무",
+          "current_official_name": "경영진 지원업무",
+          "code": "0202030101_22v2"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "경영 환경 동향 분석",
+          "current_official_name": "경영 환경 동향 분석",
+          "code": "0202030102_22v3"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "경영진 일정관리",
+          "current_official_name": "경영진 일정관리",
+          "code": "0202030103_22v2"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "출장관리",
+          "current_official_name": "출장관리",
+          "code": "0202030104_22v2"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "응대업무",
+          "current_official_name": "응대업무",
+          "code": "0202030105_22v2"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "보고업무",
+          "current_official_name": "보고업무",
+          "code": "0202030106_22v3"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "경영진 문서 작성관리",
+          "current_official_name": "경영진 문서 작성관리",
+          "code": "0202030107_22v3"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "회의의전관리",
+          "current_official_name": "회의의전관리",
+          "code": "0202030108_22v3"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "비서 사무정보관리",
+          "current_official_name": "비서 사무정보관리",
+          "code": "0202030109_22v2"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "경영진 예결산관리",
+          "current_official_name": "경영진 예결산관리",
+          "code": "0202030111_22v2"
+        },
+        {
+          "source_detail_label": "비서",
+          "source_unit_label": "글로벌 경영사무 지원",
+          "current_official_name": "글로벌 경영사무 지원",
+          "code": "0202030114_22v3"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": null
+    },
+    {
+      "sha256": "b85464defff8437cf4fac7356bbbc9c98e9d288fc537c2d03a8dfc6fc9ed92d2",
+      "document_state": "declared_no_mapping",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "첫 문서의 능력단위 행은 임상 업무 묶음이지만 세분류가 '-'이고, 두 번째 문서는 NCS 미개발을 명시하므로 현행 NCS 세분류/능력단위 코드로 추정하지 않음."
+    },
+    {
+      "sha256": "bc1466af53b8fdbc35484b0cf55c7a36553c4673c7e7cbc8525eb35298a287d3",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.98,
+      "unresolved_reason": "'능력단위'라는 행 제목은 존재하지만 이를 귀속할 명시 NCS 세분류 계층과 공식 코드가 없어 비정형 직무 묶음을 NCS 능력단위로 승격하지 않음."
+    },
+    {
+      "sha256": "c2232c615a2cc4a4c3d5aea6020be470b0c3817aa875af17dfa0e6973d225e34",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "경영지원 업무 내용만으로 사무행정 등 세분류를 의미 추정하지 않음."
+    },
+    {
+      "sha256": "e3a8e1f00acef9dd15f63d9a95ac111f0fe501d807507864edcc20ab3d06dd77",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "의료정보관리"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "의료정보관리",
+          "current_official_name": "의료정보관리",
+          "code": "06010114"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {
+        "의료정보관리": [
+          "의료정보 DB관리",
+          "의료정보 서식 개발관리",
+          "의료정보 분류",
+          "의료정보 완전성 관리",
+          "의료정보 전사",
+          "질환등록",
+          "의료정보 생성 활용",
+          "의료정보보호",
+          "진료정보 지원",
+          "요양급여 정보관리",
+          "의료정보관리 질 향상",
+          "의료기관평가 지원"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "의료정보 DB관리",
+          "current_official_name": "의료정보 DB 관리",
+          "code": "0601011413_23v3"
+        },
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "의료정보 서식 개발관리",
+          "current_official_name": "의료정보 서식 개발관리",
+          "code": "0601011414_23v3"
+        },
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "의료정보 완전성 관리",
+          "current_official_name": "의료정보 완전성 관리",
+          "code": "0601011404_23v3"
+        },
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "의료정보 전사",
+          "current_official_name": "의료정보 전사",
+          "code": "0601011405_23v3"
+        },
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "질환등록",
+          "current_official_name": "질환등록",
+          "code": "0601011406_23v3"
+        },
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "의료정보보호",
+          "current_official_name": "의료정보보호",
+          "code": "0601011408_23v2"
+        },
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "진료정보 지원",
+          "current_official_name": "진료정보 지원",
+          "code": "0601011409_23v2"
+        },
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "요양급여 정보관리",
+          "current_official_name": "요양급여 정보관리",
+          "code": "0601011410_23v2"
+        },
+        {
+          "source_detail_label": "의료정보관리",
+          "source_unit_label": "의료정보관리 질 향상",
+          "current_official_name": "의료정보관리 질 향상",
+          "code": "0601011411_23v3"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": "의료정보 분류, 의료정보 생성 활용, 의료기관평가 지원은 원문에는 명시되지만 현행 공식 명칭과 정규화 정확 일치하지 않아 현재 코드를 부여하지 않음."
+    },
+    {
+      "sha256": "e6d8075ca1b8cf3ca56e7a0083403d67db62a8018fe6a9f81e9a62e58515742e",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "상주감시 업무 문장만으로 보안·산업안전 등 세분류를 의미 추정하지 않음."
+    },
+    {
+      "sha256": "e8b9d54b76ae394e0993d6293cb02d4b6c6d7eec05a9e8f9b4f96fb118e2def8",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "간호수행",
+        "간호행정관리",
+        "총무",
+        "사무행정"
+      ],
+      "expected_detail_codes": [
+        {
+          "source_label": "총무",
+          "current_official_name": "총무",
+          "code": "02020101"
+        },
+        {
+          "source_label": "사무행정",
+          "current_official_name": "사무행정",
+          "code": "02020302"
+        }
+      ],
+      "non_current_or_custom_detail_labels": [
+        {
+          "label": "간호수행",
+          "classification": "source_legacy_or_non_current"
+        },
+        {
+          "label": "간호행정관리",
+          "classification": "source_legacy_or_non_current"
+        }
+      ],
+      "expected_ability_units_by_detail": {
+        "간호수행": [
+          "의료, 진료준비",
+          "의료,진료 지원",
+          "환자관리",
+          "환자 교육 및 상담"
+        ],
+        "간호행정관리": [
+          "간호행정",
+          "물품관리",
+          "시설 및 환경관리"
+        ],
+        "총무": [
+          "비품 관리",
+          "업무 지원",
+          "총무 문서 관리"
+        ],
+        "사무행정": [
+          "문서 작성",
+          "문서 관리",
+          "그룹웨어 활용"
+        ]
+      },
+      "expected_ability_unit_codes": [
+        {
+          "source_detail_label": "총무",
+          "source_unit_label": "비품 관리",
+          "current_official_name": "비품관리",
+          "code": "0202010104_25v3"
+        },
+        {
+          "source_detail_label": "총무",
+          "source_unit_label": "업무 지원",
+          "current_official_name": "업무지원",
+          "code": "0202010107_25v3"
+        },
+        {
+          "source_detail_label": "총무",
+          "source_unit_label": "총무 문서 관리",
+          "current_official_name": "총무문서관리",
+          "code": "0202010108_25v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "문서 작성",
+          "current_official_name": "문서 작성",
+          "code": "0202030201_22v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "문서 관리",
+          "current_official_name": "문서 관리",
+          "code": "0202030202_22v3"
+        },
+        {
+          "source_detail_label": "사무행정",
+          "source_unit_label": "그룹웨어 활용",
+          "current_official_name": "그룹웨어 활용",
+          "code": "0202030210_22v2"
+        }
+      ],
+      "confidence": 0.99,
+      "unresolved_reason": "간호수행과 간호행정관리는 현행 세분류 카탈로그에 없어 원문 라벨은 보존하되 현행 세분류/능력단위 코드를 부여하지 않음."
+    },
+    {
+      "sha256": "eafa5687d639f3fc8c5f43b485d5313ace4b84419e778d727bb184acf330536e",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "벌목 업무 내용이나 산림 자격 언급만으로 임업 관련 세분류를 의미 추정하지 않음."
+    },
+    {
+      "sha256": "f0b564456044042bca80a7f4577f941c8002b5b16bf17a23c7592d00dadf59d0",
+      "document_state": "no_explicit_ncs_detail",
+      "expected_detail_labels": [],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [],
+      "expected_ability_units_by_detail": {},
+      "expected_ability_unit_codes": [],
+      "confidence": 0.98,
+      "unresolved_reason": "통번역 업무 내용만으로 현행 세분류를 의미 추정하지 않음."
+    },
+    {
+      "sha256": "fae397840ecd6c996fe3506980ebcba65fc3b55cc3a93a9b81331ed9579d7627",
+      "document_state": "explicit_detail",
+      "expected_detail_labels": [
+        "물리치료"
+      ],
+      "expected_detail_codes": [],
+      "non_current_or_custom_detail_labels": [
+        {
+          "label": "물리치료",
+          "classification": "source_legacy_or_non_current"
+        }
+      ],
+      "expected_ability_units_by_detail": {
+        "물리치료": [
+          "해부학",
+          "생리학",
+          "운동치료",
+          "전기치료",
+          "광선치료",
+          "수치료",
+          "물리치료 검사 및 평가",
+          "정형계 물리치료",
+          "신경계 물리치료",
+          "심폐 물리치료",
+          "보장구 의지",
+          "스포츠 물리치료",
+          "보건행정",
+          "물리치료실 및 병원 인증 및 각종 평가관리"
+        ]
+      },
+      "expected_ability_unit_codes": [],
+      "confidence": 0.99,
+      "unresolved_reason": "물리치료와 나열 능력단위는 원문에 명시되지만 현행 공식 세분류/능력단위 카탈로그에 정규화 정확 일치가 없어 현재 코드를 부여하지 않음."
+    }
+  ]
+}

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.kordoc_parser import _loads_kordoc_json, structure_job_description, structure_job_notice
+from app.services.kordoc_parser import (
+    _loads_kordoc_json,
+    _split_ability_unit_entries,
+    structure_job_description,
+    structure_job_notice,
+)
 
 
 def _evidence_by_detail(result: dict) -> dict[str, dict]:
@@ -42,6 +47,686 @@ def test_structure_job_description_extracts_detail_from_html_table() -> None:
         "정보기술전략",
         "정보기술기획",
     ]
+
+
+def test_self_developed_detail_is_preserved_but_explicitly_classified() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 세분류명</th><td>(자체개발) 공동주택 시설관리</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="custom.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "(자체개발) 공동주택 시설관리"
+    ]
+    assert result["fields"]["ncs_self_developed_detail_candidates"] == [
+        "(자체개발) 공동주택 시설관리"
+    ]
+    assert result["fields"]["ncs_detail_candidate_evidence"][0][
+        "mapping_state"
+    ] == "source_declared_self_developed"
+
+
+def test_structure_job_description_preserves_exact_kordoc_table_coordinates_and_scope() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "pageNumber": 3,
+                "bbox": [10, 20, 500, 700],
+                "rows": [
+                    [
+                        {"text": "채용분야"},
+                        {"text": "일반행정", "colSpan": 3},
+                    ],
+                    [
+                        {"text": "NCS 세분류명"},
+                        {"text": "사무행정", "colSpan": 3},
+                    ],
+                    [
+                        {"text": "필요지식"},
+                        {"text": "문서관리 규정과 자료 분류 원칙", "colSpan": 3},
+                    ],
+                    [
+                        {"text": "필요기술"},
+                        {"text": "문서작성 및 자료검색 기술", "colSpan": 3},
+                    ],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="jd.hwpx")
+    items = result["fields"]["positioned_items"]
+    knowledge = next(item for item in items if item["section"] == "knowledge")
+
+    assert knowledge["page"] == 3
+    assert knowledge["table_index"] == 0
+    assert knowledge["label_cell"] == {
+        "row": 2,
+        "column": 0,
+        "row_span": 1,
+        "column_span": 1,
+    }
+    assert knowledge["value_cell"] == {
+        "row": 2,
+        "column": 1,
+        "row_span": 1,
+        "column_span": 3,
+    }
+    assert knowledge["scope"] == {
+        "job_fields": ["일반행정"],
+        "ncs_details": ["사무행정"],
+        "status": "single_detail",
+        "review_required": False,
+    }
+    assert knowledge["header_path"] == ["일반행정", "사무행정", "필요지식"]
+    assert result["fields"]["table_coordinate_contract"]["index_base"] == 0
+
+
+def test_structure_job_description_scopes_horizontal_matrix_cells_by_row() -> None:
+    markdown = """
+<table>
+<tr><th>채용분야</th><th>NCS 세분류명</th><th>요구능력단위</th><th>필요지식</th><th>필요기술</th></tr>
+<tr><td>행정</td><td>사무행정</td><td>문서 작성</td><td>문서관리 규정</td><td>자료검색 기술</td></tr>
+<tr><td>회계</td><td>세무</td><td>적격증빙관리</td><td>세법과 회계기준</td><td>세무신고 기술</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="matrix.pdf")
+    items = result["fields"]["positioned_items"]
+    knowledge = [item for item in items if item["section"] == "knowledge"]
+
+    assert [item["text"] for item in knowledge] == ["문서관리 규정", "세법과 회계기준"]
+    assert knowledge[0]["value_cell"]["row"] == 1
+    assert knowledge[0]["value_cell"]["column"] == 3
+    assert knowledge[0]["scope"]["job_fields"] == ["행정"]
+    assert knowledge[0]["scope"]["ncs_details"] == ["사무행정"]
+    assert knowledge[1]["scope"]["job_fields"] == ["회계"]
+    assert knowledge[1]["scope"]["ncs_details"] == ["세무"]
+    assert result["fields"]["ability_units"] == ["문서 작성", "적격증빙관리"]
+    assert result["fields"]["ability_units_by_detail"] == {
+        "사무행정": ["문서 작성"],
+        "세무": ["적격증빙관리"],
+    }
+
+
+def test_structure_job_description_splits_grouped_ability_units_and_keeps_detail_scope() -> None:
+    markdown = """
+<table>
+<tr><th>채용분야</th><td>경영지원</td></tr>
+<tr><th>NCS 세분류명</th><td>사무행정, 총무</td></tr>
+<tr><th>요구능력단위</th><td>(사무행정) 01.문서 작성, 02.문서 관리, 03.자료 관리; (총무) 04.비품관리, 07.업무지원</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="grouped.hwp")
+
+    assert result["fields"]["ability_units"] == [
+        "문서 작성",
+        "문서 관리",
+        "자료 관리",
+        "비품관리",
+        "업무지원",
+    ]
+    assert result["fields"]["ability_units_by_detail"] == {
+        "사무행정": ["문서 작성", "문서 관리", "자료 관리"],
+        "총무": ["비품관리", "업무지원"],
+    }
+    positioned_units = [
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ability_units"
+    ]
+    assert [item["ability_unit_ordinal"] for item in positioned_units] == [
+        "01",
+        "02",
+        "03",
+        "04",
+        "07",
+    ]
+
+
+def test_numbered_ability_units_join_layout_wraps_inside_official_names() -> None:
+    rows = _split_ability_unit_entries(
+        "(한식조리) 07.음청\n류 조리 08.한식 재료\n관리 09.한식 안전관리"
+    )
+
+    assert [row["text"] for row in rows] == [
+        "음청 류 조리",
+        "한식 재료 관리",
+        "한식 안전관리",
+    ]
+    assert [row["ordinal"] for row in rows] == ["07", "08", "09"]
+    assert all(row["detail_hint"] == "한식조리" for row in rows)
+
+
+def test_structure_job_description_keeps_comma_inside_numbered_ability_unit_name() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 세분류명</th><td>임상병리</td></tr>
+<tr><th>요구능력단위</th><td>(임상병리) 01.검사준비 02.채혈,접수 업무 03.일반혈액 검사</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="clinical.hwp")
+
+    assert result["fields"]["ability_units"] == ["검사준비", "채혈,접수 업무", "일반혈액 검사"]
+    assert result["fields"]["ability_units_by_detail"] == {
+        "임상병리": ["검사준비", "채혈,접수 업무", "일반혈액 검사"]
+    }
+
+
+def test_numbered_official_unit_splits_trailing_defined_custom_unit() -> None:
+    rows = _split_ability_unit_entries(
+        "(사무행정(기록물)) 08.사무환경조성, "
+        "기록물관리(생산·분류·편철·이관·보존·폐기)"
+    )
+
+    assert [row["text"] for row in rows] == [
+        "사무환경조성",
+        "기록물관리(생산·분류·편철·이관·보존·폐기)",
+    ]
+    assert [row["ordinal"] for row in rows] == ["08", ""]
+    assert all(row["detail_hint"] == "사무행정(기록물)" for row in rows)
+
+
+def test_numbered_official_comma_name_is_not_split() -> None:
+    rows = _split_ability_unit_entries("(위험물관리) 01.제1류, 제6류 위험물 취급")
+
+    assert [row["text"] for row in rows] == ["제1류, 제6류 위험물 취급"]
+
+
+def test_exact_base_detail_hint_scopes_qualified_institution_label() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 세분류명</th><td>사무행정</td></tr>
+<tr><th>능력단위</th><td>(사무행정(기록물)) 02.문서관리, 03.자료관리</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="qualified.hwp")
+
+    assert result["fields"]["ability_units_by_detail"] == {
+        "사무행정": ["문서관리", "자료관리"]
+    }
+    units = [
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ability_units"
+    ]
+    assert all(
+        item["scope"]["source"] == "embedded_exact_base_detail_hint"
+        for item in units
+    )
+
+
+def test_generic_bullet_separator_does_not_leave_concatenated_duplicate() -> None:
+    rows = _split_ability_unit_entries(
+        "종합적으로 법률을 해석하고 법적 쟁점을 분석하는 능력 "
+        "○ 법적 문제의 합리적인 문제해결 및 대안 제시 능력"
+    )
+
+    assert [row["text"] for row in rows] == [
+        "종합적으로 법률을 해석하고 법적 쟁점을 분석하는 능력 "
+        "○ 법적 문제의 합리적인 문제해결 및 대안 제시 능력",
+    ]
+
+
+def test_native_ability_rows_outrank_joined_html_fallback_evidence() -> None:
+    first = "종합적으로 법률을 해석하고 법적 쟁점을 분석하는 능력"
+    second = "법적 문제의 합리적인 문제해결 및 대안 제시 능력"
+    parsed = {
+        "markdown": f"""
+<table>
+<tr><th>세분류</th><td>법무</td></tr>
+<tr><th>능력단위</th><td>○ {first} ○ {second}</td></tr>
+</table>
+""",
+        "blocks": [
+            {
+                "type": "table",
+                "pageNumber": 1,
+                "rows": [
+                    [{"text": "세분류"}, {"text": "법무"}],
+                    [{"text": "능력단위"}, {"text": f"○ {first}\n○ {second}"}],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="native-plus-html.hwpx")
+
+    assert result["fields"]["ability_units"] == [first, second]
+    section_rows = result["sections"]["ability_units"]
+    assert all(row["table_index"] == 0 for row in section_rows)
+    assert all("\n" in row["raw_cell_text"] for row in section_rows)
+
+
+def test_job_field_row_uses_only_immediate_value_before_ncs_hierarchy() -> None:
+    parsed = {
+        "markdown": "| 세분류 | 사무행정 |",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {"text": "채용분야", "rowSpan": 2},
+                        {"text": "통계품질(진단기획)", "rowSpan": 2},
+                        {"text": "NCS 분류체계", "rowSpan": 2},
+                        {"text": "대분류"},
+                        {"text": "중분류"},
+                        {"text": "소분류"},
+                        {"text": "세분류"},
+                    ],
+                    [
+                        {"text": ""},
+                        {"text": ""},
+                        {"text": ""},
+                        {"text": "02.경영·회계·사무"},
+                        {"text": "02.총무·인사"},
+                        {"text": "03.일반사무"},
+                        {"text": "02.사무행정"},
+                    ],
+                    [{"text": "능력단위"}, {"text": "01.문서작성", "colSpan": 6}],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="job-field-scope.hwp")
+    unit = next(
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ability_units"
+    )
+
+    assert unit["scope"]["job_fields"] == ["통계품질(진단기획)"]
+    assert unit["header_path"][0] == "통계품질(진단기획)"
+
+
+def test_job_unit_hierarchy_recovers_only_exact_official_leaf_detail() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {"text": "직무단위"},
+                        {"text": "보건의료 – 의료 – 임상의학 - 양의학치료"},
+                    ]
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="medical-job-unit.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["양의학치료"]
+
+
+def test_job_unit_hierarchy_rejects_non_ncs_and_incomplete_paths() -> None:
+    for value in (
+        "본부 – 팀 – 담당 – 사무행정",
+        "보건의료 – 의료 – 양의학치료",
+    ):
+        parsed = {
+            "markdown": "",
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [[{"text": "직무단위"}, {"text": value}]],
+                }
+            ],
+        }
+
+        result = structure_job_description(parsed, filename="non-ncs-path.hwp")
+
+        assert result["fields"]["ncs_detail_candidates"] == []
+
+
+def test_versioned_training_row_recovers_unit_by_exact_base_code_and_name() -> None:
+    parsed = {
+        "markdown": "| 세분류 | 경영기획 |",
+        "blocks": [
+            {
+                "type": "table",
+                "pageNumber": 1,
+                "rows": [
+                    [
+                        {"text": "직무교육과정"},
+                        {"text": "020101010122v2"},
+                        {"text": ""},
+                        {"text": "01.사업환경 분석"},
+                    ]
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="training-row.pdf")
+
+    assert result["fields"]["ability_units_by_detail"] == {
+        "경영기획": ["사업환경 분석"]
+    }
+    unit = next(
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ability_units"
+    )
+    assert unit["source_unit_code"] == "020101010122v2"
+    assert unit["resolved_unit_code"] == "0201010101_22v3"
+    assert unit["source"] == "kordoc_code_anchored_training_recovery"
+    assert unit["coordinate_source"] == "kordoc_table"
+    assert unit["value_cell"] == {
+        "row": 0,
+        "column": 3,
+        "row_span": 1,
+        "column_span": 1,
+    }
+    assert next(
+        cell
+        for cell in unit["row_context_cells"]
+        if cell["column"] == unit["value_cell"]["column"]
+    )["text"] == "01.사업환경 분석"
+
+
+def test_markdown_training_rows_keep_matched_cells_and_separate_table_indexes() -> None:
+    parsed = {
+        "markdown": """
+| 세분류 | 경영기획 |
+<table><tr><td>직무교육과정</td><td>020101010122v2</td><td></td><td>01.사업환경 분석</td></tr></table>
+<table><tr><td>직무교육과정</td><td>020101010222v2</td><td>02.경영방침 수립</td></tr></table>
+""",
+        "blocks": [],
+    }
+
+    result = structure_job_description(parsed, filename="training-row-markdown.pdf")
+    units = [
+        item
+        for item in result["fields"]["positioned_items"]
+        if item.get("layout") == "markdown_code_anchored_training_row"
+    ]
+
+    assert [item["text"] for item in units] == ["사업환경 분석", "경영방침 수립"]
+    assert [item["table_index"] for item in units] == [0, 1]
+    assert [item["value_cell"]["column"] for item in units] == [3, 2]
+    assert [
+        next(
+            cell["text"]
+            for cell in item["row_context_cells"]
+            if cell["column"] == item["value_cell"]["column"]
+        )
+        for item in units
+    ] == ["01.사업환경 분석", "02.경영방침 수립"]
+
+
+def test_code_anchored_recovery_fails_closed_outside_exact_training_scope() -> None:
+    base_block = {
+        "type": "table",
+        "rows": [
+            [
+                {"text": "참고코드"},
+                {"text": "020101010122v2"},
+                {"text": "01.사업환경 분석"},
+            ]
+        ],
+    }
+    result = structure_job_description(
+        {"markdown": "| 세분류 | 경영기획 |", "blocks": [base_block]},
+        filename="not-training.pdf",
+    )
+    assert result["fields"]["ability_units"] == []
+
+    wrong_detail_block = {
+        "type": "table",
+        "rows": [
+            [
+                {"text": "직무교육과정"},
+                {"text": "020101010122v2"},
+                {"text": "01.사업환경 분석"},
+            ]
+        ],
+    }
+    result = structure_job_description(
+        {"markdown": "| 세분류 | 사무행정 |", "blocks": [wrong_detail_block]},
+        filename="wrong-detail.pdf",
+    )
+    assert result["fields"]["ability_units"] == []
+
+    wrong_name_block = {
+        "type": "table",
+        "rows": [
+            [
+                {"text": "직무교육과정"},
+                {"text": "020101010122v2"},
+                {"text": "01.사업환경 조사"},
+            ]
+        ],
+    }
+    result = structure_job_description(
+        {"markdown": "| 세분류 | 경영기획 |", "blocks": [wrong_name_block]},
+        filename="wrong-name.pdf",
+    )
+    assert result["fields"]["ability_units"] == []
+
+
+def test_kordoc_rowspan_placeholders_do_not_shift_ncs_hierarchy_values() -> None:
+    parsed = {
+        "markdown": "| 세분류 | 사무행정 |",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {"text": "채용분야", "rowSpan": 2},
+                        {"text": "행정", "rowSpan": 2},
+                        {"text": "NCS 분류체계", "rowSpan": 2},
+                        {"text": "대분류"},
+                        {"text": "중분류"},
+                        {"text": "소분류"},
+                        {"text": "세분류"},
+                    ],
+                    [
+                        {"text": ""},
+                        {"text": ""},
+                        {"text": ""},
+                        {"text": "02.경영·회계·사무"},
+                        {"text": "02.총무·인사"},
+                        {"text": "03.일반사무"},
+                        {"text": "02.사무행정"},
+                    ],
+                    [
+                        {"text": "능력단위"},
+                        {
+                            "text": "01.문서작성, 02.문서관리, 06.회의운영",
+                            "colSpan": 6,
+                        },
+                    ],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="rowspan-placeholders.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["사무행정"]
+    assert result["fields"]["ability_units_by_detail"] == {
+        "사무행정": ["문서작성", "문서관리", "회의운영"]
+    }
+
+
+    positioned_units = [
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ability_units"
+    ]
+    assert len(positioned_units) == 3
+    assert all(item["page"] == 0 for item in positioned_units)
+    assert all(item["table_index"] == 0 for item in positioned_units)
+    assert all(
+        item["label_cell"]
+        == {
+            "row": 2,
+            "column": 0,
+            "row_span": 1,
+            "column_span": 1,
+        }
+        for item in positioned_units
+    )
+    assert all(
+        item["value_cell"]
+        == {
+            "row": 2,
+            "column": 1,
+            "row_span": 1,
+            "column_span": 6,
+        }
+        for item in positioned_units
+    )
+
+
+def test_structure_job_description_scopes_grouped_units_across_separate_tables() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 세분류명</th><td>인사</td><td>총무</td></tr>
+</table>
+<table>
+<tr><th>능력단위</th><td>ㅇ (인사) 03.인력채용, 07.교육훈련운영 (총무) 04.비품관리, 07.업무지원</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="separate-tables.pdf")
+
+    assert result["fields"]["ability_units_by_detail"] == {
+        "인사": ["인력채용", "교육훈련운영"],
+        "총무": ["비품관리", "업무지원"],
+    }
+
+
+def test_embedded_exact_detail_hint_overrides_conflicting_positional_scope() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 세분류명</th><td>공공조달관리</td></tr>
+</table>
+<table>
+<tr><th>NCS 세분류명</th><td>회계·감사</td></tr>
+<tr><th>능력단위</th><td>(공공조달관리) 01.입찰실행 관리, 02.계약일반관리</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="conflict.pdf")
+
+    assert result["fields"]["ability_units_by_detail"] == {
+        "공공조달관리": ["입찰실행 관리", "계약일반관리"]
+    }
+    units = [
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ability_units"
+    ]
+    assert all(item["scope"]["source"] == "embedded_exact_detail_hint" for item in units)
+    assert all(item["scope"]["positional_ncs_details"] == ["회계·감사"] for item in units)
+
+
+def test_column_header_does_not_capture_wide_values_originating_before_it() -> None:
+    markdown = """
+<table>
+<tr><th>직무</th><td>헬스키퍼</td><th colspan="2">능력단위분류번호</th><th colspan="2">능력단위</th></tr>
+<tr><th>직무설명</th><td colspan="5">안마서비스를 제공한다.</td></tr>
+<tr><th>수행과업</th><td>안마서비스</td><td colspan="4">피로도 진단과 맞춤형 압력 조절</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="wide-cells.pdf")
+
+    assert result["fields"]["ability_units"] == []
+
+
+def test_grouped_ability_unit_split_removes_trailing_bullet_separator() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 세분류명</th><td>공공조달관리</td><td>인사</td></tr>
+<tr><th>능력단위</th><td colspan="2">(공공조달관리) 01.입찰실행 관리 02.전자조달시스템 활용 • (인사) 03.임금관리</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="bullet.pdf")
+
+    assert result["fields"]["ability_units"] == [
+        "입찰실행 관리",
+        "전자조달시스템 활용",
+        "임금관리",
+    ]
+
+
+def test_grouped_units_keep_commas_inside_parenthetical_examples() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 세분류명</th><td>통계조사</td><td>연구개발</td></tr>
+<tr><th>능력단위</th><td colspan="2">(통계조사) 자료처리, 보고서작성 • (연구개발) 문서작성, 보고서작성, 사무용 프로그램(엑셀, 한글, 파워포인트 등) 활용</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="parenthetical.pdf")
+
+    assert result["fields"]["ability_units_by_detail"] == {
+        "통계조사": ["자료처리", "보고서작성"],
+        "연구개발": [
+            "문서작성",
+            "보고서작성",
+            "사무용 프로그램(엑셀, 한글, 파워포인트 등) 활용",
+        ],
+    }
+
+
+def test_major_ability_unit_row_strips_explicit_ten_digit_codes() -> None:
+    markdown = """
+<table>
+<tr><td rowspan="2">02. 사무행정</td><th colspan="2">주요능력단위</th><td>0202030201.<br>문서작성</td><td>0202030202.<br>문서관리</td></tr>
+<tr><th colspan="2">필요지식</th><td colspan="2">문서관리 기준</td></tr>
+</table>
+"""
+
+    result = structure_job_description(
+        {"markdown": "| 세분류 | 사무행정 |\n" + markdown},
+        filename="coded-units.hwp",
+    )
+
+    assert result["fields"]["ability_units"] == ["문서작성", "문서관리"]
+    assert result["fields"]["ability_units_by_detail"] == {
+        "사무행정": ["문서작성", "문서관리"]
+    }
+
+
+def test_structure_job_description_does_not_force_one_detail_for_multi_detail_table() -> None:
+    markdown = """
+<table>
+<tr><th>채용분야</th><th colspan="4">시설관리</th></tr>
+<tr><th>세분류</th><td>전기설비운영</td><td>전기안전관리</td><td colspan="2"></td></tr>
+<tr><th>요구능력단위</th><td>전기설비 운영계획</td><td>전기안전 점검</td><td colspan="2"></td></tr>
+<tr><th>필요지식</th><td colspan="4">전기설비와 안전관리 법령</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="multi.pdf")
+    knowledge = next(
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "knowledge"
+    )
+
+    assert knowledge["scope"]["ncs_details"] == ["전기설비운영", "전기안전관리"]
+    assert knowledge["scope"]["status"] == "multi_detail"
+    assert knowledge["scope"]["review_required"] is True
+    assert result["fields"]["ability_units_by_detail"] == {
+        "전기설비운영": ["전기설비 운영계획"],
+        "전기안전관리": ["전기안전 점검"],
+    }
 
 
 def test_structure_job_description_merges_detail_from_kordoc_table_blocks() -> None:
@@ -691,6 +1376,25 @@ def test_structure_job_description_rejects_ability_unit_list_mislabeled_as_detai
     assert result["fields"]["ncs_detail_absence_reason"] == "ncs_detail_candidate_filtered"
 
 
+def test_structure_job_description_splits_long_numbered_official_detail_cell() -> None:
+    markdown = """
+<table>
+<tr><th rowspan="2">직무분야</th><th colspan="4">NCS 분류체계</th></tr>
+<tr><td>대분류</td><td>중분류</td><td>소분류</td><td>세분류</td></tr>
+<tr><td>기계</td><td>15.기계</td><td>01.기계설계</td><td>01.설계기획</td><td>01.기계설계기획<br>01.냉동공조설계<br>03.냉동공조유지보수관리<br>04.보일러설치정비</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="mechanical.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "기계설계기획",
+        "냉동공조설계",
+        "냉동공조유지보수관리",
+        "보일러설치정비",
+    ]
+
+
 def test_structure_job_description_does_not_promote_information_technology_small_category() -> None:
     markdown = """
 <table>
@@ -929,6 +1633,69 @@ def test_structure_job_description_marks_job_document_without_explicit_ncs_detai
     assert "직무소개서" in result["fields"]["ncs_detail_absence_evidence"]
 
 
+def test_structure_job_description_does_not_treat_generic_taxonomy_as_ncs() -> None:
+    markdown = """
+# 직무기술서
+<table>
+<tr><th>분류체계</th><th>모집분야</th><th>인공지능 정책 연구</th></tr>
+<tr><td>세부모집분야</td><td colspan="2">이용자보호 정책 연구</td></tr>
+<tr><td>참고사이트</td><td colspan="2">www.ncs.go.kr</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="연구직무.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert (
+        result["fields"]["ncs_detail_absence_reason"]
+        == "job_document_without_explicit_ncs_detail"
+    )
+
+
+def test_structure_job_description_marks_recruitment_notice_not_jd() -> None:
+    markdown = """
+# 2026년 공개채용 공고
+입사지원서 접수기간과 전형절차를 안내합니다.
+필기시험은 NCS 분야를 포함하며 분야별 직무기술서는 별표를 참조합니다.
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="채용공고문.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert (
+        result["fields"]["ncs_detail_absence_reason"]
+        == "recruitment_notice_not_job_description"
+    )
+    assert "recruitment_notice_markers" in result["fields"]["ncs_detail_absence_state"]
+
+
+def test_structure_job_description_marks_unapplied_ocr_as_extraction_failure() -> None:
+    parsed = {
+        "markdown": "![image](image_001.png)",
+        "warnings": [{"code": "NEEDS_OCR", "message": "OCR required"}],
+    }
+
+    result = structure_job_description(parsed, filename="스캔_직무기술서.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert (
+        result["fields"]["ncs_detail_absence_reason"]
+        == "ocr_required_extraction_failure"
+    )
+    assert result["fields"]["ncs_detail_absence_state"] == "ocr_required_without_ocr_output"
+
+
+def test_structure_job_description_marks_empty_parser_output_as_failure() -> None:
+    result = structure_job_description({"markdown": ""}, filename="upload.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert (
+        result["fields"]["ncs_detail_absence_reason"]
+        == "empty_document_extraction_failure"
+    )
+    assert result["fields"]["ncs_detail_absence_state"] == "empty_parser_output"
+
+
 def test_structure_job_description_continues_after_no_ncs_mapping_row_for_later_explicit_detail() -> None:
     markdown = """
 <table>
@@ -1145,3 +1912,91 @@ def test_structure_job_description_does_not_infer_broad_health_management_label_
 
     assert result["fields"]["ncs_detail_candidates"] == []
     assert result["fields"]["ncs_detail_source"] == ""
+
+
+def test_split_ability_unit_entries_keeps_unstructured_internal_bullet_prose() -> None:
+    rows = _split_ability_unit_entries(
+        "(법무) 종합적으로 법률을 해석하고 법적 쟁점을 분석하는 능력 ○ "
+        "법적 문제의 합리적인 문제해결 및 대안 제시 능력"
+    )
+
+    assert [row["text"] for row in rows] == [
+        "종합적으로 법률을 해석하고 법적 쟁점을 분석하는 능력 "
+        "○ 법적 문제의 합리적인 문제해결 및 대안 제시 능력"
+    ]
+    assert [row["detail_hint"] for row in rows] == ["법무"]
+
+
+def test_structure_job_description_scopes_base_detail_hint_and_split_custom_tail() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 세분류</th><td>사무행정</td></tr>
+<tr><th>능력단위</th><td>(사무행정(기록물)) 02.문서관리, 03.자료관리, 08.사무환경조성, 기록물관리(생산·분류·편철·이관·보존·폐기)</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="records.hwp")
+
+    assert result["fields"]["ability_units_by_detail"]["사무행정"] == [
+        "문서관리",
+        "자료관리",
+        "사무환경조성",
+        "기록물관리(생산·분류·편철·이관·보존·폐기)",
+    ]
+    positioned = [
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ability_units"
+    ]
+    assert all(item["scope"]["ncs_details"] == ["사무행정"] for item in positioned)
+    assert all(
+        item["scope"].get("source") == "embedded_exact_base_detail_hint"
+        for item in positioned
+    )
+
+
+def test_structural_ability_cell_uses_declared_detail_and_source_boundaries() -> None:
+    parsed = {
+        "markdown": """
+<table>
+<tr><th>세분류</th><td>양약조제</td></tr>
+<tr><th>능력단위</th><td>○ (처방조제) 의약품 조제 및 감사, 투약 및 복약설명<br>○ (교육) 직무 교육</td></tr>
+</table>
+<table>
+<tr><th>세분류</th><td>임상병리사</td></tr>
+<tr><th>능력단위</th><td>○ 채혈실 – 환자 안내 및 검사 설명, 능숙한 채혈<br>○ 응급검사실, 자동화검사실 – 장비 정도관리 및 점검<br>○ 혈핵은행 – 혈액형 검사 및 수혈적합성 검사</td></tr>
+</table>
+<table>
+<tr><th>세분류</th><td>병원안내</td></tr>
+<tr><th>능력단위</th><td>○ 병원 이용안내, 고객상담 및 민원응대, 응급·위급상황 대응, 통화 품질 및 데이터 관리, 서비스 품질 및 윤리준수 등</td></tr>
+</table>
+"""
+    }
+
+    result = structure_job_description(parsed, filename="structural.hwp")
+
+    assert result["fields"]["ability_units_by_detail"] == {
+        "양약조제": [
+            "처방조제: 의약품 조제 및 감사",
+            "처방조제: 투약 및 복약설명",
+            "교육: 직무 교육",
+        ],
+        "임상병리사": ["채혈실", "응급검사실", "자동화검사실", "혈핵은행"],
+        "병원안내": [
+            "병원 이용안내",
+            "고객상담 및 민원응대",
+            "응급·위급상황 대응",
+            "통화 품질 및 데이터 관리",
+            "서비스 품질 및 윤리준수",
+        ],
+    }
+    assert "능숙한 채혈" not in result["fields"]["ability_units"]
+    assert "장비 정도관리 및 점검" not in result["fields"]["ability_units"]
+    assert "혈액은행" not in result["fields"]["ability_units"]
+    positioned = [
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ability_units"
+    ]
+    assert all(item["raw_cell_text"] for item in positioned)
+    assert all(item["scope"]["status"] == "single_detail" for item in positioned)

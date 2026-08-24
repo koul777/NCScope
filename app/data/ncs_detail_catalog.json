@@ -1,0 +1,7665 @@
+{
+  "schema_version": 1,
+  "source": "NCS_MCP classifications joined to unit-code prefixes",
+  "classification_count": 1094,
+  "details": [
+    {
+      "code": "01010101",
+      "name": "공적개발원조사업관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "01010102",
+      "name": "프로젝트관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "01010103",
+      "name": "산학협력관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "01010201",
+      "name": "해외법인설립관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "01010202",
+      "name": "해외취업관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "02010101",
+      "name": "경영기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "02010102",
+      "name": "경영평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "02010201",
+      "name": "PR",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "02010202",
+      "name": "광고",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "02010301",
+      "name": "마케팅전략기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "02010302",
+      "name": "고객관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "02010303",
+      "name": "통계조사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "02010304",
+      "name": "유통관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "02020101",
+      "name": "총무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "02020102",
+      "name": "자산관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "02020103",
+      "name": "비상기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "02020104",
+      "name": "공공조달관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "02020201",
+      "name": "인사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "02020202",
+      "name": "노무관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "02020301",
+      "name": "비서",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "02020302",
+      "name": "사무행정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "02030101",
+      "name": "예산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "02030102",
+      "name": "자금",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "02030201",
+      "name": "회계·감사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "02030202",
+      "name": "세무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "02040101",
+      "name": "구매관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "02040102",
+      "name": "자재관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "02040103",
+      "name": "공정관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "02040104",
+      "name": "SCM",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "02040201",
+      "name": "QM/QC관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "02040302",
+      "name": "수출입관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "02040303",
+      "name": "원산지관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "02040305",
+      "name": "물류기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "02040306",
+      "name": "운송관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "02040307",
+      "name": "보관·하역관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "03010101",
+      "name": "창구사무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "03010102",
+      "name": "기업영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03010103",
+      "name": "PB영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "03010104",
+      "name": "카드영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010105",
+      "name": "여신전문금융영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03010201",
+      "name": "여수신상품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03010202",
+      "name": "투자상품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "03010203",
+      "name": "연금상품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03010204",
+      "name": "카드상품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03010301",
+      "name": "개인신용분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010302",
+      "name": "기업신용분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "03010303",
+      "name": "여신심사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010401",
+      "name": "펀드운용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "03010402",
+      "name": "주식·채권운용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "03010403",
+      "name": "파생상품운용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010404",
+      "name": "대체투자",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03010405",
+      "name": "신탁자산관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010501",
+      "name": "결제",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010502",
+      "name": "채권추심",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "03010503",
+      "name": "리스크관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010601",
+      "name": "증권거래업무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03010602",
+      "name": "외환·파생업무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010603",
+      "name": "인수업무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010604",
+      "name": "증권상장업무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03010605",
+      "name": "외화조달·외화대출업무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03010606",
+      "name": "무역금융업무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03020101",
+      "name": "보험동향분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03020102",
+      "name": "보험상품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "03020103",
+      "name": "보험계리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03020201",
+      "name": "보험모집",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "03020202",
+      "name": "보험계약심사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "03020203",
+      "name": "보험계약·보전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "03020204",
+      "name": "위험관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "03020301",
+      "name": "재물손해사정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "03020302",
+      "name": "차량손해사정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "03020303",
+      "name": "신체손해사정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "04020201",
+      "name": "평생교육프로그램 기획·개발·평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "04020202",
+      "name": "평생교육프로그램 운영·상담·교수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "04030101",
+      "name": "경력지도",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "04030102",
+      "name": "기업교육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "04030103",
+      "name": "직무분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "04030201",
+      "name": "이러닝시스템개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "04030202",
+      "name": "이러닝콘텐츠개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 31
+    },
+    {
+      "code": "04030203",
+      "name": "이러닝과정(process)운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "05010201",
+      "name": "지식재산관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 22
+    },
+    {
+      "code": "05010202",
+      "name": "지식재산평가·거래",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "05010203",
+      "name": "지식재산정보조사분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "05010204",
+      "name": "특허엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "05020101",
+      "name": "소방시설설계·감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "05020102",
+      "name": "소방시설공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "05020103",
+      "name": "구조구급",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "05020104",
+      "name": "소방안전관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "05020105",
+      "name": "위험물운송·운반관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "05020106",
+      "name": "위험물안전관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "05020107",
+      "name": "화재감식평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "05020201",
+      "name": "방재시설",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "05020202",
+      "name": "기업재난관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "05020203",
+      "name": "방재안전대책관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "05020301",
+      "name": "스마트재난위험예측",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "05020302",
+      "name": "스마트재난관리설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "06010101",
+      "name": "의료기기관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "06010108",
+      "name": "요양지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "06010109",
+      "name": "의지보조기제작·관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "06010110",
+      "name": "청각관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "06010113",
+      "name": "임상심리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "06010114",
+      "name": "의료정보관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "06010201",
+      "name": "병원행정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "06010202",
+      "name": "병원안내",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "06010203",
+      "name": "보건교육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "06010204",
+      "name": "의료시설위생관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "06010205",
+      "name": "지역사회위생관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "07010101",
+      "name": "지역사회복지개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "07010102",
+      "name": "사회복지조직운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "07010103",
+      "name": "공공복지",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "07010201",
+      "name": "사회복지프로그램운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "07010202",
+      "name": "일상생활기능지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "07010203",
+      "name": "사회복지면담",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "07010204",
+      "name": "사회복지사례관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "07010205",
+      "name": "자원봉사관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "07020101",
+      "name": "직업상담",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 28
+    },
+    {
+      "code": "07020102",
+      "name": "취업알선",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "07020103",
+      "name": "전직지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "07020201",
+      "name": "청소년활동",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "07020202",
+      "name": "청소년상담복지",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "07020203",
+      "name": "진로지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "07020301",
+      "name": "심리상담",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 21
+    },
+    {
+      "code": "07030101",
+      "name": "보육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "07030102",
+      "name": "산후육아지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "07030103",
+      "name": "아이돌봄",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "08010101",
+      "name": "문화·예술기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08010102",
+      "name": "문화·예술행정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08010103",
+      "name": "문화·예술경영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "08010104",
+      "name": "문헌정보관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "08010201",
+      "name": "실용음악",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 24
+    },
+    {
+      "code": "08010202",
+      "name": "실용사진",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "08010301",
+      "name": "무대연출",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "08010302",
+      "name": "무대조명",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "08010303",
+      "name": "무대기계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08010304",
+      "name": "무대음향",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "08010305",
+      "name": "무대미술",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "08010306",
+      "name": "무대감독",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "08010307",
+      "name": "무대기술감독",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08010308",
+      "name": "무대장치·소품",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "08010309",
+      "name": "무대의상",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "08010310",
+      "name": "무대영상",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "08010311",
+      "name": "하우스매니징",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "08010401",
+      "name": "학예",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "08010402",
+      "name": "문화재보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "08010403",
+      "name": "문화재보존",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "08020101",
+      "name": "시각디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "08020102",
+      "name": "제품디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "08020103",
+      "name": "환경디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "08020104",
+      "name": "디지털디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "08020105",
+      "name": "텍스타일디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "08020106",
+      "name": "서비스경험디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "08020107",
+      "name": "실내디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "08020108",
+      "name": "색채디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "08020109",
+      "name": "전시디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "08020110",
+      "name": "3D프린팅디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08020111",
+      "name": "패키지디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "08020112",
+      "name": "VR콘텐츠디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030101",
+      "name": "문화콘텐츠기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030201",
+      "name": "방송콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "08030202",
+      "name": "영화콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "08030203",
+      "name": "음악콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "08030204",
+      "name": "광고콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "08030205",
+      "name": "게임콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 31
+    },
+    {
+      "code": "08030206",
+      "name": "애니메이션콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 22
+    },
+    {
+      "code": "08030207",
+      "name": "만화콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "08030208",
+      "name": "캐릭터콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "08030209",
+      "name": "스마트문화앱콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "08030210",
+      "name": "영사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030211",
+      "name": "완구콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "08030212",
+      "name": "드론콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030301",
+      "name": "방송콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "08030302",
+      "name": "영화콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030303",
+      "name": "음악콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030304",
+      "name": "광고콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030305",
+      "name": "게임콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "08030306",
+      "name": "애니메이션콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030307",
+      "name": "만화콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030308",
+      "name": "캐릭터콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030309",
+      "name": "스마트문화앱콘텐츠유통·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030401",
+      "name": "영상연출",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030402",
+      "name": "영상촬영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030403",
+      "name": "영상조명",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "08030404",
+      "name": "영상음향제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030405",
+      "name": "영상그래픽",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "08030406",
+      "name": "영상편집",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "08030407",
+      "name": "영상미술",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "09010101",
+      "name": "여객운송",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "09010102",
+      "name": "화물운송",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "09010103",
+      "name": "수송포장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "09020101",
+      "name": "철도관제",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "09020102",
+      "name": "열차운용DIA",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "09020103",
+      "name": "철도운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "09020104",
+      "name": "기지내차량운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "09020201",
+      "name": "철도선로시설물유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "09020202",
+      "name": "정비기지시설물유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "09020203",
+      "name": "역시설물유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "09020204",
+      "name": "철도정보통신시설물유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "09030101",
+      "name": "항해",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "09030102",
+      "name": "선박기관운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "09030103",
+      "name": "선박통신",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "09030104",
+      "name": "수면비행선박조종",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "09030105",
+      "name": "수상레저기구조종",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "09030106",
+      "name": "선박교통관제",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "09030107",
+      "name": "선박갑판관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "09030201",
+      "name": "검수·검정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "09040101",
+      "name": "경량항공기조종",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "09040102",
+      "name": "자가용항공기조종",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "09040103",
+      "name": "사업용항공기조종",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "09040104",
+      "name": "운송용항공기조종",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "09040105",
+      "name": "소형무인기운용·조종",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "09040201",
+      "name": "항공교통관제",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "09040202",
+      "name": "운항관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "09040203",
+      "name": "항공안전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "09040204",
+      "name": "항공보안",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "09040205",
+      "name": "항공여객운송서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "09040206",
+      "name": "항공화물운송서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "09040301",
+      "name": "항행안전무선시설운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "10010101",
+      "name": "일반영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "10010102",
+      "name": "해외영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "10020101",
+      "name": "부동산개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "10020102",
+      "name": "부동산분양",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "10020103",
+      "name": "부동산경·공매",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "10020201",
+      "name": "주택관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "10020202",
+      "name": "상업용건물관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "10020203",
+      "name": "부동산자산관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "10020301",
+      "name": "부동산중개",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "10020302",
+      "name": "부동산정보제공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "10020401",
+      "name": "부동산·동산감정평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "10020402",
+      "name": "기업가치평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "10020403",
+      "name": "감정평가가격정보제공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "10030101",
+      "name": "통신판매",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "10030102",
+      "name": "전자상거래",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "10030201",
+      "name": "매장판매",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "10030202",
+      "name": "방문판매",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "10030301",
+      "name": "농축수산물경매",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "11010101",
+      "name": "보안",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 24
+    },
+    {
+      "code": "11010102",
+      "name": "경호",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "11020101",
+      "name": "환경미화",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "11020102",
+      "name": "가사지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "12010101",
+      "name": "헤어미용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 31
+    },
+    {
+      "code": "12010102",
+      "name": "피부미용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 30
+    },
+    {
+      "code": "12010103",
+      "name": "메이크업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 32
+    },
+    {
+      "code": "12010104",
+      "name": "네일미용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 29
+    },
+    {
+      "code": "12010105",
+      "name": "이용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 43
+    },
+    {
+      "code": "12020101",
+      "name": "결혼상담",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "12020102",
+      "name": "웨딩플래너",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "12020103",
+      "name": "결혼예식장관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "12020104",
+      "name": "웨딩이벤트",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "12020201",
+      "name": "장례지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "12020202",
+      "name": "장례지도",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "12030101",
+      "name": "여행상품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "12030102",
+      "name": "여행상품상담",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "12030103",
+      "name": "국내여행안내",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "12030104",
+      "name": "해외여행안내",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "12030105",
+      "name": "항공객실서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "12030201",
+      "name": "숙박기획·개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "12030202",
+      "name": "객실관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "12030203",
+      "name": "부대시설관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "12030204",
+      "name": "연회관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "12030205",
+      "name": "접객서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "12030301",
+      "name": "회의기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "12030302",
+      "name": "전시기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "12030303",
+      "name": "이벤트기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "12030401",
+      "name": "카지노기획개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "12030402",
+      "name": "카지노운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "12030403",
+      "name": "크루즈운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "12030404",
+      "name": "유원시설운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "12030405",
+      "name": "리조트운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "12040101",
+      "name": "스포츠용품제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "12040201",
+      "name": "스포츠시설개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "12040202",
+      "name": "스포츠시설운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "12040301",
+      "name": "선수스포츠지도",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "12040302",
+      "name": "일반인스포츠지도",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "12040303",
+      "name": "건강운동관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 30
+    },
+    {
+      "code": "12040304",
+      "name": "경기기록분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "12040305",
+      "name": "경기심판",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "12040306",
+      "name": "경기지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "12040307",
+      "name": "건강운동ICT융복합콘텐츠개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "12040308",
+      "name": "경기력향상융복합콘텐츠개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "12040309",
+      "name": "골프캐디",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "12040401",
+      "name": "스포츠이벤트",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "12040402",
+      "name": "스포츠라이선싱",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "12040403",
+      "name": "스포츠에이전트",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "12040404",
+      "name": "스포츠정보관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "12040501",
+      "name": "레크리에이션지도",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "13010100",
+      "name": "음식조리공통직무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "13010101",
+      "name": "한식조리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "13010102",
+      "name": "양식조리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "13010103",
+      "name": "중식조리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "13010104",
+      "name": "일식조리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "13010105",
+      "name": "복어조리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "13010201",
+      "name": "식음료접객",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "13010202",
+      "name": "소믈리에",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "13010203",
+      "name": "커피관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "13010204",
+      "name": "바텐더",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "13010205",
+      "name": "식공간연출",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "13010301",
+      "name": "외식운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14010101",
+      "name": "설계기획관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14010201",
+      "name": "건설공사공정관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14010202",
+      "name": "건설공사품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14010203",
+      "name": "건설공사환경관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14010204",
+      "name": "건설공사공무관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14010301",
+      "name": "유지관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14010401",
+      "name": "스마트건설설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "14010402",
+      "name": "스마트건설정보관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "14010403",
+      "name": "스마트건설시공관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "14020101",
+      "name": "도로설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14020102",
+      "name": "공항설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "14020103",
+      "name": "터널설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14020104",
+      "name": "교량설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14020105",
+      "name": "항만(해양)설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14020106",
+      "name": "상하수도설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "14020107",
+      "name": "하천(댐)설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14020108",
+      "name": "지반설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14020109",
+      "name": "단지설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14020110",
+      "name": "철도설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14020111",
+      "name": "토목건설사업관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14020112",
+      "name": "토목시설물경관",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14020201",
+      "name": "토공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14020202",
+      "name": "지반개량",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14020203",
+      "name": "포장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14020204",
+      "name": "수중구조물시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14020205",
+      "name": "삭도시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14020206",
+      "name": "궤도시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14020207",
+      "name": "상하수도시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14020208",
+      "name": "보링그라우팅",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14020209",
+      "name": "철강재시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14020210",
+      "name": "준설",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14020211",
+      "name": "석축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14020301",
+      "name": "지적",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14020302",
+      "name": "측량",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "14020303",
+      "name": "공간정보구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14020304",
+      "name": "공간정보융합서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "14030101",
+      "name": "건축설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "14030102",
+      "name": "건축구조설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14030103",
+      "name": "건축공사감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14030104",
+      "name": "실내건축설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14030201",
+      "name": "건축목공시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14030202",
+      "name": "조적미장시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14030203",
+      "name": "방수시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14030204",
+      "name": "타일시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14030205",
+      "name": "건축도장시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "14030206",
+      "name": "철근콘크리트시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14030207",
+      "name": "창호시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "14030208",
+      "name": "가설시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14030209",
+      "name": "수장시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "14030210",
+      "name": "단열시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14030211",
+      "name": "지붕시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14030212",
+      "name": "구조물해체",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14030213",
+      "name": "강구조시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14030214",
+      "name": "경량철골시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14030215",
+      "name": "건설공사판넬시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14030216",
+      "name": "한옥시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14030217",
+      "name": "석재시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14030301",
+      "name": "건축설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14030302",
+      "name": "건축설비시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14030303",
+      "name": "건축설비감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14030304",
+      "name": "건축설비유지관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14030305",
+      "name": "배관시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14040101",
+      "name": "발전설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14040102",
+      "name": "석유·화학설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14040103",
+      "name": "에너지설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14040104",
+      "name": "제조공장설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14040105",
+      "name": "환경설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14040106",
+      "name": "플랜트설비감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14040107",
+      "name": "해수담수화플랜트설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14040201",
+      "name": "플랜트기계설비시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14040202",
+      "name": "플랜트전기설비시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14040203",
+      "name": "플랜트계측설비시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14040301",
+      "name": "플랜트사업관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14050101",
+      "name": "조경설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "14050102",
+      "name": "조경시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14050103",
+      "name": "조경관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "14050104",
+      "name": "조경사업관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14060101",
+      "name": "국토·지역계획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14060102",
+      "name": "도시계획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14060103",
+      "name": "도시설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14060104",
+      "name": "도시재생",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14060105",
+      "name": "도시개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14060106",
+      "name": "도시경관",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14060201",
+      "name": "교통계획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14060202",
+      "name": "교통설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14060203",
+      "name": "교통운영·감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14060301",
+      "name": "주거서비스지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "14060401",
+      "name": "지능형교통체계(ITS) 기획 및 설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14060402",
+      "name": "지능형교통체계(ITS) 개발 및 구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "14060403",
+      "name": "지능형교통체계(ITS) 운영 및 유지관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "14070101",
+      "name": "모터그레이더운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14070102",
+      "name": "아스팔트피니셔운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14070103",
+      "name": "롤러운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14070104",
+      "name": "불도저운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14070105",
+      "name": "로더운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14070106",
+      "name": "굴착기운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14070107",
+      "name": "준설선운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "14070201",
+      "name": "락드릴항타항발기운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14070202",
+      "name": "지열시추기운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14070301",
+      "name": "콘크리트공기계운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14070401",
+      "name": "지게차운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "14070501",
+      "name": "기중기운전(이동식크레인조종)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14070502",
+      "name": "양화장치운전(선박크레인조종)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "14070503",
+      "name": "타워크레인운전(타워크레인조종)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14070504",
+      "name": "천장크레인운전(천장크레인조종)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "14070505",
+      "name": "컨테이너크레인운전(컨테이너크레인조종)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "14070506",
+      "name": "줄걸이작업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14070507",
+      "name": "타워크레인설치해체",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14070601",
+      "name": "건설기계정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "14070602",
+      "name": "굴착기정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "14070603",
+      "name": "지게차정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14070604",
+      "name": "이동식크레인정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "14070605",
+      "name": "건설기계성능검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14080101",
+      "name": "해양관측",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14080102",
+      "name": "해양측량",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14080103",
+      "name": "해양생태환경조사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14080201",
+      "name": "해양환경보전·복원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080202",
+      "name": "해양환경영향평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080203",
+      "name": "해양오염관리·방제",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080301",
+      "name": "원유시추설비설치·운용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14080302",
+      "name": "원유생산설비설치·운용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080303",
+      "name": "해양터미널구조물설치",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14080304",
+      "name": "해양플랜트프로세스설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14080305",
+      "name": "해양플랜트시운전설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080306",
+      "name": "해양플랜트안전설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14080307",
+      "name": "해양플랜트종합설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "14080308",
+      "name": "해양플랜트구조설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "14080309",
+      "name": "해양플랜트기계설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "14080310",
+      "name": "해양플랜트계장설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080311",
+      "name": "해양플랜트배관설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "14080312",
+      "name": "해양플랜트전장설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14080401",
+      "name": "해양자원탐사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080402",
+      "name": "해양자원개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080403",
+      "name": "해양자원관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "14080501",
+      "name": "일반잠수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "14080502",
+      "name": "산업잠수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15010101",
+      "name": "기계설계기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15010102",
+      "name": "기계개발기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15010103",
+      "name": "기계조달",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15010104",
+      "name": "기계마케팅",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15010201",
+      "name": "기계요소설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15010202",
+      "name": "기계시스템설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "15010203",
+      "name": "구조해석설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15010204",
+      "name": "기계제어설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "15020101",
+      "name": "선반가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15020102",
+      "name": "밀링가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "15020103",
+      "name": "연삭가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "15020104",
+      "name": "CAM",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "15020105",
+      "name": "측정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15020106",
+      "name": "성형가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15020201",
+      "name": "방전가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "15020202",
+      "name": "레이저가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15020203",
+      "name": "워터젯가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15020204",
+      "name": "플라즈마가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15030101",
+      "name": "기계수동조립",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "15030102",
+      "name": "기계소프트웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15030103",
+      "name": "기계하드웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15030104",
+      "name": "기계펌웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15030201",
+      "name": "기계생산관리계획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15030202",
+      "name": "기계자재관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15030203",
+      "name": "기계공정관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15030204",
+      "name": "기계생산성관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15030205",
+      "name": "기계작업감독",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15040101",
+      "name": "기계품질계획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15040102",
+      "name": "기계품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15040103",
+      "name": "기계품질평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15050101",
+      "name": "운반하역기계설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15050102",
+      "name": "건설광산기계설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15050103",
+      "name": "섬유기계설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15050104",
+      "name": "공작기계설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15050105",
+      "name": "고무프라스틱기계설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15050106",
+      "name": "농업용기계설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "15050107",
+      "name": "승강기설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "15050108",
+      "name": "승강기설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "15050201",
+      "name": "냉동공조설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15050202",
+      "name": "냉동공조설치",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 25
+    },
+    {
+      "code": "15050203",
+      "name": "냉동공조유지보수관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "15050204",
+      "name": "보일러설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 25
+    },
+    {
+      "code": "15050205",
+      "name": "보일러운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15050301",
+      "name": "오토바이정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15050302",
+      "name": "자전거정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15060101",
+      "name": "자동차설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15060102",
+      "name": "자동차시험평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "15060103",
+      "name": "자동차공정설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15060104",
+      "name": "차량용 제어기 SW개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15060201",
+      "name": "자동차조립",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "15060202",
+      "name": "자동차성능검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15060301",
+      "name": "자동차전기·전자장치정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15060302",
+      "name": "자동차엔진정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "15060303",
+      "name": "자동차섀시정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15060304",
+      "name": "자동차차체정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15060305",
+      "name": "자동차도장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "15060306",
+      "name": "자동차정비검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "15060307",
+      "name": "전기자동차정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15060308",
+      "name": "전기자동차검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15060401",
+      "name": "자동차정비경영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15060402",
+      "name": "자동차정비현장관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15060501",
+      "name": "자동차영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15060502",
+      "name": "자동차튜닝",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 23
+    },
+    {
+      "code": "15070101",
+      "name": "철도차량설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15070102",
+      "name": "철도차량제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15070103",
+      "name": "철도차량시운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15070201",
+      "name": "고속차량유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15070202",
+      "name": "디젤차량유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15070203",
+      "name": "전기차량유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15070204",
+      "name": "객화차량유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15070205",
+      "name": "특수차량유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15080101",
+      "name": "선박기본설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15080102",
+      "name": "선체설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "15080103",
+      "name": "선박배관설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15080104",
+      "name": "철의장설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15080105",
+      "name": "기장설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15080106",
+      "name": "전장설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15080107",
+      "name": "선실설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "15080201",
+      "name": "선체가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "15080202",
+      "name": "선체조립",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 28
+    },
+    {
+      "code": "15080203",
+      "name": "선박도장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15080204",
+      "name": "심출(철목)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080205",
+      "name": "조선비계(족장, 발판, scaffolding)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "15080301",
+      "name": "기장생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "15080302",
+      "name": "전장생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080303",
+      "name": "선장생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "15080304",
+      "name": "선실의장생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "15080401",
+      "name": "선체품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15080402",
+      "name": "의장품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15080403",
+      "name": "도장품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080501",
+      "name": "선박생산계획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15080502",
+      "name": "선체생산관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080503",
+      "name": "의장생산관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080601",
+      "name": "기장시운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "15080602",
+      "name": "선장시운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15080603",
+      "name": "전장시운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15080701",
+      "name": "선체정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080702",
+      "name": "선박기관정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "15080703",
+      "name": "선박배관정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080704",
+      "name": "전장정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15080705",
+      "name": "의장정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "15080801",
+      "name": "레저선박몰드제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15080802",
+      "name": "알루미늄레저선박건조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080803",
+      "name": "복합재료레저선박건조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080804",
+      "name": "레저선박도장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15080805",
+      "name": "레저선박기장설치수리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15090101",
+      "name": "항공기기체설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 22
+    },
+    {
+      "code": "15090102",
+      "name": "항공기엔진·프로펠러설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15090103",
+      "name": "항공기전기·전자장비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "15090104",
+      "name": "항공기시스템설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "15090105",
+      "name": "소형무인기비행체개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15090201",
+      "name": "항공기기체제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "15090202",
+      "name": "항공기엔진·프로펠러제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "15090203",
+      "name": "항공기전기·전자장비제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15090301",
+      "name": "항공기기체정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15090302",
+      "name": "항공기가스터빈엔진정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15090303",
+      "name": "항공기왕복엔진정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15090304",
+      "name": "항공기프로펠러정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15090305",
+      "name": "항공기계통정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15090306",
+      "name": "항공기전기·전자장비정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15090307",
+      "name": "헬리콥터정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15090308",
+      "name": "소형무인기정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15090401",
+      "name": "항공기정비관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15090402",
+      "name": "항공장비보급관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "15090403",
+      "name": "항공장구관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "15100001",
+      "name": "금형스마트시스템운영·관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15100101",
+      "name": "사출금형설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "15100102",
+      "name": "사출금형제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "15100103",
+      "name": "사출금형품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15100104",
+      "name": "사출금형조립",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15100201",
+      "name": "프레스금형설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "15100202",
+      "name": "프레스금형제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "15100203",
+      "name": "프레스금형품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15100204",
+      "name": "프레스금형조립",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15100301",
+      "name": "다이캐스팅금형설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "15100302",
+      "name": "다이캐스팅금형제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "15100303",
+      "name": "다이캐스팅금형조립",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15100304",
+      "name": "다이캐스팅금형품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "15110101",
+      "name": "스마트설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15110201",
+      "name": "스마트공장(smart factory)시스템설치",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "15110301",
+      "name": "스마트공장(smart factory)시스템관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "15110302",
+      "name": "스마트공장(smart factory)기계설비유지관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "16010101",
+      "name": "재료설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "16010102",
+      "name": "재료시험",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "16010103",
+      "name": "재료조직평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "16010200",
+      "name": "금속재료제조공통",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "16010201",
+      "name": "제선",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 41
+    },
+    {
+      "code": "16010203",
+      "name": "열간압연",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 37
+    },
+    {
+      "code": "16010204",
+      "name": "냉간압연",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "16010207",
+      "name": "금속재료제조설비정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 36
+    },
+    {
+      "code": "16010208",
+      "name": "전로제강",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "16010209",
+      "name": "전기로제강",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "16010210",
+      "name": "2차정련",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "16010211",
+      "name": "연속주조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "16010301",
+      "name": "주조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "16010302",
+      "name": "단조·압출·인발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "16010303",
+      "name": "열처리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "16010304",
+      "name": "선재가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 33
+    },
+    {
+      "code": "16010305",
+      "name": "판금제관",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "16010306",
+      "name": "강관제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "16010307",
+      "name": "분말야금",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "16010308",
+      "name": "특수주조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "16010401",
+      "name": "도금",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 31
+    },
+    {
+      "code": "16010402",
+      "name": "금속도장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 22
+    },
+    {
+      "code": "16010500",
+      "name": "용접공통직무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "16010501",
+      "name": "피복아크용접",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "16010502",
+      "name": "CO₂용접",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "16010503",
+      "name": "가스텅스텐아크용접",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "16010504",
+      "name": "가스메탈아크용접",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "16010505",
+      "name": "서브머지드아크용접",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "16010506",
+      "name": "로봇용접",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "16010507",
+      "name": "저항용접",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "16010601",
+      "name": "마그네슘제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "16010602",
+      "name": "타이타늄제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "16010603",
+      "name": "알루미늄가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "16010604",
+      "name": "비철금속건식제련",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "16010605",
+      "name": "비철금속습식제련",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "16020001",
+      "name": "세라믹재료품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 4
+    },
+    {
+      "code": "16020002",
+      "name": "세라믹재료환경안전관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "16020301",
+      "name": "소성·소결세라믹원료합성처리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "16020302",
+      "name": "소성·소결세라믹성형",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "16020303",
+      "name": "세라믹소성·소결",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "16020304",
+      "name": "소성·소결세라믹후처리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "16020305",
+      "name": "소성·소결세라믹시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "16020401",
+      "name": "용융세라믹원료배합",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 3
+    },
+    {
+      "code": "16020402",
+      "name": "용융세라믹용융",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "16020403",
+      "name": "용융세라믹성형",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 4
+    },
+    {
+      "code": "16020404",
+      "name": "용융세라믹가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "16020501",
+      "name": "탄소재료생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "16020502",
+      "name": "탄소재료품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "17010101",
+      "name": "화학물질분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 26
+    },
+    {
+      "code": "17010102",
+      "name": "화학물질검사·평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "17010103",
+      "name": "화학물질취급관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 25
+    },
+    {
+      "code": "17010104",
+      "name": "화학제품품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "17010201",
+      "name": "화학공정설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "17010202",
+      "name": "화학반응공정개발운전",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "17010203",
+      "name": "화학공정유지운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 22
+    },
+    {
+      "code": "17010301",
+      "name": "화학제품연구개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 30
+    },
+    {
+      "code": "17010302",
+      "name": "화학신소재개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "17010303",
+      "name": "화학제품기술사업화관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "17020101",
+      "name": "석유제품제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "17020201",
+      "name": "석유화학제품제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "17020202",
+      "name": "합성수지제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "17020203",
+      "name": "합섬원료제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "17020204",
+      "name": "합성고무제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "17020205",
+      "name": "고분자복합재료제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "17020206",
+      "name": "기능성고분자제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "17020302",
+      "name": "산·알카리제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "17030001",
+      "name": "정밀화학생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "17030102",
+      "name": "농약제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "17030104",
+      "name": "무기질비료제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "17030201",
+      "name": "계면활성제제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "17030202",
+      "name": "첨가제제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "17030203",
+      "name": "색소(염·안료)제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "17030204",
+      "name": "도료제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "17030205",
+      "name": "접착제제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "17030206",
+      "name": "화약류제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "17030601",
+      "name": "의약품생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "17030602",
+      "name": "의약품품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "17030603",
+      "name": "의약품연구개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "17030604",
+      "name": "의약품비임상시험",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "17030605",
+      "name": "의약품임상시험",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "17030701",
+      "name": "화장품생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "17030702",
+      "name": "화장품품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "17030703",
+      "name": "화장품연구개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "17040101",
+      "name": "압출성형",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "17040102",
+      "name": "코팅",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "17040103",
+      "name": "중공·진공성형",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "17040104",
+      "name": "컴파운딩",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "17040105",
+      "name": "사출성형",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "17040106",
+      "name": "플라스틱재활용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "17040201",
+      "name": "고무배합",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "17040202",
+      "name": "고무제품제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "17050101",
+      "name": "바이오의약품생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "17050102",
+      "name": "바이오의약품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "17050103",
+      "name": "바이오진단제품개발·서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 24
+    },
+    {
+      "code": "17050105",
+      "name": "생물학적제제개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "17050106",
+      "name": "첨단바이오의약품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "17050107",
+      "name": "바이오의약품품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "17050201",
+      "name": "바이오화학제품제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "17050202",
+      "name": "바이오플라스틱제품제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "17050203",
+      "name": "특수바이오화학제품제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "17050301",
+      "name": "유전체정보분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "17050302",
+      "name": "유전자변형",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "18010101",
+      "name": "방사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "18010102",
+      "name": "방적",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "18010103",
+      "name": "제직",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "18010104",
+      "name": "편직",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "18010105",
+      "name": "부직포",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "18010106",
+      "name": "사가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "18010202",
+      "name": "염색가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "18010301",
+      "name": "구매생산관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "18010302",
+      "name": "생산현장관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "18020101",
+      "name": "패션기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "18020102",
+      "name": "패션디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "18020103",
+      "name": "패턴",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "18020104",
+      "name": "비주얼머천다이징",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "18020201",
+      "name": "제직의류생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "18020202",
+      "name": "편직의류생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "18020203",
+      "name": "가죽·모피생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "18020204",
+      "name": "패션소품생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "18020205",
+      "name": "한복생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "18020301",
+      "name": "의류유통관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "18020302",
+      "name": "가죽·모피유통관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "18020303",
+      "name": "신발유통관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "18020304",
+      "name": "패션소품유통관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "18020401",
+      "name": "신발생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "18020402",
+      "name": "신발개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "18030101",
+      "name": "세탁",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "18030102",
+      "name": "수선",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "19010101",
+      "name": "수력발전설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19010102",
+      "name": "화력발전설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19010103",
+      "name": "원자력발전설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19010201",
+      "name": "수력발전설비운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19010202",
+      "name": "화력발전설비운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "19010203",
+      "name": "원자력발전설비운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19010204",
+      "name": "원자력발전전기설비정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "19010205",
+      "name": "원자력발전기계설비정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "19010206",
+      "name": "원자력발전계측제어설비정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "19010301",
+      "name": "송변전배전설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "19010302",
+      "name": "송변전배전설비운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19010303",
+      "name": "송변전배전설비공사감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "19010304",
+      "name": "직류송배전전력변환설비제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19010305",
+      "name": "직류송배전제어·보호시스템설비제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "19010306",
+      "name": "직류송배전시험평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19010307",
+      "name": "직류송배전전력변환설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19010308",
+      "name": "직류송배전제어·보호시스템설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19010401",
+      "name": "지능형전력망설비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "19010402",
+      "name": "지능형전력망설비소프트웨어",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19010501",
+      "name": "전기기기설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "19010502",
+      "name": "전기기기제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19010503",
+      "name": "전기기기유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "19010504",
+      "name": "전기전선제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "19010601",
+      "name": "전기설비설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 21
+    },
+    {
+      "code": "19010602",
+      "name": "전기설비감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "19010603",
+      "name": "전기설비운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 32
+    },
+    {
+      "code": "19010701",
+      "name": "내선공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 34
+    },
+    {
+      "code": "19010702",
+      "name": "외선공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 27
+    },
+    {
+      "code": "19010703",
+      "name": "변전설비공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 26
+    },
+    {
+      "code": "19010704",
+      "name": "전기공사관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19010801",
+      "name": "자동제어시스템설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "19010802",
+      "name": "자동제어기기제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "19010803",
+      "name": "자동제어시스템유지정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19010804",
+      "name": "자동제어시스템운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "19010901",
+      "name": "전기철도설계·감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "19010902",
+      "name": "전기철도시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "19010903",
+      "name": "전기철도시설물유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "19011001",
+      "name": "철도신호제어설계·감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19011002",
+      "name": "철도신호제어시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "19011003",
+      "name": "철도신호제어시설물유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "19011101",
+      "name": "초임계CO₂발전열원설계·제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "19011102",
+      "name": "초임계CO₂열교환기설계·제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19011103",
+      "name": "초임계CO₂회전기기설계·제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19011201",
+      "name": "전기저장장치개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "19011202",
+      "name": "전기저장장치설치",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19011301",
+      "name": "스마트유지보수운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19011402",
+      "name": "리튬이온전지셀개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19020101",
+      "name": "전자제품기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "19020102",
+      "name": "전자제품생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "19020201",
+      "name": "전자부품기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19020202",
+      "name": "전자부품생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19020203",
+      "name": "전자부품표면실장(SMT)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "19020301",
+      "name": "전자제품설치·정비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "19020302",
+      "name": "전자제품영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19030501",
+      "name": "전자부품하드웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19030502",
+      "name": "전자부품기구개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19030503",
+      "name": "전자부품소프트웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19030601",
+      "name": "반도체개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 26
+    },
+    {
+      "code": "19030602",
+      "name": "반도체제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 52
+    },
+    {
+      "code": "19030603",
+      "name": "반도체장비",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 37
+    },
+    {
+      "code": "19030604",
+      "name": "반도체재료",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 21
+    },
+    {
+      "code": "19030701",
+      "name": "디스플레이개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19030702",
+      "name": "디스플레이생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19030703",
+      "name": "디스플레이장비부품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19030801",
+      "name": "로봇하드웨어설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "19030802",
+      "name": "로봇기구개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "19030803",
+      "name": "로봇소프트웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "19030804",
+      "name": "로봇지능개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19030805",
+      "name": "로봇유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19030806",
+      "name": "로봇안전인증",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "19030901",
+      "name": "의료기기품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "19030902",
+      "name": "의료기기인·허가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19030903",
+      "name": "의료기기생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19030904",
+      "name": "의료기기연구개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19031001",
+      "name": "광부품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19031002",
+      "name": "레이저개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19031003",
+      "name": "LED기술개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19031004",
+      "name": "광학시스템제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19031005",
+      "name": "광학소프트웨어응용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "19031006",
+      "name": "광센서기기개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19031007",
+      "name": "광의료기기개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19031008",
+      "name": "라이다(LiDAR)기기개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19031101",
+      "name": "3D프린터개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19031102",
+      "name": "3D프린터용 제품제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "19031103",
+      "name": "3D프린팅 소재개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "19031201",
+      "name": "가상훈련시스템설계·검증",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19031202",
+      "name": "가상훈련구동엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19031203",
+      "name": "가상훈련콘텐츠개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19031204",
+      "name": "실감형콘텐츠하드웨어(디바이스)개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19031301",
+      "name": "착용형스마트기기설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19031302",
+      "name": "착용형스마트기기서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19031303",
+      "name": "착용형스마트기기개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "19031401",
+      "name": "플렉시블디스플레이모듈개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "19031402",
+      "name": "플렉시블디스플레이검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19031403",
+      "name": "플렉시블디스플레이재료개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19031501",
+      "name": "스마트팜기술개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "19031502",
+      "name": "스마트팜계측",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19031601",
+      "name": "OLED조명개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19031701",
+      "name": "커넥티드카소프트웨어기술개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19031702",
+      "name": "커넥티드카콘텐츠서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "19031801",
+      "name": "자율주행하드웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "19031802",
+      "name": "자율주행소프트웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19031901",
+      "name": "혼합현실(MR)기반협업시스템개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "19032001",
+      "name": "전자기기하드웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "19032002",
+      "name": "전자기기소프트웨어개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "19032003",
+      "name": "전자기기기구개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "20010101",
+      "name": "정보기술전략",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010102",
+      "name": "정보기술컨설팅",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20010103",
+      "name": "정보기술기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010104",
+      "name": "SW제품기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010105",
+      "name": "빅데이터분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010106",
+      "name": "IoT융합서비스기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20010107",
+      "name": "빅데이터기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20010108",
+      "name": "핀테크기술기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010201",
+      "name": "SW아키텍처",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20010202",
+      "name": "응용SW엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 27
+    },
+    {
+      "code": "20010203",
+      "name": "임베디드SW엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 24
+    },
+    {
+      "code": "20010204",
+      "name": "DB엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20010205",
+      "name": "NW엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "20010206",
+      "name": "보안엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010207",
+      "name": "UI/UX엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "20010208",
+      "name": "시스템SW엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "20010209",
+      "name": "빅데이터플랫폼구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010210",
+      "name": "핀테크엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010211",
+      "name": "데이터아키텍처",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010212",
+      "name": "IoT시스템연동",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010213",
+      "name": "인프라스트럭쳐아키텍처구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010214",
+      "name": "클라우드솔루션아키텍처",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010215",
+      "name": "클라우드인프라스트럭쳐엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010216",
+      "name": "PaaS엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010217",
+      "name": "AIoT운영플랫폼구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010301",
+      "name": "IT시스템관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "20010302",
+      "name": "IT기술교육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20010303",
+      "name": "IT기술지원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "20010304",
+      "name": "빅데이터운영·관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010305",
+      "name": "IoT시스템운영·관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010306",
+      "name": "데이터거래관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010401",
+      "name": "IT프로젝트관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "20010402",
+      "name": "IT품질보증",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "20010403",
+      "name": "IT테스트",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "20010404",
+      "name": "IT감리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20010501",
+      "name": "IT기술영업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010502",
+      "name": "IT마케팅",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010601",
+      "name": "정보보호관리·운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "20010602",
+      "name": "정보보호진단·분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010603",
+      "name": "보안사고분석대응",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20010604",
+      "name": "정보보호암호·인증",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010605",
+      "name": "영상정보처리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010606",
+      "name": "생체인식(바이오인식)",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010608",
+      "name": "디지털포렌식",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20010609",
+      "name": "영상정보보안·운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010611",
+      "name": "OT보안",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010612",
+      "name": "클라우드 보안 관리·운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010614",
+      "name": "정보보호제품 시험·평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20010615",
+      "name": "SW공급망보안",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "20010616",
+      "name": "모빌리티보안",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20010701",
+      "name": "인공지능플랫폼구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20010702",
+      "name": "인공지능서비스기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010703",
+      "name": "인공지능모델링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010704",
+      "name": "인공지능서비스운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010705",
+      "name": "인공지능서비스구현",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010706",
+      "name": "인공지능학습데이터구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20010707",
+      "name": "생성형AI엔지니어링",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010801",
+      "name": "블록체인분석·설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010802",
+      "name": "블록체인구축·운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010803",
+      "name": "블록체인서비스기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20010901",
+      "name": "스마트물류체계기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20010902",
+      "name": "스마트물류플랫폼구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20010903",
+      "name": "스마트물류통합관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20011001",
+      "name": "디지털트윈기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20011002",
+      "name": "디지털트윈설계",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20011003",
+      "name": "디지털트윈구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20011101",
+      "name": "개인정보보호관리운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "20011102",
+      "name": "개인정보가명익명처리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20011103",
+      "name": "개인정보인증평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "20020101",
+      "name": "교환시스템구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "20020102",
+      "name": "구내통신구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "20020103",
+      "name": "네트워크구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "20020104",
+      "name": "구내통신설비공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "20020105",
+      "name": "실감형플랫폼구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20020106",
+      "name": "철도정보통신설비공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020107",
+      "name": "도로·교통정보통신설비공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20020108",
+      "name": "항해·항만정보통신설비공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20020109",
+      "name": "항공·항행정보통신시설공사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020110",
+      "name": "클라우드플랫폼구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20020201",
+      "name": "무선통신시스템구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "20020202",
+      "name": "전송시스템구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20020203",
+      "name": "무선통신망구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "20020204",
+      "name": "위성통신망구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20020205",
+      "name": "IoT통신망구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "20020206",
+      "name": "공공안전통신망구축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020301",
+      "name": "유선설비접속서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020302",
+      "name": "전용회선서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020303",
+      "name": "초고속망서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20020304",
+      "name": "부가네트워크서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020305",
+      "name": "전보서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20020306",
+      "name": "이동통신서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20020307",
+      "name": "콘텐츠사용자서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "20020308",
+      "name": "콘텐츠네트워크서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020309",
+      "name": "무선초고속인터넷서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020310",
+      "name": "주파수공용통신",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "20020311",
+      "name": "무선호출메시징서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020312",
+      "name": "위성통신서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20020313",
+      "name": "특수이동통신서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020314",
+      "name": "인터넷지원서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20020315",
+      "name": "부가통신응용중계서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020316",
+      "name": "특수부가통신서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020317",
+      "name": "무선데이터통신서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020318",
+      "name": "디지털비즈니스지원서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20020319",
+      "name": "실감형통신서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020401",
+      "name": "가상현실콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20020402",
+      "name": "실감콘텐츠촬영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20020403",
+      "name": "증강현실(AR)콘텐츠제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "20030101",
+      "name": "중계방송",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20030102",
+      "name": "방송품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20030201",
+      "name": "라디오방송",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20030202",
+      "name": "지상파TV방송",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20030203",
+      "name": "지상파DMB",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20030204",
+      "name": "케이블방송",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 24
+    },
+    {
+      "code": "20030205",
+      "name": "인터넷멀티미디어방송",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "20030301",
+      "name": "유무선통합서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20030302",
+      "name": "방송시스템운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "20030303",
+      "name": "정보시스템운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "20030304",
+      "name": "방송기술지원서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20030305",
+      "name": "방송장비설치유지보수",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "20030306",
+      "name": "소셜미디어방송서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "21010101",
+      "name": "수산식품가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "21010102",
+      "name": "두류식품가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "21010103",
+      "name": "축산식품가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "21010104",
+      "name": "유제품가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "21010105",
+      "name": "건강기능식품제조가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "21010106",
+      "name": "김치·반찬가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "21010107",
+      "name": "면류식품가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "21010108",
+      "name": "곡류·서류·견과류가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "21010109",
+      "name": "음료주류가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "21010110",
+      "name": "식품가공연구개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "21010111",
+      "name": "식품품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "21010201",
+      "name": "수산식품저장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "21010202",
+      "name": "농산식품저장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "21010203",
+      "name": "축산식품저장",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "21010301",
+      "name": "수산식품유통",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "21010302",
+      "name": "농산식품유통",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "21010303",
+      "name": "축산식품유통",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "21020101",
+      "name": "제과",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "21020102",
+      "name": "제빵",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "21020103",
+      "name": "떡제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 22
+    },
+    {
+      "code": "21020104",
+      "name": "한과제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "22010101",
+      "name": "출판기획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "22010102",
+      "name": "편집디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "22010103",
+      "name": "편집",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "22010104",
+      "name": "출판물제작·공정관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "22010201",
+      "name": "프리프레스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "22010202",
+      "name": "평판인쇄",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 30
+    },
+    {
+      "code": "22010203",
+      "name": "특수인쇄",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "22010204",
+      "name": "인쇄후가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "22010205",
+      "name": "간판디자인·제작·설치",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "22020101",
+      "name": "칠공예",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "22020102",
+      "name": "도자공예",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "22020103",
+      "name": "석공예",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "22020104",
+      "name": "목공예",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 23
+    },
+    {
+      "code": "22020105",
+      "name": "금속공예",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "22020106",
+      "name": "가구제작",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "22020107",
+      "name": "섬유공예",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "22020108",
+      "name": "나전칠기",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "22020201",
+      "name": "귀금속가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "22020202",
+      "name": "귀금속품위감정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "22020203",
+      "name": "보석가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "22020204",
+      "name": "보석감정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "22020205",
+      "name": "보석디자인",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "22020206",
+      "name": "주얼리마케팅",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "23010101",
+      "name": "수질오염분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 6
+    },
+    {
+      "code": "23010102",
+      "name": "수질공정관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "23010103",
+      "name": "수질환경관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23010104",
+      "name": "정수시설운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23010105",
+      "name": "상수관로시설운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "23010106",
+      "name": "하수관로시설운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23010107",
+      "name": "하수처리시설운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23010201",
+      "name": "대기환경관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23010202",
+      "name": "온실가스관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "23010203",
+      "name": "기상기술관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23010204",
+      "name": "기후변화적응",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "23010301",
+      "name": "폐기물처리시설설계·시공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23010302",
+      "name": "폐기물관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23010401",
+      "name": "소음진동방지",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "23010402",
+      "name": "소음진동측정·분석평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "23010501",
+      "name": "지하수관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "23010502",
+      "name": "토양관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23020101",
+      "name": "산업환경보건",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "23020102",
+      "name": "실내공기질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "23020103",
+      "name": "위해성관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "23030101",
+      "name": "생태복원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 27
+    },
+    {
+      "code": "23030102",
+      "name": "생태관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "23040101",
+      "name": "환경컨설팅",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23040102",
+      "name": "환경시설운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23040103",
+      "name": "환경관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "23040201",
+      "name": "환경영향평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "23040202",
+      "name": "환경조사분석",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050101",
+      "name": "광산지질조사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050102",
+      "name": "지구물리·화학탐사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050103",
+      "name": "석유시추",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050104",
+      "name": "광물시추",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "23050201",
+      "name": "광물자원개발·생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "23050202",
+      "name": "석유자원개발·생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23050203",
+      "name": "자원처리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "23050301",
+      "name": "광해조사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050302",
+      "name": "광해복원",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23050401",
+      "name": "광산보안관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050402",
+      "name": "화약류관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050501",
+      "name": "태양광에너지생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 27
+    },
+    {
+      "code": "23050502",
+      "name": "태양열에너지생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050504",
+      "name": "바이오에너지생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "23050505",
+      "name": "해양에너지생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050506",
+      "name": "풍력에너지생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 19
+    },
+    {
+      "code": "23050507",
+      "name": "폐자원에너지생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23050508",
+      "name": "지열에너지생산·활용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050601",
+      "name": "에너지절약서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23050602",
+      "name": "건물에너지관리시스템운영관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "23050701",
+      "name": "연료전지에너지생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "23050702",
+      "name": "수소연료전지제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23050703",
+      "name": "수소공급",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "23060100",
+      "name": "산업안전관리공통직무",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "23060101",
+      "name": "기계안전관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 4
+    },
+    {
+      "code": "23060102",
+      "name": "전기안전관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "23060103",
+      "name": "건설안전관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23060104",
+      "name": "화공안전관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "23060105",
+      "name": "가스안전관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "23060106",
+      "name": "방사선측정평가",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "23060107",
+      "name": "원자력발전소해체방사성폐기물관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "23060201",
+      "name": "산업보건관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "23060202",
+      "name": "근로자작업환경관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "23060301",
+      "name": "비파괴검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 5
+    },
+    {
+      "code": "23060302",
+      "name": "방사선비파괴검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "23060303",
+      "name": "초음파비파괴검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "23060304",
+      "name": "자기비파괴검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "23060305",
+      "name": "침투비파괴검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "23060306",
+      "name": "와전류비파괴검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "23060307",
+      "name": "누설비파괴검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "23060308",
+      "name": "특수비파괴검사",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "24010101",
+      "name": "수도작재배",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "24010102",
+      "name": "전작재배",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "24010103",
+      "name": "채소재배",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "24010104",
+      "name": "과수재배",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "24010105",
+      "name": "화훼재배",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "24010106",
+      "name": "버섯재배",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "24010107",
+      "name": "특용작물재배",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "24010108",
+      "name": "시설원예",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "24010109",
+      "name": "유기재배",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "24010201",
+      "name": "종자계획",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "24010202",
+      "name": "육종",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 21
+    },
+    {
+      "code": "24010203",
+      "name": "종자생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 21
+    },
+    {
+      "code": "24010204",
+      "name": "종자유통보급",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "24010301",
+      "name": "농촌체험상품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "24010302",
+      "name": "농촌체험시설운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "24010303",
+      "name": "농업환경개선",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "24010304",
+      "name": "농산물품질관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "24010401",
+      "name": "단위화훼장식",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 24
+    },
+    {
+      "code": "24010402",
+      "name": "공간화훼장식",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "24020101",
+      "name": "사료생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "24020102",
+      "name": "종축",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 18
+    },
+    {
+      "code": "24020103",
+      "name": "동물용의약품제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "24020104",
+      "name": "수의서비스",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "24020105",
+      "name": "동물보건",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 11
+    },
+    {
+      "code": "24020106",
+      "name": "애완동물미용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "24020107",
+      "name": "말이용",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 21
+    },
+    {
+      "code": "24020108",
+      "name": "반려동물행동교정",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "24020201",
+      "name": "젖소사육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 17
+    },
+    {
+      "code": "24020202",
+      "name": "돼지사육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 14
+    },
+    {
+      "code": "24020203",
+      "name": "가금사육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "24020204",
+      "name": "한우사육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "24020205",
+      "name": "말사육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 15
+    },
+    {
+      "code": "24020206",
+      "name": "곤충사육",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 21
+    },
+    {
+      "code": "24030101",
+      "name": "임업종묘",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "24030102",
+      "name": "산림조성",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "24030201",
+      "name": "산림개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 20
+    },
+    {
+      "code": "24030202",
+      "name": "산림보호",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "24030301",
+      "name": "임산물생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 16
+    },
+    {
+      "code": "24030302",
+      "name": "목재가공",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 34
+    },
+    {
+      "code": "24030303",
+      "name": "펄프·종이제조",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 40
+    },
+    {
+      "code": "24040101",
+      "name": "원양어업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "24040102",
+      "name": "근해어업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "24040103",
+      "name": "연안어업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "24040104",
+      "name": "내수면어업",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "24040201",
+      "name": "해면양식",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 13
+    },
+    {
+      "code": "24040202",
+      "name": "수산종묘생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "24040203",
+      "name": "내수면양식",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "24040204",
+      "name": "스마트양식",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "24040301",
+      "name": "수산자원조성",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 8
+    },
+    {
+      "code": "24040302",
+      "name": "수산질병관리",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    },
+    {
+      "code": "24040303",
+      "name": "염생산",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 12
+    },
+    {
+      "code": "24040401",
+      "name": "어촌체험상품개발",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 10
+    },
+    {
+      "code": "24040402",
+      "name": "어촌체험시설운영",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 7
+    },
+    {
+      "code": "24040403",
+      "name": "어업환경개선",
+      "ncs_degree": "29",
+      "usage_yn": "Y",
+      "unit_count": 9
+    }
+  ]
+}

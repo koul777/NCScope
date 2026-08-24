@@ -3,15 +3,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.main import app
+from app.main import app, health
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "1.4.7"
-DISPLAY_VERSION = "v1.4.7"
+RELEASE_VERSION = "1.4.8"
+DISPLAY_VERSION = "v1.4.8"
 
 
-def test_release_version_is_consistent_across_product_surfaces() -> None:
+def test_local_release_artifacts_stay_gitignored() -> None:
+    ignored = {
+        line.strip()
+        for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert {".local/", "Microsoft/", "tmp/"}.issubset(ignored)
+
+
+def test_release_version_is_consistent_across_product_surfaces(monkeypatch) -> None:
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     package_lock = json.loads((ROOT / "package-lock.json").read_text(encoding="utf-8"))
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -21,6 +31,12 @@ def test_release_version_is_consistent_across_product_surfaces() -> None:
     )
 
     assert app.version == RELEASE_VERSION
+    assert app.openapi()["info"]["version"] == RELEASE_VERSION
+    monkeypatch.setattr(
+        "app.main.ncs_mcp_status",
+        lambda: {"configured": True, "reachable": True, "ksaAvailable": True},
+    )
+    assert health(None)["version"] == RELEASE_VERSION
     assert package["version"] == RELEASE_VERSION
     assert package_lock["version"] == RELEASE_VERSION
     assert package_lock["packages"][""]["version"] == RELEASE_VERSION

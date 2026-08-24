@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "reviewer_type": "agent_source_evidence_cross_adjudication",
+  "source_exact_corrections_only": true,
+  "is_human_reviewed": false,
+  "is_gold": false,
+  "review_method": "Independent residual reviewers re-opened the raw Kordoc table cell and confirmed a single blind-reference transcription correction. Parser output was not used to choose the replacement label.",
+  "corrections": [
+    {
+      "operation": "replace_ability_unit_label",
+      "sha256": "45b92c93dbfb4da0a6963aa3eae37cf57515dffad504ac641e19c6eeb755b47e",
+      "detail_label": "임상병리사",
+      "from": "혈액은행",
+      "to": "혈핵은행",
+      "source_evidence": "○ 혈핵은행 – 혈액형 검사 및 수혈적합성 검사, 수혈 혈액 수급 및 불출 관리, 수혈 혈액 보관 및 반납 폐기 관리",
+      "reason": "The raw HWP/Kordoc cell contains 혈핵은행. The blind reference had silently normalized the source typo to 혈액은행, contrary to the source-exact scoring contract."
+    }
+  ]
+}

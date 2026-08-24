@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -61,6 +62,10 @@ from app.services.hwp_text_fallback import (
 )
 from app.services.ncs_mcp_client import (
     NcsMcpError,
+    classify_official_ability_unit_names,
+    classify_official_detail_names,
+    derive_detail_candidates_from_exact_ability_scopes,
+    exact_official_units_by_name,
     ncs_mcp_status,
     search_units_by_detail,
     suggest_units_by_text,
@@ -158,7 +163,12 @@ from app.services.external_ai_privacy import sanitize_external_ai_source_text
 from app.services.request_budget import use_request_budget
 from app.services.auto_runner import start_auto_runner
 from app.services.ax_readiness import assess_ax_readiness
-from app.services.alio_ingestion import AlioIngestionError, inspect_alio_url
+from app.services.alio_ingestion import (
+    AlioIngestionError,
+    download_alio_attachment,
+    inspect_alio_url,
+)
+from app.services.alio_sclass_profile import suggest_sclass_from_profile
 from app.services.queue_manager import QueueManager
 from app.services.sclass_pipeline import (
     extract_pdf_text_fallback,
@@ -281,7 +291,7 @@ class ExpensiveRequestLimitMiddleware:
     same limits at the reverse proxy or shared rate-limit service.
     """
 
-    _EXPENSIVE_PREFIXES = ("/api/jd/", "/api/questions/")
+    _EXPENSIVE_PREFIXES = ("/api/jd/", "/api/questions/", "/api/alio/")
     _EXPENSIVE_PATHS = frozenset({"/api/ncs/units/options"})
 
     def __init__(self, app):
@@ -384,7 +394,8 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="1.4.7", lifespan=_lifespan)
+APP_VERSION = "1.4.8"
+app = FastAPI(title="NCScope", version=APP_VERSION, lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
 app.add_middleware(ExpensiveRequestLimitMiddleware)
@@ -653,6 +664,336 @@ def _norm_detail_coverage_key(value: Any) -> str:
     return re.sub(r"[\s\-\_/|(),.·・]+", "", str(value or "")).strip().lower()
 
 
+def _reviewed_ability_unit_names(values: Any) -> list[str]:
+    """Normalize human-reviewed ability-unit cells for exact MCP matching.
+
+    Official recruitment pages and institution JDs commonly render a unit as
+    either ``01.문서 작성`` or as the final segment of a full NCS hierarchy.
+    Only transport decoration is removed here; semantic/fuzzy rewriting is
+    intentionally forbidden because these names become an exact unit lock.
+    """
+
+    raw_values = values if isinstance(values, list) else [values]
+    output: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        if isinstance(raw_value, dict):
+            raw_value = raw_value.get("text") or raw_value.get("name") or ""
+        for raw_line in re.split(r"[\n;|]+", str(raw_value or "")):
+            text = re.sub(r"<[^>]+>", " ", raw_line).strip()
+            text = re.sub(r"^(?:[-*•○●▪▫◦]+\s*)+", "", text).strip()
+            text = re.sub(r"^(?:요구\s*)?능력단위(?:명)?\s*[:：\-]?\s*", "", text).strip()
+            if ">" in text:
+                text = text.rsplit(">", 1)[-1].strip()
+            text = re.sub(
+                r"^(?:NCS\s*)?\d{2}(?:[-\s]?\d{2}){4}(?:_[0-9A-Za-z]+)?\s*[:：.)\-]?\s*",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            ).strip()
+            text = re.sub(r"^\d{1,3}\s*[.)：:\-]\s*", "", text).strip()
+            if not text or text in {"-", "해당없음", "없음", "미개발"}:
+                continue
+            key = _norm_detail_coverage_key(text)
+            if len(key) < 2 or key in seen:
+                continue
+            seen.add(key)
+            output.append(text)
+    return output
+
+
+def _reviewed_ability_unit_ordinals(fields: dict[str, Any]) -> dict[str, list[str]]:
+    """Return parser-evidenced ability-unit ordinals keyed by exact name."""
+
+    output: dict[str, list[str]] = {}
+    positioned = fields.get("positioned_items") if isinstance(fields, dict) else []
+    for item in positioned if isinstance(positioned, list) else []:
+        if not isinstance(item, dict) or item.get("section") != "ability_units":
+            continue
+        name = str(item.get("text") or "").strip()
+        ordinal_raw = str(item.get("ability_unit_ordinal") or "").strip()
+        key = _norm_detail_coverage_key(name)
+        if not key or not re.fullmatch(r"\d{1,2}", ordinal_raw):
+            continue
+        ordinal = ordinal_raw.zfill(2)
+        bucket = output.setdefault(key, [])
+        if ordinal not in bucket:
+            bucket.append(ordinal)
+    return output
+
+
+def _lock_units_to_reviewed_ability_units(
+    units: list[dict[str, Any]],
+    reviewed_names: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return exact-name NCS units only when scope and base code are unique.
+
+    An official ability-unit name can occur under multiple NCS details.  A
+    reviewed label is therefore not enough to select a code globally: all
+    exact-name rows must converge on one eight-digit detail-code prefix and one
+    ten-digit ability-unit base code before the unit can be locked.  Ambiguous
+    names remain unresolved and are never allowed to widen the downstream KSA
+    lookup.  Multiple versions of the same base code remain compatible.
+    """
+
+    rows_by_name: dict[str, list[dict[str, Any]]] = {}
+    for unit in units or []:
+        if not isinstance(unit, dict):
+            continue
+        unit_name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
+        key = _norm_detail_coverage_key(unit_name)
+        if key:
+            rows_by_name.setdefault(key, []).append(unit)
+
+    locked: list[dict[str, Any]] = []
+    missing: list[str] = []
+    seen_codes: set[str] = set()
+    for reviewed_name in reviewed_names:
+        matches = rows_by_name.get(_norm_detail_coverage_key(reviewed_name), [])
+        if not matches:
+            missing.append(reviewed_name)
+            continue
+        detail_scopes = {
+            match.group(1)
+            for unit in matches
+            for match in [
+                re.match(
+                    r"^(\d{8})\d{2}(?:_|$)",
+                    str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip(),
+                )
+            ]
+            if match
+        }
+        base_codes = {
+            match.group(1)
+            for unit in matches
+            for match in [
+                re.match(
+                    r"^(\d{10})(?:_|$)",
+                    str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip(),
+                )
+            ]
+            if match
+        }
+        # A missing code scope is not authoritative, while two or more scopes
+        # mean the same reviewed name belongs to multiple selected details. A
+        # second base code is also ambiguous even when both codes share a
+        # detail, matching the official-catalog classifier contract.
+        if len(detail_scopes) != 1 or len(base_codes) != 1:
+            missing.append(reviewed_name)
+            continue
+        for match in matches:
+            code = str(match.get("ncsClCd") or match.get("unit_code") or "").strip()
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            locked.append(
+                {
+                    **match,
+                    "requiredAbilityUnitName": reviewed_name,
+                    "requiredAbilityUnitMatch": "exact",
+                }
+            )
+    return locked, missing
+
+
+def _scope_reviewed_ability_units_by_exact_detail_membership(
+    detail_units_by_name: dict[str, list[dict[str, Any]]],
+    reviewed_names: list[str],
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Scope unassigned unit names only when one selected detail owns them.
+
+    Some recruitment tables visually merge the detail cell across several
+    ability-unit rows. Kordoc can still recover every unit label while the
+    row-to-detail edge is absent. This helper reconstructs that edge from the
+    authoritative unit lists of the details already extracted from the same
+    document. It deliberately accepts normalized exact names only and leaves
+    names that occur under zero or multiple details unresolved.
+    """
+
+    details_by_unit_name: dict[str, set[str]] = {}
+    for detail_name, units in (detail_units_by_name or {}).items():
+        detail = str(detail_name or "").strip()
+        if not detail:
+            continue
+        for unit in units or []:
+            if not isinstance(unit, dict):
+                continue
+            unit_name = str(
+                unit.get("compeUnitName") or unit.get("unit_name") or ""
+            ).strip()
+            unit_key = _norm_detail_coverage_key(unit_name)
+            if unit_key:
+                details_by_unit_name.setdefault(unit_key, set()).add(detail)
+
+    scoped: dict[str, list[str]] = {}
+    unresolved: list[str] = []
+    for reviewed_name in reviewed_names or []:
+        matches = details_by_unit_name.get(
+            _norm_detail_coverage_key(reviewed_name), set()
+        )
+        if len(matches) != 1:
+            unresolved.append(reviewed_name)
+            continue
+        detail = next(iter(matches))
+        scoped.setdefault(detail, []).append(reviewed_name)
+    return scoped, unresolved
+
+
+def _recover_ordinal_scoped_reviewed_ability_units(
+    detail_units: list[dict[str, Any]],
+    missing_names: list[str],
+    ordinals_by_name: dict[str, list[str]],
+    *,
+    already_locked: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Recover a renamed current unit from its table ordinal and code scope.
+
+    Recruitment JDs often retain an earlier label while preserving the
+    official two-digit unit ordinal. Recovery requires a unique base unit code
+    in the already exact detail scope and a containment-only name change of at
+    most six normalized characters. Ordinal-only or fuzzy matching is not
+    accepted.
+    """
+
+    def code_parts(unit: dict[str, Any]) -> tuple[str, str]:
+        code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+        match = re.match(r"^(\d{8})(\d{2})(?:_|$)", code)
+        return (match.group(1) + match.group(2), match.group(2)) if match else ("", "")
+
+    detail_prefixes = {
+        base_code[:8]
+        for unit in detail_units or []
+        if isinstance(unit, dict)
+        for base_code, _ordinal in [code_parts(unit)]
+        if base_code
+    }
+    if len(detail_prefixes) != 1:
+        return [], list(missing_names or [])
+
+    seen_codes = {
+        str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+        for unit in (already_locked or [])
+        if isinstance(unit, dict)
+    }
+    recovered: list[dict[str, Any]] = []
+    remaining: list[str] = []
+    for required_name in missing_names or []:
+        required_key = _norm_detail_coverage_key(required_name)
+        ordinals = set(ordinals_by_name.get(required_key) or [])
+        candidates: list[dict[str, Any]] = []
+        for unit in detail_units or []:
+            if not isinstance(unit, dict):
+                continue
+            base_code, ordinal = code_parts(unit)
+            if not base_code or ordinal not in ordinals:
+                continue
+            current_name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
+            current_key = _norm_detail_coverage_key(current_name)
+            if not current_key:
+                continue
+            shorter, longer = sorted((required_key, current_key), key=len)
+            if shorter not in longer or len(longer) - len(shorter) > 6:
+                continue
+            candidates.append(unit)
+        base_codes = {code_parts(unit)[0] for unit in candidates if code_parts(unit)[0]}
+        if len(base_codes) != 1:
+            remaining.append(required_name)
+            continue
+        accepted = False
+        for unit in candidates:
+            code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            accepted = True
+            recovered.append(
+                {
+                    **unit,
+                    "requiredAbilityUnitName": required_name,
+                    "requiredAbilityUnitMatch": "ordinal_code_scope_current_name",
+                    "source": "ncs-mcp-required-unit-ordinal-recovery",
+                }
+            )
+        if not accepted:
+            remaining.append(required_name)
+    return recovered, remaining
+
+
+def _recover_code_scoped_reviewed_ability_units(
+    detail_units: list[dict[str, Any]],
+    missing_names: list[str],
+    candidate_units: list[dict[str, Any]],
+    *,
+    already_locked: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Recover exact unit names when the MCP classification link is corrupt.
+
+    The official NCS unit code starts with the eight-digit detail code. A small
+    number of serving-DB rows can have a stale ``classification_id`` even
+    though the unit code itself is correct. Recovery is allowed only when the
+    required name remains exact and its code prefix belongs to an already
+    exact-resolved detail scope. Semantic similarity and the returned path are
+    never used as authority.
+    """
+
+    def detail_code(unit: dict[str, Any]) -> str:
+        code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+        match = re.match(r"^(\d{8})\d{2}(?:_|$)", code)
+        return match.group(1) if match else ""
+
+    allowed_detail_codes = {
+        detail_code(unit)
+        for unit in (detail_units or [])
+        if isinstance(unit, dict) and detail_code(unit)
+    }
+    if not allowed_detail_codes:
+        return [], list(missing_names or [])
+
+    rows_by_name: dict[str, list[dict[str, Any]]] = {}
+    for unit in candidate_units or []:
+        if not isinstance(unit, dict) or detail_code(unit) not in allowed_detail_codes:
+            continue
+        name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
+        key = _norm_detail_coverage_key(name)
+        if key:
+            rows_by_name.setdefault(key, []).append(unit)
+
+    seen_codes = {
+        str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+        for unit in (already_locked or [])
+        if isinstance(unit, dict)
+    }
+    recovered: list[dict[str, Any]] = []
+    remaining: list[str] = []
+    for required_name in missing_names or []:
+        matches = rows_by_name.get(_norm_detail_coverage_key(required_name), [])
+        match_detail_codes = {
+            detail_code(match) for match in matches if detail_code(match)
+        }
+        if len(match_detail_codes) != 1:
+            remaining.append(required_name)
+            continue
+        accepted = False
+        for match in matches:
+            code = str(match.get("ncsClCd") or match.get("unit_code") or "").strip()
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            accepted = True
+            recovered.append(
+                {
+                    **match,
+                    "requiredAbilityUnitName": required_name,
+                    "requiredAbilityUnitMatch": "exact_name_code_scope_recovery",
+                    "source": "ncs-mcp-required-unit-code-scope-recovery",
+                }
+            )
+        if not accepted:
+            remaining.append(required_name)
+    return recovered, remaining
+
+
 def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
     """Use official NCS spellings for exact-equivalent reviewed labels.
 
@@ -731,6 +1072,24 @@ def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
         if official_name and key:
             official_by_key.setdefault(key, official_name)
 
+    resolved_decorations_by_key: dict[str, str] = {}
+    for row in classify_official_detail_names(reviewed_terms):
+        if not isinstance(row, dict):
+            continue
+        official_names = [
+            str(value or "").strip()
+            for value in (row.get("officialDetailNames") or [])
+            if str(value or "").strip()
+        ]
+        source_key = _norm_detail_coverage_key(str(row.get("sourceName") or ""))
+        if (
+            source_key
+            and row.get("mappingState") == "official_current_exact"
+            and row.get("resolvedCatalogExact") is True
+            and len(official_names) == 1
+        ):
+            resolved_decorations_by_key[source_key] = official_names[0]
+
     canonical_terms: list[str] = []
     for term in reviewed_terms:
         official_name = next(
@@ -741,6 +1100,11 @@ def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
             ),
             "",
         )
+        if not official_name:
+            official_name = resolved_decorations_by_key.get(
+                _norm_detail_coverage_key(term),
+                "",
+            )
         canonical_terms.append(official_name or term)
     return canonical_terms
 
@@ -909,6 +1273,63 @@ def _recover_hangul_fallback_detail_candidates(
     structured_fields["ncs_detail_absence_saw_detail_header"] = False
     structured_fields["ncs_detail_absence_blank_or_dash_detail_cell"] = False
     structured_fields["ncs_detail_absence_declared_no_mapping"] = False
+
+
+def _has_non_marker_review_text(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    text = re.sub(r"^(?:[-*•○●□■▪▫◦ㅇ¡]+\s*)+", "", text)
+    text = re.sub(r"(?:\s*[-*•○●□■▪▫◦ㅇ¡])+\s*$", "", text).strip()
+    return bool(text)
+
+
+def _sanitize_parse_review_ability_artifacts(structured: dict[str, Any]) -> None:
+    structured_fields = structured.get("fields")
+    if not isinstance(structured_fields, dict):
+        return
+    ability_units = [
+        str(value or "").strip()
+        for value in (structured_fields.get("ability_units") or [])
+        if _has_non_marker_review_text(value)
+    ]
+    structured_fields["ability_units"] = ability_units
+
+    source_scopes = structured_fields.get("ability_units_by_detail")
+    if isinstance(source_scopes, dict):
+        structured_fields["ability_units_by_detail"] = {
+            str(detail): [
+                str(value or "").strip()
+                for value in values
+                if _has_non_marker_review_text(value)
+            ]
+            for detail, values in source_scopes.items()
+            if isinstance(values, list)
+            and any(_has_non_marker_review_text(value) for value in values)
+        }
+
+    positioned_items = structured_fields.get("positioned_items")
+    if isinstance(positioned_items, list):
+        structured_fields["positioned_items"] = [
+            item
+            for item in positioned_items
+            if not (
+                isinstance(item, dict)
+                and item.get("section") == "ability_units"
+                and not _has_non_marker_review_text(item.get("text"))
+            )
+        ]
+
+    sections = structured.get("sections")
+    if isinstance(sections, dict) and isinstance(sections.get("ability_units"), list):
+        sections["ability_units"] = [
+            item
+            for item in sections["ability_units"]
+            if not (
+                isinstance(item, dict)
+                and not _has_non_marker_review_text(item.get("text"))
+            )
+        ]
 
 
 def _detail_lookup_coverage(
@@ -1172,6 +1593,7 @@ _MAX_DUTY_TEXT_CHARS = 3000
 _MAX_QUALIFICATION_TEXT_CHARS = 2400
 _MAX_PREFERENCE_TEXT_CHARS = 2400
 _MAX_EVALUATION_TEXT_CHARS = 2400
+_MAX_ABILITY_UNIT_TEXT_CHARS = 6000
 _MAX_PRESENTATION_MATERIAL_TEXT_CHARS = 6000
 _MAX_PRESENTATION_MATERIAL_FILE_BYTES = 2 * 1024 * 1024
 _MAX_GENERATION_AVOID_QUESTION_ITEMS = 50
@@ -12414,6 +12836,7 @@ def health(request: Request) -> dict:
     mcp = ncs_mcp_status()
     mcp_ready = bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable"))
     return {
+        "version": app.version,
         "status": "ok" if mcp_ready else "degraded",
         "keys": {
             "public_inst": bool(settings.public_inst_key()),
@@ -13088,9 +13511,9 @@ def alio_recommend(
 def alio_attachments(payload: dict[str, Any]) -> dict[str, Any]:
     """Inspect a public ALIO list/detail URL and return selectable metadata.
 
-    This endpoint deliberately does not download or parse attachments. The
-    caller must select the matching notice and JD files, then send them through
-    the existing upload/review endpoints where the signed human-review gate,
+    This endpoint only discovers metadata.  A selected notice/JD may then be
+    fetched through ``/api/alio/attachment`` and is still sent through the
+    existing upload/review endpoints where the signed human-review gate,
     upload-size limit, and document parser apply.
     """
     raw_url = str(payload.get("url", "")).strip() if isinstance(payload, dict) else ""
@@ -13104,6 +13527,50 @@ def alio_attachments(payload: dict[str, Any]) -> dict[str, Any]:
             status_code=status,
             detail={"code": exc.code, "message": exc.message, "retryable": exc.retryable},
         ) from exc
+
+
+@app.post("/api/alio/attachment")
+def alio_attachment(payload: dict[str, Any], request: Request) -> StreamingResponse:
+    """Proxy one public ALIO document into the normal browser upload flow."""
+
+    raw_url = str(payload.get("url", "")).strip() if isinstance(payload, dict) else ""
+    expected_name = str(payload.get("name", "")).strip() if isinstance(payload, dict) else ""
+    if not raw_url:
+        raise HTTPException(status_code=422, detail="url is required")
+    try:
+        downloaded = download_alio_attachment(
+            raw_url,
+            expected_name=expected_name,
+            max_bytes=settings.max_upload_bytes(),
+        )
+    except AlioIngestionError as exc:
+        status = 504 if exc.code == "upstream_timeout" else 413 if exc.code == "attachment_too_large" else 502 if exc.retryable else 422
+        raise HTTPException(
+            status_code=status,
+            detail={"code": exc.code, "message": exc.message, "retryable": exc.retryable},
+        ) from exc
+
+    _record_audit_event(
+        request,
+        action="alio_attachment_import",
+        resource_type="public_alio_attachment",
+        resource_id=_sha256_text(downloaded.url)[:24],
+    )
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", downloaded.filename).strip("._") or "alio_attachment"
+    disposition = (
+        f'attachment; filename="{ascii_name[:100]}"; '
+        f"filename*=UTF-8''{quote(downloaded.filename, safe='')}"
+    )
+    return StreamingResponse(
+        io.BytesIO(downloaded.data),
+        media_type=downloaded.content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": disposition,
+            "Content-Length": str(len(downloaded.data)),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.get("/api/alio/options")
@@ -13160,7 +13627,6 @@ def alio_options(
 @app.post("/api/alio/strategy")
 def alio_strategy(payload: dict) -> dict:
     desired_job = str(payload.get("desired_job", "")).strip()
-    desired_region = str(payload.get("desired_region", "")).strip()
     strengths = _validate_generation_text_input(
         payload.get("strengths", ""),
         field_name="strengths",
@@ -13245,6 +13711,7 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
     structured = structure_job_description(parsed, filename=jd_file.filename or "")
     structured_fields = structured.get("fields") if isinstance(structured.get("fields"), dict) else None
     if structured_fields is not None:
+        _sanitize_parse_review_ability_artifacts(structured)
         _recover_hangul_fallback_detail_candidates(parsed, structured_fields)
         # Kordoc can return an entire numbered table row as one candidate.
         # Normalize it before the browser renders the review dropdown and
@@ -13367,6 +13834,105 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                 # Kordoc response (including an empty review state) must still
                 # be returned when the optional parser is unavailable.
                 logger.warning("jd_parse_review_structural_sclass_fallback_failed: %s", exc)
+        # A locally collected ALIO profile can suggest official labels when a
+        # document has no explicit 세분류 cell.  These rows are trained only
+        # from single-label, explicitly classified ALIO JDs and remain inside
+        # the same signed human-review gate; an explicit "NCS 미개발/매핑 없음"
+        # declaration always suppresses the suggestion path.
+        if (
+            not structured_fields.get("ncs_detail_candidates")
+            and not structured_fields.get("ncs_detail_absence_declared_no_mapping")
+        ):
+            profile_context_parts = [
+                str(parsed.get("markdown") or "")[:60000],
+                *[
+                    str(value or "")
+                    for key in ("duties", "knowledge", "skills", "attitudes", "qualifications", "preferences")
+                    for value in (
+                        structured_fields.get(key)
+                        if isinstance(structured_fields.get(key), list)
+                        else [structured_fields.get(key)]
+                    )
+                    if str(value or "").strip()
+                ],
+            ]
+            profile_suggestions = suggest_sclass_from_profile(
+                "\n".join(profile_context_parts),
+                max_items=5,
+            )
+            structured_fields["ncs_detail_suggestions"] = profile_suggestions
+            if profile_suggestions:
+                suggested_names = _canonicalize_detail_lookup_terms(
+                    [
+                        str(item.get("sclass_name") or "").strip()
+                        for item in profile_suggestions
+                        if str(item.get("sclass_name") or "").strip()
+                    ]
+                )
+                structured_fields["ncs_detail_candidates"] = suggested_names
+                structured_fields["ncs_detail_source"] = "alio_corpus_review_suggestion"
+                suggestion_by_name = {
+                    _norm_sclass_key(str(item.get("sclass_name") or "")): item
+                    for item in profile_suggestions
+                }
+                structured_fields["ncs_detail_candidate_evidence"] = [
+                    {
+                        "detail": name,
+                        "text": name,
+                        "page": 0,
+                        "source": "alio_corpus_review_suggestion",
+                        "raw": name,
+                        "snippet": str(
+                            (suggestion_by_name.get(_norm_sclass_key(name)) or {}).get("evidence")
+                            or "ALIO 명시 세분류 코퍼스 어휘 매칭"
+                        )[:500],
+                        "confidence": float(
+                            (suggestion_by_name.get(_norm_sclass_key(name)) or {}).get("confidence")
+                            or 0.0
+                        ),
+                        "review_required": True,
+                    }
+                    for name in suggested_names
+                ]
+        detail_states = classify_official_detail_names(
+            list(structured_fields.get("ncs_detail_candidates") or []),
+            self_developed_names=list(
+                structured_fields.get("ncs_self_developed_detail_candidates")
+                or []
+            ),
+        )
+        ability_states = classify_official_ability_unit_names(
+            list(structured_fields.get("ability_units") or []),
+            selected_detail_names=list(
+                structured_fields.get("ncs_detail_candidates") or []
+            ),
+        )
+        structured_fields["ncs_detail_mapping_states"] = detail_states
+        structured_fields["ability_unit_mapping_states"] = ability_states
+        structured_fields["ncs_unmapped_detail_candidates"] = [
+            row["sourceName"]
+            for row in detail_states
+            if row.get("mappingState") == "not_in_current_official_catalog"
+        ]
+        structured_fields["ncs_unmapped_ability_units"] = [
+            row["sourceName"]
+            for row in ability_states
+            if row.get("mappingState") == "not_in_current_official_catalog"
+        ]
+        source_ability_scopes = (
+            structured_fields.get("ability_units_by_detail")
+            if isinstance(structured_fields.get("ability_units_by_detail"), dict)
+            else {}
+        )
+        if not source_ability_scopes and structured_fields.get("ability_units"):
+            source_ability_scopes = {
+                "": list(structured_fields.get("ability_units") or [])
+            }
+        structured_fields["ncs_detail_convergence_suggestions"] = (
+            derive_detail_candidates_from_exact_ability_scopes(
+                source_ability_scopes
+            )
+        )
     review_session = _create_review_session(data, structured, jd_file.filename or "")
     _record_audit_event(
         request,
@@ -13562,6 +14128,11 @@ async def jd_strategy_upload(
         field_name="jd_review_json.fields.preferences",
         max_chars=_MAX_PREFERENCE_TEXT_CHARS,
     )
+    _validate_generation_text_collection_input(
+        reviewed_fields.get("ability_units") or [],
+        field_name="jd_review_json.fields.ability_units",
+        max_chars=_MAX_ABILITY_UNIT_TEXT_CHARS,
+    )
     review_session: dict[str, Any] | None = _validate_review_session(
         review_payload,
         jd_bytes,
@@ -13577,6 +14148,10 @@ async def jd_strategy_upload(
             if str(value).strip()
         )
     )
+    reviewed_ability_units = _reviewed_ability_unit_names(
+        reviewed_fields.get("ability_units") or []
+    )
+    reviewed_ability_unit_ordinals = _reviewed_ability_unit_ordinals(reviewed_fields)
     question_plan = _parse_question_plan_json(question_plan_json, reviewed_detail_terms)
     _enforce_question_plan_capacity(question_plan)
     if question_plan["selected_terms"]:
@@ -13818,10 +14393,16 @@ async def jd_strategy_upload(
     # are available. If this path is not usable, continue with public/API fallback.
     mcp_lookup_terms = _canonicalize_detail_lookup_terms(reviewed_detail_terms)
     if mcp_only:
+        detail_search_unit_limit = max(20, run_top_k * 12)
+        if reviewed_ability_units:
+            detail_search_unit_limit = min(
+                200,
+                max(80, len(reviewed_ability_units) * 4, detail_search_unit_limit),
+            )
         try:
             ncs_items = search_units_by_detail(
                 mcp_lookup_terms,
-                max_units=max(20, run_top_k * 12),
+                max_units=detail_search_unit_limit,
             )
         except NcsMcpError as exc:
             logger.error(
@@ -13877,7 +14458,73 @@ async def jd_strategy_upload(
                         "suggested_ncs_units": list(suggestions or []),
                     },
                 )
-            ncs_source = "ncs-mcp"
+            if reviewed_ability_units:
+                locked_units, missing_ability_units = _lock_units_to_reviewed_ability_units(
+                    ncs_items,
+                    reviewed_ability_units,
+                )
+                if missing_ability_units:
+                    ordinal_recovered, missing_ability_units = (
+                        _recover_ordinal_scoped_reviewed_ability_units(
+                            ncs_items,
+                            missing_ability_units,
+                            reviewed_ability_unit_ordinals,
+                            already_locked=locked_units,
+                        )
+                    )
+                    locked_units.extend(ordinal_recovered)
+                if missing_ability_units:
+                    catalog_recovered, missing_ability_units = (
+                        _recover_code_scoped_reviewed_ability_units(
+                            ncs_items,
+                            missing_ability_units,
+                            exact_official_units_by_name(missing_ability_units),
+                            already_locked=locked_units,
+                        )
+                    )
+                    locked_units.extend(catalog_recovered)
+                if missing_ability_units:
+                    recovery_candidates: list[dict[str, Any]] = []
+                    try:
+                        for missing_name in missing_ability_units:
+                            recovery_candidates.extend(
+                                suggest_units_by_text([missing_name], max_units=20)
+                            )
+                    except NcsMcpError:
+                        recovery_candidates = []
+                    recovered_units, missing_ability_units = (
+                        _recover_code_scoped_reviewed_ability_units(
+                            ncs_items,
+                            missing_ability_units,
+                            recovery_candidates,
+                            already_locked=locked_units,
+                        )
+                    )
+                    locked_units.extend(recovered_units)
+                if missing_ability_units:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "ncs_required_ability_unit_mismatch",
+                            "message": (
+                                "검토·확정한 요구능력단위 일부가 선택한 세분류의 공식 NCS 능력단위와 "
+                                "정확히 일치하지 않습니다. 직무기술서 표의 능력단위명을 다시 확인해 주세요."
+                            ),
+                            "reviewed_detail_terms": list(mcp_lookup_terms),
+                            "reviewed_ability_units": list(reviewed_ability_units),
+                            "matched_ability_units": [
+                                str(unit.get("compeUnitName") or "").strip()
+                                for unit in locked_units
+                                if str(unit.get("compeUnitName") or "").strip()
+                            ],
+                            "unmatched_ability_units": list(missing_ability_units),
+                            "retryable": False,
+                        },
+                    )
+                ncs_items = locked_units
+                ncs_source = "ncs-mcp+required-unit-lock"
+            else:
+                ncs_source = "ncs-mcp"
             ncs_query_terms = list(mcp_lookup_terms)
 
     # 4) 코드 기반 조회 후, 키워드 기반으로 순차 fallback
@@ -13919,7 +14566,17 @@ async def jd_strategy_upload(
         preference_text=preference_text_clean,
         evaluation_text=evaluation_text_clean,
     )
-    if ncs_items and ncs_source in {"ncs-mcp", "api-hrdk-code-first", "api-hrdk-clcode", "api-hrdk-keyword", "api-hrdk-sclass-verified", "api-hrdk-sclass-name"}:
+    if ncs_items and (
+        ncs_source.startswith("ncs-mcp")
+        or ncs_source
+        in {
+            "api-hrdk-code-first",
+            "api-hrdk-clcode",
+            "api-hrdk-keyword",
+            "api-hrdk-sclass-verified",
+            "api-hrdk-sclass-name",
+        }
+    ):
         # The upload flow has already required a human-confirmed exact detail
         # classification before this point. Calling a second model merely to
         # reorder those authoritative local-DB candidates adds latency and can
@@ -14029,6 +14686,35 @@ async def jd_strategy_upload(
         ncs_matches,
         ncs_items,
     )
+    if reviewed_ability_units and ncs_matches:
+        # Ranking may rebuild row dictionaries. Re-attach the exact-lock audit
+        # fields by official unit code so the response proves which reviewed
+        # cell selected every KSA lookup target.
+        locked_by_code = {
+            str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip(): unit
+            for unit in ncs_items
+            if str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+        }
+        ncs_matches = [
+            {
+                **match,
+                "requiredAbilityUnitName": str(
+                    locked_by_code.get(
+                        str(match.get("ncsClCd") or match.get("unit_code") or "").strip(),
+                        {},
+                    ).get("requiredAbilityUnitName")
+                    or ""
+                ).strip(),
+                "requiredAbilityUnitMatch": str(
+                    locked_by_code.get(
+                        str(match.get("ncsClCd") or match.get("unit_code") or "").strip(),
+                        {},
+                    ).get("requiredAbilityUnitMatch")
+                    or ""
+                ).strip(),
+            }
+            for match in ncs_matches
+        ]
 
     # NCS 평가요소를 수집해 OpenAI 입력에 함께 전달한다.
     # 질문계획에서 실제 배정될 능력단위만 조회한 뒤, JD 핵심 +
@@ -14282,6 +14968,8 @@ async def jd_strategy_upload(
         "manual_sclass_add": manual_sclass_add_terms,
         "manual_sclass_remove": manual_sclass_remove_terms,
         "manual_sclass_final": manual_sclass_final_terms,
+        "required_ability_units_reviewed": reviewed_ability_units,
+        "required_ability_unit_lock_applied": bool(reviewed_ability_units),
         "ai_sclass_candidates": ai_sclass_candidates,
         "csv_sclass_candidates": csv_sclass_candidates,
         "ai_ncs_code_candidates": ai_ncs_code_candidates,

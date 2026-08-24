@@ -14,6 +14,8 @@ def test_vercel_fastapi_entrypoint_and_duration_are_production_safe() -> None:
 
     assert function["maxDuration"] == 300
     assert "app/**" in function["includeFiles"]
+    for excluded in ("tests/**", "docs/**", "reports/**", ".claude/**", ".github/**"):
+        assert excluded in function["excludeFiles"]
     assert kordoc_function["maxDuration"] == 120
     assert config["routes"] == [
         {"src": "/api/kordoc-parse", "dest": "api/kordoc-parse.js"},
@@ -36,6 +38,36 @@ def test_vercel_fastapi_entrypoint_and_duration_are_production_safe() -> None:
     assert (ROOT / "api" / "index.py").read_text(encoding="utf-8").strip().endswith(
         '__all__ = ["app"]'
     )
+
+
+def test_kordoc_onnx_runtime_is_deduplicated_for_function_size() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    package_lock = json.loads((ROOT / "package-lock.json").read_text(encoding="utf-8"))
+
+    assert package["overrides"]["onnxruntime-node"] == "1.24.3"
+    installed_onnx_runtimes = {
+        path: metadata["version"]
+        for path, metadata in package_lock["packages"].items()
+        if path.endswith("node_modules/onnxruntime-node")
+    }
+    assert installed_onnx_runtimes == {"node_modules/onnxruntime-node": "1.24.3"}
+    assert "node_modules/@img/sharp-linux-x64" in package_lock["packages"]
+    assert "node_modules/@img/sharp-libvips-linux-x64" in package_lock["packages"]
+
+
+def test_python_upload_and_pdf_runtime_uses_audited_security_pins() -> None:
+    requirements = {
+        line.strip()
+        for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert {
+        "fastapi==0.141.1",
+        "starlette==1.6.0",
+        "pypdf==6.16.1",
+        "python-multipart==0.0.32",
+    }.issubset(requirements)
 
 
 def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> None:

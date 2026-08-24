@@ -222,12 +222,18 @@ def _safe_member_label(name: str) -> str:
     return value[:160] or "archive_member"
 
 
-def parse_benchmark_document(data: bytes, filename: str, max_bytes: int) -> dict[str, Any]:
+def parse_benchmark_document(
+    data: bytes,
+    filename: str,
+    max_bytes: int,
+    *,
+    ocr: bool = False,
+) -> dict[str, Any]:
     suffix = _suffix_of(filename)
     if suffix == ".txt":
         return {"markdown": data.decode("utf-8", errors="ignore"), "metadata": {"filename": filename}}
     if suffix != ".zip":
-        return parse_with_kordoc(data, filename=filename, ocr=False)
+        return parse_with_kordoc(data, filename=filename, ocr=ocr)
 
     chunks: list[str] = []
     members: list[dict[str, str]] = []
@@ -266,7 +272,7 @@ def parse_benchmark_document(data: bytes, filename: str, max_bytes: int) -> dict
                         parsed = parse_with_kordoc(
                             member_bytes,
                             filename=member_label,
-                            ocr=member_suffix in SUPPORTED_IMAGE_SUFFIXES,
+                            ocr=ocr or member_suffix in SUPPORTED_IMAGE_SUFFIXES,
                         )
                 except KordocParseError as exc:
                     warnings.append(f"{member_label}: {exc}")

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "frozen_at": "2026-08-25T00:48:28.3152073+09:00",
+  "comparison_performed": false,
+  "selection_method": "seeded_sha256_by_suffix_without_parser_output",
+  "record_count": 36,
+  "manifest_reference_set_match": true,
+  "source_bytes_match": true,
+  "sha256": {
+    "app/services/kordoc_parser.py": "80a01e74ebefe2e85d1cd614e2937cb22d0fb13c792f4b7a111342fefd8dbf3f",
+    "app/services/ncs_mcp_client.py": "5519ba48a9a75dd7c1336dd7af679a516f4e1a590fd69903b4c8382daa55505b",
+    "scripts/benchmark_stored_jd_corpus.py": "3753c5b51d3bc1b8c9bc018a0f18a2a6628b7b86ff60c7dea24ab269f190e7c0",
+    "scripts/benchmark_alio_jd.py": "cde1c7af39be885c45a14c3dbdd38b176e57b6d53df31c7719362d23eca6429b",
+    "scripts/score_stored_jd_holdout.py": "44c6c3f362de36edf374a2f6357db05a09ba96d3e70f006e355a075a8ca97cc9",
+    "app/data/ncs_detail_catalog.json": "adb40e58eeb4c75881dbe1c4df2d0dad2f0a861ed9980c4b72ac186c31345c46",
+    "app/data/ncs_unit_catalog.json": "769ac7db086b605e254fe2d375919cb025e220366acdfb8da0246bb70f8ea21a",
+    "tests/fixtures/stored_jd_final_blind_reference.json": "f70e7c7a407578b58edeb1e75ed62bb96ced1fd597f4058d94fb7bbd84ffbefc",
+    "tmp/stored_jd_final_blind/final_blind_manifest.json": "50633c6172941ed89d9e06fb4d952cfe334b7961b96c58694c2da3dc1f9c1601",
+    "tmp/stored_jd_benchmark/stored_jd_benchmark_20260825_004507.csv": "fec51eaa23db90913d314bbe3a831098e13902b3d759431baa46979b58c79a05",
+    "tmp/stored_jd_benchmark/stored_jd_benchmark_20260825_004507.json": "9eb87510a846f234ba370fd7ae024256a8b61244bacac5c830d0dc4a13f910b0"
+  }
+}

@@ -228,3 +228,74 @@ def test_parse_review_skips_pdf_recovery_when_document_declares_no_ncs_mapping(m
     assert fields["ncs_detail_absence_state"] == "declared_no_mapping"
     assert fields["ncs_detail_absence_declared_no_mapping"] is True
     structural.assert_not_called()
+
+
+def test_parse_review_filters_marker_only_ability_artifacts_before_review_state(
+    mocker,
+):
+    mocker.patch(
+        "app.main._parse_upload_document",
+        return_value={"markdown": "NCS ?몃텇瑜섎챸: PR", "blocks": []},
+    )
+    mocker.patch(
+        "app.main.structure_job_description",
+        return_value={
+            "sections": {
+                "ability_units": [
+                    {"text": "¡", "section": "ability_units"},
+                    {"text": "온라인 PR", "section": "ability_units"},
+                ]
+            },
+            "document": {"markdown": "NCS ?몃텇瑜섎챸: PR"},
+            "fields": {
+                "ncs_detail_candidates": ["PR"],
+                "ability_units": ["¡", "온라인 PR"],
+                "ability_units_by_detail": {"PR": ["¡", "온라인 PR"]},
+                "positioned_items": [
+                    {"section": "ability_units", "text": "¡"},
+                    {"section": "ability_units", "text": "온라인 PR"},
+                ],
+            },
+        },
+    )
+    ability_states = mocker.patch(
+        "app.main.classify_official_ability_unit_names",
+        return_value=[
+            {
+                "sourceName": "온라인 PR",
+                "mappingState": "official_exact_source_scoped",
+                "catalogExact": True,
+                "candidateDetailCodes": ["02010201"],
+                "resolvedUnitCodes": ["0201020103_24v3"],
+            }
+        ],
+    )
+    mocker.patch("app.main.classify_official_detail_names", return_value=[])
+    mocker.patch(
+        "app.main.derive_detail_candidates_from_exact_ability_scopes",
+        return_value=[],
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("artifact.txt", b"job", "text/plain")},
+        )
+
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    assert fields["ability_units"] == ["온라인 PR"]
+    assert fields["ability_units_by_detail"] == {"PR": ["온라인 PR"]}
+    assert [
+        item["text"]
+        for item in fields["positioned_items"]
+        if item["section"] == "ability_units"
+    ] == ["온라인 PR"]
+    assert [
+        item["text"]
+        for item in response.json()["sections"]["ability_units"]
+    ] == ["온라인 PR"]
+    ability_states.assert_called_once_with(
+        ["온라인 PR"],
+        selected_detail_names=["PR"],
+    )

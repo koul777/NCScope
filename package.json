@@ -1,6 +1,6 @@
 {
   "name": "ncscope",
-  "version": "1.4.7",
+  "version": "1.4.8",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
   },
   "overrides": {
     "adm-zip": "^0.6.0",
+    "onnxruntime-node": "1.24.3",
     "sharp": "^0.35.3"
   }
 }

@@ -1,0 +1,50 @@
+{
+  "schema_version": 2,
+  "evaluated_at": "2026-08-24T15:59:33.915121+00:00",
+  "evaluation_basis": "agent_source_evidence_review_holdout_not_human_gold",
+  "is_human_reviewed": false,
+  "is_gold_accuracy": false,
+  "comparison_count": 1,
+  "comparison_id": "5c433fa10faad305ead15a37c1a61306f7bbf6f7137890edfe3c77f3e11b4ad8",
+  "reference_id": "stored-jd-agent-reviewed-ce976bce2e7f910b",
+  "reference_records_sha256": "ce976bce2e7f910b2fe350fe1168017451573e3d65fc14ceb1db7c233d116952",
+  "selection_manifest_records_sha256": "beed55bf351e722d7d68204a69cbd90cf03ab9236cef719902b31f892b272a08",
+  "record_count": 36,
+  "metric_validity": true,
+  "integrity_failures": [],
+  "release_acceptance": true,
+  "accuracy_evidence": {
+    "provenance": "frozen source-only agent-reviewed holdout, not human gold",
+    "metrics": {
+      "detail_label_precision_pct": 98.97,
+      "detail_label_recall_pct": 98.97,
+      "detail_document_exact_pct": 95.83,
+      "detail_code_precision_pct": 97.44,
+      "detail_code_recall_pct": 100.0,
+      "ability_scope_precision_pct": 97.04,
+      "ability_scope_recall_pct": 97.62,
+      "ability_code_precision_pct": 91.67,
+      "ability_code_recall_pct": 99.59,
+      "ksa_recall_pct": 100.0,
+      "document_state_accuracy_pct": 97.22
+    }
+  },
+  "operational_diagnostics": {
+    "provenance": "operational diagnostics, not independent accuracy",
+    "files": 206,
+    "unique_contents": 198,
+    "parse_success_pct": 100.0,
+    "operational_candidate_coverage_current_official_detail_pct": 100.0,
+    "operational_candidate_coverage_current_official_detail_document_exact_pct": 100.0,
+    "operational_candidate_coverage_ability_scope_pct": 99.01,
+    "operational_candidate_coverage_ability_code_pct": 94.62,
+    "operational_candidate_coverage_ksa_pct": 100.0,
+    "mapping_state_coverage_pct": 100.0
+  },
+  "source_artifacts": {
+    "holdout_score_sha256": "dff6970b3904c4a67101ed59fed86d752987ed59fc548dadf8206e35e1318bd9",
+    "quality_gate_sha256": "4ab44ad7ee8d65b6ee83e21b9e61affc32f5f8583e8c725a481d72dad98ef73d",
+    "benchmark_csv_sha256": "fec51eaa23db90913d314bbe3a831098e13902b3d759431baa46979b58c79a05",
+    "benchmark_summary_sha256": "9eb87510a846f234ba370fd7ae024256a8b61244bacac5c830d0dc4a13f910b0"
+  }
+}

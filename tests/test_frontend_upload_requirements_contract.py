@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -12,6 +13,263 @@ def _page() -> tuple[str, str]:
     scripts = re.findall(r"<script>([\s\S]*?)</script>", html)
     assert len(scripts) == 1
     return html, scripts[0]
+
+
+def test_inline_javascript_has_valid_syntax() -> None:
+    _, script = _page()
+    completed = subprocess.run(
+        ["node", "--check", "--input-type=commonjs"],
+        input=script.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
+
+
+def test_review_only_convergence_suggestion_behavior_executes_in_node() -> None:
+    _, script = _page()
+    start = script.index("function reviewedConvergenceSuggestions(fields)")
+    end = script.index("function positionedAbilityItemsForReviewedDetail(fields, detail)")
+    functions = script[start:end]
+    harness = """
+const makeElement = (tagName) => ({
+  tagName,
+  children: [],
+  dataset: {},
+  value: '',
+  textContent: '',
+  label: '',
+  appendChild(child) { this.children.push(child); },
+});
+const document = { createElement: makeElement };
+const reviewNcsDetail = makeElement('select');
+const dedupSclassLabels = (values) => [...new Set(
+  values.map(value => String(value || '').trim()).filter(Boolean)
+)];
+""" + functions + """
+const fields = {
+  ncs_detail_candidates: [],
+  ability_units: ['오염되면 안 되는 전체 능력단위'],
+  ncs_detail_convergence_suggestions: [
+    {
+      officialDetailName: '사무행정',
+      distinctExactUnitCount: 2,
+      reviewRequired: true,
+      automaticMappingAllowed: false,
+      mappingState: 'official_detail_candidate_from_exact_unit_convergence',
+      evidence: [
+        { sourceAbilityUnitName: '문서 작성' },
+        { sourceAbilityUnitName: '문서 관리' },
+      ],
+    },
+    {
+      officialDetailName: '총무',
+      distinctExactUnitCount: 3,
+      reviewRequired: true,
+      automaticMappingAllowed: true,
+      mappingState: 'official_detail_candidate_from_exact_unit_convergence',
+      evidence: [{ sourceAbilityUnitName: '비품관리' }],
+    },
+  ],
+};
+const suggestions = reviewedConvergenceSuggestions(fields);
+if (suggestions.length !== 1 || suggestions[0].name !== '사무행정') {
+  throw new Error('unsafe convergence rows were not filtered');
+}
+const direct = setReviewedNcsDetailOptions([], '', suggestions);
+if (direct.length !== 0 || reviewNcsDetail.value !== '' || reviewNcsDetail.selectedIndex !== 0) {
+  throw new Error('review-only suggestion was automatically selected');
+}
+const groups = reviewNcsDetail.children.filter(child => child.tagName === 'optgroup');
+if (groups.length !== 1 || groups[0].children[0].dataset.reviewSuggestion !== 'true') {
+  throw new Error('review-only suggestion group was not rendered');
+}
+const units = abilityUnitsForReviewedDetail(fields, '사무행정');
+if (JSON.stringify(units) !== JSON.stringify(['문서 작성', '문서 관리'])) {
+  throw new Error('selected suggestion did not retain only its exact evidence units');
+}
+console.log('convergence suggestion behavior ok');
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=commonjs"],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
+
+
+def test_coordinate_rendering_behavior_executes_in_node() -> None:
+    _, script = _page()
+    start = script.index("function normalizeNcsReviewKey(value)")
+    end = script.index("function clearJdReviewExtractedFields()")
+    functions = script[start:end]
+    harness = """
+const makeElement = (tagName) => ({
+  tagName,
+  children: [],
+  className: '',
+  style: {},
+  textContent: '',
+  open: true,
+  appendChild(child) { this.children.push(child); },
+  append(...children) { this.children.push(...children); },
+  replaceChildren() { this.children = []; },
+});
+const document = {
+  createElement: makeElement,
+  createTextNode: text => ({ tagName: '#text', textContent: String(text) }),
+};
+const reviewAbilityEvidence = makeElement('details');
+const reviewAbilityEvidenceSummary = makeElement('summary');
+const reviewAbilityEvidenceList = makeElement('div');
+""" + functions + """
+const cell = (row, column, row_span = 1, column_span = 1) => ({
+  row, column, row_span, column_span,
+});
+const fields = {
+  table_coordinate_contract: { index_base: 0 },
+  positioned_items: [
+    {
+      section: 'ability_units', text: '문서 작성', source: 'kordoc', page: 2, table_index: 0,
+      label_cell: cell(0, 0), value_cell: cell(0, 1),
+      scope: { ncs_details: ['사무행정'] },
+    },
+    {
+      section: 'ability_units', text: '오류 좌표', source: 'kordoc', page: 1, table_index: 0,
+      label_cell: cell(1, 0), value_cell: cell(1, 1, 0, 1),
+      scope: { ncs_details: ['사무행정'] },
+    },
+    {
+      section: 'ability_units', text: '미연결 복구', source: 'html_table_recovery', page: 0, table_index: 1,
+      label_cell: cell(2, 0), value_cell: cell(2, 1),
+      scope: { ncs_details: [] },
+    },
+    {
+      section: 'ability_units', text: '코드 기준 복구', source: 'kordoc_code_anchored_training_recovery', page: 3, table_index: 2,
+      label_cell: cell(3, 0), value_cell: cell(3, 3),
+      scope: { ncs_details: ['사무행정'] },
+    },
+  ],
+};
+renderAbilityCoordinateEvidence(fields, '사무행정');
+if (reviewAbilityEvidenceSummary.textContent !== '선택 세분류 표 위치 3건 · 세분류 미연결 1건 · 좌표 보기') {
+  throw new Error('scoped and unscoped coordinate counts were mixed');
+}
+const renderedRows = reviewAbilityEvidenceList.children.filter(child => child.tagName === 'div');
+const rowText = row => row.children.map(child => child.textContent || '').join('');
+const nativeRow = renderedRows.find(row => rowText(row).includes('문서 작성'));
+const recoveredRow = renderedRows.find(row => rowText(row).includes('미연결 복구'));
+const codeRecoveredRow = renderedRows.find(row => rowText(row).includes('코드 기준 복구'));
+const invalidRow = renderedRows.find(row => rowText(row).includes('오류 좌표'));
+if (!rowText(nativeRow).includes('2페이지 · 표 1 · 라벨 R1C1 · span 1×1 · 값 R1C2')) {
+  throw new Error('native page or 0-based cell display is wrong');
+}
+if (!rowText(recoveredRow).includes('세분류 미연결 · 원본 페이지 미확정(복구 좌표)')) {
+  throw new Error('recovered coordinates were shown as native page evidence');
+}
+if (!rowText(codeRecoveredRow).includes('원본 페이지 미확정(복구 좌표)')) {
+  throw new Error('code-anchored recovery was shown as native page evidence');
+}
+if (!invalidRow.className.includes('invalid') || !rowText(invalidRow).includes('값 좌표 형식 오류')) {
+  throw new Error('invalid coordinate shape was silently normalized');
+}
+console.log('coordinate rendering behavior ok');
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=commonjs"],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
+
+
+def test_mapping_state_notice_behavior_executes_in_node() -> None:
+    _, script = _page()
+    start = script.index("function mappingSourceNames(rows, states)")
+    end = script.index("function abilityUnitsForReviewedDetail(fields, detail)")
+    functions = script[start:end]
+    harness = """
+const makeElement = (tagName) => ({
+  tagName,
+  children: [],
+  textContent: '',
+  hidden: true,
+  appendChild(child) { this.children.push(child); },
+  replaceChildren() { this.children = []; },
+});
+const document = { createElement: makeElement };
+const reviewNcsMappingNotice = makeElement('div');
+""" + functions + """
+const fields = {
+  ncs_detail_candidates: [],
+  ncs_detail_absence_declared_no_mapping: true,
+  ncs_detail_absence_reason: 'no_ncs_mapping_declared',
+  ncs_detail_mapping_states: [
+    { sourceName: '기관 자체 직무', mappingState: 'source_declared_self_developed' },
+    { sourceName: '구버전 세분류', mappingState: 'not_in_current_official_catalog' },
+    { sourceName: '중복 공식명', mappingState: 'official_current_name_ambiguous' },
+  ],
+  ability_unit_mapping_states: [
+    { sourceName: '기관 능력단위', mappingState: 'not_in_current_official_catalog' },
+    { sourceName: '공통 관리', mappingState: 'official_exact_scope_conflict' },
+    { sourceName: '중복 코드 능력', mappingState: 'official_exact_code_ambiguous' },
+    { sourceName: '파생 범위 능력', mappingState: 'official_exact_derived_scope_review_required' },
+  ],
+};
+const notices = renderNcsMappingNotice(fields);
+const rendered = notices.join('\\n');
+for (const expected of ['NCS 매핑 없음 선언', '현재 공식 NCS 세분류 미매핑', '세분류 공식명 모호', '현재 공식 NCS 능력단위 미매핑', '능력단위 범위 모호·충돌', '능력단위 코드 모호', '능력단위 범위 검토']) {
+  if (!rendered.includes(expected)) throw new Error(`missing mapping state: ${expected}`);
+}
+if (reviewNcsMappingNotice.hidden || reviewNcsMappingNotice.children.length !== notices.length) {
+  throw new Error('mapping notices were not rendered accessibly');
+}
+const exactOnly = renderNcsMappingNotice({
+  ncs_detail_candidates: ['사무행정'],
+  ncs_detail_mapping_states: [
+    { sourceName: '사무행정', mappingState: 'official_current_exact' },
+  ],
+});
+if (exactOnly.length !== 0 || !reviewNcsMappingNotice.hidden || reviewNcsMappingNotice.children.length !== 0) {
+  throw new Error('exact-only state produced a false warning');
+}
+const absenceCases = [
+  ['ncs_detail_header_without_candidate', '세분류 값 미확정'],
+  ['recruitment_notice_not_job_description', '문서 유형 확인'],
+  ['translation_role_without_explicit_ncs_detail', '번역 직무·세분류 미기재'],
+  ['multi_role_healthcare_document_without_explicit_ncs_detail', '의료 다직종·세분류 미기재'],
+  ['job_document_without_explicit_ncs_detail', '직무기술서·세분류 미기재'],
+];
+for (const [reason, expected] of absenceCases) {
+  const result = renderNcsMappingNotice({ ncs_detail_candidates: [], ncs_detail_absence_reason: reason });
+  if (!result.some(value => value.startsWith(expected))) throw new Error(`missing absence reason: ${reason}`);
+}
+const tableEmpty = renderNcsMappingNotice({
+  ncs_detail_candidates: [],
+  ncs_detail_source: 'pdf_table_detail_empty',
+});
+if (!tableEmpty.some(value => value.startsWith('표 기반 세분류 미확정'))) {
+  throw new Error('pdf_table_detail_empty was silent');
+}
+const failed = renderNcsMappingNotice({}, true);
+if (failed.length !== 1 || !failed[0].startsWith('추출 실패:')) {
+  throw new Error('parse failure was not distinguished');
+}
+console.log('mapping state notice behavior ok');
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=commonjs"],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
 
 
 def test_upload_mode_explains_both_required_documents_before_api_setup() -> None:
@@ -88,11 +346,13 @@ def test_upload_review_and_generation_block_oversized_text_inputs_early() -> Non
     _, script = _page()
 
     assert "const MAX_REVIEW_NCS_DETAIL_CHARS = 2000;" in script
+    assert "const MAX_REVIEW_ABILITY_UNIT_CHARS = 6000;" in script
     assert "const MAX_NOTICE_TEXT_CHARS = 12000;" in script
     assert "const MAX_STRENGTHS_CHARS = 2000;" in script
     assert "const UPLOAD_TEXT_FIELD_LIMITS = Object.freeze({" in script
     assert "function textBoundaryIssue(mode = inputMode.value || 'upload')" in script
     assert "['확정 세분류', reviewNcsDetail, MAX_REVIEW_NCS_DETAIL_CHARS]" in script
+    assert "['확정 요구능력단위', reviewAbilityUnits, MAX_REVIEW_ABILITY_UNIT_CHARS]" in script
     assert "['담당업무 텍스트', dutyText, UPLOAD_TEXT_FIELD_LIMITS.dutyText]" in script
     assert "['직접입력 공고문 텍스트', noticeText, MAX_NOTICE_TEXT_CHARS]" in script
     assert "['강점 텍스트', strengthsInput, MAX_STRENGTHS_CHARS]" in script
@@ -108,11 +368,52 @@ def test_upload_review_uses_single_select_for_ncs_detail_and_single_method_selec
     assert '<select id="reviewNcsDetail" class="dropdown"' in html
     assert '<textarea id="reviewNcsDetail"' not in html
     assert 'id="reviewNcsDetailHelp"' in html
-    assert "function setReviewedNcsDetailOptions(candidates, selectedValue = '')" in script
-    assert "const reviewedCandidates = setReviewedNcsDetailOptions(fields.ncs_detail_candidates || []);" in script
+    assert "function reviewedConvergenceSuggestions(fields)" in script
+    assert "row.mappingState !== 'official_detail_candidate_from_exact_unit_convergence'" in script
+    assert "!row.reviewRequired || row.automaticMappingAllowed" in script
+    assert "function setReviewedNcsDetailOptions(candidates, selectedValue = '', suggestions = [])" in script
+    assert "'직접 세분류 없음 · 검토 제안 선택 필요'" in script
+    assert "능력단위 정확 일치 기반 검토 제안 · 자동 확정 아님" in script
+    assert "const convergenceSuggestions = reviewedConvergenceSuggestions(fields);" in script
+    assert "const reviewedCandidates = setReviewedNcsDetailOptions(" in script
     assert "jdReviewPayload.fields.ncs_detail_candidates = currentReviewedDetails();" in script
     assert "return detail ? [detail] : [];" in script
     assert "reviewNcsDetail.addEventListener('change'" in script
+    assert '<textarea id="reviewAbilityUnits"' in html
+    assert "function abilityUnitsForReviewedDetail(fields, detail)" in script
+    assert "const singleDetailFallback = detailCandidates.length === 1" in script
+    assert "const convergenceSuggestion = reviewedConvergenceSuggestions(fields).find(" in script
+    assert "row?.sourceAbilityUnitName" in script
+    assert 'id="reviewNcsMappingNotice"' in html
+    assert "function renderNcsMappingNotice(fields, parseFailure = false)" in script
+    assert "source_declared_self_developed" in script
+    assert "not_in_current_official_catalog" in script
+    assert "official_current_name_ambiguous" in script
+    assert "official_exact_scope_conflict" in script
+    assert "ncs_detail_cell_blank_or_dash" in script
+    assert "renderNcsMappingNotice({}, true);" in script
+    assert "jdReviewPayload.fields.ability_units = reviewAbilityUnits.value.split(/\\n+/)" in script
+
+    assert 'id="reviewAbilityEvidence"' in html
+    assert 'id="reviewAbilityEvidenceSummary"' in html
+    assert 'id="reviewAbilityEvidenceList"' in html
+    assert "function positionedAbilityItemsForReviewedDetail(fields, detail)" in script
+    assert "function unscopedPositionedAbilityItems(fields, detail)" in script
+    assert "function renderAbilityCoordinateEvidence(fields, detail)" in script
+    assert "item.section !== 'ability_units'" in script
+    assert "return !detailKey || scopeDetails.includes(detailKey);" in script
+    assert "scopeDetails.length === 0" in script
+    assert "function nonnegativeCoordinate(value)" in script
+    assert "function positiveCoordinateSpan(value)" in script
+    assert "function formattedCellCoordinate(cell, label, indexBase)" in script
+    assert "? `${page}페이지`" in script
+    assert "원본 페이지 미확정(복구 좌표)" in script
+    assert "좌표 형식 오류" in script
+    assert "세분류 미연결" in script
+    assert "function clearJdReviewExtractedFields()" in script
+    assert script.count("clearJdReviewExtractedFields();") >= 4
+    assert "renderAbilityCoordinateEvidence(fields, reviewNcsDetail.value);" in script
+    assert 'id="jdReviewStatus" class="sub" role="status" aria-live="polite"' in html
 
     assert 'id="interviewMethodSelect" class="dropdown"' in html
     assert 'name="interviewMethod"' not in html

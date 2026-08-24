@@ -187,7 +187,18 @@ def test_signed_review_session_rejects_unsafe_filename_even_with_valid_signature
     assert exc_info.value.status_code == 409
 
 
-def test_expensive_request_limit_returns_429_only_after_configured_limit(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/ncs/units/options",
+        "/api/alio/attachments",
+        "/api/alio/attachment",
+    ],
+)
+def test_expensive_request_limit_returns_429_only_after_configured_limit(
+    monkeypatch,
+    path: str,
+) -> None:
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("RATE_LIMIT_WINDOW_SEC", "60")
     monkeypatch.setenv("RATE_LIMIT_REQUESTS_PER_WINDOW", "1")
@@ -213,7 +224,7 @@ def test_expensive_request_limit_returns_429_only_after_configured_limit(monkeyp
         scope = {
             "type": "http",
             "method": "GET",
-            "path": "/api/ncs/units/options",
+            "path": path,
             "client": ("198.51.100.10", 1234),
             "headers": [],
         }
@@ -223,3 +234,14 @@ def test_expensive_request_limit_returns_429_only_after_configured_limit(monkeyp
     asyncio.run(invoke())
 
     assert statuses == [200, 429]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/alio/attachments",
+        "/api/alio/attachment",
+    ],
+)
+def test_expensive_request_limit_covers_alio_download_paths(path: str) -> None:
+    assert main.ExpensiveRequestLimitMiddleware._is_expensive(path)

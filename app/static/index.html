@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NCScope v1.4.7</title>
+  <title>NCScope v1.4.8</title>
   <style>
     :root {
       --bg:#f3f7fb;
@@ -119,6 +119,16 @@
     .review-panel { margin-top:14px; padding:14px; border:1px solid #cbdcf0; border-radius:16px; background:linear-gradient(180deg,#fbfdff,#f3f8ff); }
     .review-panel-head { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:6px; }
     .review-panel-head label { margin:0; }
+    .coordinate-evidence { margin-top:8px; padding:8px 10px; border:1px solid #c9dff2; border-radius:10px; background:#fff; }
+    .coordinate-evidence summary { color:#24446c; font-size:12px; font-weight:800; }
+    .coordinate-evidence-list { display:grid; gap:6px; margin-top:8px; }
+    .coordinate-evidence-row { padding:7px 8px; border-left:3px solid #4f8fc9; border-radius:6px; background:#f5f9fe; color:#40546b; font-size:11.5px; line-height:1.45; overflow-wrap:anywhere; }
+    .coordinate-evidence-row strong { color:#17345c; }
+    .coordinate-evidence-row.unscoped { border-left-color:#b7791f; background:#fffbeb; }
+    .coordinate-evidence-row.invalid { border-left-color:#b91c1c; background:#fff1f2; }
+    .coordinate-evidence-group { margin:4px 0 0; color:#7a4a09; font-size:11.5px; font-weight:800; }
+    .mapping-review-notice { display:grid; gap:5px; margin-top:8px; padding:9px 10px; border:1px solid #f0c36d; border-radius:10px; background:#fffbeb; color:#6f4609; font-size:11.5px; line-height:1.45; }
+    .mapping-review-notice p { margin:0; }
     .ncs-table { width:100%; border-collapse:collapse; font-size:13px; }
     .ncs-table th,.ncs-table td { border-bottom:1px solid #eef3fa; text-align:left; padding:8px 6px; }
     .ncs-table th { color:var(--muted); font-weight:700; }
@@ -230,7 +240,7 @@
           <div class="build-tag">Original interface · Local document parsing · Human Review · NCS MCP evidence</div>
         </div>
         <div class="hero-badges">
-          <span class="badge">v1.4.7</span>
+          <span class="badge">v1.4.8</span>
           <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
           <span class="badge">KSA 근거 추적</span>
@@ -356,7 +366,7 @@
               <input id="alioUrl" type="url" inputmode="url" placeholder="https://job.alio.go.kr/recruit.do 또는 recruitview.do?idx=..." />
               <button id="btnInspectAlio" type="button" style="background:#475569;">공고·첨부 확인</button>
             </div>
-            <div id="alioSourceStatus" class="sub" role="status" aria-live="polite" style="margin-top:6px;">ALIO URL을 넣으면 공고와 첨부파일 메타데이터만 확인합니다. 파일은 사람이 선택해 기존 업로드 칸에 탑재합니다.</div>
+            <div id="alioSourceStatus" class="sub" role="status" aria-live="polite" style="margin-top:6px;">ALIO URL을 넣으면 공고문과 직무기술서를 찾아 기존 업로드·검토 흐름으로 가져옵니다.</div>
             <div id="alioSourceResults" style="display:none; margin-top:8px;">
               <label for="alioPostingSelect">공고 1개 선택</label>
               <select id="alioPostingSelect" class="dropdown" style="display:none;"></select>
@@ -366,7 +376,7 @@
           <div id="jdReviewBlock" class="review-panel" style="display:none;">
             <div class="review-panel-head">
               <label style="margin:0;">문서 자동 추출 검토</label>
-              <span id="jdReviewStatus" class="sub">파일을 분석합니다...</span>
+              <span id="jdReviewStatus" class="sub" role="status" aria-live="polite">파일을 분석합니다...</span>
             </div>
             <p class="sub" style="margin:6px 0 10px;">자동 추출값을 확인한 뒤 확정해야 공식 NCS MCP 조회와 면접 질문 생성을 진행합니다.</p>
             <label for="reviewDuties">수행업무</label>
@@ -379,7 +389,15 @@
             <select id="reviewNcsDetail" class="dropdown" aria-describedby="reviewNcsDetailHelp">
               <option value="">세분류 후보를 기다리는 중...</option>
             </select>
-            <div id="reviewNcsDetailHelp" class="sub" style="margin-top:4px;">자동 추출 후보 중 1개를 선택합니다. 후보가 없으면 재분석 또는 다른 파일 확인이 필요합니다.</div>
+            <div id="reviewNcsDetailHelp" class="sub" style="margin-top:4px;">문서에 명시된 자동 추출 후보 중 1개를 선택합니다. 직접 후보가 없고 여러 공식 능력단위가 한 세분류로 정확히 수렴하면, 자동 확정하지 않고 별도 검토 제안으로 표시합니다.</div>
+            <div id="reviewNcsMappingNotice" class="mapping-review-notice" role="status" aria-live="polite" hidden></div>
+            <label for="reviewAbilityUnits">확정할 요구능력단위</label>
+            <textarea id="reviewAbilityUnits" rows="4" aria-describedby="reviewAbilityUnitsHelp reviewAbilityEvidence" placeholder="직무기술서 표에서 추출한 요구능력단위를 한 줄에 하나씩 확인하세요."></textarea>
+            <div id="reviewAbilityUnitsHelp" class="sub" style="margin-top:4px;">값이 있으면 선택한 세분류의 공식 능력단위명과 전부 정확히 일치할 때만 KSA를 조회합니다. 표에 요구능력단위가 없으면 비워 둘 수 있습니다.</div>
+            <details id="reviewAbilityEvidence" class="coordinate-evidence" style="display:none;">
+              <summary id="reviewAbilityEvidenceSummary">표 위치 근거</summary>
+              <div id="reviewAbilityEvidenceList" class="coordinate-evidence-list"></div>
+            </details>
             <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
           </div>
 
@@ -642,6 +660,11 @@
     const reviewQualifications = document.getElementById('reviewQualifications');
     const reviewPreferences = document.getElementById('reviewPreferences');
     const reviewNcsDetail = document.getElementById('reviewNcsDetail');
+    const reviewNcsMappingNotice = document.getElementById('reviewNcsMappingNotice');
+    const reviewAbilityUnits = document.getElementById('reviewAbilityUnits');
+    const reviewAbilityEvidence = document.getElementById('reviewAbilityEvidence');
+    const reviewAbilityEvidenceSummary = document.getElementById('reviewAbilityEvidenceSummary');
+    const reviewAbilityEvidenceList = document.getElementById('reviewAbilityEvidenceList');
     const noticeReviewBlock = document.getElementById('noticeReviewBlock');
     const noticeReviewStatus = document.getElementById('noticeReviewStatus');
     const btnConfirmReview = document.getElementById('btnConfirmReview');
@@ -691,6 +714,7 @@
     const MAX_SINGLE_UPLOAD_FILE_BYTES = 4 * 1024 * 1024;
     const MAX_COMBINED_GENERATION_UPLOAD_BYTES = 3 * 1024 * 1024;
     const MAX_REVIEW_NCS_DETAIL_CHARS = 2000;
+    const MAX_REVIEW_ABILITY_UNIT_CHARS = 6000;
     const MAX_NOTICE_TEXT_CHARS = 12000;
     const MAX_STRENGTHS_CHARS = 2000;
     const UPLOAD_TEXT_FIELD_LIMITS = Object.freeze({
@@ -865,6 +889,7 @@
         ]
         : [
           ['확정 세분류', reviewNcsDetail, MAX_REVIEW_NCS_DETAIL_CHARS],
+          ['확정 요구능력단위', reviewAbilityUnits, MAX_REVIEW_ABILITY_UNIT_CHARS],
           ['담당업무 텍스트', dutyText, UPLOAD_TEXT_FIELD_LIMITS.dutyText],
           ['지원자격 텍스트', qualificationText, UPLOAD_TEXT_FIELD_LIMITS.qualificationText],
           ['우대사항 텍스트', preferenceText, UPLOAD_TEXT_FIELD_LIMITS.preferenceText],
@@ -1627,16 +1652,47 @@
       el.value = `${current}\n${text}`;
     }
 
-    function setReviewedNcsDetailOptions(candidates, selectedValue = '') {
+    function reviewedConvergenceSuggestions(fields) {
+      const rows = Array.isArray(fields?.ncs_detail_convergence_suggestions)
+        ? fields.ncs_detail_convergence_suggestions
+        : [];
+      const seen = new Set();
+      return rows.map((row) => ({
+        name: String(row?.officialDetailName || '').trim(),
+        count: Number(row?.distinctExactUnitCount || 0),
+        reviewRequired: row?.reviewRequired === true,
+        automaticMappingAllowed: row?.automaticMappingAllowed === true,
+        mappingState: String(row?.mappingState || ''),
+        evidence: Array.isArray(row?.evidence) ? row.evidence : [],
+      })).filter((row) => {
+        const key = normalizeNcsReviewKey(row.name);
+        if (!key || seen.has(key)) return false;
+        if (!row.reviewRequired || row.automaticMappingAllowed) return false;
+        if (row.mappingState !== 'official_detail_candidate_from_exact_unit_convergence') return false;
+        if (!Number.isInteger(row.count) || row.count < 2) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+
+    function setReviewedNcsDetailOptions(candidates, selectedValue = '', suggestions = []) {
       if (!reviewNcsDetail) return [];
       const uniqueCandidates = dedupSclassLabels(Array.isArray(candidates) ? candidates : []);
-      const nextValue = uniqueCandidates.includes(selectedValue)
+      const candidateKeys = new Set(uniqueCandidates.map(normalizeNcsReviewKey));
+      const suggestionRows = (Array.isArray(suggestions) ? suggestions : []).filter(
+        row => !candidateKeys.has(normalizeNcsReviewKey(row?.name))
+      );
+      const suggestionNames = suggestionRows.map(row => row.name);
+      const selectableValues = [...uniqueCandidates, ...suggestionNames];
+      const nextValue = selectableValues.includes(selectedValue)
         ? selectedValue
         : (uniqueCandidates[0] || '');
       reviewNcsDetail.innerHTML = '';
       const placeholder = document.createElement('option');
       placeholder.value = '';
-      placeholder.textContent = uniqueCandidates.length ? '세분류 후보를 선택하세요' : '세분류 후보 없음';
+      placeholder.textContent = uniqueCandidates.length
+        ? '문서에 명시된 세분류 후보를 선택하세요'
+        : (suggestionRows.length ? '직접 세분류 없음 · 검토 제안 선택 필요' : '세분류 후보 없음');
       reviewNcsDetail.appendChild(placeholder);
       uniqueCandidates.forEach((candidate) => {
         const option = document.createElement('option');
@@ -1644,11 +1700,278 @@
         option.textContent = candidate;
         reviewNcsDetail.appendChild(option);
       });
+      if (suggestionRows.length) {
+        const group = document.createElement('optgroup');
+        group.label = '능력단위 정확 일치 기반 검토 제안 · 자동 확정 아님';
+        suggestionRows.forEach((row) => {
+          const option = document.createElement('option');
+          option.value = row.name;
+          option.textContent = `${row.name} · 공식 능력단위 ${row.count}개 수렴 · 검토 필요`;
+          option.dataset.reviewSuggestion = 'true';
+          group.appendChild(option);
+        });
+        reviewNcsDetail.appendChild(group);
+      }
       reviewNcsDetail.value = nextValue;
       if (!reviewNcsDetail.value) {
         reviewNcsDetail.selectedIndex = 0;
       }
       return uniqueCandidates;
+    }
+
+    function normalizeNcsReviewKey(value) {
+      return String(value || '').toLowerCase().replace(/[\s\-_/|(),.·・]+/g, '');
+    }
+
+    function mappingSourceNames(rows, states) {
+      const allowed = new Set(states);
+      const names = [];
+      (Array.isArray(rows) ? rows : []).forEach((row) => {
+        if (!row || !allowed.has(String(row.mappingState || ''))) return;
+        const name = String(row.sourceName || '').trim();
+        if (name && !names.includes(name)) names.push(name);
+      });
+      const visible = names.slice(0, 5);
+      return names.length > visible.length
+        ? `${visible.join(', ')} 외 ${names.length - visible.length}건`
+        : visible.join(', ');
+    }
+
+    function renderNcsMappingNotice(fields, parseFailure = false) {
+      if (!reviewNcsMappingNotice) return [];
+      const notices = [];
+      const add = (text) => {
+        const value = String(text || '').trim();
+        if (value && !notices.includes(value)) notices.push(value);
+      };
+      if (parseFailure) {
+        add('추출 실패: 문서 파서가 분석을 완료하지 못했습니다. 파일 형식과 내용을 확인해 다시 분석하세요.');
+      } else {
+        const detailStates = Array.isArray(fields?.ncs_detail_mapping_states)
+          ? fields.ncs_detail_mapping_states
+          : [];
+        const abilityStates = Array.isArray(fields?.ability_unit_mapping_states)
+          ? fields.ability_unit_mapping_states
+          : [];
+        const detailSource = String(fields?.ncs_detail_source || '');
+        const absenceReason = String(fields?.ncs_detail_absence_reason || '');
+        const absenceState = String(fields?.ncs_detail_absence_state || '');
+        const selfDeveloped = mappingSourceNames(detailStates, ['source_declared_self_developed']);
+        const unmapped = mappingSourceNames(detailStates, ['not_in_current_official_catalog']);
+        const ambiguous = mappingSourceNames(detailStates, ['official_current_name_ambiguous']);
+        const abilityUnmapped = mappingSourceNames(abilityStates, ['not_in_current_official_catalog']);
+        const abilityAmbiguous = mappingSourceNames(
+          abilityStates,
+          ['official_exact_detail_ambiguous', 'official_exact_scope_conflict'],
+        );
+        const abilityCodeAmbiguous = mappingSourceNames(abilityStates, ['official_exact_code_ambiguous']);
+        const abilityDerivedReview = mappingSourceNames(
+          abilityStates,
+          ['official_exact_derived_scope_review_required'],
+        );
+        if (fields?.ncs_detail_absence_declared_no_mapping === true || absenceReason === 'no_ncs_mapping_declared') {
+          add('NCS 매핑 없음 선언: 문서가 현재 공식 NCS 매핑이 없거나 미개발 분야임을 명시했습니다. 자동 추정하지 않습니다.');
+        }
+        if (selfDeveloped) add(`자체개발 세분류: ${selfDeveloped} · 공식 코드로 자동 대체하지 않습니다.`);
+        if (unmapped) add(`현재 공식 NCS 세분류 미매핑: ${unmapped} · 원문 값을 보존하고 검토가 필요합니다.`);
+        if (ambiguous) add(`세분류 공식명 모호: ${ambiguous} · 하나의 공식 코드로 자동 확정하지 않습니다.`);
+        if (detailSource === 'pdf_table_detail_empty') {
+          add('표 기반 세분류 미확정: PDF에서 세분류 열은 확인했지만 공식 세분류 값을 복구하지 못했습니다. 원문 표 검토가 필요합니다.');
+        }
+        if (absenceState.includes('ocr_required_without_ocr_output') || absenceState.includes('empty_parser_output')) {
+          add('추출 실패 가능성: OCR 또는 파서 출력이 없어 세분류 근거를 확인하지 못했습니다.');
+        } else if (absenceReason === 'ncs_detail_cell_blank_or_dash') {
+          add('세분류 값 부재: NCS 표와 세분류 칸은 있으나 값이 비어 있거나 대시(-)입니다.');
+        } else if (absenceReason === 'ncs_detail_header_without_candidate') {
+          add('세분류 값 미확정: NCS 표와 세분류 헤더는 있으나 유효한 세분류 값을 확인하지 못했습니다.');
+        } else if (absenceReason === 'ncs_table_without_detail_header') {
+          add('세분류 근거 부재: NCS 분류표는 있으나 세분류 헤더를 찾지 못했습니다.');
+        } else if (absenceReason === 'ncs_detail_candidate_filtered') {
+          add('세분류 후보 제외: 값은 감지했지만 세분류 형식 검증을 통과하지 못해 자동 확정하지 않았습니다.');
+        } else if (absenceReason === 'recruitment_notice_not_job_description') {
+          add('문서 유형 확인: 이 파일은 직무기술서가 아닌 채용공고문으로 보여 세분류를 추출하지 않았습니다.');
+        } else if (absenceReason === 'translation_role_without_explicit_ncs_detail') {
+          add('번역 직무·세분류 미기재: 문서는 정상 추출됐지만 공식 NCS 세분류가 명시되지 않았습니다.');
+        } else if (absenceReason === 'multi_role_healthcare_document_without_explicit_ncs_detail') {
+          add('의료 다직종·세분류 미기재: 여러 의료 직종이 함께 있으나 공식 NCS 세분류가 명시되지 않았습니다.');
+        } else if (absenceReason === 'job_document_without_explicit_ncs_detail') {
+          add('직무기술서·세분류 미기재: 직무 내용은 확인됐지만 공식 NCS 세분류가 명시되지 않았습니다.');
+        } else if (
+          !Array.isArray(fields?.ncs_detail_candidates)
+          || fields.ncs_detail_candidates.length === 0
+        ) {
+          if (absenceReason && absenceReason !== 'no_ncs_mapping_declared') {
+            add('명시적 세분류 없음: 문서 근거만으로 공식 세분류를 확정하지 않았습니다.');
+          }
+        }
+        if (abilityUnmapped) add(`현재 공식 NCS 능력단위 미매핑: ${abilityUnmapped} · KSA 조회 대상에서 제외됩니다.`);
+        if (abilityAmbiguous) add(`능력단위 범위 모호·충돌: ${abilityAmbiguous} · 선택 세분류 근거로 자동 연결하지 않습니다.`);
+        if (abilityCodeAmbiguous) add(`능력단위 코드 모호: ${abilityCodeAmbiguous} · 공식명이 같아도 코드가 하나로 확정되지 않아 자동 연결하지 않습니다.`);
+        if (abilityDerivedReview) add(`능력단위 범위 검토: ${abilityDerivedReview} · 세분류 직접 근거 없이 파생된 범위이므로 사람의 확인이 필요합니다.`);
+      }
+      reviewNcsMappingNotice.replaceChildren();
+      notices.forEach((notice) => {
+        const row = document.createElement('p');
+        row.textContent = notice;
+        reviewNcsMappingNotice.appendChild(row);
+      });
+      reviewNcsMappingNotice.hidden = notices.length === 0;
+      return notices;
+    }
+
+    function abilityUnitsForReviewedDetail(fields, detail) {
+      const mapping = fields && typeof fields.ability_units_by_detail === 'object'
+        ? fields.ability_units_by_detail
+        : {};
+      const detailKey = normalizeNcsReviewKey(detail);
+      const scopedKey = Object.keys(mapping || {}).find(
+        key => normalizeNcsReviewKey(key) === detailKey
+      );
+      const detailCandidates = [...new Set(
+        (Array.isArray(fields?.ncs_detail_candidates) ? fields.ncs_detail_candidates : [])
+          .map(value => String(value || '').trim())
+          .filter(Boolean)
+      )];
+      const singleDetailFallback = detailCandidates.length === 1
+        && normalizeNcsReviewKey(detailCandidates[0]) === detailKey;
+      const convergenceSuggestion = reviewedConvergenceSuggestions(fields).find(
+        row => normalizeNcsReviewKey(row.name) === detailKey
+      );
+      const convergenceUnits = convergenceSuggestion
+        ? convergenceSuggestion.evidence
+          .map(row => String(row?.sourceAbilityUnitName || '').trim())
+          .filter(Boolean)
+        : [];
+      const values = scopedKey
+        ? mapping[scopedKey]
+        : (convergenceSuggestion
+          ? convergenceUnits
+          : (singleDetailFallback && Array.isArray(fields?.ability_units) ? fields.ability_units : []));
+      return [...new Set((Array.isArray(values) ? values : []).map(value => String(value || '').trim()).filter(Boolean))];
+    }
+
+    function positionedAbilityItemsForReviewedDetail(fields, detail) {
+      const detailKey = normalizeNcsReviewKey(detail);
+      const positioned = Array.isArray(fields?.positioned_items) ? fields.positioned_items : [];
+      return positioned.filter((item) => {
+        if (!item || item.section !== 'ability_units' || !String(item.text || '').trim()) return false;
+        const scopeDetails = Array.isArray(item.scope?.ncs_details)
+          ? item.scope.ncs_details.map(normalizeNcsReviewKey).filter(Boolean)
+          : [];
+        return !detailKey || scopeDetails.includes(detailKey);
+      }).sort(sortPositionedAbilityItems);
+    }
+
+    function unscopedPositionedAbilityItems(fields, detail) {
+      if (!normalizeNcsReviewKey(detail)) return [];
+      const positioned = Array.isArray(fields?.positioned_items) ? fields.positioned_items : [];
+      return positioned.filter((item) => {
+        if (!item || item.section !== 'ability_units' || !String(item.text || '').trim()) return false;
+        const scopeDetails = Array.isArray(item.scope?.ncs_details)
+          ? item.scope.ncs_details.map(normalizeNcsReviewKey).filter(Boolean)
+          : [];
+        return scopeDetails.length === 0;
+      }).sort(sortPositionedAbilityItems);
+    }
+
+    function sortPositionedAbilityItems(left, right) {
+        const leftCell = left?.value_cell || {};
+        const rightCell = right?.value_cell || {};
+        return (Number(left?.page || 0) - Number(right?.page || 0))
+          || (Number(left?.table_index || 0) - Number(right?.table_index || 0))
+          || (Number(leftCell.row || 0) - Number(rightCell.row || 0))
+          || (Number(leftCell.column || 0) - Number(rightCell.column || 0))
+          || String(left?.text || '').localeCompare(String(right?.text || ''), 'ko');
+    }
+
+    function nonnegativeCoordinate(value) {
+      if (value === null || value === undefined || value === '') return null;
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+    }
+
+    function positiveCoordinateSpan(value) {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
+    }
+
+    function formattedCellCoordinate(cell, label, indexBase) {
+      const row = nonnegativeCoordinate(cell?.row);
+      const column = nonnegativeCoordinate(cell?.column);
+      const rowSpan = positiveCoordinateSpan(cell?.row_span);
+      const columnSpan = positiveCoordinateSpan(cell?.column_span);
+      if (row === null || column === null || rowSpan === null || columnSpan === null) {
+        return { text: `${label} 좌표 형식 오류`, valid: false };
+      }
+      return {
+        text: `${label} R${row - indexBase + 1}C${column - indexBase + 1} · span ${rowSpan}×${columnSpan}`,
+        valid: row >= indexBase && column >= indexBase,
+      };
+    }
+
+    function renderAbilityCoordinateEvidence(fields, detail) {
+      if (!reviewAbilityEvidence || !reviewAbilityEvidenceSummary || !reviewAbilityEvidenceList) return;
+      const items = positionedAbilityItemsForReviewedDetail(fields, detail);
+      const unscopedItems = unscopedPositionedAbilityItems(fields, detail);
+      const allItems = [...items, ...unscopedItems];
+      reviewAbilityEvidenceList.replaceChildren();
+      reviewAbilityEvidence.style.display = allItems.length ? 'block' : 'none';
+      reviewAbilityEvidence.open = false;
+      reviewAbilityEvidenceSummary.textContent = allItems.length
+        ? `선택 세분류 표 위치 ${items.length}건${unscopedItems.length ? ` · 세분류 미연결 ${unscopedItems.length}건` : ''} · 좌표 보기`
+        : '표 위치 근거 없음';
+      const indexBaseValue = Number(fields?.table_coordinate_contract?.index_base);
+      const indexBase = Number.isInteger(indexBaseValue) && indexBaseValue >= 0
+        ? indexBaseValue
+        : 0;
+      const nativeSources = new Set(['kordoc', 'kordoc_table']);
+      const appendItem = (item, unscoped = false) => {
+        const labelCell = item.label_cell || {};
+        const valueCell = item.value_cell || {};
+        const row = document.createElement('div');
+        const page = nonnegativeCoordinate(item.page);
+        const table = nonnegativeCoordinate(item.table_index);
+        const nativeCoordinate = nativeSources.has(String(item.source || ''));
+        const labelPosition = formattedCellCoordinate(labelCell, '라벨', indexBase);
+        const valuePosition = formattedCellCoordinate(valueCell, '값', indexBase);
+        const coordinateValid = page !== null && table !== null
+          && page >= indexBase && table >= indexBase
+          && labelPosition.valid && valuePosition.valid;
+        row.className = `coordinate-evidence-row${unscoped ? ' unscoped' : ''}${coordinateValid ? '' : ' invalid'}`;
+        const title = document.createElement('strong');
+        title.textContent = String(item.text || '').trim();
+        const scopeReview = item.scope?.review_required === true ? ' · 범위 검토 필요' : '';
+        const scopeLabel = unscoped ? '세분류 미연결 · ' : '';
+        const pageLabel = nativeCoordinate && page !== null && page > 0
+          ? `${page}페이지`
+          : (nativeCoordinate ? '페이지 정보 없음' : '원본 페이지 미확정(복구 좌표)');
+        const tableLabel = table !== null && table >= indexBase
+          ? `표 ${table - indexBase + 1}`
+          : '표 좌표 오류';
+        row.append(title, document.createElement('br'));
+        row.append(document.createTextNode(
+          `${scopeLabel}${pageLabel} · ${tableLabel} · ${labelPosition.text} · ${valuePosition.text}${scopeReview}`
+        ));
+        reviewAbilityEvidenceList.appendChild(row);
+      };
+      items.forEach(item => appendItem(item, false));
+      if (unscopedItems.length) {
+        const group = document.createElement('p');
+        group.className = 'coordinate-evidence-group';
+        group.textContent = '아래 항목은 표 위치는 있으나 선택 세분류와 연결되지 않아 확정 근거에 포함하지 않습니다.';
+        reviewAbilityEvidenceList.appendChild(group);
+        unscopedItems.forEach(item => appendItem(item, true));
+      }
+    }
+
+    function clearJdReviewExtractedFields() {
+      reviewDuties.value = '';
+      reviewQualifications.value = '';
+      reviewPreferences.value = '';
+      reviewAbilityUnits.value = '';
+      setReviewedNcsDetailOptions([]);
+      renderNcsMappingNotice({});
+      renderAbilityCoordinateEvidence({}, '');
     }
 
     function noticeConfirmButtons() {
@@ -1770,7 +2093,7 @@
       btn.disabled = true;
       btn.textContent = '직무기술서 분석 중...';
       runHint.textContent = '문서 파서가 직무기술서에서 세분류 후보와 검토 텍스트를 추출하고 있습니다.';
-      setReviewedNcsDetailOptions([]);
+      clearJdReviewExtractedFields();
       errorBox.style.display = 'none';
       showRawText(`직무기술서 파싱 시작: ${file.name}`);
       startProgress(PARSE_PROGRESS_STEPS, {
@@ -1786,10 +2109,21 @@
         if (!res.ok) throw new Error(readableApiError(text));
         const data = JSON.parse(text);
         const fields = data.fields || {};
+        renderNcsMappingNotice(fields);
         reviewDuties.value = (fields.duties || []).join('\n');
         reviewQualifications.value = (fields.qualifications || []).join('\n');
         reviewPreferences.value = (fields.preferences || []).join('\n');
-        const reviewedCandidates = setReviewedNcsDetailOptions(fields.ncs_detail_candidates || []);
+        const convergenceSuggestions = reviewedConvergenceSuggestions(fields);
+        const reviewedCandidates = setReviewedNcsDetailOptions(
+          fields.ncs_detail_candidates || [],
+          '',
+          convergenceSuggestions,
+        );
+        reviewAbilityUnits.value = abilityUnitsForReviewedDetail(
+          fields,
+          reviewNcsDetail.value,
+        ).join('\n');
+        renderAbilityCoordinateEvidence(fields, reviewNcsDetail.value);
         mergeTextareaValue(dutyText, (fields.duties || []).join('\n'));
         mergeTextareaValue(qualificationText, (fields.qualifications || []).join('\n'));
         mergeTextareaValue(preferenceText, (fields.preferences || []).join('\n'));
@@ -1797,10 +2131,13 @@
         jdReviewPayload = data;
         renderQuestionPlanRows();
         const detailCount = reviewedCandidates.length;
+        const suggestionCount = convergenceSuggestions.length;
         const parserLabel = documentParserLabel(data);
         jdReviewStatus.textContent = detailCount
           ? `${parserLabel} 분석 완료 · 검토 필요 · 세분류 후보 ${detailCount}개`
-          : `${parserLabel} 분석 완료 · 세분류 후보가 없어 확정할 수 없습니다`;
+          : (suggestionCount
+            ? `${parserLabel} 분석 완료 · 직접 세분류 없음 · 능력단위 기반 검토 제안 ${suggestionCount}개 · 자동 확정 안 됨`
+            : `${parserLabel} 분석 완료 · 세분류 후보가 없어 확정할 수 없습니다`);
         btnConfirmReview.disabled = false;
         btnConfirmReview.textContent = '추출 결과 검토·확정';
         btnConfirmReview.style.background = '#0f766e';
@@ -1810,6 +2147,7 @@
           parser: data.parser || 'unknown',
           parser_version: data.parser_version || '',
           ncs_detail_candidates: fields.ncs_detail_candidates || [],
+          ability_units: fields.ability_units || [],
           duties_count: (fields.duties || []).length,
           qualifications_count: (fields.qualifications || []).length,
           preferences_count: (fields.preferences || []).length,
@@ -1819,7 +2157,8 @@
         updateWorkflowMenu();
       } catch (e) {
         const msg = String(e.message || e);
-        setReviewedNcsDetailOptions([]);
+        clearJdReviewExtractedFields();
+        renderNcsMappingNotice({}, true);
         jdReviewStatus.textContent = '자동 파싱 실패 · 파일 형식과 내용을 확인하세요';
         errorBox.style.display = 'block';
         errorBox.textContent = `직무기술서 파싱 오류: ${msg}`;
@@ -1920,23 +2259,130 @@
         alioAttachmentList.textContent = '첨부파일을 찾지 못했습니다. 상세 페이지의 첨부 목록을 확인하거나 파일을 직접 선택하세요.';
         return;
       }
+      const importable = attachments.filter((item) => ['notice', 'job_description'].includes(String(item?.kind || '')));
+      const primaryNotice = importable.find((item) => item.kind === 'notice');
+      const primaryJd = importable.find((item) => item.kind === 'job_description');
+      if (primaryNotice || primaryJd) {
+        const autoRow = document.createElement('div');
+        autoRow.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:center;padding:8px 10px;border:1px solid #99c9bf;border-radius:8px;background:#f0fdfa;';
+        const autoLabel = document.createElement('span');
+        autoLabel.textContent = primaryNotice && primaryJd
+          ? '대표 공고문 + 직무기술서'
+          : `대표 ${primaryJd ? '직무기술서' : '공고문'}`;
+        const autoButton = document.createElement('button');
+        autoButton.type = 'button';
+        autoButton.textContent = '자동 가져오기';
+        autoButton.style.cssText = 'width:auto;padding:6px 10px;background:#0f766e;';
+        autoButton.addEventListener('click', async () => {
+          autoButton.disabled = true;
+          alioSourceStatus.textContent = 'ALIO 공고문·직무기술서를 안전하게 가져오는 중...';
+          try {
+            if (primaryJd) await importAlioAttachment(primaryJd);
+            if (primaryNotice) await importAlioAttachment(primaryNotice);
+            alioSourceStatus.textContent = '가져오기 완료 · 자동 추출 결과와 세분류 후보를 확인해 주세요.';
+          } catch (error) {
+            alioSourceStatus.textContent = `ALIO 파일 가져오기 실패: ${String(error.message || error)}`;
+          } finally {
+            autoButton.disabled = false;
+          }
+        });
+        autoRow.append(autoLabel, autoButton);
+        alioAttachmentList.append(autoRow);
+      }
       attachments.forEach((item) => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:center;padding:7px 9px;border:1px solid #dbe5f0;border-radius:8px;background:#fff;';
         const label = document.createElement('span');
-        label.textContent = `${item.kind || 'other'} · ${item.name || '첨부파일'}`;
+        const kindLabel = item.kind === 'notice' ? '공고문' : item.kind === 'job_description' ? '직무기술서' : (item.section || '기타');
+        label.textContent = `${kindLabel} · ${item.name || '첨부파일'}`;
+        const actions = document.createElement('span');
+        actions.style.cssText = 'display:flex;gap:6px;align-items:center;flex:0 0 auto;';
         const link = document.createElement('a');
         link.href = item.url || '#';
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.textContent = '파일 열기';
-        row.append(label, link);
+        actions.append(link);
+        if (['notice', 'job_description'].includes(String(item.kind || ''))) {
+          const importButton = document.createElement('button');
+          importButton.type = 'button';
+          importButton.textContent = '이 파일 가져오기';
+          importButton.style.cssText = 'width:auto;padding:5px 8px;background:#475569;';
+          importButton.addEventListener('click', async () => {
+            importButton.disabled = true;
+            alioSourceStatus.textContent = `${kindLabel}를 가져오는 중...`;
+            try {
+              await importAlioAttachment(item);
+              alioSourceStatus.textContent = `${kindLabel} 가져오기 완료 · 추출 결과를 확인해 주세요.`;
+            } catch (error) {
+              alioSourceStatus.textContent = `${kindLabel} 가져오기 실패: ${String(error.message || error)}`;
+            } finally {
+              importButton.disabled = false;
+            }
+          });
+          actions.append(importButton);
+        }
+        row.append(label, actions);
         alioAttachmentList.append(row);
       });
       const hint = document.createElement('div');
       hint.className = 'sub';
-      hint.textContent = 'notice와 job_description 파일을 각각 내려받아 위의 공고문·직무기술서 업로드 칸에 선택하세요. 자동 전송하지 않습니다.';
+      hint.textContent = '가져온 파일은 기존 공고문·직무기술서 검토 칸에만 탑재됩니다. 세분류는 자동 확정하지 않으며 사람이 추출 근거를 확인해야 합니다.';
       alioAttachmentList.append(hint);
+    }
+
+    function alioAttachmentFilename(contentDisposition, fallback) {
+      const header = String(contentDisposition || '');
+      let candidate = '';
+      const encoded = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+      if (encoded) {
+        try { candidate = decodeURIComponent(encoded[1].trim().replace(/^"|"$/g, '')); } catch { candidate = ''; }
+      }
+      if (!candidate) {
+        const quoted = header.match(/filename\s*=\s*"([^"]+)"/i);
+        if (quoted) candidate = quoted[1];
+      }
+      candidate = String(candidate || '').split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f]/g, '').trim();
+      return candidate || String(fallback || '').trim();
+    }
+
+    async function importAlioAttachment(item) {
+      const kind = String(item?.kind || '');
+      if (!['notice', 'job_description'].includes(kind)) throw new Error('공고문 또는 직무기술서만 가져올 수 있습니다.');
+      const response = await fetch('/api/alio/attachment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: item.url || '', name: item.name || '' }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(readableApiError(text));
+      }
+      const blob = await response.blob();
+      const fallbackFilename = String(item.name || (kind === 'notice' ? '채용공고문' : '직무기술서')).trim();
+      const filename = alioAttachmentFilename(
+        response.headers.get('content-disposition'),
+        fallbackFilename,
+      );
+      const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+      const input = kind === 'notice' ? noticeFile : jdFile;
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      refreshRequiredDocumentStatus();
+      const boundary = uploadPayloadBoundaryState(kind === 'notice' ? 'notice' : 'jd', file);
+      if (boundary) {
+        input.value = '';
+        showClientBoundaryError(boundary);
+        throw new Error(boundary.message);
+      }
+      if (kind === 'notice') {
+        await parseNoticeForReview(file);
+      } else {
+        sclassBlock.style.display = 'none';
+        await parseJdForReview(file);
+      }
+      return file;
     }
 
     async function inspectAlioUrl(url) {
@@ -1975,7 +2421,7 @@
       }
       renderAlioAttachments(data);
       alioSourceStatus.textContent = data.status === 'human_review_required'
-        ? '사람 검토 필요 · 첨부파일을 확인한 뒤 두 필수 파일을 직접 업로드하세요.'
+        ? '공고문·직무기술서를 가져온 뒤 자동 추출 결과와 세분류 후보를 검토하세요.'
         : 'ALIO 조회가 완료되었습니다.';
       return data;
     }
@@ -2013,6 +2459,7 @@
       jdReviewPayload.fields.qualifications = reviewQualifications.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       jdReviewPayload.fields.preferences = reviewPreferences.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       jdReviewPayload.fields.ncs_detail_candidates = currentReviewedDetails();
+      jdReviewPayload.fields.ability_units = reviewAbilityUnits.value.split(/\n+/).map(x => x.trim()).filter(Boolean);
       renderQuestionPlanRows();
       const boundaryIssue = textBoundaryIssue();
       if (boundaryIssue) {
@@ -2045,6 +2492,9 @@
         const uploadBoundary = uploadPayloadBoundaryState('jd', file);
         if (uploadBoundary) {
           showClientBoundaryError(uploadBoundary);
+          clearJdReviewExtractedFields();
+          jdReviewPayload = null;
+          reviewConfirmed = false;
           e.target.value = '';
           refreshRequiredDocumentStatus();
           syncGenerationButtonState();
@@ -2057,7 +2507,7 @@
         jdReviewBlock.style.display = 'none';
         sclassItems = [];
         extractedSclassBase = [];
-        setReviewedNcsDetailOptions([]);
+        clearJdReviewExtractedFields();
         jdReviewPayload = null;
         reviewConfirmed = false;
         syncGenerationButtonState();
@@ -2123,7 +2573,19 @@
     });
     reviewNcsDetail.addEventListener('change', () => {
       reviewConfirmed = false;
+      if (jdReviewPayload?.fields && reviewAbilityUnits) {
+        reviewAbilityUnits.value = abilityUnitsForReviewedDetail(
+          jdReviewPayload.fields,
+          reviewNcsDetail.value,
+        ).join('\n');
+        renderAbilityCoordinateEvidence(jdReviewPayload.fields, reviewNcsDetail.value);
+      }
       renderQuestionPlanRows();
+      refreshRunButtonState();
+      updateWorkflowMenu();
+    });
+    reviewAbilityUnits?.addEventListener('input', () => {
+      reviewConfirmed = false;
       refreshRunButtonState();
       updateWorkflowMenu();
     });

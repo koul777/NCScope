@@ -12,10 +12,13 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -73,7 +76,13 @@ class _McpRequestSession:
     def get_client(self) -> tuple[httpx.Client, int]:
         with self.state_lock:
             if self.client is None:
-                self.client = httpx.Client(follow_redirects=True)
+                # NCS queries and KSA evidence must go only to the configured
+                # MCP endpoint.  Do not inherit workstation/cloud proxy
+                # variables or forward a signed session across a redirect.
+                self.client = httpx.Client(
+                    follow_redirects=False,
+                    trust_env=False,
+                )
                 self.transport_generation += 1
             return self.client, self.transport_generation
 
@@ -200,7 +209,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                         "params": {
                             "protocolVersion": MCP_PROTOCOL_VERSION,
                             "capabilities": {},
-                            "clientInfo": {"name": "ncscope", "version": "1.4.7"},
+                            "clientInfo": {"name": "ncscope", "version": "1.4.8"},
                         },
                     },
                     timeout=request_timeout,
@@ -286,7 +295,421 @@ def _path_value(path: Any, *keys: str) -> str:
 
 
 def _norm(value: Any) -> str:
-    return re.sub(r"[\s·‧･ㆍ•∙⋅・\-\_/|(),.]+", "", str(value or "")).lower()
+    # NCS recruitment documents use several visually identical middle-dot
+    # glyphs (for example ``·``, ``・`` and U+2024 ``․``).  Normalize Unicode
+    # compatibility forms before removing transport punctuation so exact-name
+    # validation does not fail only because the PDF/HWP text layer changed a
+    # glyph.  Semantic rewriting is still intentionally excluded.
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    # U+318D HANGUL LETTER ARAEA is used as a middle dot in legacy NCS names
+    # even though Unicode classifies it as a letter, so ``\W`` alone does not
+    # remove it. Recruitment files commonly substitute U+FF65/U+30FB instead.
+    # Treat only this documented visual-separator family as punctuation.
+    text = re.sub(r"[·ᆞ․‧•∙⋅・ㆍ]", "", text)
+    return re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
+
+
+@lru_cache(maxsize=1)
+def _official_details_by_name_key() -> dict[str, tuple[dict[str, str], ...]]:
+    """Load the lightweight official detail code/name index shipped to Vercel.
+
+    The multi-gigabyte MCP database remains remote.  This small catalog holds
+    only official eight-digit detail codes and display names, which is enough
+    to restore punctuation lost by PDF/HWP text layers before querying MCP.
+    """
+
+    path = Path(__file__).resolve().parents[1] / "data" / "ncs_detail_catalog.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    rows = payload.get("details") if isinstance(payload, dict) else []
+    output: dict[str, list[dict[str, str]]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("usage_yn") or "").strip().upper() != "Y":
+            continue
+        code = str(row.get("code") or "").strip()
+        name = str(row.get("name") or "").strip()
+        key = _norm(name)
+        if not (name and key and re.fullmatch(r"\d{8}", code)):
+            continue
+        item = {"code": code, "name": name}
+        if item not in output.setdefault(key, []):
+            output[key].append(item)
+    return {key: tuple(items) for key, items in output.items()}
+
+
+@lru_cache(maxsize=1)
+def _official_detail_names_by_key() -> dict[str, tuple[str, ...]]:
+    return {
+        key: tuple(dict.fromkeys(row["name"] for row in rows))
+        for key, rows in _official_details_by_name_key().items()
+    }
+
+
+@lru_cache(maxsize=1)
+def _active_official_detail_codes() -> frozenset[str]:
+    return frozenset(
+        row["code"]
+        for rows in _official_details_by_name_key().values()
+        for row in rows
+    )
+
+
+def _official_detail_from_ordinal_unit_decoration(
+    source_name: str,
+    detail_index: dict[str, tuple[dict[str, str], ...]],
+) -> list[dict[str, str]]:
+    """Resolve only ``official detail (NN. official unit)`` decorations."""
+
+    match = re.fullmatch(
+        r"\s*(?P<base>[^()]{1,100}?)\s*\(\s*(?P<ordinal>\d{1,2})\s*[.)]\s*"
+        r"(?P<unit>[^(),/|]{1,120}?)\s*\)\s*",
+        str(source_name or ""),
+    )
+    if not match:
+        return []
+    detail_matches = list(detail_index.get(_norm(match.group("base")), ()))
+    if len(detail_matches) != 1:
+        return []
+    detail_code = detail_matches[0]["code"]
+    ordinal = match.group("ordinal").zfill(2)
+    matching_units = [
+        row
+        for row in _official_units_by_name_key().get(_norm(match.group("unit")), ())
+        if str(row.get("officialDetailCode") or "") == detail_code
+        and str(row.get("ncsClCd") or "").split("_", 1)[0].endswith(ordinal)
+    ]
+    return detail_matches if matching_units else []
+
+
+def classify_official_detail_names(
+    names: list[str],
+    *,
+    self_developed_names: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Classify source detail labels against the complete current catalog.
+
+    An absent name is reported as absent, never promoted by similarity.  A
+    source-declared self-developed label remains distinct from a legacy or
+    otherwise unmapped label even though both correctly have no current code.
+    """
+
+    self_developed_keys = {
+        _norm(name) for name in (self_developed_names or []) if _norm(name)
+    }
+    index = _official_details_by_name_key()
+    output: list[dict[str, Any]] = []
+    for name in names or []:
+        source_name = str(name or "").strip()
+        key = _norm(source_name)
+        if not source_name or not key:
+            continue
+        direct_matches = list(index.get(key, ()))
+        matches = direct_matches or _official_detail_from_ordinal_unit_decoration(
+            source_name,
+            index,
+        )
+        match_method = (
+            "catalog_normalized_exact"
+            if direct_matches
+            else (
+                "official_detail_with_exact_ordinal_unit_decoration"
+                if matches
+                else "none"
+            )
+        )
+        if key in self_developed_keys:
+            state = "source_declared_self_developed"
+        elif len(matches) == 1:
+            state = "official_current_exact"
+        elif len(matches) > 1:
+            state = "official_current_name_ambiguous"
+        else:
+            state = "not_in_current_official_catalog"
+        output.append(
+            {
+                "sourceName": source_name,
+                "mappingState": state,
+                "catalogExact": bool(direct_matches),
+                "resolvedCatalogExact": bool(matches),
+                "matchMethod": match_method,
+                "officialDetailCodes": [row["code"] for row in matches],
+                "officialDetailNames": list(
+                    dict.fromkeys(row["name"] for row in matches)
+                ),
+                "automaticSemanticMappingAllowed": False,
+                "reviewRequired": True,
+            }
+        )
+    return output
+
+
+@lru_cache(maxsize=1)
+def _official_units_by_name_key() -> dict[str, tuple[dict[str, Any], ...]]:
+    """Load the deployable exact-name index for all official NCS units.
+
+    This catalog is only an immutable lookup index.  A row becomes an
+    authoritative application result only after its ten-digit code prefix is
+    checked against an exact-resolved detail and the code is subsequently
+    served by ``ncs_unit_detail`` for KSA.
+    """
+
+    path = Path(__file__).resolve().parents[1] / "data" / "ncs_unit_catalog.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    rows = payload.get("units") if isinstance(payload, dict) else []
+    active_detail_codes = _active_official_detail_codes()
+    output: dict[str, list[dict[str, Any]]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or "").strip()
+        name = str(row.get("name") or "").strip()
+        detail_code = str(row.get("detail_code") or "").strip()
+        detail_name = str(row.get("detail_name") or "").strip()
+        key = _norm(name)
+        if not (
+            key
+            and re.fullmatch(r"\d{10}(?:_[0-9A-Za-z]+)?", code)
+            and re.fullmatch(r"\d{8}", detail_code)
+            and code.startswith(detail_code)
+            and detail_code in active_detail_codes
+        ):
+            continue
+        output.setdefault(key, []).append(
+            {
+                "ncsClCd": code,
+                "compeUnitName": name,
+                "ncsSubdCdnm": detail_name,
+                "canonicalDetailName": detail_name,
+                "officialDetailCode": detail_code,
+                "source": "ncs-unit-catalog-exact",
+                "matchScore": 1.0,
+                "isExactUnitNameMatch": True,
+            }
+        )
+    return {key: tuple(items) for key, items in output.items()}
+
+
+def exact_official_units_by_name(names: list[str]) -> list[dict[str, Any]]:
+    """Return catalog rows for normalized-exact official ability-unit names.
+
+    No fuzzy, synonym, containment, or semantic matching is performed.  The
+    caller must still enforce selected-detail code scope before accepting a
+    row, because an official unit name may occur in more than one detail.
+    """
+
+    output: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    index = _official_units_by_name_key()
+    for name in names or []:
+        source_name = str(name or "").strip()
+        for row in index.get(_norm(source_name), ()):
+            code = str(row.get("ncsClCd") or "").strip()
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            output.append({**row, "requiredAbilityUnitName": source_name})
+    return output
+
+
+def classify_official_ability_unit_names(
+    names: list[str],
+    *,
+    selected_detail_names: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Classify exact official unit names and their deterministic scope.
+
+    The state names deliberately distinguish a source-compatible official
+    edge from a unique code-derived suggestion and from a scope conflict.
+    Unique derivation remains review-required; it is not silently inserted as
+    a source-declared detail.
+    """
+
+    selected_detail_codes = {
+        row["code"]
+        for name in (selected_detail_names or [])
+        for row in _official_details_by_name_key().get(_norm(name), ())
+    }
+    index = _official_units_by_name_key()
+    output: list[dict[str, Any]] = []
+    for name in names or []:
+        source_name = str(name or "").strip()
+        key = _norm(source_name)
+        if not source_name or not key:
+            continue
+        matches = list(index.get(key, ()))
+        detail_codes = {
+            str(row.get("officialDetailCode") or "").strip()
+            for row in matches
+            if str(row.get("officialDetailCode") or "").strip()
+        }
+        compatible_codes = detail_codes.intersection(selected_detail_codes)
+        compatible_rows = [
+            row
+            for row in matches
+            if str(row.get("officialDetailCode") or "").strip()
+            in compatible_codes
+        ]
+        candidate_rows = compatible_rows if len(compatible_codes) == 1 else matches
+        base_codes = {
+            str(row.get("ncsClCd") or "").split("_", 1)[0]
+            for row in candidate_rows
+            if re.fullmatch(
+                r"\d{10}(?:_[0-9A-Za-z]+)?",
+                str(row.get("ncsClCd") or "").strip(),
+            )
+        }
+
+        if not matches:
+            state = "not_in_current_official_catalog"
+        elif len(compatible_codes) == 1 and len(base_codes) == 1:
+            state = "official_exact_source_scoped"
+        elif len(compatible_codes) == 1:
+            state = "official_exact_code_ambiguous"
+        elif len(compatible_codes) > 1:
+            state = "official_exact_detail_ambiguous"
+        elif len(detail_codes) == 1 and len(base_codes) == 1:
+            state = (
+                "official_exact_scope_conflict"
+                if selected_detail_codes
+                else "official_exact_derived_scope_review_required"
+            )
+        else:
+            state = "official_exact_detail_ambiguous"
+
+        resolved_rows = (
+            compatible_rows
+            if state == "official_exact_source_scoped"
+            else candidate_rows
+            if state == "official_exact_derived_scope_review_required"
+            else []
+        )
+        output.append(
+            {
+                "sourceName": source_name,
+                "mappingState": state,
+                "catalogExact": bool(matches),
+                "selectedDetailCodes": sorted(selected_detail_codes),
+                "candidateDetailCodes": sorted(detail_codes),
+                "candidateDetailNames": list(
+                    dict.fromkeys(
+                        str(row.get("ncsSubdCdnm") or "").strip()
+                        for row in matches
+                        if str(row.get("ncsSubdCdnm") or "").strip()
+                    )
+                ),
+                "candidateUnitCodes": list(
+                    dict.fromkeys(
+                        str(row.get("ncsClCd") or "").strip()
+                        for row in matches
+                        if str(row.get("ncsClCd") or "").strip()
+                    )
+                ),
+                "resolvedUnitCodes": list(
+                    dict.fromkeys(
+                        str(row.get("ncsClCd") or "").strip()
+                        for row in resolved_rows
+                        if str(row.get("ncsClCd") or "").strip()
+                    )
+                ),
+                "automaticSemanticMappingAllowed": False,
+                "reviewRequired": state != "official_exact_source_scoped",
+            }
+        )
+    return output
+
+
+def derive_detail_candidates_from_exact_ability_scopes(
+    ability_units_by_detail: dict[str, list[str]],
+    *,
+    minimum_distinct_units: int = 2,
+) -> list[dict[str, Any]]:
+    """Suggest one official detail when exact scoped units all converge.
+
+    This is evidence generation, not automatic alias creation.  Every counted
+    ability name must resolve to one official detail and one base unit code;
+    at least two distinct units must vote for the same detail, and any vote
+    for another detail rejects convergence for that source scope.
+    """
+
+    unit_index = _official_units_by_name_key()
+    detail_index = _official_details_by_name_key()
+    output: list[dict[str, Any]] = []
+    threshold = max(2, int(minimum_distinct_units or 2))
+    for source_detail, raw_names in (ability_units_by_detail or {}).items():
+        source_name = str(source_detail or "").strip()
+        # An already current official detail does not need an alias suggestion.
+        if source_name and detail_index.get(_norm(source_name)):
+            continue
+        evidence_by_detail: dict[str, list[dict[str, Any]]] = {}
+        seen_names: set[str] = set()
+        for raw_name in raw_names if isinstance(raw_names, list) else []:
+            ability_name = str(raw_name or "").strip()
+            ability_key = _norm(ability_name)
+            if not ability_name or not ability_key or ability_key in seen_names:
+                continue
+            seen_names.add(ability_key)
+            matches = list(unit_index.get(ability_key, ()))
+            detail_codes = {
+                str(row.get("officialDetailCode") or "").strip()
+                for row in matches
+                if str(row.get("officialDetailCode") or "").strip()
+            }
+            base_codes = {
+                str(row.get("ncsClCd") or "").split("_", 1)[0]
+                for row in matches
+                if re.fullmatch(
+                    r"\d{10}(?:_[0-9A-Za-z]+)?",
+                    str(row.get("ncsClCd") or "").strip(),
+                )
+            }
+            if len(detail_codes) != 1 or len(base_codes) != 1:
+                continue
+            detail_code = next(iter(detail_codes))
+            evidence_by_detail.setdefault(detail_code, []).append(
+                {
+                    "sourceAbilityUnitName": ability_name,
+                    "officialUnitCodes": list(
+                        dict.fromkeys(
+                            str(row.get("ncsClCd") or "").strip()
+                            for row in matches
+                            if str(row.get("ncsClCd") or "").strip()
+                        )
+                    ),
+                }
+            )
+        if len(evidence_by_detail) != 1:
+            continue
+        detail_code, evidence = next(iter(evidence_by_detail.items()))
+        if len(evidence) < threshold:
+            continue
+        detail_rows = [
+            row
+            for rows in detail_index.values()
+            for row in rows
+            if row.get("code") == detail_code
+        ]
+        if len(detail_rows) != 1:
+            continue
+        output.append(
+            {
+                "sourceDetailName": source_name,
+                "mappingState": "official_detail_candidate_from_exact_unit_convergence",
+                "officialDetailCode": detail_code,
+                "officialDetailName": detail_rows[0]["name"],
+                "distinctExactUnitCount": len(evidence),
+                "evidence": evidence,
+                "automaticMappingAllowed": False,
+                "reviewRequired": True,
+            }
+        )
+    return output
 
 
 def _split_detail_terms(values: list[str]) -> list[str]:
@@ -350,9 +773,10 @@ def _detail_query_names(name: str) -> list[str]:
     # similar classification.
     if not known_aliases:
         punctuation_compact = re.sub(
-            r"[\s·‧･ㆍ•∙⋅・\-_/|(),.]+",
+            r"[\W_]+",
             "",
-            base_name,
+            unicodedata.normalize("NFKC", base_name),
+            flags=re.UNICODE,
         )
         if punctuation_compact and punctuation_compact not in names:
             names.append(punctuation_compact)
@@ -363,6 +787,16 @@ def _detail_query_names(name: str) -> list[str]:
         ).strip(" \\")
         if ordinal_stripped and ordinal_stripped not in names:
             names.append(ordinal_stripped)
+    # The MCP search index tokenizes punctuation. A recruitment document can
+    # therefore contain the exact official letters while losing the official
+    # middle dot (for example ``보일러설치정비``). Retry the unique canonical
+    # display form from the bundled code/name catalog. Matching remains strict
+    # because the catalog lookup uses the punctuation-insensitive exact key.
+    catalog_names = _official_detail_names_by_key().get(_norm(base_name), ())
+    if len(catalog_names) == 1:
+        canonical_name = str(catalog_names[0]).strip()
+        if canonical_name and canonical_name not in names:
+            names.append(canonical_name)
     for alias in known_aliases:
         alias = str(alias or "").strip()
         if alias and all(_norm(alias) != _norm(existing) for existing in names):
@@ -403,10 +837,17 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 if _norm(sub_name) != _norm(query_name):
                     continue
                 code = str(row.get("id") or row.get("unit_code") or "").strip()
+                base_code = code.split("_", 1)[0]
+                if base_code[:8] not in _active_official_detail_codes():
+                    continue
                 if not code or code in seen:
                     continue
                 seen.add(code)
-                is_alias = _norm(query_name) != _norm(name)
+                is_alias = unicodedata.normalize(
+                    "NFKC", query_name
+                ).casefold().strip() != unicodedata.normalize(
+                    "NFKC", name
+                ).casefold().strip()
                 output.append(
                     {
                         "ncsClCd": code,
@@ -455,6 +896,9 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
             if not isinstance(row, dict):
                 continue
             code = str(row.get("id") or row.get("unit_code") or "").strip()
+            base_code = code.split("_", 1)[0]
+            if base_code[:8] not in _active_official_detail_codes():
+                continue
             if not code or code in seen:
                 continue
             seen.add(code)

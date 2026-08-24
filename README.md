@@ -18,7 +18,7 @@
 
 <p align="center"><a href="https://ncscope.vercel.app"><strong>NCScope 실행하기</strong></a></p>
 
-# NCScope v1.4.7
+# NCScope v1.4.8
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 
@@ -118,13 +118,32 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8015
 ## 주요 흐름
 
 1. 공고문과 NCS 직무기술서 업로드
-2. 문서 파서 추출 결과 검토·확정
+2. 문서 파서가 표 좌표와 함께 추출한 세분류·요구능력단위 검토·확정
 3. NCS 세분류 1개와 면접형태 1개 선택
-4. 공식 NCS KSA 조회 및 `evidence_id` 잠금
+4. 검토한 요구능력단위를 공식 NCS 능력단위명에 정확 일치시킨 뒤 KSA 조회 및 `evidence_id` 잠금
 5. OpenAI 질문 생성
 6. 독립 OpenAI 품질검수
 7. 필요 시 실패 슬롯 재생성 및 최종 검수
 8. 통과 문항만 표시·복사·다운로드
+
+### 세분류 우선 성능 해석
+
+NCScope의 1차 제품 성능은 직무기술서에 명시된 **현행 공식 NCS 세분류명과
+세분류 코드**를 정확히 복구하는 능력으로 판단합니다. 파싱 성공률, 세분류
+precision/recall, 문서 단위 세분류 완전일치율, `현행 공식/구버전·비표준/자체개발/
+미명시/모호` 상태 판정을 핵심 지표로 사용합니다.
+
+능력단위·KSA는 확정 세분류에서 면접 질문 근거를 좁히는 심화 단계입니다. 따라서
+`Strict pipeline-ready`는 세분류 추출 성능이 아니라 **세분류부터 능력단위 exact와
+KSA 조회까지 한 번에 끝난 비율**입니다. 이 값을 세분류 정확도나 세분류 자동처리율로
+해석하지 않습니다. 현재 공개 생성 경로는 안전을 위해 검토한 능력단위가 공식명과
+정확히 일치할 때만 KSA 질문 생성을 허용합니다. 다음 제품 단계에서는 세분류를 먼저
+확정하고, 문서에 명확한 능력단위는 자동 선택하되 나머지는 확정 세분류의 공식
+능력단위 후보를 사용자가 선택하는 흐름으로 분리합니다.
+
+사람 골드 정확도는 기존 튜닝 표본과 분리한 NCS 공정채용 사이트 신규 직무기술서를
+두 명 이상이 독립 검수하고 불일치를 조정한 뒤에만 발표합니다. 아래 에이전트 검토
+동결셋과 실전 공고 집계는 회귀·운영 진단 근거이며 사람 골드 정확도가 아닙니다.
 
 업로드는 PDF, HWP, HWPX, DOCX, TXT, 이미지와 이 문서들을 담은 ZIP을 지원합니다.
 로컬은 Node/Kordoc을 직접 실행하고, Vercel은 같은 NCScope 배포의 인증된 비공개
@@ -136,7 +155,258 @@ fallback으로만 지원합니다. Kordoc 실행이 불가능해
 대체 파서를 사용한 경우 응답과 화면에 실제 파서명을 표시하며, 표 좌표가 사라진
 분류표는 대분류·중분류를 제거한 뒤 공식 NCS MCP exact 결과만 세분류 후보로 확정합니다.
 
-ALIO 첨부 메타데이터 조회는 `POST /api/alio/attachments`를 사용합니다. 외부 파일을 자동으로 내려받아 모델에 전송하지 않으며, 사람이 같은 채용 건의 공고문과 직무기술서를 확인해 기존 업로드 흐름으로 넘깁니다.
+### KSA 출처와 요구능력단위 잠금
+
+직무기술서 표의 `필요지식`, `필요기술`, `직무수행태도`는 기관이 작성한 직무 맥락이며
+공식 KSA 원문으로 취급하지 않습니다. Kordoc 표 파서는 `page`, `table_index`,
+`label_cell`, `value_cell`, `row_span`, `column_span`과 해당 행의 채용분야·세분류 범위를
+보존하고, `요구능력단위` 셀을 세분류별로 묶어 사람 검토 화면에 표시합니다.
+화면 좌표는 행·열을 사람이 읽는 1부터 시작하는 번호로 변환해 보여주되 응답 원본은
+0부터 시작합니다. `page=0`이거나 HTML/Markdown에서 표를 복구한 좌표는 원본 페이지를
+확정하지 않고 `원본 페이지 미확정(복구 좌표)`으로 표시합니다. 범위가 잘못된 좌표는
+임의 보정하지 않고 오류로 표시하며, 세분류에 연결되지 않은 능력단위는 확정 근거와
+분리해 `세분류 미연결`로 둡니다.
+
+검토 화면은 정확 매핑만 있을 때는 경고하지 않습니다. 대신 문서의 NCS 매핑 없음·미개발
+선언, 현행 공식 목록 미등재, 공식명·코드·세분류 범위 모호성, PDF 표에서 세분류 열만
+확인된 상태, 빈 세분류 셀, OCR 미적용·빈 파서 출력 같은 추출 실패를 서로 다른 상태로
+표시합니다. 채용공고문 자체, 번역 직무, 의료 다직종, 일반 직무기술서에 세분류가
+명시되지 않은 경우도 파싱 실패와 분리합니다.
+
+검토가 끝나면 Vercel 앱은 DB 파일을 직접 열지 않고 `NCS_MCP_URL`의 `ncs_search`로
+확정 세분류의 공식 능력단위를 조회합니다. 검토한 요구능력단위명은 공백·목록번호·NCS
+코드 같은 표시 장식만 제거한 뒤 공식 능력단위명과 정규화 정확 일치해야 합니다. 하나라도
+일치하지 않으면 `422 ncs_required_ability_unit_mismatch`로 중단하며 유사 능력단위로
+자동 대체하지 않습니다. 일치한 능력단위 코드에 대해서만 `ncs_unit_detail`을
+`include=["elements", "criteria", "ksa"]`, `text_version="raw"`로 호출하고, 그 응답의
+K/S/A 행만 `factorSource=ncs-mcp`, `ksaStatus=official` 근거로 사용합니다. 성공 응답은
+`required_ability_units_reviewed`, `required_ability_unit_lock_applied` 및 각 능력단위의
+`requiredAbilityUnitName`, `requiredAbilityUnitMatch=exact`를 반환합니다.
+배포용 경량 카탈로그와 원격 MCP 검색 결과는 모두 `usage_yn=Y`인 현행 1,094개
+세분류의 코드 범위로 제한합니다. 비활성 세분류 15개와 그 연결 능력단위 153개는
+`현행 공식`으로 승격하지 않으며, 서로 다른 현행 세분류에 같은 능력단위명이 있는
+195개 정규화 이름도 세분류 코드 범위가 하나로 확정되지 않으면 KSA 조회 전에 거부합니다.
+
+ALIO 조회는 `POST /api/alio/attachments`로 공고의 표 구획까지 읽어 공고문과 직무기술서를 구분하고, `POST /api/alio/attachment`로 선택한 공개 파일을 크기·redirect·host 제한 안에서 가져옵니다. 가져온 파일은 기존 업로드 칸과 동일한 Kordoc 파싱·서명된 사람 검토 흐름으로만 넘어가며 세분류를 자동 확정하거나 파일을 곧바로 모델에 전송하지 않습니다.
+
+### ALIO 공고문·직무기술서 대량 코퍼스
+
+최근 공고뿐 아니라 과거 등록일 구간을 31일 창으로 나눠 페이지를 순회하고, 각 공고의 `공고문`과 `직무기술서` 표 행에 연결된 파일을 모두 수집하는 재개 가능한 수집기를 제공합니다. 기본 결과는 Git에서 제외되는 `.local/alio_corpus`에 SQLite 코퍼스와 요약, 세분류 어휘 프로필로 저장됩니다.
+
+```powershell
+# 최근 1년, 최대 1,000개 공고(기본값)
+python scripts/collect_alio_documents.py
+
+# JOB-ALIO 과거 범위를 제한 없이 순회하고 원본 공개 첨부도 보관
+python scripts/collect_alio_documents.py --start-date 2011-01-01 --limit 0 --keep-files
+```
+
+프로필 학습에는 문서가 세분류를 명시하고, 그 값이 로컬 공식 NCS 목록에 정확히 매칭되며, 한 문서에 세분류가 하나뿐인 사례만 사용합니다. 세분류가 없는 새 문서에는 일치 어휘와 학습 문서 수를 포함한 `review_required` 후보만 제안합니다. `NCS 미개발/매핑 없음`이 명시된 문서는 제안 대상에서 제외됩니다. 다른 위치의 프로필을 쓰려면 `ALIO_SCLASS_PROFILE_PATH`를 설정합니다.
+
+### 저장 직무기술서 회귀·블라인드 품질 게이트
+
+로컬 공개 코퍼스 206개(고유 내용 198개)는 Git에 넣지 않습니다. 평가는 세 층으로
+분리합니다. 핵심 세분류 층은 파싱 성공, 현행 공식 세분류 인식, 세분류 매핑 상태와
+문서 단위 완전일치를 봅니다. 심화 진단 층은 능력단위 범위·코드 후보와 KSA 가용성을
+별도로 기록합니다. 별도로 동결한 36개
+source-only 블라인드 세트는 최신 파서 출력 없이 세 명의 에이전트가 원문 표만 판정한 뒤
+한 번 비교했습니다. 이 기준표는 사람 검토나 골드 데이터가 아니며, 결과도 그 한계를
+명시합니다.
+
+동결 결과는 `tests/fixtures/stored_jd_final_blind_{reference,freeze,freeze_addendum,result,comparison_ledger}.json`
+에 있습니다. 결과 JSON은 점수·게이트·벤치마크 원본의 실제 해시를 검증하는 생성기로만
+만들며, 비교 원장은 같은 동결셋의 다른 비교 결과를 거부합니다. 전체 코퍼스 값은 독립
+정확도가 아닌 운영 진단용 후보 커버리지로 별도 표시합니다. 첫 비교 결과는 세분류 코드 P 97.44/R 100, 세분류 문서 완전일치 95.83,
+능력단위-세분류 범위 P 97.04/R 97.62, 공식 능력단위 코드 P 91.67/R 99.59,
+확정 코드 KSA 반환 100%입니다. 이후 실전 공고에서 발견한 번호가 붙은 능력단위 장식을
+정확히 해석하는 로직이 동결셋 1건의 코드 출력을 바꿨으므로, 이 첫 결과는 변경 전 1회
+비교 기록으로만 보존합니다. 현 코드 재검사는 세분류 코드 P 96.20/R 100으로 모든
+게이트를 통과하지만 독립 블라인드 점수로 주장하지 않습니다. 생성기도 이 상태에서 새
+블라인드 결과 생성을 의도적으로 거부합니다.
+
+```powershell
+$env:NCS_MCP_URL='http://127.0.0.1:8766/mcp'
+python scripts/benchmark_stored_jd_corpus.py
+
+python scripts/score_stored_jd_holdout.py `
+  tests/fixtures/stored_jd_final_blind_reference.json `
+  tmp/stored_jd_benchmark/<latest>.csv `
+  --selection-manifest-json tmp/stored_jd_final_blind/final_blind_manifest.json `
+  --require-selection-manifest
+
+python scripts/check_stored_jd_quality_gate.py `
+  tmp/stored_jd_benchmark/<latest>.json `
+  --holdout-score-json tmp/stored_jd_holdout_score/<latest>.json `
+  --expected-holdout-records 36
+
+# 논리 표 좌표 계약: 206개/고유 198개, 좌표 형상과 직접·복구 좌표를 분리 집계
+python scripts/audit_stored_jd_coordinate_contract.py `
+  --input-dir tmp/alio_jd_200_mcp `
+  --expected-files 206 `
+  --expected-unique-contents 198
+
+# KSA 강한 계약: benchmark-selected probe 집합의 지식·기술·태도 3종과 수행준거 확인
+python scripts/audit_stored_jd_ksa_contract.py `
+  tmp/stored_jd_benchmark_release_candidate/stored_jd_benchmark_20260825_050424.csv `
+  --expected-unit-codes 554 `
+  --expected-benchmark-rows 206 `
+  --expected-benchmark-sha256 13aca798e616260fa5d2842e9199e0f9d0f571ec52265baaae64c3f1dfdbe03e `
+  --expected-catalog-sha256 8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357 `
+  --expected-code-set-sha256 652f6d546007d185a9a90da8a0f1124a6d580281a31d22cf8de7e93c61626dfd `
+  --expected-client-sha256 eb5e070c08feb417371a1b0aed95f2d505feb5043f2c99718e078aef8aff9477 `
+  --expected-audit-script-sha256 797d95f4c5492bdbf8b0f545a5ddefb72671d82eec05588956c4f8ad19c0f2a0 `
+  --require-input-digests
+
+# 배포 active catalog 13,282개 능력단위 전체를 같은 계약으로 확인
+python scripts/audit_stored_jd_ksa_contract.py `
+  --all-active-catalog-units `
+  --expected-unit-codes 13282 `
+  --expected-catalog-sha256 8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357 `
+  --expected-code-set-sha256 cc09e69442e780b319fb772a7459fd49066f1f57790bf9140e8243e29d066a01 `
+  --expected-client-sha256 eb5e070c08feb417371a1b0aed95f2d505feb5043f2c99718e078aef8aff9477 `
+  --expected-audit-script-sha256 797d95f4c5492bdbf8b0f545a5ddefb72671d82eec05588956c4f8ad19c0f2a0 `
+  --require-input-digests `
+  --max-factors-per-unit 3
+```
+
+최신 저장 코퍼스가 선택한 고유 probe 코드 554개를 대상으로 각 코드당 최대 12개
+요인을 조회한 KSA 계약 감사에서는 554/554개 모두 지식·기술·태도 3종을 갖췄고,
+반환된 6,640/6,640건에 수행준거와 configured NCS MCP client contract marker가
+있었습니다. 이 554개에는 문서에서 능력단위를 직접 추출하지 못한 경우 벤치마크가
+가용성 확인용으로 고른 코드도 포함되며, 그중 14개는 그런 probe에서만 나타납니다.
+따라서 이는 "실제 추출된 554개 코드" 정확도나 upstream 공식 DB의 독립 provenance
+인증이 아닙니다. 입력 CSV·206행·코드 집합·active catalog·MCP client 해시를 함께
+고정한 configured `ncs_unit_detail` 응답 계약입니다.
+
+별도의 active catalog 전체 감사에서는 13,282/13,282개 능력단위 모두 지식·기술·태도
+3종을 반환했고, 1종당 1개씩 선택한 39,846/39,846행 모두 수행준거와 configured client
+contract marker를 가졌습니다. 이 결과도 catalog·13,282개 코드 집합·client·감사 스크립트
+해시에 결박되지만, 현재 MCP 계약이 upstream DB 식별자나 버전을 노출하지 않으므로 해당
+DB 자체의 독립 provenance 인증으로 해석하지 않습니다.
+
+현재 좌표 회귀는 세분류·능력단위 2,197/2,197건의 논리 좌표 형상과 `raw_cell_text`의
+실제 `value_cell` 연결이 모두 유효합니다. 그중 Kordoc이 직접 준 표 좌표는 1,491건
+(67.87%)이며, 나머지 706건은 코드 앵커 Kordoc 블록과 HTML/Markdown 논리 표 복구
+좌표로 분리됩니다. 최종 고유
+능력단위명과 직접·복구 논리 좌표 전체의 문서 내 정확 이름 연결 진단 87.55%는
+목록·중복·표 밖 항목을 분모에서 제거하지 않은 비재현율 진단값이며, 직접 표 좌표
+연결률이나 추출 recall로 해석하지 않습니다.
+
+### NCS 현재 공고 실전 진단
+
+NCS 채용공고 목록·상세·첨부를 현재 사이트에서 읽어 실제 배포 API와 같은 경로로
+검사할 수 있습니다. 결과에는 파일명·공고명·원문·예측값을 남기지 않고 비공개 HMAC
+식별자와 집계만 기록합니다. 공고 상세 API가 선언한 세분류 합집합을 분모로 삼은 값은
+공고 단위 진단이며, 개별 첨부가 그 모든 세분류를 반드시 포함한다는 골드 정답은
+아닙니다. 첨부별 일치율은 정확도 근거가 아닌 진단으로만 표시합니다.
+아래 `KSA probe 가용 x/x`는 공고별 능력단위 코드 조회(중복 포함)에서 코드당 최대
+1개 KSA 요소를 요청해 1행 이상 반환된 횟수입니다. 고유 능력단위 수, K/S/A 세 유형
+전체, 또는 전체 KSA 원문 행 완전성을 뜻하지 않습니다.
+
+```powershell
+$env:NCS_RECRUITMENT_LIVE_DIGEST_KEY='<32바이트 이상의 비공개 임시키>'
+$env:NCS_MCP_URL='http://127.0.0.1:8766/mcp'
+python scripts/benchmark_ncs_recruitment_live.py `
+  --max-postings 20 `
+  --page-limit 8
+
+# 같은 시점의 상위 20개를 건너뛴 비중복 검증 창
+python scripts/benchmark_ncs_recruitment_live.py `
+  --max-postings 20 `
+  --skip-postings 20 `
+  --page-limit 8
+```
+
+2026-08-25(KST) 현재 20개 공고·52개 직무기술서 실전 진단은 처리 실패 0건, 공고 선언
+합집합 기준 세분류 P 98.17/R 82.31, 공고 완전일치 60%(12/20)입니다. 이 수치는 같은
+실전 표본에서 발견한 장식 규칙을 반영한 튜닝 확인값이므로 독립 홀드아웃 성능으로
+주장하지 않습니다. 좌표 형상은 418/418, 최종 고유 능력단위의 논리 좌표 정확 이름
+연결 진단은 272/308(88.31%), KSA probe 가용은 1,278/1,278입니다.
+
+같은 날 기존 20개를 건너뛴 비중복 20개 공고·68개 직무기술서는 처리 실패 0건,
+공고 선언 합집합 기준 P 95.15/R 93.33, 완전일치 65%(13/20), 좌표 형상
+293/293, KSA probe 가용 1,187/1,187이었습니다. 기존 튜닝 표본과 공고 ID는 겹치지 않지만
+같은 게시판의 인접 날짜를 순서대로 고른 표본이므로, 시기·기관 분포까지 독립인
+통계 표본으로 과장하지 않습니다.
+
+상위 40개를 건너뛴 또 다른 비중복 20개 공고·54개 직무기술서도 처리 실패 0건,
+P 95.77/R 91.28, 완전일치 55%(11/20), 좌표 형상 680/680, KSA probe 가용
+1,623/1,623이었습니다. 두 비중복 창 40개를 합치면 TP 234/FP 11/FN 20,
+P 95.51/R 92.13, 완전일치 60%(24/40)입니다.
+
+상위 60개를 건너뛴 세 번째 비중복 20개 공고·23개 직무기술서는 P 97.83/R 88.24,
+완전일치 70%(14/20), 좌표 형상 95/95, KSA probe 가용 644/644였습니다. 튜닝에 사용하지
+않은 세 창 60개를 합치면 TP 279/FP 12/FN 26, P 95.88/R 91.48, 완전일치
+63.33%(38/60)입니다. 실전 명령은 기본적으로 P 90/R 80/완전일치 50, 좌표 형상
+100, KSA 100을 모두 요구하며 미달하면 종료 코드 1을 반환합니다.
+
+세 비중복 창의 완전일치 실패 22건을 사후 분류하면 공고 API의 세분류 합집합과 개별
+직무기술서 범위가 다른 사례 12건, 문서가 공고 API보다 더 많은 값을 명시한 사례 3건,
+파서·정규화 누락 가능성이 높은 사례 4건, 공식 매핑 모호성 2건, 빈 세분류 1건입니다.
+이 분류는 성능을 다시 계산하는 정답 보정이 아니라 오류 원인을 분리한 진단입니다. 해당
+60개에 맞춘 기관·세분류 예외나 임계값 튜닝은 하지 않으며, 공고 합집합 정확도와 개별
+문서 추출 정확도를 별도 지표로 유지합니다.
+
+같은 고정 로직으로 상위 80개를 건너뛴 네 번째 비중복 20개 공고·35개 직무기술서를
+추가 검증한 결과도 처리 실패 0건, P 97.30/R 93.51, 완전일치 65%(13/20), 좌표 형상
+211/211, KSA probe 가용 1,032/1,032로 게이트를 통과했습니다. 네 창 80개를 합치면
+TP 351/FP 14/FN 31, P 96.16/R 91.88, 완전일치 63.75%(51/80)입니다. 이 네 창은
+서로 공고 ID가 겹치지 않지만 같은 게시판과 인접 시기에서 순서로 선택했으므로 완전한
+통계적 독립 표본으로 주장하지 않습니다.
+
+상위 100개를 건너뛴 다섯 번째 비중복 20개 공고·33개 직무기술서도 처리 실패 0건,
+P 95.12/R 86.67, 완전일치 70%(14/20), 좌표 형상 477/477, KSA probe 가용
+1,010/1,010으로 통과했습니다. 다섯 창 전체는 100개 공고·213개 문서, TP 429/FP
+18/FN 43, P 95.97/R 90.89, 완전일치 65%(65/100), 좌표 형상
+1,756/1,756, KSA probe 가용 5,496/5,496입니다. 이 합계 역시 같은 게시판·인접 시기의
+순차 비중복 검증이며 기관·시기 분포까지 독립인 무작위 표본은 아닙니다.
+완전일치 실패 35건의 진단 분류는 공고 합집합과 문서 범위 불일치 16건, 파서·정규화
+누락 가능성 9건, 문서에는 있으나 공고 합집합에 없는 값 5건, 공식 매핑 모호성 2건,
+빈 값·매핑 없음 3건입니다. 따라서 공고 단위 완전일치 실패 전체를 파서 실패율로
+해석하지 않습니다.
+
+새 set-relation 진단을 켠 뒤 상위 120개를 건너뛴 여섯 번째 비중복 20개 공고·37개
+직무기술서도 처리 실패 0건, P 100/R 98.48, 완전일치 95%(19/20), 좌표 형상
+92/92, KSA probe 가용 853/853으로 통과했습니다. 불일치 1건은 원인을 단정하지 않는
+`source_union_superset_possible`로 기록됐습니다. 여섯 창 전체는 120개 공고·250개
+문서, TP 494/FP 18/FN 44, P 96.48/R 91.82, 완전일치 70%(84/120), 좌표 형상
+1,848/1,848, KSA probe 가용 6,349/6,349입니다.
+
+문서 상태 집계까지 켠 현재 게시판 정렬 141~160번째(상위 140개를 건너뜀) 일곱 번째
+비중복 20개 공고·44개 직무기술서도
+P 96.81/R 88.35, 완전일치 60%(12/20), 좌표 형상 221/221, KSA probe 가용
+1,190/1,190으로 통과했습니다. 불일치 8건은 합집합 우세 가능 5건, 문서 extra 2건,
+교차 불일치 검토 1건으로 분리됐고 문서 상태 44건은 공식 exact 42건, 공식 매핑 모호
+1건, NCS 표만 감지 1건으로 합계가 일치합니다. 정렬 1~20번째 튜닝 표본은 이 누적에서
+제외하므로 일곱 비중복 창(21~160번째) 전체는 140개 공고·294개 문서,
+TP 585/FP 21/FN 56, P 96.53/R 91.26, 완전일치 68.57%(96/140), 좌표 형상
+2,069/2,069, KSA probe 가용 7,539/7,539입니다.
+
+같은 시점에 상위 160개를 건너뛴 다음 창은 공고 0건을 반환해, 감사 경로로 조회 가능한
+현재 게시판 160개를 모두 소진했음을 확인했습니다. 튜닝에 사용한 정렬 1~20번째까지
+단순 합산한 전체 게시판 관측값은 160개 공고·346개 문서, TP 692/FP 23/FN 79,
+P 96.78/R 89.75, 완전일치 67.50%(108/160), 좌표 형상 2,487/2,487,
+KSA probe 가용 8,817/8,817입니다. 이 합계는 첫 20개 튜닝 표본을 포함하고 같은 날의
+순차 게시판 전수 관측이므로 독립 홀드아웃이나 장기 성능 추정치로 사용하지 않습니다.
+
+로컬/운영 동일성은 문서명과 본문을 보고서에 남기지 않는 HMAC 계약으로 검사합니다.
+원격 문서 업로드가 발생하므로 공개 문서 처리 승인을 확인한 뒤에만 명시적 플래그를
+사용합니다.
+
+```powershell
+$env:NCSCOPE_PARITY_DIGEST_KEY='<32바이트 이상의 비공개 임시키>'
+python scripts/verify_stored_jd_local_vercel_parity.py `
+  --allow-remote-document-upload
+```
+
+### Vercel 릴리스 안전 규칙
+
+`scripts/prepare_vercel_build_sandbox.py`는 추적 파일이 수정·staged 된 상태를 거부하고,
+필수 런타임 서비스와 두 경량 NCS 카탈로그가 Git 스냅샷에 포함됐는지 검사합니다.
+Windows에서 만든 `.vercel/output`에는 `sharp` 같은 네이티브 Node 의존성이 Windows용으로
+묶일 수 있으므로 운영에는 `vercel deploy --prebuilt`를 사용하지 않습니다. 커밋 뒤 깨끗한
+샌드박스에서 `vercel deploy --prod --force --yes`로 Vercel의 Linux 원격 소스 빌드를
+실행하고, 실제 Kordoc 문서 smoke와 206개 로컬/운영 동일성 검사를 통과한 배포만 유지합니다.
 
 ## API 실패 계약
 
@@ -144,6 +414,7 @@ ALIO 첨부 메타데이터 조회는 `POST /api/alio/attachments`를 사용합�
 |---|---|---|
 | 400 | `openai_api_key_required` | 요청 단위 OpenAI 키 없음 |
 | 401 | `openai_api_authentication_failed` | 입력 키 인증 실패 |
+| 422 | `ncs_required_ability_unit_mismatch` | 검토한 요구능력단위가 확정 세분류의 공식 능력단위와 정확히 일치하지 않음 |
 | 429 | `openai_api_usage_limit_reached` | OpenAI 사용량 또는 요청 한도 |
 | 502 | `openai_api_quality_rejected` | 재생성 뒤에도 독립 품질검수 실패 |
 | 503 | `openai_api_unreachable` | 네트워크 연결 실패 |

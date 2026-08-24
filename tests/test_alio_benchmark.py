@@ -252,6 +252,49 @@ def test_benchmark_zip_image_member_uses_kordoc_ocr(monkeypatch: pytest.MonkeyPa
     assert calls == [("직무기술서.jpg", True)]
 
 
+def test_benchmark_document_can_enable_pdf_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def fake_parse_with_kordoc(data: bytes, filename: str, ocr: bool) -> dict:
+        calls.append((filename, ocr))
+        return {"markdown": "세분류: 한식조리"}
+
+    monkeypatch.setattr(benchmark_alio_jd, "parse_with_kordoc", fake_parse_with_kordoc)
+
+    parsed = parse_benchmark_document(
+        b"fake pdf bytes",
+        filename="직무기술서.pdf",
+        max_bytes=1024 * 1024,
+        ocr=True,
+    )
+
+    assert parsed["markdown"] == "세분류: 한식조리"
+    assert calls == [("직무기술서.pdf", True)]
+
+
+def test_benchmark_zip_pdf_member_inherits_explicit_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def fake_parse_with_kordoc(data: bytes, filename: str, ocr: bool) -> dict:
+        calls.append((filename, ocr))
+        return {"markdown": "세분류: 한식조리"}
+
+    monkeypatch.setattr(benchmark_alio_jd, "parse_with_kordoc", fake_parse_with_kordoc)
+    data = _zip_bytes({"직무기술서.pdf": "fake pdf bytes"})
+
+    parsed = parse_benchmark_document(
+        data,
+        filename="alio.zip",
+        max_bytes=1024 * 1024,
+        ocr=True,
+    )
+
+    assert "ZIP member: 직무기술서.pdf" in parsed["markdown"]
+    assert calls == [("직무기술서.pdf", True)]
+
+
 def test_detail_member_map_tracks_zip_member_sources() -> None:
     data = _zip_bytes(
         {
