@@ -42,31 +42,36 @@ const headerText = (req, name) => {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
 };
 
-const hasValidSignature = (req, bytes) => {
+const validateSignature = (req, bytes) => {
   try {
     const timestampText = headerText(req, "x-ncscope-kordoc-timestamp");
     const signatureText = headerText(req, "x-ncscope-kordoc-signature");
     const encodedFilename = headerText(req, "x-ncscope-filename-b64");
     const ocrFlag = headerText(req, "x-ncscope-ocr") === "1" ? "1" : "0";
-    if (!/^\d{10}$/.test(timestampText)) return false;
-    if (!/^[A-Za-z0-9_-]{86}$/.test(signatureText)) return false;
-    if (!/^[A-Za-z0-9_-]{0,1024}$/.test(encodedFilename)) return false;
+    if (!/^\d{10}$/.test(timestampText)) return { valid: false, reason: "timestamp_format" };
+    if (!/^[A-Za-z0-9_-]{86}$/.test(signatureText)) {
+      return { valid: false, reason: "signature_format" };
+    }
+    if (!/^[A-Za-z0-9_-]{0,1024}$/.test(encodedFilename)) {
+      return { valid: false, reason: "filename_format" };
+    }
     const timestamp = Number(timestampText);
     const now = Math.floor(Date.now() / 1000);
     if (!Number.isSafeInteger(timestamp) || Math.abs(now - timestamp) > SIGNATURE_TTL_SECONDS) {
-      return false;
+      return { valid: false, reason: "timestamp_expired" };
     }
     const bodySha256 = crypto.createHash("sha256").update(bytes).digest("hex");
     const message = [timestampText, bodySha256, encodedFilename, ocrFlag].join("\n");
     const signature = Buffer.from(signatureText, "base64url");
-    return signature.length === 64 && crypto.verify(
+    const valid = signature.length === 64 && crypto.verify(
       null,
       Buffer.from(message, "ascii"),
       ED25519_PUBLIC_KEY,
       signature,
     );
+    return { valid, reason: valid ? "passed" : "signature_mismatch" };
   } catch {
-    return false;
+    return { valid: false, reason: "verification_error" };
   }
 };
 
@@ -151,7 +156,11 @@ export default async function handler(req, res) {
     if (bytes.length > MAX_UPLOAD_BYTES) {
       return sendJson(res, 413, { success: false, code: "upload_too_large" });
     }
-    if (!hasValidSharedSecret && !hasValidSignature(req, bytes)) {
+    const signatureReview = validateSignature(req, bytes);
+    if (!hasValidSharedSecret && !signatureReview.valid) {
+      if (headerText(req, "x-ncscope-kordoc-signature")) {
+        console.warn("kordoc_bridge_signed_request_rejected", { reason: signatureReview.reason });
+      }
       return sendJson(res, 401, { success: false, code: "unauthorized" });
     }
 

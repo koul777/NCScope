@@ -27,7 +27,8 @@ def test_vercel_fastapi_entrypoint_and_duration_are_production_safe() -> None:
     assert "normalizeSecret" in bridge_source
     assert "\\uFEFF" in bridge_source
     assert "ED25519_PUBLIC_KEY_RAW" in bridge_source
-    assert "hasValidSignature" in bridge_source
+    assert "validateSignature" in bridge_source
+    assert "kordoc_bridge_signed_request_rejected" in bridge_source
     assert "SIGNATURE_TTL_SECONDS = 120" in bridge_source
     assert "MAX_UPLOAD_BYTES = 4 * 1024 * 1024" in bridge_source
     assert "MAX_RESPONSE_BYTES = 4 * 1024 * 1024" in bridge_source
