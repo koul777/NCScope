@@ -1551,7 +1551,7 @@ def _parse_with_remote_kordoc(
     }
     if signature_headers:
         headers.update(signature_headers)
-    if bridge_secret:
+    elif bridge_secret:
         headers["x-ncscope-kordoc-secret"] = bridge_secret
     try:
         with httpx.Client(
@@ -1567,6 +1567,13 @@ def _parse_with_remote_kordoc(
 
     if response.status_code != 200:
         rejection = str(response.headers.get("x-ncscope-bridge-rejection") or "")
+        if not rejection:
+            try:
+                rejection_payload = response.json()
+            except (TypeError, ValueError):
+                rejection_payload = {}
+            if isinstance(rejection_payload, dict):
+                rejection = str(rejection_payload.get("reason_code") or "")
         safe_rejection = rejection if re.fullmatch(r"[a-z_]{1,40}", rejection) else "unspecified"
         logger.warning(
             "kordoc_bridge_rejected status=%s auth_mode=%s reason=%s",

@@ -108,7 +108,7 @@ def test_vercel_bridge_signs_each_request_with_ed25519(
     kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
 
     headers = calls[-1]["headers"]
-    assert headers["x-ncscope-kordoc-secret"] == "different-dedicated-key"
+    assert "x-ncscope-kordoc-secret" not in headers
     message = "\n".join(
         (
             headers["x-ncscope-kordoc-timestamp"],

@@ -162,7 +162,11 @@ export default async function handler(req, res) {
       if (headerText(req, "x-ncscope-kordoc-signature")) {
         console.warn("kordoc_bridge_signed_request_rejected", { reason: signatureReview.reason });
       }
-      return sendJson(res, 401, { success: false, code: "unauthorized" });
+      return sendJson(res, 401, {
+        success: false,
+        code: "unauthorized",
+        reason_code: signatureReview.reason,
+      });
     }
 
     const parse = await getKordocParse();
