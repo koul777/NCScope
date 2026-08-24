@@ -18,11 +18,14 @@ const sendJson = (res, status, payload) => {
   res.end(JSON.stringify(payload));
 };
 
+const normalizeSecret = (value) => String(value || "").trim().replace(/^\uFEFF+/, "").trim();
+
 const sameSecret = (provided, expected) => {
-  const providedText = String(provided || "");
+  const providedText = normalizeSecret(provided);
+  const expectedText = normalizeSecret(expected);
   if (!providedText) return false;
   const left = crypto.createHash("sha256").update(providedText, "utf8").digest();
-  const right = crypto.createHash("sha256").update(String(expected || ""), "utf8").digest();
+  const right = crypto.createHash("sha256").update(expectedText, "utf8").digest();
   return crypto.timingSafeEqual(left, right);
 };
 
@@ -88,7 +91,7 @@ export default async function handler(req, res) {
     return sendJson(res, 405, { success: false, code: "method_not_allowed" });
   }
 
-  const expectedSecret = String(process.env.KORDOC_BRIDGE_SECRET || "");
+  const expectedSecret = normalizeSecret(process.env.KORDOC_BRIDGE_SECRET);
   if (!expectedSecret) {
     return sendJson(res, 503, { success: false, code: "bridge_not_configured" });
   }
