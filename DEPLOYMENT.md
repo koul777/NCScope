@@ -143,15 +143,19 @@ AI_QUALITY_REVIEW_TIMEOUT_SEC=70
 Vercel에서는 Python 함수가 같은 배포의 `/api/kordoc-parse` Node 함수에 원문
 바이트를 전달해 Kordoc 4.9.1을 자체 실행합니다. 외부 문서 변환 API는 사용하지
 않고 `KORDOC_OFFLINE=1`로 외부 OCR·모델 다운로드를 차단합니다. 두 함수 사이의
-호출은 저장소에 기록하지 않은 동일한 공유 비밀로 인증해야 합니다.
+호출은 Python 함수만 보유한 Ed25519 개인키로 본문 해시·파일명·OCR 플래그·시각을
+서명하고, Node 함수가 저장소에 고정한 공개키로 120초 안에 검증합니다.
 
 ```powershell
-vercel env add KORDOC_BRIDGE_SECRET production
-vercel env add KORDOC_BRIDGE_SECRET preview
+vercel env add KORDOC_BRIDGE_ED25519_PRIVATE_KEY production
+vercel env add KORDOC_BRIDGE_ED25519_PRIVATE_KEY preview
 ```
 
-각 환경에는 충분히 긴 서로 다른 무작위 값을 대화형 입력으로 등록합니다. 값을
-`vercel.json`, README, 로그, 셸 명령 인자에 넣지 마십시오. 명시적인
+값은 패딩을 제거한 base64url 형식의 Ed25519 32바이트 개인키이며, 저장소의
+`ED25519_PUBLIC_KEY_RAW`와 한 쌍이어야 합니다. 개인키를 `vercel.json`, README,
+로그, 셸 명령 인자에 넣지 마십시오. 키 교체 시 공개키 코드와 Production·Preview
+개인키를 함께 교체하고 강제 재빌드한 뒤 실제 PDF canary를 실행합니다. 선택적
+`KORDOC_BRIDGE_SECRET`은 로컬·전환 fallback에만 사용합니다. 명시적인
 `KORDOC_BRIDGE_URL`이 없으면 Vercel의 `VERCEL_URL`에서 같은 배포 주소를 구성합니다.
 요청·응답은 Vercel 4.5MB 제한보다 작은 4MiB에서 먼저 차단하고, 실제 Kordoc 성공만
 `parser=kordoc`, `parser_version=4.9.1`로 기록합니다. Kordoc이 불가능해 PDF/HWP

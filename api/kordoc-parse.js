@@ -9,7 +9,14 @@ const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 // platform never replaces our controlled error with a generic 500 response.
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const KORDOC_VERSION = "4.9.1";
-const BRIDGE_KEY_CONTEXT = "ncscope:kordoc-bridge:v1";
+const SIGNATURE_TTL_SECONDS = 120;
+const ED25519_PUBLIC_KEY_RAW = "tbBF-dGBMdncj9AkHph9pD4pUaeFevCUOGjyNDCgWIc";
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+const ED25519_PUBLIC_KEY = crypto.createPublicKey({
+  key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(ED25519_PUBLIC_KEY_RAW, "base64url")]),
+  format: "der",
+  type: "spki",
+});
 let parsePromise;
 
 const sendJson = (res, status, payload) => {
@@ -21,15 +28,6 @@ const sendJson = (res, status, payload) => {
 
 const normalizeSecret = (value) => String(value || "").trim().replace(/^\uFEFF+/, "").trim();
 
-const derivedBridgeSecret = () => {
-  const reviewSigningKey = String(process.env.REVIEW_SESSION_SIGNING_KEY || "");
-  if (!reviewSigningKey.trim()) return "";
-  return crypto
-    .createHmac("sha256", Buffer.from(reviewSigningKey, "utf8"))
-    .update(BRIDGE_KEY_CONTEXT, "utf8")
-    .digest("base64url");
-};
-
 const sameSecret = (provided, expected) => {
   const providedText = normalizeSecret(provided);
   const expectedText = normalizeSecret(expected);
@@ -37,6 +35,39 @@ const sameSecret = (provided, expected) => {
   const left = crypto.createHash("sha256").update(providedText, "utf8").digest();
   const right = crypto.createHash("sha256").update(expectedText, "utf8").digest();
   return crypto.timingSafeEqual(left, right);
+};
+
+const headerText = (req, name) => {
+  const value = req.headers[name];
+  return Array.isArray(value) ? String(value[0] || "") : String(value || "");
+};
+
+const hasValidSignature = (req, bytes) => {
+  try {
+    const timestampText = headerText(req, "x-ncscope-kordoc-timestamp");
+    const signatureText = headerText(req, "x-ncscope-kordoc-signature");
+    const encodedFilename = headerText(req, "x-ncscope-filename-b64");
+    const ocrFlag = headerText(req, "x-ncscope-ocr") === "1" ? "1" : "0";
+    if (!/^\d{10}$/.test(timestampText)) return false;
+    if (!/^[A-Za-z0-9_-]{86}$/.test(signatureText)) return false;
+    if (!/^[A-Za-z0-9_-]{0,1024}$/.test(encodedFilename)) return false;
+    const timestamp = Number(timestampText);
+    const now = Math.floor(Date.now() / 1000);
+    if (!Number.isSafeInteger(timestamp) || Math.abs(now - timestamp) > SIGNATURE_TTL_SECONDS) {
+      return false;
+    }
+    const bodySha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+    const message = [timestampText, bodySha256, encodedFilename, ocrFlag].join("\n");
+    const signature = Buffer.from(signatureText, "base64url");
+    return signature.length === 64 && crypto.verify(
+      null,
+      Buffer.from(message, "ascii"),
+      ED25519_PUBLIC_KEY,
+      signature,
+    );
+  } catch {
+    return false;
+  }
 };
 
 const readBody = async (req) => {
@@ -101,16 +132,11 @@ export default async function handler(req, res) {
     return sendJson(res, 405, { success: false, code: "method_not_allowed" });
   }
 
-  const expectedSecrets = [
-    derivedBridgeSecret(),
-    normalizeSecret(process.env.KORDOC_BRIDGE_SECRET),
-  ].filter(Boolean);
-  if (!expectedSecrets.length) {
-    return sendJson(res, 503, { success: false, code: "bridge_not_configured" });
-  }
-  if (!expectedSecrets.some((secret) => sameSecret(req.headers["x-ncscope-kordoc-secret"], secret))) {
-    return sendJson(res, 401, { success: false, code: "unauthorized" });
-  }
+  const expectedSecret = normalizeSecret(process.env.KORDOC_BRIDGE_SECRET);
+  const hasValidSharedSecret = Boolean(expectedSecret) && sameSecret(
+    req.headers["x-ncscope-kordoc-secret"],
+    expectedSecret,
+  );
 
   const contentType = String(req.headers["content-type"] || "").toLowerCase();
   if (!contentType.startsWith("application/octet-stream")) {
@@ -124,6 +150,9 @@ export default async function handler(req, res) {
     }
     if (bytes.length > MAX_UPLOAD_BYTES) {
       return sendJson(res, 413, { success: false, code: "upload_too_large" });
+    }
+    if (!hasValidSharedSecret && !hasValidSignature(req, bytes)) {
+      return sendJson(res, 401, { success: false, code: "unauthorized" });
     }
 
     const parse = await getKordocParse();

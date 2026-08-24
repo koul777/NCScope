@@ -25,6 +25,8 @@ def test_readme_matches_openai_byok_and_ai_review_contract() -> None:
     assert "template_fallback" in readme
     assert "질문을 반환하지 않습니다" in readme
     assert "OpenRouter, 서버 공용키" in readme
+    assert "KORDOC_BRIDGE_ED25519_PRIVATE_KEY" in readme
+    assert "120초 유효 요청 서명" in readme
 
 
 def test_deployment_profile_values_are_synchronized_with_vercel_config() -> None:
@@ -66,6 +68,9 @@ def test_deployment_profile_values_are_synchronized_with_vercel_config() -> None
         assert f"{key}={environment[key]}" in deployment
 
     assert not any(key.startswith("OPENROUTER_") for key in environment)
+    assert "KORDOC_BRIDGE_ED25519_PRIVATE_KEY" in deployment
+    assert "ED25519_PUBLIC_KEY_RAW" in deployment
+    assert "KORDOC_BRIDGE_ED25519_PRIVATE_KEY" not in environment
 
 
 def test_security_doc_forbids_secret_persistence_and_provider_fallback() -> None:
@@ -78,3 +83,4 @@ def test_security_doc_forbids_secret_persistence_and_provider_fallback() -> None
     assert "https://api.openai.com/v1" in security
     assert "제3자 OpenAI 호환 endpoint" in security
     assert "질문 원문, API 키, provider 예외 문자열" in security
+    assert "Ed25519 개인키" in security

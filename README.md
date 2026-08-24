@@ -122,7 +122,9 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8015
 로컬은 Node/Kordoc을 직접 실행하고, Vercel은 같은 NCScope 배포의 인증된 비공개
 Node 함수에서 Kordoc 4.9.1을 자체 실행합니다. 문서를 외부 변환 API로 보내지 않으며
 `KORDOC_OFFLINE=1`로 외부 OCR·모델 다운로드를 막습니다. 운영 환경에는 저장소에
-기록하지 않은 `KORDOC_BRIDGE_SECRET`을 설정해야 합니다. Kordoc 실행이 불가능해
+기록하지 않은 `KORDOC_BRIDGE_ED25519_PRIVATE_KEY`를 설정하며, Node 함수는 저장소에
+고정한 공개키로 120초 유효 요청 서명을 검증합니다. 공유 비밀은 로컬·전환용
+fallback으로만 지원합니다. Kordoc 실행이 불가능해
 대체 파서를 사용한 경우 응답과 화면에 실제 파서명을 표시하며, 표 좌표가 사라진
 분류표는 대분류·중분류를 제거한 뒤 공식 NCS MCP exact 결과만 세분류 후보로 확정합니다.
 
