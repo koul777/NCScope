@@ -52,6 +52,7 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["MAX_UPLOAD_MB"] == "4"
     assert environment["MAX_REQUEST_BODY_MB"] == "4"
     assert environment["KORDOC_OFFLINE"] == "1"
+    assert environment["KORDOC_BRIDGE_URL"] == "https://ncscope.vercel.app/api/kordoc-parse"
     assert environment["OPENAI_STRATEGY_CANDIDATE_MULTIPLIER"] == "1"
     assert environment["OPENAI_QUESTION_CANDIDATE_MULTIPLIER"] == "1"
     assert environment["OPENAI_QUESTION_VARIANT_ATTEMPTS"] == "1"

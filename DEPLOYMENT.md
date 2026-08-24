@@ -156,7 +156,10 @@ vercel env add KORDOC_BRIDGE_ED25519_PRIVATE_KEY preview
 로그, 셸 명령 인자에 넣지 마십시오. 키 교체 시 공개키 코드와 Production·Preview
 개인키를 함께 교체하고 강제 재빌드한 뒤 실제 PDF canary를 실행합니다. 선택적
 `KORDOC_BRIDGE_SECRET`은 로컬·전환 fallback에만 사용합니다. 명시적인
-`KORDOC_BRIDGE_URL`이 없으면 Vercel의 `VERCEL_URL`에서 같은 배포 주소를 구성합니다.
+Production·Preview는 `KORDOC_BRIDGE_URL=https://ncscope.vercel.app/api/kordoc-parse`를
+사용합니다. 배포별 `VERCEL_URL`은 Standard Protection이 적용될 수 있으므로 함수 간
+호출 주소로 사용하지 않습니다. 로컬에서 명시값이 없을 때만 `VERCEL_URL` 구성을
+호환 fallback으로 사용합니다.
 요청·응답은 Vercel 4.5MB 제한보다 작은 4MiB에서 먼저 차단하고, 실제 Kordoc 성공만
 `parser=kordoc`, `parser_version=4.9.1`로 기록합니다. Kordoc이 불가능해 PDF/HWP
 텍스트 복구를 사용하면 실제 대체 파서명을 응답과 화면에 표시합니다. ZIP은 구성원별

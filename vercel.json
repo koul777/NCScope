@@ -18,6 +18,7 @@
     "MAX_UPLOAD_MB": "4",
     "MAX_REQUEST_BODY_MB": "4",
     "KORDOC_OFFLINE": "1",
+    "KORDOC_BRIDGE_URL": "https://ncscope.vercel.app/api/kordoc-parse",
     "PDF_SCLASS_MAX_PAGES": "24",
     "NCS_MCP_TIMEOUT_SEC": "5",
     "NCS_MCP_KSA_CONCURRENCY": "4",
