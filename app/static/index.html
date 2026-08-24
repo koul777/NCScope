@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NCScope v1.4.5</title>
+  <title>NCScope v1.4.6</title>
   <style>
     :root {
       --bg:#f3f7fb;
@@ -230,7 +230,7 @@
           <div class="build-tag">Original interface · Local document parsing · Human Review · NCS MCP evidence</div>
         </div>
         <div class="hero-badges">
-          <span class="badge">v1.4.5</span>
+          <span class="badge">v1.4.6</span>
           <span class="badge">비공식 보조도구</span>
           <span class="badge">세분류 검토 필수</span>
           <span class="badge">KSA 근거 추적</span>
@@ -290,7 +290,7 @@
             <span id="generationProviderBadge" class="provider-status-pill" role="status" aria-live="polite">확인 중</span>
           </div>
           <p id="generationProviderMessage" class="provider-message">요청 단위 OpenAI API 키 사용 상태를 확인하고 있습니다.</p>
-          <div id="generationProviderModelNote" class="provider-model-note" role="status" aria-live="polite">OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성</div>
+          <div id="generationProviderModelNote" class="provider-model-note" role="status" aria-live="polite">OpenAI · NCS MCP 확정·로컬 정렬 → Terra 작성 → Sol 검수·재생성</div>
           <div class="provider-key-field">
             <label id="generationApiKeyLabel" for="generationApiKey">OpenAI API 키 (필수)</label>
             <div class="provider-key-row">
@@ -569,7 +569,7 @@
             <div id="ksaEmpty" class="empty">KSA 데이터가 없습니다.</div>
           </div>
 
-          <details>
+          <details id="rawJsonDetails">
             <summary>원본 JSON</summary>
             <pre id="raw"></pre>
           </details>
@@ -586,6 +586,7 @@
     const ncsSelect = document.getElementById('ncsSelect');
     const selectedCount = document.getElementById('selectedCount');
     const raw = document.getElementById('raw');
+    const rawJsonDetails = document.getElementById('rawJsonDetails');
     const errorBox = document.getElementById('errorBox');
     const progressWrap = document.getElementById('progressWrap');
     const progressStage = document.getElementById('progressStage');
@@ -899,7 +900,7 @@
       errorBox.style.display = 'block';
       errorBox.textContent = issue.message;
       errorBox.focus();
-      raw.textContent = issue.message;
+      showRawText(issue.message);
       if (issue.target && typeof issue.target.focus === 'function') {
         issue.target.focus({ preventScroll: true });
       }
@@ -925,13 +926,13 @@
       openai_api: Object.freeze({
         label: 'OpenAI API · 요청 단위 키',
         shortLabel: 'OpenAI API',
-        modelNote: 'OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성',
+        modelNote: 'OpenAI · NCS MCP 확정·로컬 정렬 → Terra 작성 → Sol 검수·재생성',
       }),
     });
     const AUTO_PROVIDER_CONFIG = Object.freeze({
       label: 'OpenAI API · 요청 단위 키',
       shortLabel: 'OpenAI API',
-      modelNote: 'OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성',
+      modelNote: 'OpenAI · NCS MCP 확정·로컬 정렬 → Terra 작성 → Sol 검수·재생성',
     });
     const GENERATION_PROVIDER_LABELS = {
       openai_api: GENERATION_PROVIDER_CONFIGS.openai_api.label,
@@ -1759,7 +1760,7 @@
       runHint.textContent = '문서 파서가 직무기술서에서 세분류 후보와 검토 텍스트를 추출하고 있습니다.';
       setReviewedNcsDetailOptions([]);
       errorBox.style.display = 'none';
-      raw.textContent = `직무기술서 파싱 시작: ${file.name}`;
+      showRawText(`직무기술서 파싱 시작: ${file.name}`);
       startProgress(PARSE_PROGRESS_STEPS, {
         label: '문서 파싱 진행 중',
         note: 'PDF/HWP/HWPX/DOCX 문서는 표와 OCR 처리 때문에 시간이 걸릴 수 있습니다.',
@@ -1790,7 +1791,7 @@
         btnConfirmReview.disabled = false;
         btnConfirmReview.textContent = '추출 결과 검토·확정';
         btnConfirmReview.style.background = '#0f766e';
-        raw.textContent = JSON.stringify({
+        showRawText(JSON.stringify({
           status: '직무기술서 파싱 완료',
           filename: data.filename || file.name,
           ncs_detail_candidates: fields.ncs_detail_candidates || [],
@@ -1798,7 +1799,7 @@
           qualifications_count: (fields.qualifications || []).length,
           preferences_count: (fields.preferences || []).length,
           review_session_id: data.review_session_id || '',
-        }, null, 2);
+        }, null, 2));
         stopProgress('파싱 완료', '자동 추출 결과를 검토하고 세분류를 확정하세요.');
         updateWorkflowMenu();
       } catch (e) {
@@ -1807,7 +1808,7 @@
         jdReviewStatus.textContent = '자동 파싱 실패 · 파일 형식과 내용을 확인하세요';
         errorBox.style.display = 'block';
         errorBox.textContent = `직무기술서 파싱 오류: ${msg}`;
-        raw.textContent = `직무기술서 파싱 오류: ${msg}`;
+        showRawText(`직무기술서 파싱 오류: ${msg}`);
         stopProgress('파싱 실패', '오류 내용을 확인한 뒤 파일을 다시 선택하거나 텍스트를 직접 입력하세요.');
         console.warn('직무기술서 검토 파싱 실패:', e);
         updateWorkflowMenu();
@@ -1833,7 +1834,7 @@
       setNoticeConfirmButtons('공고문 분석 중...', '#64748b', true);
       if (noticeApplyHint) noticeApplyHint.textContent = '공고문에서 보완 텍스트 후보를 추출하고 있습니다.';
       errorBox.style.display = 'none';
-      raw.textContent = `공고문 파싱 시작: ${file.name}`;
+      showRawText(`공고문 파싱 시작: ${file.name}`);
       startProgress(NOTICE_PROGRESS_STEPS, {
         label: '공고문 파싱 진행 중',
         note: '공고문에서 담당업무와 면접 평가항목 후보를 찾고 있습니다.',
@@ -1859,7 +1860,7 @@
         if (noticeApplyHint) {
           noticeApplyHint.textContent = '추출된 공고문 텍스트를 확인·수정한 뒤 적용 버튼을 눌러야 질문 생성에 포함됩니다.';
         }
-        raw.textContent = JSON.stringify({
+        showRawText(JSON.stringify({
           status: '공고문 파싱 완료',
           filename: data.filename || file.name,
           duty_text_chars: (fields.duty_text || '').length,
@@ -1867,7 +1868,7 @@
           preference_text_chars: (fields.preference_text || '').length,
           evaluation_text_chars: (fields.evaluation_text || '').length,
           review_session_id: data.review_session_id || '',
-        }, null, 2);
+        }, null, 2));
         stopProgress('파싱 완료', '공고문 핵심 텍스트를 확인하고 필요하면 수정하세요.');
       } catch (e) {
         noticeReviewPayload = null;
@@ -1875,7 +1876,7 @@
         noticeReviewStatus.textContent = '자동 추출 실패 · 직접 입력 가능';
         errorBox.style.display = 'block';
         errorBox.textContent = `공고문 파싱 오류: ${msg}`;
-        raw.textContent = `공고문 파싱 오류: ${msg}`;
+        showRawText(`공고문 파싱 오류: ${msg}`);
         stopProgress('파싱 실패', '공고문 파일을 다시 선택하거나 핵심 텍스트를 직접 입력해 주세요.');
         console.warn('공고문 검토 파싱 실패:', e);
       } finally {
@@ -2984,6 +2985,41 @@
       return value;
     }
 
+    let pendingRawPayload = null;
+    let pendingRawPayloadPassed = false;
+
+    function showRawText(value) {
+      pendingRawPayload = null;
+      pendingRawPayloadPassed = false;
+      raw.textContent = String(value ?? '');
+    }
+
+    function materializeRawPayload() {
+      if (pendingRawPayload === null) return;
+      const value = pendingRawPayloadPassed
+        ? releasedPayloadForDisplay(pendingRawPayload)
+        : { status: 'AI 품질검수 미통과', questions: [] };
+      pendingRawPayload = null;
+      pendingRawPayloadPassed = false;
+      raw.textContent = JSON.stringify(value, null, 2);
+    }
+
+    function deferRawPayload(value, aiQualityPassed) {
+      pendingRawPayload = value;
+      pendingRawPayloadPassed = Boolean(aiQualityPassed);
+      if (rawJsonDetails && rawJsonDetails.open) {
+        materializeRawPayload();
+      } else {
+        raw.textContent = '원본 JSON을 열면 안전하게 표시합니다.';
+      }
+    }
+
+    if (rawJsonDetails) {
+      rawJsonDetails.addEventListener('toggle', () => {
+        if (rawJsonDetails.open) materializeRawPayload();
+      });
+    }
+
     function buildGeneratedQuestionsText(items) {
       const rows = Array.isArray(items) ? items.filter(isReleasedAiQuestion) : [];
       if (!rows.length) {
@@ -3325,13 +3361,7 @@
       renderGeneratedQuestionsText(textExportRows);
       renderNcs(data.ncs_matches || []);
       renderKsa(data.ncs_ksa || []);
-      raw.textContent = JSON.stringify(
-        aiQualityPassed
-          ? releasedPayloadForDisplay(data)
-          : { status: 'AI 품질검수 미통과', questions: [] },
-        null,
-        2
-      );
+      deferRawPayload(data, aiQualityPassed);
     }
 
     function populateNcsUnitSelect(items, selected=false) {
@@ -3393,7 +3423,7 @@
       }
       errorBox.style.display = 'block';
       errorBox.focus();
-      raw.textContent = JSON.stringify(payload, null, 2);
+      showRawText(JSON.stringify(payload, null, 2));
       updateWorkflowMenu();
     }
 
@@ -3425,7 +3455,7 @@
       errorBox.textContent = `오류: ${apiErrorMessage(payload, fallback)}${stageHint}${diagnosticsHint ? ` ${diagnosticsHint}` : ''}`;
       errorBox.style.display = 'block';
       errorBox.focus();
-      raw.textContent = JSON.stringify(payload.detail || payload, null, 2);
+      showRawText(JSON.stringify(payload.detail || payload, null, 2));
       updateWorkflowMenu();
     }
 
@@ -3656,7 +3686,7 @@
         errorBox.style.display = 'block';
         errorBox.textContent = `오류: ${msg}`;
         errorBox.focus();
-        raw.textContent = `오류: ${msg}`;
+        showRawText(`오류: ${msg}`);
         stopProgress('실패');
       } finally {
         questionGenerationInFlight = false;
@@ -3732,10 +3762,10 @@
       .then(() => fetch('/health').then(r => r.json()))
       .then((h) => {
         updateWorkflowMenu();
-        raw.textContent = JSON.stringify({ status: '준비완료', health: h, ncs_options: ncsUnitOptions.length }, null, 2);
+        showRawText(JSON.stringify({ status: '준비완료', health: h, ncs_options: ncsUnitOptions.length }, null, 2));
       })
       .catch((e) => {
-        raw.textContent = String(e);
+        showRawText(String(e));
       });
   </script>
 </body>

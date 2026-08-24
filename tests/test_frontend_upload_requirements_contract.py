@@ -144,7 +144,7 @@ def test_successful_generation_exposes_repeat_one_question_action() -> None:
 def test_required_upload_ux_uses_openai_byok_contract() -> None:
     html, script = _page()
     assert "OpenAI API 키 (필수)" in html
-    assert "OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성" in html
+    assert "OpenAI · NCS MCP 확정·로컬 정렬 → Terra 작성 → Sol 검수·재생성" in html
     assert "OpenRouter · Ox Alpha" not in html
     assert "serverEnvApiStatusValid" not in script
     assert "openrouter_api" not in script

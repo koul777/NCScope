@@ -383,6 +383,38 @@ def test_provider_failure_returns_no_questions_and_does_not_expose_keys(
     assert SERVER_KEY not in response.text
 
 
+def test_one_question_fetches_ksa_only_for_its_planned_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetched_units: list[list[str]] = []
+    _patch_generation_pipeline(monkeypatch, lambda **_kwargs: _model_strategy())
+
+    def capture_fetch(**kwargs: Any) -> list[dict[str, str]]:
+        fetched_units.append(
+            [str(row.get("ncsClCd") or "") for row in kwargs["ncs_matches"]]
+        )
+        return [_ksa()]
+
+    monkeypatch.setattr(main, "_fetch_ncs_ksa_or_502", capture_fetch)
+    selected_units = [_unit()]
+    for index in range(2, 6):
+        selected_units.append(
+            {
+                **_unit(),
+                "ncsClCd": f"020101010{index}_22v2",
+                "compeUnitName": f"UNUSED_UNIT_{index}",
+            }
+        )
+    payload = _generation_payload(selected_ncs=selected_units)
+
+    with TestClient(main.app, client=REMOTE_CLIENT) as client:
+        response = client.post("/api/questions/generate-from-text", json=payload)
+
+    assert response.status_code == 200, response.text
+    assert fetched_units == [[_unit()["ncsClCd"]]]
+    assert response.json()["ncs_ksa_queried_unit_count"] == 1
+
+
 @pytest.mark.parametrize(
     "method",
     [

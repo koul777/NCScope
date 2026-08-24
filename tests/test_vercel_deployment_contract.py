@@ -28,6 +28,7 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["NCS_MCP_TIMEOUT_SEC"] == "5"
     assert environment["NCS_MCP_KSA_CONCURRENCY"] == "4"
     assert environment["KSA_RANK_MAX_UNITS"] == "5"
+    assert environment["OPENAI_NET_CHECK_ENABLED"] == "false"
     assert environment["DATABASE_URL"] == "sqlite:////tmp/ncscope.db"
     assert environment["MAX_UPLOAD_MB"] == "4"
     assert environment["MAX_REQUEST_BODY_MB"] == "4"

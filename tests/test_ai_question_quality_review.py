@@ -283,6 +283,45 @@ def test_review_prompt_keeps_star_completeness_advisory_and_method_gate_narrow()
     assert "실제 상황·역할·행동·결과 증거를 끌어낼 수 있는지만 보세요" not in prompt
 
 
+def test_review_prompt_deduplicates_long_context_and_keeps_only_question_units() -> None:
+    ksa = _ksa()
+    evidence_id = stable_ksa_evidence_id(ksa)
+    duty = ("DUTY_EXACT_MARKER_" + ("project administration evidence " * 5)).strip()
+    evaluation = ("EVALUATION_EXACT_MARKER_" + ("observable decision result " * 5)).strip()
+    short_common = "SHORT_COMMON"
+    selected_unit = dict(ksa)
+    selected_unit["compeUnitName"] = "SELECTED_UNIT_MARKER"
+    unrelated_unit = {
+        **ksa,
+        "ncsClCd": "9999999999_99v9",
+        "compeUnitName": "UNRELATED_UNIT_MARKER",
+    }
+
+    prompt = review_service._review_prompt(
+        questions=[_question("Tell us about the work event.", evidence_id=evidence_id)],
+        ncs_matches=[selected_unit, unrelated_unit],
+        ncs_ksa=[ksa],
+        interview_methods=["experience"],
+        job_context={
+            "notice": (
+                f"[duties]\n{duty}\n{short_common}\n"
+                f"UNIQUE_NOTICE_MARKER\n[evaluation]\n{evaluation}"
+            ),
+            "job_description": f"UNIQUE_JD_MARKER\n{duty}\n{short_common}",
+            "duties": duty,
+            "evaluation": evaluation,
+        },
+    )
+
+    assert prompt.count(duty) == 1
+    assert prompt.count(evaluation) == 1
+    assert prompt.count(short_common) == 2
+    assert "UNIQUE_NOTICE_MARKER" in prompt
+    assert "UNIQUE_JD_MARKER" in prompt
+    assert "SELECTED_UNIT_MARKER" in prompt
+    assert "UNRELATED_UNIT_MARKER" not in prompt
+
+
 @pytest.mark.parametrize(
     "broken_text",
     [

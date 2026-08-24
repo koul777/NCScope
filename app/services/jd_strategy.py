@@ -4540,7 +4540,7 @@ def _check_openai_connectivity(
 ) -> tuple[bool, str]:
     """Check a request credential without retaining a key-derived cache id."""
 
-    enabled = os.getenv("OPENAI_NET_CHECK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y"}
+    enabled = os.getenv("OPENAI_NET_CHECK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "y"}
     if not enabled:
         return True, "disabled"
 
@@ -5718,33 +5718,11 @@ def build_strategy_with_openai(
             target_count=target_count,
         )
 
-    strict_net_check = os.getenv("OPENAI_NET_CHECK_STRICT", "false").strip().lower() in {"1", "true", "yes", "y"}
-    if generation_provider == OPENROUTER_PROVIDER:
-        # A separate models probe adds latency but cannot prove that this
-        # specific model request will succeed. Let the bounded completion
-        # requests perform authentication and capability validation directly.
-        net_ok, net_msg = True, ""
-    else:
-        net_ok, net_msg = _check_openai_connectivity(
-            api_key=api_key,
-            ttl_sec=60,
-            provider=generation_provider,
-        )
+    # Do not issue a separate GET /models on the generation hot path. The
+    # bounded completion request already validates the exact credential,
+    # model, network route, and rate limit, while the probe adds one serial
+    # provider round trip and cannot predict completion capability.
     precheck_warning = ""
-    if not net_ok:
-        detail = (
-            "openrouter_network_unreachable"
-            if generation_provider == OPENROUTER_PROVIDER
-            else "openai_network_unreachable"
-        )
-        if strict_net_check:
-            return build_strategy_with_rule_fallback(
-                ncs_matches=ncs_matches,
-                ncs_ksa=ncs_ksa,
-                error_message=f"model_generation_skipped: {detail}",
-                target_count=target_count,
-            )
-        precheck_warning = detail
 
     jd_text = sanitize_external_ai_source_text(jd_text).strip()
     notice_text = sanitize_external_ai_source_text(notice_text).strip()

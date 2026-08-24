@@ -1111,7 +1111,7 @@ def test_openai_overfull_primary_is_trimmed_without_retry(monkeypatch) -> None:
     monkeypatch.setattr(
         jd_strategy,
         "_check_openai_connectivity",
-        lambda **_: (True, ""),
+        lambda **_: pytest.fail("generation hot path must not call GET /models preflight"),
     )
 
     def overfull_response(**_kwargs):

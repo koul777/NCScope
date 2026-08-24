@@ -59,7 +59,13 @@ from app.services.hwp_text_fallback import (
     extract_hwpx_text,
     extract_linear_ncs_classification_terms,
 )
-from app.services.ncs_mcp_client import NcsMcpError, ncs_mcp_status, search_units_by_detail, suggest_units_by_text
+from app.services.ncs_mcp_client import (
+    NcsMcpError,
+    ncs_mcp_status,
+    search_units_by_detail,
+    suggest_units_by_text,
+    use_ncs_mcp_request_session,
+)
 from app.services.jd_strategy import (
     _planned_question_sequence_for_prompt,
     ai_extract_ncs_cl_codes,
@@ -378,7 +384,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="NCScope", version="1.4.5", lifespan=_lifespan)
+app = FastAPI(title="NCScope", version="1.4.6", lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
 app.add_middleware(ExpensiveRequestLimitMiddleware)
@@ -409,7 +415,10 @@ def _internal_http_error(
 @app.middleware("http")
 async def add_no_cache_headers(request, call_next):
     """Ensure no caching for dynamic question generation APIs"""
-    response = await call_next(request)
+    # NCS matching and KSA collection make several MCP tool calls. Keep one
+    # initialized, connection-pooled transport for the whole web request.
+    with use_ncs_mcp_request_session():
+        response = await call_next(request)
 
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"
@@ -805,6 +814,24 @@ def _recover_hangul_fallback_detail_candidates(
             for value in (member.get("classification_terms") or [])
             if str(value or "").strip()
         )
+    existing_candidates = [
+        str(value or "").strip()
+        for value in (structured_fields.get("ncs_detail_candidates") or [])
+        if str(value or "").strip()
+    ]
+    # A single PDF fallback already ran the structural table extractor. The
+    # old enrichment pass queried every flattened classification term even
+    # though it only appended results and never validated or removed an
+    # existing candidate. Generation revalidates the human-selected label
+    # against NCS MCP, so repeating broad MCP searches here adds latency but
+    # no release authority. Keep recovery for HWP/HWPX and mixed ZIP inputs.
+    if (
+        str(metadata.get("fallback") or "").casefold() == "pdf-text"
+        and not metadata.get("members")
+        and existing_candidates
+        and not supplemental_terms
+    ):
+        return
     used_fallback = _used_local_hangul_text_fallback(parsed)
     if not used_fallback and not supplemental_terms and not generic_terms:
         return
@@ -13971,9 +13998,12 @@ async def jd_strategy_upload(
     )
 
     # NCS 평가요소를 수집해 OpenAI 입력에 함께 전달한다.
-    # 전체 KSA 후보를 넓게 수집한 뒤, JD 핵심 + 담당업무 텍스트 기준 TF-IDF로 상위만 선별한다.
+    # 질문계획에서 실제 배정될 능력단위만 조회한 뒤, JD 핵심 +
+    # 담당업무 텍스트 기준 TF-IDF로 KSA를 선별한다. 한 문항을 위해
+    # 사용되지 않을 상위 능력단위 전체를 원격 조회하지 않는다.
     ncs_ksa: list[dict[str, Any]] = []
     ncs_ksa_candidates: list[dict[str, Any]] = []
+    ksa_units: list[dict[str, Any]] = []
     ksa_query_text = _build_priority_query_text(
         base_text=jd_text,
         duty_text=duty_text_clean,
@@ -13989,9 +14019,13 @@ async def jd_strategy_upload(
         ksa_sim_weight = _to_float_or(os.getenv("KSA_SIMILARITY_WEIGHT", "0.75"), 0.75)
         ksa_unit_weight = _to_float_or(os.getenv("KSA_UNIT_WEIGHT", "0.25"), 0.25)
 
+        planned_ksa_units = _select_units_for_question_plan(
+            question_plan,
+            ncs_matches,
+        )
         ksa_units = _collect_ksa_candidate_units(
-            primary_units=ncs_matches,
-            secondary_units=ncs_items,
+            primary_units=planned_ksa_units or ncs_matches,
+            secondary_units=None if planned_ksa_units else ncs_items,
             max_units=ksa_rank_units,
         )
         if not ksa_units:
@@ -14223,6 +14257,7 @@ async def jd_strategy_upload(
         "ncs_matches": ncs_matches,
         "ncs_ksa": ncs_ksa,
         "ncs_ksa_candidate_count": len(ncs_ksa_candidates),
+        "ncs_ksa_queried_unit_count": len(ksa_units),
         "ncs_factor_sources": ncs_factor_sources,
         "runtime_knobs": {
             "ncs_top_k": run_top_k,
@@ -14403,8 +14438,12 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     ksa_sim_weight = _to_float_or(os.getenv("KSA_SIMILARITY_WEIGHT", "0.75"), 0.75)
     ksa_unit_weight = _to_float_or(os.getenv("KSA_UNIT_WEIGHT", "0.25"), 0.25)
 
+    planned_ksa_units = _select_units_for_question_plan(
+        question_plan,
+        ncs_matches,
+    )
     ksa_units = _collect_ksa_candidate_units(
-        primary_units=ncs_matches,
+        primary_units=planned_ksa_units or ncs_matches,
         secondary_units=None,
         max_units=min(ksa_rank_units, len(ncs_matches)),
     )
@@ -14607,6 +14646,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "ncs_matches": ncs_matches,
         "ncs_ksa": ncs_ksa,
         "ncs_ksa_candidate_count": len(ncs_ksa_candidates),
+        "ncs_ksa_queried_unit_count": len(ksa_units),
         "ncs_factor_sources": ncs_factor_sources,
         "runtime_knobs": {
             "ncs_top_k": run_top_k,

@@ -41,6 +41,7 @@ def test_deployment_profile_values_are_synchronized_with_vercel_config() -> None
         "NCS_MCP_KSA_CONCURRENCY",
         "KSA_RANK_MAX_UNITS",
         "OPENAI_HTTP_CURL_FALLBACK_ENABLED",
+        "OPENAI_NET_CHECK_ENABLED",
         "OPENAI_RERANK_MODEL",
         "OPENAI_STRATEGY_MODEL",
         "OPENAI_STRATEGY_RETRY_MODEL",

@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -27,6 +30,111 @@ MCP_PROTOCOL_VERSION = "2025-03-26"
 _TOOLS_TTL = 300.0
 _tools_cache: tuple[float, str, set[str]] | None = None
 _last_error: str | None = None
+
+
+@dataclass
+class _McpRequestSession:
+    """One reusable MCP transport for a single incoming HTTP request."""
+
+    endpoint: str
+    client: httpx.Client | None = None
+    retired_clients: list[httpx.Client] = field(default_factory=list)
+    initialized: bool = False
+    session_id: str = ""
+    request_id: int = 0
+    transport_generation: int = 0
+    state_lock: threading.Lock = field(default_factory=threading.Lock)
+    initialize_lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def next_request_id(self) -> int:
+        with self.state_lock:
+            self.request_id += 1
+            return self.request_id
+
+    def request_headers(self, generation: int) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+        }
+        with self.state_lock:
+            if generation == self.transport_generation and self.session_id:
+                headers["Mcp-Session-Id"] = self.session_id
+        return headers
+
+    def remember_session_id(self, response: httpx.Response, generation: int) -> None:
+        session_id = str(response.headers.get("mcp-session-id") or "").strip()
+        if not session_id:
+            return
+        with self.state_lock:
+            if generation == self.transport_generation:
+                self.session_id = session_id
+
+    def get_client(self) -> tuple[httpx.Client, int]:
+        with self.state_lock:
+            if self.client is None:
+                self.client = httpx.Client(follow_redirects=True)
+                self.transport_generation += 1
+            return self.client, self.transport_generation
+
+    def mark_initialized(self, generation: int) -> None:
+        with self.state_lock:
+            if generation == self.transport_generation:
+                self.initialized = True
+
+    def invalidate_transport(self, generation: int) -> None:
+        """Retire a failed transport without closing concurrent in-flight calls."""
+
+        with self.initialize_lock:
+            with self.state_lock:
+                if generation != self.transport_generation:
+                    return
+                if self.client is not None:
+                    self.retired_clients.append(self.client)
+                self.client = None
+                self.initialized = False
+                self.session_id = ""
+
+    def close(self) -> None:
+        with self.state_lock:
+            clients = [*self.retired_clients]
+            if self.client is not None:
+                clients.append(self.client)
+            self.client = None
+            self.retired_clients = []
+            self.initialized = False
+            self.session_id = ""
+        for client in clients:
+            client.close()
+
+
+_request_session: ContextVar[_McpRequestSession | None] = ContextVar(
+    "ncs_mcp_request_session",
+    default=None,
+)
+
+
+@contextmanager
+def use_ncs_mcp_request_session():
+    """Reuse one initialized client and connection pool within a web request.
+
+    Context values are copied into the KSA worker threads, so parallel
+    ``ncs_unit_detail`` calls share the same thread-safe ``httpx.Client``.
+    """
+
+    endpoint = _endpoint()
+    existing = _request_session.get()
+    if existing is not None and existing.endpoint == endpoint:
+        yield existing
+        return
+
+    state = _McpRequestSession(endpoint=endpoint)
+    token = _request_session.set(state)
+    try:
+        yield state
+    finally:
+        _request_session.reset(token)
+        state.close()
 
 
 class NcsMcpError(RuntimeError):
@@ -66,51 +174,63 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     endpoint = _endpoint()
     if not endpoint:
         raise NcsMcpError("NCS_MCP_URL is not configured")
-    headers = {
-        "Accept": "application/json, text/event-stream",
-        "Content-Type": "application/json",
-        "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
-    }
+    state = _request_session.get()
+    if state is None or state.endpoint != endpoint:
+        with use_ncs_mcp_request_session():
+            return _rpc(method, params)
+
+    transport_generation = 0
     try:
         request_timeout = clamp_timeout_to_request_budget(
             settings.ncs_mcp_timeout_sec(),
             reserve_sec=2.0,
         )
-        with httpx.Client(timeout=request_timeout, follow_redirects=True) as client:
-            init = client.post(
-                endpoint,
-                headers=headers,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": MCP_PROTOCOL_VERSION,
-                        "capabilities": {},
-                        "clientInfo": {"name": "ncscope", "version": "1.4.5"},
+        # KSA calls can run in worker threads. Only the first caller may
+        # initialize the shared request-scoped transport.
+        with state.initialize_lock:
+            client, transport_generation = state.get_client()
+            if not state.initialized:
+                init = client.post(
+                    endpoint,
+                    headers=state.request_headers(transport_generation),
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": state.next_request_id(),
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": MCP_PROTOCOL_VERSION,
+                            "capabilities": {},
+                            "clientInfo": {"name": "ncscope", "version": "1.4.6"},
+                        },
                     },
-                },
-            )
-            init.raise_for_status()
-            _decode_rpc(init.text)
-            request_timeout = clamp_timeout_to_request_budget(
-                settings.ncs_mcp_timeout_sec(),
-                reserve_sec=2.0,
-            )
-            response = client.post(
-                endpoint,
-                headers=headers,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": method,
-                    "params": params or {},
-                },
-                timeout=request_timeout,
-            )
-            response.raise_for_status()
-            return _decode_rpc(response.text)
+                    timeout=request_timeout,
+                )
+                init.raise_for_status()
+                _decode_rpc(init.text)
+                state.remember_session_id(init, transport_generation)
+                state.mark_initialized(transport_generation)
+
+        request_timeout = clamp_timeout_to_request_budget(
+            settings.ncs_mcp_timeout_sec(),
+            reserve_sec=2.0,
+        )
+        response = client.post(
+            endpoint,
+            headers=state.request_headers(transport_generation),
+            json={
+                "jsonrpc": "2.0",
+                "id": state.next_request_id(),
+                "method": method,
+                "params": params or {},
+            },
+            timeout=request_timeout,
+        )
+        response.raise_for_status()
+        state.remember_session_id(response, transport_generation)
+        return _decode_rpc(response.text)
     except (httpx.HTTPError, NcsMcpError, RequestBudgetExceeded) as exc:
+        if transport_generation:
+            state.invalidate_transport(transport_generation)
         global _last_error
         _last_error = "ncs_mcp_request_failed"
         if isinstance(exc, NcsMcpError):
@@ -257,8 +377,8 @@ def _detail_search_query_limit(max_units: int) -> int:
 def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list[dict[str, Any]]:
     """Resolve confirmed 세분류 names to NCS ability units."""
 
-    if "ncs_search" not in _tool_names():
-        raise NcsMcpError("configured NCS MCP does not expose ncs_search")
+    # Call the versioned generation tool directly. Full discovery remains a
+    # readiness concern and must not add a cold-path round trip here.
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
     for detail in _split_detail_terms(detail_names):
@@ -320,8 +440,6 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
     institution-specific or out-of-DB classification label.
     """
 
-    if "ncs_search" not in _tool_names():
-        raise NcsMcpError("configured NCS MCP does not expose ncs_search")
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
     limit = max(1, int(max_units or 20))
@@ -484,8 +602,6 @@ def _interleave_element_ksa(elements: list[dict[str, Any]]) -> list[dict[str, An
 def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12) -> list[dict[str, Any]]:
     """Fetch official KSA rows from NCS_MCP's ncs_unit_detail tool."""
 
-    if "ncs_unit_detail" not in _tool_names():
-        raise NcsMcpError("configured NCS MCP does not expose ncs_unit_detail")
     per_unit_limit = max(1, int(max_factors_per_unit or 12))
     selected_units = [
         dict(unit)

@@ -24,7 +24,7 @@ def test_openai_byok_card_is_required_and_accessible() -> None:
     assert 'id="btnPasteApiKey"' in html
     assert 'id="btnClearApiKey"' in html
     assert 'id="generationProviderSelect"' not in html
-    assert "OpenAI · Luna 분류 → Terra 작성 → Sol 검수·재생성" in html
+    assert "OpenAI · NCS MCP 확정·로컬 정렬 → Terra 작성 → Sol 검수·재생성" in html
     assert "Vercel Production 서버 키" not in script
 
 
@@ -33,7 +33,9 @@ def test_frontend_releases_only_openai_ai_reviewed_questions() -> None:
 
     assert "function isReleasedAiQuestion(item)" in script
     assert "function releasedPayloadForDisplay(value)" in script
-    assert "releasedPayloadForDisplay(data)" in script
+    assert "releasedPayloadForDisplay(pendingRawPayload)" in script
+    assert "function deferRawPayload(value, aiQualityPassed)" in script
+    assert "rawJsonDetails.addEventListener('toggle'" in script
     assert "String(row.question_source || '').trim() === 'openai_api'" in script
     assert "candidateQList.filter(isReleasedAiQuestion)" in script
     assert "data.generated_questions_all.filter(isReleasedAiQuestion)" in script

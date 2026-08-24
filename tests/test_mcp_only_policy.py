@@ -407,6 +407,35 @@ def test_flattened_multi_document_recovery_scales_mcp_unit_budget(mocker):
     search.assert_called_once_with(terms, max_units=240)
 
 
+def test_single_pdf_fallback_keeps_structural_candidates_without_broad_mcp_search(mocker):
+    parsed = {
+        "markdown": "NCS 분류체계와 직무 표",
+        "metadata": {
+            "fallback": "pdf-text",
+            "classification_terms": [
+                "프로젝트관리",
+                "산학협력관리",
+                "경영기획",
+                "경영평가",
+                "총무",
+                "인사",
+                "예산",
+            ],
+        },
+    }
+    fields = {
+        "ncs_detail_candidates": ["프로젝트관리", "인사"],
+        "ncs_detail_source": "pdf_structural_table",
+    }
+    search = mocker.patch("app.main.search_units_by_detail")
+
+    main._recover_hangul_fallback_detail_candidates(parsed, fields)
+
+    assert fields["ncs_detail_candidates"] == ["프로젝트관리", "인사"]
+    assert fields["ncs_detail_source"] == "pdf_structural_table"
+    search.assert_not_called()
+
+
 def test_parse_review_keeps_kordoc_result_when_optional_hwp_reader_crashes(mocker):
     mocker.patch("app.main.parse_with_kordoc", return_value={"markdown": JD_TEXT})
     mocker.patch("app.main.extract_hwp_text", side_effect=RuntimeError("bad ole crc"))
@@ -1948,6 +1977,185 @@ def test_mcp_tool_cache_is_scoped_to_the_configured_endpoint(monkeypatch):
     current["endpoint"] = "http://mcp-b.example/mcp"
     assert ncs_mcp_client._tool_names() == {"tool-b"}
     assert calls == ["http://mcp-a.example/mcp", "http://mcp-b.example/mcp"]
+
+
+def test_mcp_request_session_initializes_once_and_reuses_transport(monkeypatch):
+    monkeypatch.setenv("NCS_MCP_URL", "https://ncs.example/api/mcp")
+    calls: list[dict] = []
+    clients: list[object] = []
+
+    class FakeResponse:
+        def __init__(self, result, *, session_id=""):
+            self.text = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result})
+            self.headers = {"mcp-session-id": session_id} if session_id else {}
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.closed = False
+            clients.append(self)
+
+        def post(self, endpoint, *, headers, json, timeout):
+            calls.append(
+                {
+                    "endpoint": endpoint,
+                    "headers": dict(headers),
+                    "payload": dict(json),
+                    "timeout": timeout,
+                }
+            )
+            if json["method"] == "initialize":
+                return FakeResponse(
+                    {"protocolVersion": ncs_mcp_client.MCP_PROTOCOL_VERSION},
+                    session_id="session-123",
+                )
+            return FakeResponse({"ok": True})
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(ncs_mcp_client.httpx, "Client", FakeClient)
+
+    with ncs_mcp_client.use_ncs_mcp_request_session():
+        assert ncs_mcp_client._rpc("tools/list") == {"ok": True}
+        assert ncs_mcp_client._rpc("tools/call", {"name": "ncs_search"}) == {"ok": True}
+
+    assert len(clients) == 1
+    assert clients[0].closed is True
+    assert [call["payload"]["method"] for call in calls] == [
+        "initialize",
+        "tools/list",
+        "tools/call",
+    ]
+    assert [call["payload"]["id"] for call in calls] == [1, 2, 3]
+    assert "Mcp-Session-Id" not in calls[0]["headers"]
+    assert calls[1]["headers"]["Mcp-Session-Id"] == "session-123"
+    assert calls[2]["headers"]["Mcp-Session-Id"] == "session-123"
+
+
+def test_mcp_request_session_reinitializes_after_transport_failure(monkeypatch):
+    monkeypatch.setenv("NCS_MCP_URL", "https://ncs.example/api/mcp")
+    calls: list[tuple[int, str]] = []
+    clients: list[object] = []
+
+    class FakeResponse:
+        def __init__(self, result, *, session_id=""):
+            self.text = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result})
+            self.headers = {"mcp-session-id": session_id} if session_id else {}
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.index = len(clients)
+            self.closed = False
+            clients.append(self)
+
+        def post(self, _endpoint, *, headers, json, timeout):
+            _ = headers, timeout
+            calls.append((self.index, json["method"]))
+            if json["method"] == "initialize":
+                return FakeResponse({}, session_id=f"session-{self.index}")
+            if self.index == 0:
+                raise ncs_mcp_client.httpx.ConnectError("dropped connection")
+            return FakeResponse({"ok": True})
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(ncs_mcp_client.httpx, "Client", FakeClient)
+
+    with ncs_mcp_client.use_ncs_mcp_request_session():
+        with pytest.raises(ncs_mcp_client.NcsMcpError, match="request failed"):
+            ncs_mcp_client._rpc("tools/list")
+        assert ncs_mcp_client._rpc("tools/list") == {"ok": True}
+
+    assert calls == [
+        (0, "initialize"),
+        (0, "tools/list"),
+        (1, "initialize"),
+        (1, "tools/list"),
+    ]
+    assert len(clients) == 2
+    assert all(client.closed for client in clients)
+
+
+def test_parallel_ksa_calls_share_one_initialized_mcp_transport(monkeypatch):
+    monkeypatch.setenv("NCS_MCP_URL", "https://ncs.example/api/mcp")
+    monkeypatch.setenv("NCS_MCP_KSA_CONCURRENCY", "4")
+    calls: list[dict] = []
+    clients: list[object] = []
+    calls_lock = ncs_mcp_client.threading.Lock()
+
+    class FakeResponse:
+        def __init__(self, result, *, session_id=""):
+            self.text = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result})
+            self.headers = {"mcp-session-id": session_id} if session_id else {}
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            clients.append(self)
+
+        def post(self, _endpoint, *, headers, json, timeout):
+            _ = timeout
+            with calls_lock:
+                calls.append({"headers": dict(headers), "payload": dict(json)})
+            if json["method"] == "initialize":
+                return FakeResponse({}, session_id="parallel-session")
+            unit_code = json["params"]["arguments"]["unit_code"]
+            return FakeResponse(
+                {
+                    "unit": {"unit_name": unit_code, "classification": {}},
+                    "elements": [
+                        {
+                            "element_id": f"element-{unit_code}",
+                            "element_name": "element",
+                            "ksa": [
+                                {
+                                    "text": f"factor-{unit_code}",
+                                    "ksa_type": "knowledge",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(ncs_mcp_client.httpx, "Client", FakeClient)
+    units = [
+        {"ncsClCd": f"unit-{index}", "compeUnitName": f"Unit {index}"}
+        for index in range(4)
+    ]
+
+    with ncs_mcp_client.use_ncs_mcp_request_session():
+        rows = ncs_mcp_client.get_ksa_by_units(units, max_factors_per_unit=1)
+
+    assert len(rows) == 4
+    assert len(clients) == 1
+    assert clients[0].closed is True
+    assert [call["payload"]["method"] for call in calls].count("initialize") == 1
+    detail_calls = [
+        call for call in calls if call["payload"]["method"] == "tools/call"
+    ]
+    assert len(detail_calls) == 4
+    assert all(
+        call["headers"].get("Mcp-Session-Id") == "parallel-session"
+        for call in detail_calls
+    )
+    request_ids = [call["payload"]["id"] for call in calls]
+    assert sorted(request_ids) == list(range(1, 6))
+    assert len(request_ids) == len(set(request_ids))
 
 
 def test_mcp_status_bypasses_discovery_cache_to_detect_outage(monkeypatch):

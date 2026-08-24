@@ -286,6 +286,11 @@ def _review_prompt(
                 ][:8],
             }
         )
+    question_unit_codes = {
+        str(row.get("ncs_code") or "").strip()
+        for row in question_rows
+        if str(row.get("ncs_code") or "").strip()
+    }
     unit_rows = [
         {
             "ncs_code": str(row.get("ncsClCd") or "").strip(),
@@ -294,12 +299,35 @@ def _review_prompt(
         }
         for row in ncs_matches
         if isinstance(row, dict)
+        and (
+            not question_unit_codes
+            or str(row.get("ncsClCd") or "").strip() in question_unit_codes
+        )
     ][:10]
-    context = {
-        key: sanitize_external_ai_source_text(value, max_chars=2400).strip()
+    raw_context = {
+        key: str(value or "").strip()
         for key, value in job_context.items()
         if key in {"notice", "job_description", "duties", "evaluation"}
         and str(value or "").strip()
+    }
+    # ``notice`` is assembled from the dedicated duty/evaluation fields on
+    # the upload path. Remove only long, byte-for-byte duplicate source text
+    # before truncation so the review keeps more unique job context without
+    # fuzzy deletion or any change to the quality rubric.
+    dedicated_context = [
+        value
+        for key in ("duties", "evaluation")
+        if len((value := raw_context.get(key, ""))) >= 80
+    ]
+    for broad_key in ("notice", "job_description"):
+        broad_value = raw_context.get(broad_key, "")
+        for duplicate in dedicated_context:
+            broad_value = broad_value.replace(duplicate, "")
+        raw_context[broad_key] = broad_value.strip()
+    context = {
+        key: sanitize_external_ai_source_text(value, max_chars=2400).strip()
+        for key, value in raw_context.items()
+        if str(value or "").strip()
     }
     review_input = {
         "selected_interview_methods": list(interview_methods),
