@@ -9,6 +9,7 @@ const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 // platform never replaces our controlled error with a generic 500 response.
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const KORDOC_VERSION = "4.9.1";
+const BRIDGE_KEY_CONTEXT = "ncscope:kordoc-bridge:v1";
 let parsePromise;
 
 const sendJson = (res, status, payload) => {
@@ -19,6 +20,15 @@ const sendJson = (res, status, payload) => {
 };
 
 const normalizeSecret = (value) => String(value || "").trim().replace(/^\uFEFF+/, "").trim();
+
+const derivedBridgeSecret = () => {
+  const reviewSigningKey = String(process.env.REVIEW_SESSION_SIGNING_KEY || "");
+  if (!reviewSigningKey.trim()) return "";
+  return crypto
+    .createHmac("sha256", Buffer.from(reviewSigningKey, "utf8"))
+    .update(BRIDGE_KEY_CONTEXT, "utf8")
+    .digest("base64url");
+};
 
 const sameSecret = (provided, expected) => {
   const providedText = normalizeSecret(provided);
@@ -91,11 +101,14 @@ export default async function handler(req, res) {
     return sendJson(res, 405, { success: false, code: "method_not_allowed" });
   }
 
-  const expectedSecret = normalizeSecret(process.env.KORDOC_BRIDGE_SECRET);
-  if (!expectedSecret) {
+  const expectedSecrets = [
+    derivedBridgeSecret(),
+    normalizeSecret(process.env.KORDOC_BRIDGE_SECRET),
+  ].filter(Boolean);
+  if (!expectedSecrets.length) {
     return sendJson(res, 503, { success: false, code: "bridge_not_configured" });
   }
-  if (!sameSecret(req.headers["x-ncscope-kordoc-secret"], expectedSecret)) {
+  if (!expectedSecrets.some((secret) => sameSecret(req.headers["x-ncscope-kordoc-secret"], secret))) {
     return sendJson(res, 401, { success: false, code: "unauthorized" });
   }
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import io
 import zipfile
@@ -52,6 +55,7 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     # PowerShell can prepend a UTF-8 BOM when a value is piped to the Vercel CLI.
     # It must never leak into the HTTP header value.
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "\ufefftest-shared-secret")
+    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
 
     result = kordoc_parser.parse_with_kordoc(b"%PDF-sanitized", filename="직무기술서.pdf")
@@ -65,11 +69,59 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     assert result["parser_version"] == "4.9.1"
 
 
+def test_vercel_bridge_derives_an_isolated_secret_from_review_signing_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    class FakeClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def post(self, url: str, *, content: bytes, headers: dict[str, str]):
+            calls.append({"url": url, "content": content, "headers": headers})
+            return _FakeResponse(
+                {
+                    "success": True,
+                    "parser": "kordoc",
+                    "parser_version": "4.9.1",
+                    "markdown": "document",
+                    "blocks": [],
+                    "metadata": {},
+                }
+            )
+
+    monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(kordoc_parser.httpx, "Client", FakeClient)
+    monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
+    monkeypatch.setenv("REVIEW_SESSION_SIGNING_KEY", "stable-review-key")
+    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "different-dedicated-key")
+
+    kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
+
+    expected = base64.urlsafe_b64encode(
+        hmac.new(
+            b"stable-review-key",
+            b"ncscope:kordoc-bridge:v1",
+            hashlib.sha256,
+        ).digest()
+    ).decode("ascii").rstrip("=")
+    assert calls[-1]["headers"]["x-ncscope-kordoc-secret"] == expected
+    assert expected not in {"stable-review-key", "different-dedicated-key"}
+
+
 def test_vercel_bridge_refuses_to_run_without_shared_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
     monkeypatch.delenv("KORDOC_BRIDGE_SECRET", raising=False)
+    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
 
     with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable") as caught:
         kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
@@ -82,6 +134,7 @@ def test_vercel_bridge_refuses_non_ascii_header_secret(monkeypatch: pytest.Monke
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "not-ascii-비밀")
+    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
 
     with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):
@@ -92,6 +145,7 @@ def test_external_insecure_bridge_url_is_not_accepted(monkeypatch: pytest.Monkey
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("KORDOC_BRIDGE_URL", "http://example.com/api/kordoc-parse")
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "test-shared-secret")
+    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
     monkeypatch.delenv("VERCEL_URL", raising=False)
 
     with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):

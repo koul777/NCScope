@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
 import html
+import hmac
 import json
 import os
 import re
@@ -34,6 +36,7 @@ class _LocalKordocUnavailable(KordocParseError):
 _KORDOC_PARSER_VERSION = "4.9.1"
 _KORDOC_BRIDGE_MAX_BYTES = 4 * 1024 * 1024
 _KORDOC_BRIDGE_PATH = "/api/kordoc-parse"
+_KORDOC_BRIDGE_KEY_CONTEXT = b"ncscope:kordoc-bridge:v1"
 _SAFE_PARSER_NAMES = {
     "kordoc",
     "plain_text",
@@ -1473,6 +1476,15 @@ def _safe_bridge_url() -> str:
 
 def _normalized_bridge_secret() -> str:
     """Return an ASCII-only shared secret safe for an HTTP header."""
+
+    review_signing_key = os.getenv("REVIEW_SESSION_SIGNING_KEY", "")
+    if review_signing_key and review_signing_key.strip():
+        derived = hmac.new(
+            review_signing_key.encode("utf-8"),
+            _KORDOC_BRIDGE_KEY_CONTEXT,
+            hashlib.sha256,
+        ).digest()
+        return base64.urlsafe_b64encode(derived).decode("ascii").rstrip("=")
 
     value = os.getenv("KORDOC_BRIDGE_SECRET", "").strip().lstrip("\ufeff").strip()
     return value if value.isascii() else ""

@@ -26,6 +26,8 @@ def test_vercel_fastapi_entrypoint_and_duration_are_production_safe() -> None:
     assert "KORDOC_BRIDGE_SECRET" in bridge_source
     assert "normalizeSecret" in bridge_source
     assert "\\uFEFF" in bridge_source
+    assert "derivedBridgeSecret" in bridge_source
+    assert "ncscope:kordoc-bridge:v1" in bridge_source
     assert "MAX_UPLOAD_BYTES = 4 * 1024 * 1024" in bridge_source
     assert "MAX_RESPONSE_BYTES = 4 * 1024 * 1024" in bridge_source
     assert (ROOT / "api" / "index.py").read_text(encoding="utf-8").strip().endswith(
