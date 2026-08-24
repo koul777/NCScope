@@ -118,7 +118,15 @@ def test_upload_review_uses_single_select_for_ncs_detail_and_single_method_selec
     assert 'name="interviewMethod"' not in html
     assert "const interviewMethodSelect = document.getElementById('interviewMethodSelect');" in script
     assert "const SUPPORTED_INTERVIEW_METHODS = Object.freeze([" in script
-    assert '<option value="발표면접">발표면접</option>' in html
+    assert '<option value="발표면접">발표면접</option>' not in html
+    supported_methods = script.split(
+        "const SUPPORTED_INTERVIEW_METHODS = Object.freeze([", 1
+    )[1].split("]);", 1)[0]
+    authoring_guides = script.split(
+        "const INTERVIEW_METHOD_AUTHORING_GUIDES = Object.freeze({", 1
+    )[1].split("});", 1)[0]
+    assert "'발표면접'" not in supported_methods
+    assert "발표면접:" not in authoring_guides
     assert "const INTERVIEW_METHOD_AUTHORING_GUIDES = Object.freeze({" in script
     assert "function renderInterviewMethodGuide()" in script
     assert "공통 면접 기본원칙과 선택한 면접기법의 지침이 AI 작성에만 반영" in script
