@@ -12,6 +12,7 @@ import csv
 import hashlib
 import html
 import json
+import logging
 import os
 import re
 import shutil
@@ -24,6 +25,9 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+
+logger = logging.getLogger(__name__)
 
 
 class KordocParseError(RuntimeError):
@@ -1562,6 +1566,14 @@ def _parse_with_remote_kordoc(
         raise KordocParseError("Kordoc bridge is unavailable") from exc
 
     if response.status_code != 200:
+        rejection = str(response.headers.get("x-ncscope-bridge-rejection") or "")
+        safe_rejection = rejection if re.fullmatch(r"[a-z_]{1,40}", rejection) else "unspecified"
+        logger.warning(
+            "kordoc_bridge_rejected status=%s auth_mode=%s reason=%s",
+            response.status_code,
+            "ed25519" if signature_headers else "shared_secret",
+            safe_rejection,
+        )
         # Do not copy a serverless exception body into the Python response.
         raise KordocParseError("Kordoc bridge rejected the document")
     if len(response.content) > 4 * 1024 * 1024:

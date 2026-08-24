@@ -158,6 +158,7 @@ export default async function handler(req, res) {
     }
     const signatureReview = validateSignature(req, bytes);
     if (!hasValidSharedSecret && !signatureReview.valid) {
+      res.setHeader("x-ncscope-bridge-rejection", signatureReview.reason);
       if (headerText(req, "x-ncscope-kordoc-signature")) {
         console.warn("kordoc_bridge_signed_request_rejected", { reason: signatureReview.reason });
       }
