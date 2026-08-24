@@ -3,6 +3,16 @@
   "created_at": "2026-08-25T00:49:44.1976680+09:00",
   "updated_at": "2026-08-25T05:00:00+09:00",
   "original_freeze_sha256": "a031c53a37cab6c81c4dd9ff4c7f91b2022453d493cbb68d5ee69fb70f2e985c",
+  "git_text_hash_canonicalization": "UTF-8 with CRLF and lone CR normalized to LF; historical raw-byte hashes remain unchanged",
+  "git_text_sha256": {
+    "tests/fixtures/stored_jd_final_blind_reference.json": "c609b6143444040f96d320084f7fe2fb5f19c688cd2bcf41aa895d04cb3df2f4",
+    "scripts/benchmark_stored_jd_corpus.py": "3753c5b51d3bc1b8c9bc018a0f18a2a6628b7b86ff60c7dea24ab269f190e7c0",
+    "scripts/benchmark_alio_jd.py": "d8af01ec4fc4af081ea78614b39512d226e49fd6d5980869ae57bfe1b3e6fd3b",
+    "app/services/kordoc_parser.py": "fcc406ca91b14bba70f65a7602dfa3ae438b67dc58359cd76215d1a7a5fd208c",
+    "app/services/ncs_mcp_client.py": "3557ffe780e97b6a32325aa1bcc890914a65e177b640cee6fdcfcbbc61ddd947",
+    "scripts/score_stored_jd_holdout.py": "8b1502cafa4c8cccf0b1429dcab334dc81f55677a61565675519b69134ac7217",
+    "tests/fixtures/stored_jd_final_blind_result.json": "0ce1ccb71ad563ea982d37f384a26ce3f5365b836c09c70eb3b6028d9734e6b6"
+  },
   "change_scope": "evaluation_integrity_transport_security_post_freeze_semantic_mapping_and_active_catalog_filtering",
   "reason": "The original scorer only recognized the legacy digest-modulo split. The final blind set was intentionally frozen by a separate seeded, source-only manifest, so the scorer now validates the exact manifest SHA256 set instead. A later integrity-only change added a fail-closed CLI mode requiring that manifest, and the NCS MCP HTTP transport was hardened without changing semantic output. After the one-time comparison, exact ordinal-unit decoration resolution was added for labels such as an official detail followed by a numbered official unit in parentheses. That semantic mapping change affects one frozen record, so the original result is retained only as the pre-change append-only result and no independent blind claim is made for the current code. The deployable catalogs were subsequently restricted to usage_yn=Y so 15 inactive details and their 153 units cannot be presented as current official data; none of the 36 frozen records use those inactive detail codes.",
   "frozen_code_artifacts_changed": true,

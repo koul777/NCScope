@@ -42,10 +42,12 @@ def _sample_parse() -> dict:
 
 
 def _workspace_temp_dir() -> Path:
+    temp_root = Path(__file__).resolve().parents[1] / "tmp"
+    temp_root.mkdir(parents=True, exist_ok=True)
     return Path(
         tempfile.mkdtemp(
             prefix="verify-ncs-guide-",
-            dir=str(Path(__file__).resolve().parents[1] / "tmp"),
+            dir=str(temp_root),
         )
     )
 

@@ -16,6 +16,11 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _git_text_sha256(path: Path) -> str:
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _canonical_sha256(value: Any) -> str:
     payload = json.dumps(
         value,
@@ -61,7 +66,7 @@ def _verify_freeze(
     *,
     freeze_path: Path,
 ) -> None:
-    if addendum.get("original_freeze_sha256") != _sha256(freeze_path):
+    if addendum.get("original_freeze_sha256") != _git_text_sha256(freeze_path):
         raise ValueError("freeze hash does not match its addendum")
     if freeze.get("comparison_performed") is not False:
         raise ValueError("freeze must predate the first observed comparison")
@@ -220,7 +225,7 @@ def build_result(
             raise ValueError("invalid source artifact hash")
 
     accuracy = _accuracy_metrics(holdout)
-    freeze_sha256 = _sha256(freeze_path)
+    freeze_sha256 = _git_text_sha256(freeze_path)
     comparison_id = _canonical_sha256(
         {
             "freeze_sha256": freeze_sha256,

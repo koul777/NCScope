@@ -4,6 +4,8 @@ import csv
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "analyze_stored_jd_gaps.py"
 SPEC = importlib.util.spec_from_file_location("analyze_stored_jd_gaps", SCRIPT_PATH)
@@ -224,6 +226,8 @@ def test_collect_gap_occurrences_preserves_explicit_self_developed_evidence() ->
 
 def test_current_catalog_and_benchmark_baseline_is_reproducible() -> None:
     catalog = gap_analysis.load_catalog_index()
+    if not gap_analysis.DEFAULT_BENCHMARK_PATH.is_file():
+        pytest.skip("local stored-JD benchmark is intentionally excluded from Git")
     with gap_analysis.DEFAULT_BENCHMARK_PATH.open(
         "r", encoding="utf-8-sig", newline=""
     ) as handle:
