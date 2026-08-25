@@ -571,16 +571,49 @@ def _build_evaluation_runtime_attestation() -> dict[str, Any]:
         "app_main": Path(__file__).resolve(),
         "kordoc_parser": root / "app" / "services" / "kordoc_parser.py",
         "ncs_mcp_client": root / "app" / "services" / "ncs_mcp_client.py",
+        "request_budget": root / "app" / "services" / "request_budget.py",
         "official_detail_catalog": root / "app" / "data" / "ncs_detail_catalog.json",
+        "kordoc_local_runner": root / "scripts" / "kordoc_parse.mjs",
+        "kordoc_serverless_bridge": root / "api" / "kordoc-parse.js",
+        "package_json": root / "package.json",
+        "package_lock": root / "package-lock.json",
+        "vercel_config": root / "vercel.json",
     }
-    return {
-        "schema_version": "ncscope_evaluation_runtime_attestation_v1",
+    package_lock = json.loads(source_paths["package_lock"].read_text(encoding="utf-8"))
+    package_entry = (package_lock.get("packages") or {}).get("node_modules/kordoc")
+    if not isinstance(package_entry, dict):
+        raise RuntimeError("Kordoc package lock entry is unavailable")
+    package_version = str(package_entry.get("version") or "").strip()
+    package_integrity = str(package_entry.get("integrity") or "").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", package_version) or not re.fullmatch(
+        r"sha512-[A-Za-z0-9+/]+={0,2}", package_integrity
+    ):
+        raise RuntimeError("Kordoc package lock identity is invalid")
+    attestation = {
+        "schema_version": "ncscope_evaluation_runtime_attestation_v2",
         "app_version": APP_VERSION,
         "source_artifact_sha256": {
             name: hashlib.sha256(path.read_bytes()).hexdigest()
             for name, path in source_paths.items()
         },
+        "parser_contract": {
+            "schema_version": "ncscope_kordoc_build_contract_v1",
+            "selection_policy": "local_node_then_authenticated_bridge_v1",
+            "package_name": "kordoc",
+            "package_version": package_version,
+            "package_integrity": package_integrity,
+            "offline_required": True,
+        },
     }
+    attestation["runtime_bundle_sha256"] = hashlib.sha256(
+        json.dumps(
+            attestation,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return attestation
 
 
 # Build this once at module import. Reading files on every request would only
@@ -596,13 +629,19 @@ def _evaluation_runtime_attestation() -> dict[str, Any]:
         "source_artifact_sha256": dict(
             _EVALUATION_RUNTIME_ATTESTATION["source_artifact_sha256"]
         ),
+        "parser_contract": dict(
+            _EVALUATION_RUNTIME_ATTESTATION["parser_contract"]
+        ),
+        "runtime_bundle_sha256": _EVALUATION_RUNTIME_ATTESTATION[
+            "runtime_bundle_sha256"
+        ],
     }
 
 
 def _ensure_evaluation_runtime_unchanged() -> None:
     try:
         current = _build_evaluation_runtime_attestation()
-    except OSError as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError, TypeError) as exc:
         raise HTTPException(
             status_code=503,
             detail={
@@ -618,6 +657,126 @@ def _ensure_evaluation_runtime_unchanged() -> None:
                 "retryable": False,
             },
         )
+
+
+def _bind_parser_executions_to_runtime(structured: dict[str, Any]) -> None:
+    executions = structured.get("parser_executions")
+    if not isinstance(executions, list) or not executions:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "parser_execution_attestation_unavailable",
+                "retryable": False,
+            },
+        )
+    runtime_attestation = _evaluation_runtime_attestation()
+    runtime_bundle_sha256 = runtime_attestation["runtime_bundle_sha256"]
+    expected_kordoc_version = runtime_attestation["parser_contract"][
+        "package_version"
+    ]
+    normalized: list[dict[str, Any]] = []
+    for execution in executions:
+        if not isinstance(execution, dict):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "parser_execution_attestation_invalid",
+                    "retryable": False,
+                },
+            )
+        row = dict(execution)
+        parser = str(row.get("parser") or "").strip()
+        mode = str(row.get("mode") or "").strip()
+        build_identity = row.get("build_identity")
+        expected_build_kinds = {
+            "local_node_subprocess": "local_source_bundle",
+            "authenticated_serverless_bridge": "vercel_deployment",
+            "builtin_plain_text": "python_runtime_bundle",
+            "local_text_fallback": "python_runtime_bundle",
+        }
+        valid = (
+            row.get("schema_version") == "ncscope_parser_execution_v1"
+            and row.get("role") == "selected"
+            and isinstance(build_identity, dict)
+            and build_identity.get("kind") == expected_build_kinds.get(mode)
+        )
+        if mode in {"local_node_subprocess", "authenticated_serverless_bridge"}:
+            valid = valid and (
+                parser == "kordoc"
+                and row.get("parser_version") == expected_kordoc_version
+                and re.fullmatch(
+                    r"\d+\.\d+\.\d+",
+                    str(row.get("node_version") or ""),
+                )
+                is not None
+            )
+        elif mode == "builtin_plain_text":
+            valid = valid and parser == "plain_text"
+        elif mode == "local_text_fallback":
+            valid = valid and parser in {
+                "pdf_text_fallback",
+                "hwp_text_fallback",
+                "hwpx_text_fallback",
+            }
+        else:
+            valid = False
+        if valid and mode == "authenticated_serverless_bridge":
+            deployment_url = str(
+                build_identity.get("deployment_url") or ""
+            ).strip().lower()
+            expected_deployment_url = os.getenv("VERCEL_URL", "").strip().lower()
+            deployment_id = str(
+                build_identity.get("deployment_id") or ""
+            ).strip()
+            git_commit_sha = str(
+                build_identity.get("git_commit_sha") or ""
+            ).strip().lower()
+            expected_deployment_id = os.getenv(
+                "VERCEL_DEPLOYMENT_ID", ""
+            ).strip()
+            expected_git_commit_sha = os.getenv(
+                "VERCEL_GIT_COMMIT_SHA", ""
+            ).strip().lower()
+            valid = bool(
+                expected_deployment_url
+                and deployment_url == expected_deployment_url
+                and re.fullmatch(r"[a-z0-9.-]+\.vercel\.app", deployment_url)
+                and set(build_identity).issubset(
+                    {
+                        "kind",
+                        "deployment_url",
+                        "deployment_id",
+                        "git_commit_sha",
+                    }
+                )
+                and (
+                    not deployment_id
+                    or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", deployment_id)
+                )
+                and (
+                    not git_commit_sha
+                    or re.fullmatch(r"[a-f0-9]{40}", git_commit_sha)
+                )
+                and (
+                    not expected_deployment_id
+                    or deployment_id == expected_deployment_id
+                )
+                and (
+                    not expected_git_commit_sha
+                    or git_commit_sha == expected_git_commit_sha
+                )
+            )
+        if not valid:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "parser_execution_attestation_invalid",
+                    "retryable": False,
+                },
+            )
+        row["runtime_bundle_sha256"] = runtime_bundle_sha256
+        normalized.append(row)
+    structured["parser_executions"] = normalized
 
 
 app = FastAPI(title="NCScope", version=APP_VERSION, lifespan=_lifespan)
@@ -6796,7 +6955,13 @@ def _reject_hwp_upload(label: str, filename: str | None = None) -> None:
         )
 
 
-def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dict[str, Any]:
+def _parse_single_document_upload(
+    data: bytes,
+    filename: str,
+    label: str,
+    *,
+    allow_remote_kordoc: bool = True,
+) -> dict[str, Any]:
     name = str(filename or "")
     suffix = _suffix_of(name)
     if suffix == ".txt":
@@ -6810,6 +6975,7 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
             data,
             filename=name,
             ocr=os.getenv("KORDOC_OCR", "true").strip().lower() in {"1", "true", "yes", "y"},
+            allow_remote=allow_remote_kordoc,
         )
         if suffix in {".hwp", ".hwpx"}:
             try:
@@ -6924,12 +7090,26 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
         ) from exc
 
 
-def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, Any]:
+def _parse_upload_document(
+    data: bytes,
+    filename: str,
+    label: str,
+    *,
+    allow_remote_kordoc: bool = True,
+) -> dict[str, Any]:
     """Parse one upload or a ZIP of supported documents into one markdown payload."""
 
     name = str(filename or "")
+    parser_kwargs = (
+        {} if allow_remote_kordoc else {"allow_remote_kordoc": False}
+    )
     if _suffix_of(name) != ".zip":
-        return _parse_single_document_upload(data, name, label)
+        return _parse_single_document_upload(
+            data,
+            name,
+            label,
+            **parser_kwargs,
+        )
 
     declared_metadata = _zip_declared_metadata(data)
     if declared_metadata is not None:
@@ -7013,7 +7193,12 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                     warnings.append(f"{member_label}: ZIP member could not be read")
                     continue
                 try:
-                    parsed = _parse_single_document_upload(member_bytes, member_label, label)
+                    parsed = _parse_single_document_upload(
+                        member_bytes,
+                        member_label,
+                        label,
+                        **parser_kwargs,
+                    )
                 except HTTPException as exc:
                     warnings.append(f"{member_label}: {exc.detail}")
                     continue
@@ -7029,6 +7214,30 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                     "suffix": suffix,
                     "parser": member_parser,
                 }
+                member_execution = parsed.get("parser_execution")
+                if not isinstance(member_execution, dict):
+                    if member_parser == "plain_text":
+                        member_execution = {
+                            "schema_version": "ncscope_parser_execution_v1",
+                            "role": "selected",
+                            "parser": member_parser,
+                            "mode": "builtin_plain_text",
+                            "build_identity": {"kind": "python_runtime_bundle"},
+                        }
+                    elif member_parser in {
+                        "pdf_text_fallback",
+                        "hwp_text_fallback",
+                        "hwpx_text_fallback",
+                    }:
+                        member_execution = {
+                            "schema_version": "ncscope_parser_execution_v1",
+                            "role": "selected",
+                            "parser": member_parser,
+                            "mode": "local_text_fallback",
+                            "build_identity": {"kind": "python_runtime_bundle"},
+                        }
+                if isinstance(member_execution, dict):
+                    member_record["parser_execution"] = dict(member_execution)
                 if member_parser == "kordoc" and member_version:
                     member_record["parser_version"] = member_version
                 member_fallback = str(member_metadata.get("fallback") or "").strip()
@@ -7081,6 +7290,24 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
         "warnings": warnings,
         "parser": archive_parser,
     }
+    parser_executions: list[dict[str, Any]] = []
+    seen_parser_executions: set[str] = set()
+    for member in members:
+        execution = member.get("parser_execution")
+        if not isinstance(execution, dict):
+            continue
+        execution_key = json.dumps(
+            execution,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if execution_key in seen_parser_executions:
+            continue
+        seen_parser_executions.add(execution_key)
+        parser_executions.append(dict(execution))
+    if parser_executions:
+        result["parser_executions"] = parser_executions
     if archive_parser == "kordoc" and len(archive_versions) == 1:
         result["parser_version"] = archive_versions[0]
     return result
@@ -7596,13 +7823,19 @@ async def _parse_upload_document_off_loop(
     data: bytes,
     filename: str,
     label: str,
+    *,
+    allow_remote_kordoc: bool = True,
 ) -> dict[str, Any]:
     _require_serverless_document_contract()
+    parser_kwargs = (
+        {} if allow_remote_kordoc else {"allow_remote_kordoc": False}
+    )
     return await _run_document_work_off_loop(
         _parse_upload_document,
         data,
         filename,
         label,
+        **parser_kwargs,
     )
 
 
@@ -14346,11 +14579,29 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=400, detail="only .pdf or .txt supported")
 
 
+@app.get("/api/jd/parse-review/runtime-policy")
+def parse_jd_review_runtime_policy() -> dict[str, Any]:
+    """Expose a byte-free scorer preflight for the local-only parser contract."""
+
+    _ensure_evaluation_runtime_unchanged()
+    return {
+        "evaluation_runtime_attestation": _evaluation_runtime_attestation(),
+        "supported_parser_policies": ["local-only"],
+        "policy_header": "x-ncscope-parser-policy",
+    }
+
+
 @app.post("/api/jd/parse-review")
 async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(...)) -> dict:
     """Parse a JD with Kordoc and return editable human-review fields."""
 
     _ensure_evaluation_runtime_unchanged()
+    parser_policy = request.headers.get("x-ncscope-parser-policy", "").strip().lower()
+    if parser_policy not in {"", "local-only"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "unsupported_parser_policy", "retryable": False},
+        )
     data = await _read_upload_limited(jd_file, "jd_file")
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
@@ -14358,6 +14609,7 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
         data,
         jd_file.filename or "",
         "jd_file",
+        allow_remote_kordoc=parser_policy != "local-only",
     )
     cached_structural_result = parsed.pop(
         _PARSED_STRUCTURAL_SCLASS_CACHE_KEY,
@@ -14377,6 +14629,8 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                 "retryable": False,
             },
         ) from exc
+    _bind_parser_executions_to_runtime(structured)
+    structured["parser_policy"] = parser_policy or "default"
     structured_fields = structured.get("fields") if isinstance(structured.get("fields"), dict) else None
     if structured_fields is not None:
         _sanitize_parse_review_ability_artifacts(structured)

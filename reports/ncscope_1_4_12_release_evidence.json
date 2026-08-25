@@ -1,7 +1,7 @@
 {
   "schema_version": "ncscope_release_evidence_v2",
   "release_version": "1.4.12",
-  "generated_at": "2026-08-25T16:31:08+09:00",
+  "generated_at": "2026-08-25T17:35:31+09:00",
   "evidence_scope": "sanitized aggregate release evidence; private source documents and MCP response bodies are excluded",
   "human_gold_accuracy_available": false,
   "stored_jd_parser": {
@@ -41,23 +41,30 @@
     "historical_published_metrics_split": "v1_document_sha256_not_v2_component_split",
     "source_contract_git_text_sha256": {
       "split_contract": "5c9177c40b84f7b6516bfbc05f94ec19edc7061782ef03ef12932bd5accf3308",
-      "prepare_goldset": "af0816d394c6bbf1eb134cfa36cf1956ae7621f82fa83237e105644669f3315b",
+      "prepare_goldset": "e0a00f72c147d4dc83c37b0f078537855b9975dcb5f12e261bb855ac0be32202",
       "prepare_source_packets": "1b518199893a599f6115559d30be63999deb3fddbb915f26cabf23aacce9dce9",
-      "finalize_goldset": "79d9ffb0bd1d1508c02e937588682ad0bb263dec3df0b94cdd61f41ba7c869e2",
-      "score_goldset": "570fbf02f6c38548caffaa7f0ccc4f9ba294fccf372b971aab350214370af2d0",
+      "finalize_goldset": "ec7b2167c93f891dc039da53666a0c721a65d79edba771d785d580c0d90ec9a1",
+      "score_goldset": "b65584760c7f9b4023ffe0912d0551bb4a01b77c3b07dd5589e89515eef236d3",
       "official_detail_catalog": "a031d1817baa69e6b97bc89b2e75a592afb8067443152dc5ab46ceb2f4c58a8b"
     }
   },
   "scoring_runtime_attestation": {
-    "schema_version": "ncscope_evaluation_runtime_attestation_v1",
+    "schema_version": "ncscope_evaluation_runtime_attestation_v2",
     "fail_closed": true,
     "verified_on_every_response": true,
     "startup_and_completion_source_stability_checked": true,
+    "parser_execution_identity_verified": true,
     "server_source_keys": [
       "app_main",
       "kordoc_parser",
       "ncs_mcp_client",
-      "official_detail_catalog"
+      "request_budget",
+      "official_detail_catalog",
+      "kordoc_local_runner",
+      "kordoc_serverless_bridge",
+      "package_json",
+      "package_lock",
+      "vercel_config"
     ]
   },
   "configured_ncs_mcp_contract": {
@@ -88,18 +95,18 @@
   "release_run_source_raw_sha256": {
     "scope": "Windows release-run worktree bytes; use source_contract_git_text_sha256 for cross-platform repository identity",
     "digests": {
-      "app_main": "3f29a3643175cb8985816fc86061202b24109986bf9d6e1674f7463d25bc2397",
+      "app_main": "9a03775948d3c17b329f941a6207d1b14eaec7ecee014058e51028882c08615f",
       "benchmark_alio": "1962b86b4bbe94695e28794707733792d0fa71b7c145bddb323f63ce9820fe06",
-      "kordoc_parser": "7686b65198b721a3e5f5fab7d735fc553953aa79ceb8360e3f4653e9f2e75555",
+      "kordoc_parser": "a0befb13562e7f166af38364c97976b6ef9720e8ab59db25911c09c3b3af2572",
       "ncs_mcp_client": "bbafa3813e06d9e2b09c2c20621114aefb6bfe11de2f171119875a6b23bf7430",
       "ksa_audit_script": "b2ce756a9cfb39d68b27db4d6027bf93326d9475f65c1fb56cd98a891be5629d"
     }
   },
   "source_contract_git_text_sha256": {
     "canonicalization": "UTF-8 with CRLF and lone CR normalized to LF",
-    "app_main": "cc35d676018edd7d6f4f94871f39ba5ed8796c18fd51a6f4b2d70334539b130b",
+    "app_main": "a6c908c6c68132f449bfe025e25ac1b8d121f6b1d16db85399242b5595ce6474",
     "benchmark_alio": "63048d7d0e482b14ec8f5c13914a6b9f04b06a32baaecbdc973c5280bc2cfaff",
-    "kordoc_parser": "8c08d2f3d08c39aba8a234873d7f46673d54dea5c0608a824ad15797b471324d",
+    "kordoc_parser": "f4c628e2c71d29e80bbce4a08150f920fe3c83bcd4cc1104e5bd6597ccc16459",
     "ncs_mcp_client": "dfcda2e941ebbfd50b4d6638320c63156e04a4aebc7b1e637b00f41eedac6426",
     "ksa_audit_script": "b2ce756a9cfb39d68b27db4d6027bf93326d9475f65c1fb56cd98a891be5629d"
   },
@@ -107,9 +114,9 @@
     "ruff": "passed",
     "pytest": {
       "status": "passed",
-      "passed": 5130,
+      "passed": 5157,
       "skipped": 72,
-      "duration_seconds": 97.66
+      "duration_seconds": 102.62
     },
     "npm_audit_high_or_critical": 0
   }

@@ -23,11 +23,12 @@
 ## v1.4.12 안정성·평가 무결성 보강
 
 - ZIP/HWP/PDF 파싱은 손상된 압축 스트림과 지원하지 않는 ZIP 방식을 예측 가능한 `422` 오류로 종료합니다.
-- HTML/Markdown 표, 줄 수, 세분류 후보 수에 구조 예산을 적용해 작은 악성 입력이 작업 슬롯을 오래 점유하지 못하게 했습니다. 최종 configured-MCP 재검사는 저장 문서 206/206 파싱, KSA 555/555를 성공했고 직전 정상 실행 대비 비타이밍 필드 변경은 0건입니다.
+- HTML/Markdown 표, 줄 수, Markdown 총 1,000,000자, 세분류 후보 수에 구조 예산을 적용해 작은 악성 입력이나 압축 해제 후 팽창한 문서가 작업 슬롯을 오래 점유하지 못하게 했습니다. 최종 configured-MCP 재검사는 저장 문서 206/206 파싱, KSA 555/555를 성공했고 직전 정상 실행 대비 비타이밍 필드 변경은 0건입니다.
 - 요청 시간 초과 뒤에도 실제 스레드와 중첩 MCP 작업이 끝날 때까지 동시성 슬롯을 유지하며, MCP 상태 확인은 single-flight 캐시를 사용합니다.
 - KSA 병렬 조회는 첫 실제 오류를 보존하고 새 backlog를 중단합니다. 남은 작업이 실행 중이면 외부 요청 슬롯과 MCP 세션은 작업 종료 시점까지 유지됩니다.
 - 공정채용 평가 분할은 문서 SHA-256뿐 아니라 동일 공고의 모든 첨부를 connected component로 묶습니다. workflow/reference v2는 `posting_ids`, 재계산 가능한 `split_group_sha256`, split 정책을 필수로 검증합니다.
-- 평가기는 공식 세분류명과 8자리 코드를 독립 집합이 아닌 `(세분류명, 코드)` 쌍으로도 채점합니다. 또한 원시 parse 응답 digest와 실제 loopback 서버가 로드한 버전·코드·카탈로그 hash를 매 응답에서 fail-closed 검증해 결과 무결성에 묶습니다.
+- 평가기는 공식 세분류명과 8자리 코드를 독립 집합이 아닌 `(세분류명, 코드)` 쌍으로도 채점합니다. 또한 원시 parse 응답 digest와 실제 loopback 서버의 Python 소스·Node local/remote bridge·package/lock·배포 설정 hash를 runtime attestation v2로 매 응답에서 검증합니다. 각 문서에는 실제 local/bridge/fallback 실행 mode와 Kordoc·Node 버전도 별도 봉인합니다.
+- 비공개 정확도 채점기는 원문을 보내기 전에 loopback 서버의 `local-only` 정책과 동일 runtime bundle을 byte-free preflight로 확인합니다. 운영 bridge는 현재 Vercel 배포 URL과 실행 identity가 일치할 때만 같은 runtime으로 봉인됩니다.
 - 현재 source packet은 운영 파서와 같은 Kordoc 계열 추출을 사용하므로 `human_gold_eligible=false`입니다. 독립 원문 렌더/OCR 교차검증이 추가되기 전에는 AI adjudicated reference로만 해석해야 합니다.
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
@@ -162,7 +163,9 @@ Node 함수에서 Kordoc 4.9.1을 자체 실행합니다. 문서를 외부 변�
 `KORDOC_OFFLINE=1`로 외부 OCR·모델 다운로드를 막습니다. 운영 환경에는 저장소에
 기록하지 않은 `KORDOC_BRIDGE_ED25519_PRIVATE_KEY`를 설정하며, Node 함수는 저장소에
 고정한 공개키로 120초 유효 요청 서명을 검증합니다. 공유 비밀은 로컬·전환용
-fallback으로만 지원합니다. Kordoc 실행이 불가능해
+fallback으로만 지원합니다. Python 함수는 고정 production alias보다 현재 요청의
+`VERCEL_URL`을 우선해 Node 함수를 호출하고, 응답의 deployment URL·선택적 deployment
+ID·Git SHA가 현재 실행 환경과 일치해야만 runtime attestation을 결속합니다. Kordoc 실행이 불가능해
 대체 파서를 사용한 경우 응답과 화면에 실제 파서명을 표시하며, 표 좌표가 사라진
 분류표는 대분류·중분류를 제거한 뒤 공식 NCS MCP exact 결과만 세분류 후보로 확정합니다.
 
@@ -390,6 +393,18 @@ python scripts/prepare_ncs_recruitment_source_packets.py `
 들어가지 않습니다. 튜닝 문서와 연결된 공고의 모든 첨부도 함께 제외하고 감사 원장에
 문서·공고·split-group 해시를 남깁니다.
 
+후보 수집 범위 밖의 튜닝 문서까지 연결하려면 CSV/JSON 튜닝 매니페스트의 각 문서
+해시 행에 `posting_id` 또는 `posting_ids`를 함께 넣어야 합니다. 식별자가 없는 외부
+튜닝 해시가 있으면 component-wide 제외를 조용히 축소하지 않고 준비 단계가 실패합니다.
+튜닝 매니페스트를 지정하면서 `--exclude-tuning-overlap`를 생략하는 것도 실패합니다.
+`posting_id`는 비어 있지 않은 단일 문자열, `posting_ids`는 JSON에서는 중복·공백이 없는
+문자열 배열, CSV에서는 같은 형식의 유효한 JSON 배열이어야 하며 손상된 값은 거부합니다.
+원본 benchmark·source-index·각 tuning manifest와 정규화된 문서/공고 identity 집합,
+제외 후 records는 `candidate_exclusions.local.json`에 해시로 기록되고 seed integrity의
+여섯 번째 artifact로 봉인됩니다. 제외를 적용하지 않은 seed도 현재 integrity version과
+`applied=false` binding을 명시합니다. finalizer는 binding 제거를 legacy downgrade로
+수락하지 않으며, 검증한 제외 provenance를 최종 reference와 integrity에 다시 봉인합니다.
+
 두 답이 완료되면 다음처럼 일치 항목을 잠그고 불일치만 제3자에게 전달합니다.
 
 ```powershell
@@ -453,6 +468,13 @@ attestation을 가질 수 없습니다. 이 attestation은 변조 탐지를 위�
 
 봉인한 로컬 기준표는 실제 API를 통해 다시 파싱해 점수화합니다. HTTP 429나 전송 장애는
 문서 오답으로 넣지 않고 전체 실행을 중단하거나 제한된 `Retry-After` 재시도를 수행합니다.
+정확도 실행은 loopback 서버의 `local_node_subprocess` Kordoc과 직접 TXT만 허용합니다.
+인증된 운영 bridge나 HWP/PDF fallback으로 실행 mode가 바뀌면 문서 오답으로 낮추지 않고
+전체 점수화를 중단합니다. 채점기는 비공개 문서 bytes를 전송하기 전에
+`/api/jd/parse-review/runtime-policy`를 호출해 동일 runtime attestation과 `local-only`
+지원 여부를 확인하고, 이후 모든 요청에 강제 정책 헤더를 보냅니다. 서버는 이 헤더가
+있으면 원격 Kordoc bridge 호출을 금지합니다. 결과 writer도 비어 있지 않은 local-only
+parser execution identity 원장을 다시 검증한 뒤에만 점수 artifact를 씁니다.
 핵심 지표는 기준 상태가 `official_current`인 문서만의 세분류명·코드와 `(세분류명, 코드)`
 쌍 P/R/F1, 문서 exact입니다. 이름 집합과 코드 집합이 각각 같아도 쌍이 뒤바뀌면 오답이며,
 legacy·자체개발·미명시·모호·판독불가는 별도 all-state 진단으로 남깁니다.

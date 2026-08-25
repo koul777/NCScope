@@ -152,6 +152,12 @@ def _write_bundle(tmp_path: Path, mod):
         },
         "automatic_predictions_are_gold": False,
         "usage_policy": mod.USAGE_POLICY,
+        "candidate_exclusion_provenance": {
+            "seed_integrity_version": mod.SEED_INTEGRITY_VERSION,
+            "applied": False,
+            "version": mod.CANDIDATE_EXCLUSION_AUDIT_VERSION,
+            "audit_sha256": None,
+        },
         "review_provenance": {
             "reviewer_a": {
                 "reviewer_id": "agent-a",
@@ -229,6 +235,9 @@ def _write_bundle(tmp_path: Path, mod):
         "human_gold_attestation_sha256": mod.sha256_bytes(
             mod.canonical_json_bytes(reference["human_gold_attestation"])
         ),
+        "candidate_exclusion_provenance": reference[
+            "candidate_exclusion_provenance"
+        ],
         "automatic_predictions_are_gold": False,
         "usage_policy": mod.USAGE_POLICY,
         "local_only": True,
@@ -354,6 +363,66 @@ def test_scores_validation_and_holdout_without_calling_it_human_gold(
         "recall_pct",
         "f1_pct",
     ]
+
+
+def test_candidate_exclusion_provenance_is_required_and_source_bound(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(f"score_goldset_candidate_provenance_{tmp_path.name}")
+    missing = _write_bundle(tmp_path / "missing", mod)
+    missing_reference = missing["reference"]
+    missing_reference.pop("candidate_exclusion_provenance")
+    missing["reference_json"].write_text(
+        json.dumps(missing_reference, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    missing_integrity = json.loads(
+        missing["integrity"].read_text(encoding="utf-8")
+    )
+    missing_integrity.pop("candidate_exclusion_provenance")
+    missing_integrity["output_artifact_sha256"]["reference_json"] = (
+        mod.sha256_file(missing["reference_json"])
+    )
+    missing["integrity"].write_text(
+        json.dumps(missing_integrity, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(mod.GoldsetScoringError, match="missing or invalid"):
+        mod.validate_reference_bundle(
+            missing["reference_json"],
+            missing["reference_csv"],
+            missing["integrity"],
+        )
+
+    unbound = _write_bundle(tmp_path / "unbound", mod)
+    applied = {
+        "seed_integrity_version": mod.SEED_INTEGRITY_VERSION,
+        "applied": True,
+        "version": mod.CANDIDATE_EXCLUSION_AUDIT_VERSION,
+        "audit_sha256": "a" * 64,
+    }
+    unbound["reference"]["candidate_exclusion_provenance"] = applied
+    unbound["reference_json"].write_text(
+        json.dumps(unbound["reference"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    unbound_integrity = json.loads(
+        unbound["integrity"].read_text(encoding="utf-8")
+    )
+    unbound_integrity["candidate_exclusion_provenance"] = applied
+    unbound_integrity["output_artifact_sha256"]["reference_json"] = (
+        mod.sha256_file(unbound["reference_json"])
+    )
+    unbound["integrity"].write_text(
+        json.dumps(unbound_integrity, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(mod.GoldsetScoringError, match="not bound"):
+        mod.validate_reference_bundle(
+            unbound["reference_json"],
+            unbound["reference_csv"],
+            unbound["integrity"],
+        )
 
 
 def test_document_exact_requires_correct_official_name_code_pairing(
@@ -794,14 +863,117 @@ def test_parse_client_rejects_non_loopback_endpoints_without_network(
         mod.LocalParseReviewClient("http://127.0.0.1:8000/not-local-root")
 
 
+def test_private_bytes_are_not_uploaded_before_local_only_policy_preflight(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(f"score_goldset_preflight_{tmp_path.name}")
+    request_bodies: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_bodies.append(request.content)
+        return httpx.Response(404, json={"detail": "missing policy contract"})
+
+    client = mod.LocalParseReviewClient("http://127.0.0.1:8000")
+    client._client.close()
+    client._client = httpx.Client(
+        base_url="http://127.0.0.1:8000",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+    try:
+        with pytest.raises(
+            mod.GoldsetScoringInfrastructureError,
+            match="local-only parser policy",
+        ):
+            client.parse(
+                tmp_path / "private.pdf",
+                b"PRIVATE-DOCUMENT-BYTES",
+            )
+    finally:
+        client.close()
+
+    assert request_bodies == [b""]
+
+
+def test_runtime_attestation_v2_seals_parser_build_closure(tmp_path: Path) -> None:
+    mod = load_module(f"score_goldset_runtime_v2_{tmp_path.name}")
+
+    attestation = mod.local_runtime_attestation()
+
+    assert attestation["schema_version"] == (
+        "ncscope_evaluation_runtime_attestation_v2"
+    )
+    assert set(attestation["source_artifact_sha256"]) == {
+        "app_main",
+        "kordoc_parser",
+        "ncs_mcp_client",
+        "request_budget",
+        "official_detail_catalog",
+        "kordoc_local_runner",
+        "kordoc_serverless_bridge",
+        "package_json",
+        "package_lock",
+        "vercel_config",
+    }
+    assert attestation["parser_contract"]["package_version"] == "4.9.1"
+    declared_bundle_digest = attestation.pop("runtime_bundle_sha256")
+    assert declared_bundle_digest == mod.sha256_bytes(
+        mod.canonical_json_bytes(attestation)
+    )
+
+
+def test_private_scorer_rejects_remote_bridge_execution(tmp_path: Path) -> None:
+    mod = load_module(f"score_goldset_remote_mode_{tmp_path.name}")
+    client = mod.LocalParseReviewClient("http://127.0.0.1:8000")
+    try:
+        with pytest.raises(
+            mod.GoldsetScoringInfrastructureError,
+            match="not allowed for scoring",
+        ):
+            client._validate_parser_executions(
+                {
+                    "parser_executions": [
+                        {
+                            "schema_version": "ncscope_parser_execution_v1",
+                            "role": "selected",
+                            "parser": "kordoc",
+                            "mode": "authenticated_serverless_bridge",
+                            "parser_version": "4.9.1",
+                            "node_version": "24.0.0",
+                            "build_identity": {"kind": "vercel_deployment"},
+                            "runtime_bundle_sha256": (
+                                client._expected_runtime_attestation[
+                                    "runtime_bundle_sha256"
+                                ]
+                            ),
+                        }
+                    ]
+                }
+            )
+    finally:
+        client.close()
+
+
 def test_parse_client_retries_rate_limit_with_bounded_retry_after(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mod = load_module(f"score_goldset_retry_{tmp_path.name}")
     attempts = 0
 
-    def handler(_request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
+        if request.url.path.endswith("/runtime-policy"):
+            return httpx.Response(
+                200,
+                json={
+                    "evaluation_runtime_attestation": (
+                        client._expected_runtime_attestation
+                    ),
+                    "supported_parser_policies": ["local-only"],
+                    "policy_header": "x-ncscope-parser-policy",
+                },
+            )
+        assert request.headers["x-ncscope-parser-policy"] == "local-only"
         attempts += 1
         if attempts == 1:
             return httpx.Response(429, headers={"Retry-After": "999"})
@@ -812,6 +984,22 @@ def test_parse_client_retries_rate_limit_with_bounded_retry_after(
                 "evaluation_runtime_attestation": (
                     client._expected_runtime_attestation
                 ),
+                "parser_executions": [
+                    {
+                        "schema_version": "ncscope_parser_execution_v1",
+                        "role": "selected",
+                        "parser": "kordoc",
+                        "mode": "local_node_subprocess",
+                        "parser_version": client._expected_runtime_attestation[
+                            "parser_contract"
+                        ]["package_version"],
+                        "node_version": "24.0.0",
+                        "build_identity": {"kind": "local_source_bundle"},
+                        "runtime_bundle_sha256": client._expected_runtime_attestation[
+                            "runtime_bundle_sha256"
+                        ],
+                    }
+                ],
             },
         )
 
@@ -890,6 +1078,82 @@ def test_parse_client_finalize_rejects_sources_changed_during_run(
             client.finalize_runtime_attestation()
     finally:
         client.close()
+
+
+def test_score_writer_rejects_missing_parser_execution_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = load_module(f"score_goldset_writer_provenance_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+    score, source_paths = mod.evaluate_bundle(
+        seeded["reference_json"],
+        seeded["reference_csv"],
+        seeded["integrity"],
+        seeded["source_dir"],
+        lambda _path, _data: _not_stated_payload(),
+    )
+    attestation = mod.local_runtime_attestation()
+    scorer_sources = mod.local_scorer_source_artifact_sha256()
+    score["evaluation_runtime"] = {
+        "runtime_attested": True,
+        "server_runtime_attestation": attestation,
+        "scorer_source_artifact_sha256": scorer_sources,
+        "allowed_parser_modes": [
+            "builtin_plain_text",
+            "local_node_subprocess",
+        ],
+        "parser_execution_identities": [],
+    }
+    monkeypatch.setattr(mod, "local_runtime_attestation", lambda: attestation)
+    monkeypatch.setattr(
+        mod,
+        "local_scorer_source_artifact_sha256",
+        lambda: scorer_sources,
+    )
+    fake_root = tmp_path / "writer-root"
+    fake_root.mkdir()
+    mod.ROOT = fake_root
+    output_dir = fake_root / "tmp" / "score"
+
+    with pytest.raises(mod.GoldsetScoringError, match="execution provenance"):
+        mod.write_score_report(
+            score,
+            output_dir,
+            reference_paths={
+                "reference_json": seeded["reference_json"],
+                "reference_csv": seeded["reference_csv"],
+                "reference_integrity": seeded["integrity"],
+            },
+            source_paths=source_paths,
+        )
+    assert not output_dir.exists()
+
+    base_execution = {
+        "schema_version": "ncscope_parser_execution_v1",
+        "role": "selected",
+        "parser": "kordoc",
+        "mode": "local_node_subprocess",
+        "parser_version": attestation["parser_contract"]["package_version"],
+        "build_identity": {"kind": "local_source_bundle"},
+        "runtime_bundle_sha256": attestation["runtime_bundle_sha256"],
+    }
+    score["evaluation_runtime"]["parser_execution_identities"] = [
+        {**base_execution, "node_version": "24.14.0"},
+        {**base_execution, "node_version": "24.15.0"},
+    ]
+    with pytest.raises(mod.GoldsetScoringError, match="identity drifted"):
+        mod.write_score_report(
+            score,
+            output_dir,
+            reference_paths={
+                "reference_json": seeded["reference_json"],
+                "reference_csv": seeded["reference_csv"],
+                "reference_integrity": seeded["integrity"],
+            },
+            source_paths=source_paths,
+        )
+    assert not output_dir.exists()
 
 
 def test_infrastructure_error_aborts_score_instead_of_polluting_accuracy(

@@ -4,7 +4,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 300,
-      "includeFiles": "{app/**,scripts/kordoc_parse.mjs,STRUCTURED_INTERVIEW_GUIDE.md,ncs_sclass_codes_with_code_no.csv}",
+      "includeFiles": "{app/**,api/kordoc-parse.js,scripts/kordoc_parse.mjs,package.json,package-lock.json,vercel.json,STRUCTURED_INTERVIEW_GUIDE.md,ncs_sclass_codes_with_code_no.csv}",
       "excludeFiles": "{tests/**,docs/**,reports/**,.claude/**,.github/**}"
     },
     "api/kordoc-parse.js": {

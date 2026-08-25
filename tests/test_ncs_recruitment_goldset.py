@@ -277,6 +277,163 @@ def test_tuning_filter_removes_entire_shared_posting_component(tmp_path: Path) -
     assert len(audit["excluded_split_group_sha256"]) == 1
 
 
+def test_tuning_filter_links_out_of_window_tuning_posting_component(
+    tmp_path: Path,
+) -> None:
+    mod = load_module()
+    sibling_document = tmp_path / "sibling.pdf"
+    remaining_document = tmp_path / "remaining.pdf"
+    sibling_document.write_bytes(b"same posting sibling")
+    remaining_document.write_bytes(b"independent evaluation")
+    payload = benchmark_payload(["case-sibling", "case-remaining"])
+    payload["cases"][0]["posting_id"] = "shared-posting"
+    tuning_digest = "f" * 64
+
+    filtered_payload, filtered_rows, audit = mod.exclude_tuning_overlap_candidates(
+        payload,
+        [
+            source_row("case-sibling", sibling_document),
+            source_row("case-remaining", remaining_document),
+        ],
+        tuning_hashes={tuning_digest},
+        tuning_posting_ids_by_hash={tuning_digest: {"shared-posting"}},
+    )
+
+    assert [row["case_id"] for row in filtered_payload["cases"]] == [
+        "case-remaining"
+    ]
+    assert [row["case_id"] for row in filtered_rows] == ["case-remaining"]
+    assert audit["excluded_case_ids"] == ["case-sibling"]
+    assert audit["out_of_window_tuning_document_count"] == 1
+    assert audit["tuning_document_with_manifest_posting_id_count"] == 1
+    assert audit["component_graph_document_count"] == 3
+
+
+def test_tuning_filter_excludes_transitively_connected_posting_component(
+    tmp_path: Path,
+) -> None:
+    mod = load_module()
+    bridge_a = tmp_path / "bridge-a.pdf"
+    bridge_a_copy = tmp_path / "bridge-a-copy.pdf"
+    bridge_b = tmp_path / "bridge-b.pdf"
+    remaining = tmp_path / "remaining.pdf"
+    bridge_a.write_bytes(b"bridge attachment")
+    bridge_a_copy.write_bytes(b"bridge attachment")
+    bridge_b.write_bytes(b"second-hop attachment")
+    remaining.write_bytes(b"independent attachment")
+    payload = benchmark_payload(
+        ["case-a-p1", "case-a-p2", "case-b-p2", "case-remaining"]
+    )
+    payload["cases"][0]["posting_id"] = "posting-1"
+    payload["cases"][1]["posting_id"] = "posting-2"
+    payload["cases"][2]["posting_id"] = "posting-2"
+    tuning_digest = "e" * 64
+
+    filtered_payload, _, audit = mod.exclude_tuning_overlap_candidates(
+        payload,
+        [
+            source_row("case-a-p1", bridge_a),
+            source_row("case-a-p2", bridge_a_copy),
+            source_row("case-b-p2", bridge_b),
+            source_row("case-remaining", remaining),
+        ],
+        tuning_hashes={tuning_digest},
+        tuning_posting_ids_by_hash={tuning_digest: {"posting-1"}},
+    )
+
+    assert [row["case_id"] for row in filtered_payload["cases"]] == [
+        "case-remaining"
+    ]
+    assert audit["excluded_case_ids"] == [
+        "case-a-p1",
+        "case-a-p2",
+        "case-b-p2",
+    ]
+    assert audit["excluded_posting_ids"] == ["posting-1", "posting-2"]
+
+
+def test_tuning_filter_rejects_unidentified_out_of_window_tuning_document(
+    tmp_path: Path,
+) -> None:
+    mod = load_module()
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"first evaluation")
+    second.write_bytes(b"second evaluation")
+
+    with pytest.raises(
+        mod.GoldsetPreparationError,
+        match="outside the candidate corpus require posting_id",
+    ):
+        mod.exclude_tuning_overlap_candidates(
+            benchmark_payload(["case-first", "case-second"]),
+            [source_row("case-first", first), source_row("case-second", second)],
+            tuning_hashes={"f" * 64},
+        )
+
+
+def test_load_tuning_identities_preserves_document_posting_links(
+    tmp_path: Path,
+) -> None:
+    mod = load_module()
+    first_digest = "a" * 64
+    second_digest = "b" * 64
+    manifest = tmp_path / "tuning.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "document_sha256": first_digest,
+                        "posting_id": "posting-a",
+                    },
+                    {
+                        "posting_ids": ["posting-b", "posting-c"],
+                        "source": {"sha256": second_digest},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    hashes, posting_ids_by_hash = mod.load_tuning_identities([manifest])
+
+    assert hashes == {first_digest, second_digest}
+    assert posting_ids_by_hash == {
+        first_digest: {"posting-a"},
+        second_digest: {"posting-b", "posting-c"},
+    }
+    assert mod.load_tuning_hashes([manifest]) == hashes
+
+
+@pytest.mark.parametrize(
+    "posting_ids",
+    [
+        '["shared-posting"',
+        '"shared-posting"',
+        {"posting": "shared-posting"},
+        [""],
+        ["shared-posting", " shared-posting "],
+    ],
+)
+def test_load_tuning_identities_rejects_malformed_plural_posting_ids(
+    tmp_path: Path,
+    posting_ids: object,
+) -> None:
+    mod = load_module()
+    manifest = tmp_path / "tuning.json"
+    manifest.write_text(
+        json.dumps(
+            {"document_sha256": "a" * 64, "posting_ids": posting_ids}
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(mod.GoldsetPreparationError, match="posting_ids"):
+        mod.load_tuning_identities([manifest])
+
+
 def test_tuning_overlap_filter_rejects_all_candidates_removed(tmp_path: Path) -> None:
     mod = load_module()
     document = tmp_path / "tuning.pdf"
@@ -352,8 +509,18 @@ def test_write_workflow_emits_only_local_templates_with_artifact_hashes(
     }
     assert all(path.is_file() for path in paths.values())
     integrity = json.loads(paths["integrity"].read_text(encoding="utf-8"))
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
     assert integrity["local_only"] is True
     assert integrity["automatic_predictions_are_gold"] is False
+    assert integrity["seed_integrity_version"] == mod.SEED_INTEGRITY_VERSION
+    assert integrity["candidate_exclusion_audit"] == {
+        "applied": False,
+        "version": mod.CANDIDATE_EXCLUSION_AUDIT_VERSION,
+        "audit_sha256": None,
+    }
+    assert manifest["summary"]["candidate_exclusion_audit"] == integrity[
+        "candidate_exclusion_audit"
+    ]
     assert set(integrity["artifact_sha256"]) == {
         "manifest",
         "reviewer_a",
@@ -373,3 +540,194 @@ def test_write_workflow_emits_only_local_templates_with_artifact_hashes(
 
     with pytest.raises(mod.GoldsetPreparationError, match="tmp/"):
         mod.validate_local_output_dir(fake_root / "tracked-artifacts")
+
+
+def test_write_workflow_seals_attested_candidate_exclusion_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = load_module()
+    tuning_document = tmp_path / "tuning.pdf"
+    evaluation_document = tmp_path / "evaluation.pdf"
+    tuning_document.write_bytes(b"known tuning content")
+    evaluation_document.write_bytes(b"evaluation content")
+    tuning_digest = mod.sha256_file(tuning_document)
+    payload = benchmark_payload(["case-tuning", "case-evaluation"])
+    filtered_payload, filtered_rows, audit = mod.exclude_tuning_overlap_candidates(
+        payload,
+        [
+            source_row("case-tuning", tuning_document),
+            source_row("case-evaluation", evaluation_document),
+        ],
+        tuning_hashes={tuning_digest},
+        source_input_sha256={
+            "benchmark_json": "a" * 64,
+            "source_index": "b" * 64,
+            "tuning_manifests": ["c" * 64],
+        },
+    )
+    workflow = mod.build_workflow(
+        filtered_payload,
+        filtered_rows,
+        tuning_hashes={tuning_digest},
+    )
+    fake_root = tmp_path / "repository"
+    output_dir = fake_root / "tmp" / "goldset"
+    monkeypatch.setattr(mod, "ROOT", fake_root)
+
+    paths = mod.write_workflow(workflow, output_dir, exclusion_audit=audit)
+
+    assert "candidate_exclusions" in paths
+    integrity = json.loads(paths["integrity"].read_text(encoding="utf-8"))
+    assert integrity["artifact_count"] == 6
+    assert integrity["artifact_sha256"]["candidate_exclusions"] == mod.sha256_file(
+        paths["candidate_exclusions"]
+    )
+    sealed_audit = json.loads(
+        paths["candidate_exclusions"].read_text(encoding="utf-8")
+    )
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+    assert audit["input_artifacts_attested"] is True
+    assert len(audit["tuning_document_set_sha256"]) == 64
+    assert len(audit["tuning_identity_ledger_sha256"]) == 64
+    assert sealed_audit["remaining_records_sha256"] == workflow["summary"][
+        "records_sha256"
+    ]
+    assert manifest["summary"]["candidate_exclusion_audit"] == integrity[
+        "candidate_exclusion_audit"
+    ]
+    assert manifest["summary"]["candidate_exclusion_audit"]["audit_sha256"] == (
+        sealed_audit["audit_sha256"]
+    )
+
+    tampered = dict(audit)
+    tampered["excluded_case_count"] = 99
+    with pytest.raises(mod.GoldsetPreparationError, match="audit digest mismatch"):
+        mod.write_workflow(workflow, output_dir, exclusion_audit=tampered)
+
+
+def test_main_seals_raw_inputs_and_rejects_empty_exclusion_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = load_module()
+    fake_root = tmp_path / "repository"
+    private_dir = fake_root / "private"
+    private_dir.mkdir(parents=True)
+    tuning_document = private_dir / "tuning.pdf"
+    evaluation_document = private_dir / "evaluation.pdf"
+    tuning_document.write_bytes(b"known tuning")
+    evaluation_document.write_bytes(b"new evaluation")
+    benchmark_path = private_dir / "benchmark.json"
+    payload = benchmark_payload(["case-tuning", "case-evaluation"])
+    benchmark_path.write_text(json.dumps(payload), encoding="utf-8")
+    source_index_path = private_dir / "source.csv"
+    with source_index_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["case_id", "local_document_path"],
+        )
+        writer.writeheader()
+        writer.writerows(
+            [
+                {
+                    "case_id": "case-tuning",
+                    "local_document_path": str(tuning_document),
+                },
+                {
+                    "case_id": "case-evaluation",
+                    "local_document_path": str(evaluation_document),
+                },
+            ]
+        )
+    tuning_manifest_path = private_dir / "tuning.json"
+    tuning_manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "document_sha256": mod.sha256_file(tuning_document),
+                    "posting_id": payload["cases"][0]["posting_id"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_dir = fake_root / "tmp" / "goldset"
+    monkeypatch.setattr(mod, "ROOT", fake_root)
+
+    assert mod.main(
+        [
+            str(benchmark_path),
+            str(source_index_path),
+            "--tuning-manifest",
+            str(tuning_manifest_path),
+            "--exclude-tuning-overlap",
+            "--output-dir",
+            str(output_dir),
+        ]
+    ) == 0
+
+    audit = json.loads(
+        (output_dir / "candidate_exclusions.local.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["input_artifact_sha256"] == {
+        "benchmark_json": mod.sha256_file(benchmark_path),
+        "source_index": mod.sha256_file(source_index_path),
+        "tuning_manifests": [mod.sha256_file(tuning_manifest_path)],
+    }
+    assert audit["excluded_case_ids"] == ["case-tuning"]
+
+    with pytest.raises(
+        mod.GoldsetPreparationError,
+        match="--tuning-manifest requires --exclude-tuning-overlap",
+    ):
+        mod.main(
+            [
+                str(benchmark_path),
+                str(source_index_path),
+                "--tuning-manifest",
+                str(tuning_manifest_path),
+                "--output-dir",
+                str(fake_root / "tmp" / "missing-exclusion-flag"),
+            ]
+        )
+
+    tuning_manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "document_sha256": mod.sha256_file(tuning_document),
+                    "posting_ids": '["shared-posting"',
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(mod.GoldsetPreparationError, match="posting_ids"):
+        mod.main(
+            [
+                str(benchmark_path),
+                str(source_index_path),
+                "--tuning-manifest",
+                str(tuning_manifest_path),
+                "--exclude-tuning-overlap",
+                "--output-dir",
+                str(fake_root / "tmp" / "malformed-posting-ids"),
+            ]
+        )
+
+    with pytest.raises(
+        mod.GoldsetPreparationError,
+        match="requires a non-empty tuning manifest",
+    ):
+        mod.main(
+            [
+                str(benchmark_path),
+                str(source_index_path),
+                "--exclude-tuning-overlap",
+                "--output-dir",
+                str(fake_root / "tmp" / "missing-manifest"),
+            ]
+        )

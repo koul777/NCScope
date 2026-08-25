@@ -17,7 +17,7 @@ const ED25519_PUBLIC_KEY = crypto.createPublicKey({
   format: "der",
   type: "spki",
 });
-let parsePromise;
+let parserModulePromise;
 
 const sendJson = (res, status, payload) => {
   res.statusCode = status;
@@ -144,11 +144,22 @@ const clean = (value, depth = 0, seen = new WeakSet()) => {
   return value;
 };
 
-const getKordocParse = async () => {
-  if (!parsePromise) {
-    parsePromise = import("kordoc").then((module) => module.parse);
+const getKordocModule = async () => {
+  if (!parserModulePromise) {
+    parserModulePromise = import("kordoc");
   }
-  return parsePromise;
+  return parserModulePromise;
+};
+
+const buildIdentity = () => {
+  const identity = { kind: "vercel_deployment" };
+  const deploymentUrl = String(process.env.VERCEL_URL || "").trim().toLowerCase();
+  const deploymentId = String(process.env.VERCEL_DEPLOYMENT_ID || "").trim();
+  const gitCommitSha = String(process.env.VERCEL_GIT_COMMIT_SHA || "").trim().toLowerCase();
+  if (/^[a-z0-9.-]+\.vercel\.app$/.test(deploymentUrl)) identity.deployment_url = deploymentUrl;
+  if (/^[A-Za-z0-9_-]{1,128}$/.test(deploymentId)) identity.deployment_id = deploymentId;
+  if (/^[a-f0-9]{40}$/.test(gitCommitSha)) identity.git_commit_sha = gitCommitSha;
+  return identity;
 };
 
 export default async function handler(req, res) {
@@ -201,9 +212,18 @@ export default async function handler(req, res) {
         reason_code: signatureReview.reason,
       });
     }
+    const executionBuildIdentity = buildIdentity();
+    if (!executionBuildIdentity.deployment_url) {
+      return sendJson(res, 503, {
+        success: false,
+        code: "deployment_identity_unavailable",
+      });
+    }
 
-    const parse = await getKordocParse();
-    if (typeof parse !== "function") {
+    const parserModule = await getKordocModule();
+    const parse = parserModule?.parse;
+    const actualVersion = String(parserModule?.VERSION || "").trim();
+    if (typeof parse !== "function" || actualVersion !== KORDOC_VERSION) {
       return sendJson(res, 503, { success: false, code: "parser_unavailable" });
     }
     const options = req.headers["x-ncscope-ocr"] === "1" ? { ocr: true } : {};
@@ -211,7 +231,16 @@ export default async function handler(req, res) {
     const response = clean({
       success: parsed?.success !== false,
       parser: "kordoc",
-      parser_version: KORDOC_VERSION,
+      parser_version: actualVersion,
+      parser_execution: {
+        schema_version: "ncscope_parser_execution_v1",
+        role: "selected",
+        parser: "kordoc",
+        mode: "authenticated_serverless_bridge",
+        parser_version: actualVersion,
+        node_version: process.versions.node,
+        build_identity: executionBuildIdentity,
+      },
       markdown: parsed?.markdown || "",
       blocks: parsed?.blocks || [],
       metadata: parsed?.metadata || {},

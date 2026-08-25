@@ -204,7 +204,6 @@ def test_official_current_requires_exact_catalog_name_code_pair(
             adjudication,
         )
 
-
 def test_legacy_state_rejects_names_that_are_all_current_official(
     tmp_path: Path,
 ) -> None:
@@ -761,6 +760,150 @@ def test_manifest_split_integrity_do_not_tune_and_prediction_schema_are_sealed(
         )
 
 
+def test_seed_integrity_requires_and_verifies_candidate_exclusion_audit(
+    tmp_path: Path,
+) -> None:
+    mod, paths, manifest, integrity, reviewer_a, reviewer_b, adjudication = seed(
+        tmp_path
+    )
+    for row in reviewer_a:
+        complete_review(row, reviewer_id="agent-a")
+    for row in reviewer_b:
+        complete_review(row, reviewer_id="agent-b")
+    candidate_exclusions = paths["manifest"].parent / "candidate_exclusions.local.json"
+    tuning_digest = "e" * 64
+    excluded_document_digest = "f" * 64
+    tuning_identities = [
+        {"document_sha256": tuning_digest, "posting_ids": ["posting-excluded"]}
+    ]
+    benchmark_payload_digest = "9" * 64
+    audit = {
+        "audit_version": mod.CANDIDATE_EXCLUSION_AUDIT_VERSION,
+        "policy": "component_wide_known_tuning_exclusion_before_blind_review",
+        "input_artifacts_attested": True,
+        "input_artifact_sha256": {
+            "benchmark_json": "a" * 64,
+            "source_index": "b" * 64,
+            "tuning_manifests": ["c" * 64],
+        },
+        "tuning_identities": tuning_identities,
+        "tuning_document_set_sha256": mod.sha256_bytes(
+            mod.canonical_json_bytes([tuning_digest])
+        ),
+        "tuning_identity_ledger_sha256": mod.sha256_bytes(
+            mod.canonical_json_bytes(tuning_identities)
+        ),
+        "tuning_hash_count_checked": 1,
+        "remaining_records_sha256": manifest["summary"]["records_sha256"],
+        "remaining_benchmark_payload_sha256": benchmark_payload_digest,
+        "remaining_source_index_sha256": "d" * 64,
+        "remaining_case_count": 2,
+        "remaining_unique_document_count": 2,
+        "excluded_case_ids": ["case-excluded"],
+        "excluded_document_sha256": [excluded_document_digest],
+        "excluded_case_count": 1,
+        "excluded_unique_document_count": 1,
+        "original_case_count": 3,
+        "original_unique_document_count": 3,
+    }
+    audit["audit_sha256"] = mod.sha256_bytes(mod.canonical_json_bytes(audit))
+    candidate_exclusions.write_text(json.dumps(audit), encoding="utf-8")
+    binding = {
+        "applied": True,
+        "version": mod.CANDIDATE_EXCLUSION_AUDIT_VERSION,
+        "audit_sha256": audit["audit_sha256"],
+    }
+    manifest["summary"]["candidate_exclusion_audit"] = binding
+    manifest["summary"]["benchmark_payload_sha256"] = benchmark_payload_digest
+    paths["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+    integrity["candidate_exclusion_audit"] = binding
+    integrity["artifact_sha256"]["manifest"] = mod.sha256_file(paths["manifest"])
+    integrity["artifact_sha256"]["candidate_exclusions"] = mod.sha256_file(
+        candidate_exclusions
+    )
+    integrity["artifact_count"] = 6
+
+    result = finalize_call(
+        mod,
+        paths,
+        manifest,
+        integrity,
+        reviewer_a,
+        reviewer_b,
+        adjudication,
+    )
+    assert result["summary"]["record_count"] == 2
+    assert result["candidate_exclusion_provenance"] == {
+        "seed_integrity_version": mod.SEED_INTEGRITY_VERSION,
+        **binding,
+    }
+
+    candidate_exclusions.write_text("{}", encoding="utf-8")
+    with pytest.raises(
+        mod.GoldsetFinalizationError,
+        match="candidate exclusions integrity hash mismatch",
+    ):
+        finalize_call(
+            mod,
+            paths,
+            manifest,
+            integrity,
+            reviewer_a,
+            reviewer_b,
+            adjudication,
+        )
+
+    tampered_audit = dict(audit)
+    tampered_audit["original_case_count"] = 4
+    candidate_exclusions.write_text(json.dumps(tampered_audit), encoding="utf-8")
+    integrity["artifact_sha256"]["candidate_exclusions"] = mod.sha256_file(
+        candidate_exclusions
+    )
+    with pytest.raises(
+        mod.GoldsetFinalizationError,
+        match="semantic audit hash mismatch",
+    ):
+        finalize_call(
+            mod,
+            paths,
+            manifest,
+            integrity,
+            reviewer_a,
+            reviewer_b,
+            adjudication,
+        )
+
+
+def test_seed_integrity_rejects_candidate_exclusion_binding_downgrade(
+    tmp_path: Path,
+) -> None:
+    mod, paths, manifest, integrity, reviewer_a, reviewer_b, adjudication = seed(
+        tmp_path
+    )
+    for row in reviewer_a:
+        complete_review(row, reviewer_id="agent-a")
+    for row in reviewer_b:
+        complete_review(row, reviewer_id="agent-b")
+
+    manifest["summary"].pop("candidate_exclusion_audit")
+    paths["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+    integrity.pop("candidate_exclusion_audit")
+    integrity["artifact_sha256"]["manifest"] = mod.sha256_file(paths["manifest"])
+
+    with pytest.raises(
+        mod.GoldsetFinalizationError,
+        match="candidate exclusion audit binding is required",
+    ):
+        finalize_call(
+            mod,
+            paths,
+            manifest,
+            integrity,
+            reviewer_a,
+            reviewer_b,
+            adjudication,
+        )
+
 def test_write_reference_is_local_only_and_hashes_every_input_output(
     tmp_path: Path,
 ) -> None:
@@ -804,6 +947,9 @@ def test_write_reference_is_local_only_and_hashes_every_input_output(
     assert final_integrity["human_gold_attestation_sha256"] == mod.sha256_bytes(
         mod.canonical_json_bytes(final_integrity["human_gold_attestation"])
     )
+    assert final_integrity["candidate_exclusion_provenance"] == reference[
+        "candidate_exclusion_provenance"
+    ]
     assert set(final_integrity["source_artifact_sha256"]) == set(source_paths)
     assert set(final_integrity["output_artifact_sha256"]) == {
         "reference_json",

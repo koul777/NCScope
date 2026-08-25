@@ -1,4 +1,8 @@
-import { parse } from "kordoc";
+import { parse, VERSION } from "kordoc";
+
+if (!/^\d+\.\d+\.\d+$/.test(String(VERSION || ""))) {
+  throw new Error("invalid_kordoc_version");
+}
 
 const input = await new Promise((resolve, reject) => {
   const chunks = [];
@@ -35,6 +39,17 @@ const clean = (value, depth = 0) => {
 
 const response = {
   success: parsed?.success !== false,
+  parser: "kordoc",
+  parser_version: VERSION,
+  parser_execution: {
+    schema_version: "ncscope_parser_execution_v1",
+    role: "selected",
+    parser: "kordoc",
+    mode: "local_node_subprocess",
+    parser_version: VERSION,
+    node_version: process.versions.node,
+    build_identity: { kind: "local_source_bundle" },
+  },
   markdown: parsed?.markdown || "",
   blocks: parsed?.blocks || [],
   metadata: parsed?.metadata || {},

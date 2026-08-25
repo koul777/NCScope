@@ -17,6 +17,22 @@ class _FakeResponse:
     status_code = 200
 
     def __init__(self, payload: dict) -> None:
+        if payload.get("parser") == "kordoc" and "parser_execution" not in payload:
+            payload = {
+                **payload,
+                "parser_execution": {
+                    "schema_version": "ncscope_parser_execution_v1",
+                    "role": "selected",
+                    "parser": "kordoc",
+                    "mode": "authenticated_serverless_bridge",
+                    "parser_version": payload.get("parser_version"),
+                    "node_version": "24.0.0",
+                    "build_identity": {
+                        "kind": "vercel_deployment",
+                        "deployment_url": "ncscope-preview.vercel.app",
+                    },
+                },
+            }
         self._payload = payload
         self.content = json.dumps(payload).encode("utf-8")
 
@@ -149,6 +165,35 @@ def test_vercel_bridge_refuses_to_run_without_shared_secret(monkeypatch: pytest.
     assert "vercel" not in str(caught.value).casefold()
 
 
+def test_local_only_parse_never_calls_remote_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote_calls: list[bytes] = []
+
+    def local_unavailable(*_args, **_kwargs):
+        raise kordoc_parser._LocalKordocUnavailable("missing local runtime")
+
+    def remote_parse(data: bytes, **_kwargs):
+        remote_calls.append(data)
+        return {"success": True}
+
+    monkeypatch.setattr(kordoc_parser, "_parse_with_local_kordoc", local_unavailable)
+    monkeypatch.setattr(kordoc_parser, "_parse_with_remote_kordoc", remote_parse)
+    monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
+
+    with pytest.raises(
+        kordoc_parser.KordocParseError,
+        match="remote parsing is disabled",
+    ):
+        kordoc_parser.parse_with_kordoc(
+            b"PRIVATE-DOCUMENT-BYTES",
+            filename="private.pdf",
+            allow_remote=False,
+        )
+
+    assert remote_calls == []
+
+
 def test_vercel_bridge_refuses_non_ascii_header_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
@@ -188,6 +233,22 @@ def test_external_insecure_bridge_url_is_not_accepted(monkeypatch: pytest.Monkey
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("KORDOC_BRIDGE_URL", "http://example.com/api/kordoc-parse")
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "test-shared-secret")
+    monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("VERCEL_URL", raising=False)
+
+    with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):
+        kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
+
+
+def test_external_non_vercel_bridge_host_is_not_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
+    monkeypatch.setenv(
+        "KORDOC_BRIDGE_URL",
+        "https://example.com/api/kordoc-parse",
+    )
+    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "A" * 32)
     monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("VERCEL_URL", raising=False)
 
@@ -244,7 +305,12 @@ def test_unknown_parser_metadata_cannot_be_reflected_to_the_ui() -> None:
 def test_zip_review_preserves_each_member_parser_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     from app import main
 
-    def fake_parse(data: bytes, filename: str, _label: str) -> dict:
+    def fake_parse(
+        data: bytes,
+        filename: str,
+        _label: str,
+        **_kwargs,
+    ) -> dict:
         if filename.endswith(".pdf"):
             return {
                 "markdown": "세분류: 프로젝트관리",
@@ -268,12 +334,123 @@ def test_zip_review_preserves_each_member_parser_provenance(monkeypatch: pytest.
 
     assert parsed["parser"] == "mixed_document_parsers"
     assert "parser_version" not in parsed
-    assert parsed["metadata"]["members"] == [
-        {
-            "filename": "jd.pdf",
-            "suffix": ".pdf",
-            "parser": "kordoc",
-            "parser_version": "4.9.1",
-        },
-        {"filename": "notes.txt", "suffix": ".txt", "parser": "plain_text"},
+    assert [row["parser"] for row in parsed["metadata"]["members"]] == [
+        "kordoc",
+        "plain_text",
     ]
+    assert parsed["metadata"]["members"][1]["parser_execution"]["mode"] == (
+        "builtin_plain_text"
+    )
+    assert parsed["parser_executions"][0]["mode"] == "builtin_plain_text"
+
+
+def test_parser_execution_is_bound_to_static_runtime_bundle() -> None:
+    from app import main
+
+    structured = {
+        "parser_executions": [
+            {
+                "schema_version": "ncscope_parser_execution_v1",
+                "role": "selected",
+                "parser": "kordoc",
+                "mode": "local_node_subprocess",
+                "parser_version": "4.9.1",
+                "node_version": "24.0.0",
+                "build_identity": {"kind": "local_source_bundle"},
+            }
+        ]
+    }
+
+    main._bind_parser_executions_to_runtime(structured)
+
+    assert structured["parser_executions"][0]["runtime_bundle_sha256"] == (
+        main._evaluation_runtime_attestation()["runtime_bundle_sha256"]
+    )
+
+    structured["parser_executions"][0]["parser_version"] = "0.0.0"
+    with pytest.raises(main.HTTPException) as caught:
+        main._bind_parser_executions_to_runtime(structured)
+    assert getattr(caught.value, "status_code", None) == 503
+
+    wrong_kind = {
+        "parser_executions": [
+            {
+                "schema_version": "ncscope_parser_execution_v1",
+                "role": "selected",
+                "parser": "kordoc",
+                "mode": "local_node_subprocess",
+                "parser_version": "4.9.1",
+                "node_version": "24.0.0",
+                "build_identity": {"kind": "not_the_execution_source"},
+            }
+        ]
+    }
+    with pytest.raises(main.HTTPException) as caught:
+        main._bind_parser_executions_to_runtime(wrong_kind)
+    assert getattr(caught.value, "status_code", None) == 503
+
+
+def test_remote_execution_must_match_current_vercel_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main
+
+    monkeypatch.setenv("VERCEL_URL", "current-preview.vercel.app")
+    structured = {
+        "parser_executions": [
+            {
+                "schema_version": "ncscope_parser_execution_v1",
+                "role": "selected",
+                "parser": "kordoc",
+                "mode": "authenticated_serverless_bridge",
+                "parser_version": "4.9.1",
+                "node_version": "24.0.0",
+                "build_identity": {
+                    "kind": "vercel_deployment",
+                    "deployment_url": "stale-preview.vercel.app",
+                },
+            }
+        ]
+    }
+
+    with pytest.raises(main.HTTPException) as caught:
+        main._bind_parser_executions_to_runtime(structured)
+    assert getattr(caught.value, "status_code", None) == 503
+
+
+def test_kordoc_result_rejects_missing_or_stale_execution_identity() -> None:
+    base = {
+        "success": True,
+        "parser": "kordoc",
+        "parser_version": "4.9.1",
+        "parser_execution": {
+            "schema_version": "ncscope_parser_execution_v1",
+            "role": "selected",
+            "parser": "kordoc",
+            "mode": "local_node_subprocess",
+            "parser_version": "4.9.1",
+            "node_version": "24.0.0",
+            "build_identity": {"kind": "local_source_bundle"},
+        },
+    }
+    accepted = kordoc_parser._stamp_kordoc_result(
+        base,
+        expected_mode="local_node_subprocess",
+    )
+    assert accepted["parser_execution"]["node_version"] == "24.0.0"
+
+    stale = json.loads(json.dumps(base))
+    stale["parser_version"] = "4.8.0"
+    with pytest.raises(kordoc_parser.KordocParseError, match="execution provenance"):
+        kordoc_parser._stamp_kordoc_result(
+            stale,
+            expected_mode="local_node_subprocess",
+        )
+
+    missing = dict(base)
+    missing.pop("parser_execution")
+    with pytest.raises(kordoc_parser.KordocParseError, match="execution provenance"):
+        kordoc_parser._stamp_kordoc_result(
+            missing,
+            expected_mode="local_node_subprocess",
+        )

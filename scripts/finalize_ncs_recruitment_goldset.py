@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset"
 DEFAULT_OUTPUT_DIR = DEFAULT_INPUT_DIR / "final"
 WORKFLOW_VERSION = "ncs_recruitment_human_goldset_v2"
+SEED_INTEGRITY_VERSION = "ncs_recruitment_seed_integrity_v2"
+CANDIDATE_EXCLUSION_AUDIT_VERSION = (
+    "ncs_recruitment_candidate_exclusion_audit_v1"
+)
 FINAL_SCHEMA_VERSION = "ncs_recruitment_adjudicated_reference_v2"
 SOURCE_PACKET_VERSION = "ncs_recruitment_source_only_review_packet_v2"
 USAGE_POLICY = "evaluation_only_no_training_or_rule_tuning"
@@ -382,6 +386,7 @@ def _validate_seed(
     *,
     manifest_path: Path,
     do_not_tune_path: Path,
+    candidate_exclusions_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     summary = manifest.get("summary")
     records = manifest.get("records")
@@ -501,6 +506,8 @@ def _validate_seed(
     if summary.get("records_sha256") != records_hash:
         raise GoldsetFinalizationError("manifest records SHA-256 mismatch")
 
+    if integrity.get("seed_integrity_version") != SEED_INTEGRITY_VERSION:
+        raise GoldsetFinalizationError("seed integrity version mismatch")
     if integrity.get("workflow_version") != WORKFLOW_VERSION:
         raise GoldsetFinalizationError("seed integrity workflow version mismatch")
     if integrity.get("local_only") is not True:
@@ -512,6 +519,50 @@ def _validate_seed(
     artifact_hashes = integrity.get("artifact_sha256")
     if not isinstance(artifact_hashes, dict):
         raise GoldsetFinalizationError("seed artifact hashes are missing")
+    base_artifact_names = {
+        "manifest",
+        "reviewer_a",
+        "reviewer_b",
+        "adjudication",
+        "do_not_tune",
+    }
+    summary_exclusion_binding = summary.get("candidate_exclusion_audit")
+    integrity_exclusion_binding = integrity.get("candidate_exclusion_audit")
+    if summary_exclusion_binding != integrity_exclusion_binding:
+        raise GoldsetFinalizationError(
+            "candidate exclusion audit binding mismatch"
+        )
+    if not isinstance(summary_exclusion_binding, dict) or set(
+        summary_exclusion_binding
+    ) != {"applied", "version", "audit_sha256"}:
+        raise GoldsetFinalizationError(
+            "candidate exclusion audit binding is required and invalid"
+        )
+    if (
+        not isinstance(summary_exclusion_binding.get("applied"), bool)
+        or summary_exclusion_binding.get("version")
+        != CANDIDATE_EXCLUSION_AUDIT_VERSION
+    ):
+        raise GoldsetFinalizationError(
+            "candidate exclusion audit binding is invalid"
+        )
+    exclusion_applied = summary_exclusion_binding["applied"]
+    if exclusion_applied:
+        _require_sha256(
+            summary_exclusion_binding.get("audit_sha256"),
+            field="candidate exclusion audit binding digest",
+        )
+    elif summary_exclusion_binding.get("audit_sha256") is not None:
+        raise GoldsetFinalizationError(
+            "unapplied candidate exclusion audit must not declare a digest"
+        )
+    expected_artifact_names = base_artifact_names | (
+        {"candidate_exclusions"} if exclusion_applied else set()
+    )
+    if set(artifact_hashes) != expected_artifact_names:
+        raise GoldsetFinalizationError("seed artifact hash set is invalid")
+    if integrity.get("artifact_count") != len(expected_artifact_names):
+        raise GoldsetFinalizationError("seed artifact count is invalid")
     for artifact_name, artifact_path in (
         ("manifest", manifest_path),
         ("do_not_tune", do_not_tune_path),
@@ -525,6 +576,194 @@ def _validate_seed(
     for name in ("reviewer_a", "reviewer_b", "adjudication"):
         _require_sha256(
             artifact_hashes.get(name), field=f"integrity.artifact_sha256.{name}"
+        )
+    if exclusion_applied:
+        if candidate_exclusions_path is None:
+            candidate_exclusions_path = (
+                manifest_path.parent / "candidate_exclusions.local.json"
+            ).resolve()
+        if not candidate_exclusions_path.is_file():
+            raise GoldsetFinalizationError(
+                "candidate exclusions path is required by seed integrity"
+            )
+        expected_candidate_exclusions_hash = _require_sha256(
+            artifact_hashes.get("candidate_exclusions"),
+            field="integrity.artifact_sha256.candidate_exclusions",
+        )
+        if sha256_file(candidate_exclusions_path) != expected_candidate_exclusions_hash:
+            raise GoldsetFinalizationError(
+                "candidate exclusions integrity hash mismatch"
+            )
+        exclusion_audit = _read_json_object(
+            candidate_exclusions_path,
+            label="candidate exclusions",
+        )
+        declared_audit_sha256 = _require_sha256(
+            exclusion_audit.get("audit_sha256"),
+            field="candidate exclusions audit_sha256",
+        )
+        audit_without_digest = dict(exclusion_audit)
+        audit_without_digest.pop("audit_sha256", None)
+        if sha256_bytes(canonical_json_bytes(audit_without_digest)) != declared_audit_sha256:
+            raise GoldsetFinalizationError(
+                "candidate exclusions semantic audit hash mismatch"
+            )
+        if (
+            declared_audit_sha256
+            != summary_exclusion_binding["audit_sha256"]
+            or exclusion_audit.get("audit_version")
+            != CANDIDATE_EXCLUSION_AUDIT_VERSION
+            or exclusion_audit.get("policy")
+            != "component_wide_known_tuning_exclusion_before_blind_review"
+        ):
+            raise GoldsetFinalizationError(
+                "candidate exclusions audit contract mismatch"
+            )
+        if exclusion_audit.get("input_artifacts_attested") is not True:
+            raise GoldsetFinalizationError(
+                "candidate exclusions input artifacts are not attested"
+            )
+        input_hashes = exclusion_audit.get("input_artifact_sha256")
+        if not isinstance(input_hashes, dict) or set(input_hashes) != {
+            "benchmark_json",
+            "source_index",
+            "tuning_manifests",
+        }:
+            raise GoldsetFinalizationError(
+                "candidate exclusions input hash ledger is invalid"
+            )
+        for name in ("benchmark_json", "source_index"):
+            _require_sha256(
+                input_hashes.get(name),
+                field=f"candidate exclusions input.{name}",
+            )
+        tuning_manifest_hashes = input_hashes.get("tuning_manifests")
+        if (
+            not isinstance(tuning_manifest_hashes, list)
+            or not tuning_manifest_hashes
+            or tuning_manifest_hashes != sorted(tuning_manifest_hashes)
+        ):
+            raise GoldsetFinalizationError(
+                "candidate exclusions tuning manifest hashes are invalid"
+            )
+        for index, digest in enumerate(tuning_manifest_hashes):
+            _require_sha256(
+                digest,
+                field=f"candidate exclusions tuning manifest[{index}]",
+            )
+        tuning_identities = exclusion_audit.get("tuning_identities")
+        if not isinstance(tuning_identities, list) or not tuning_identities:
+            raise GoldsetFinalizationError(
+                "candidate exclusions tuning identity ledger is empty"
+            )
+        normalized_tuning_identities: list[dict[str, Any]] = []
+        for index, identity in enumerate(tuning_identities):
+            if not isinstance(identity, dict) or set(identity) != {
+                "document_sha256",
+                "posting_ids",
+            }:
+                raise GoldsetFinalizationError(
+                    "candidate exclusions tuning identity is invalid"
+                )
+            digest = _require_sha256(
+                identity.get("document_sha256"),
+                field=f"candidate exclusions tuning identity[{index}]",
+            )
+            posting_ids = identity.get("posting_ids")
+            if (
+                not isinstance(posting_ids, list)
+                or any(not str(value or "").strip() for value in posting_ids)
+                or posting_ids != sorted(set(posting_ids))
+            ):
+                raise GoldsetFinalizationError(
+                    "candidate exclusions tuning posting IDs are invalid"
+                )
+            normalized_tuning_identities.append(
+                {"document_sha256": digest, "posting_ids": posting_ids}
+            )
+        if normalized_tuning_identities != sorted(
+            normalized_tuning_identities,
+            key=lambda row: row["document_sha256"],
+        ) or len({row["document_sha256"] for row in normalized_tuning_identities}) != len(
+            normalized_tuning_identities
+        ):
+            raise GoldsetFinalizationError(
+                "candidate exclusions tuning identity order is invalid"
+            )
+        if _require_sha256(
+            exclusion_audit.get("tuning_identity_ledger_sha256"),
+            field="candidate exclusions tuning identity ledger digest",
+        ) != sha256_bytes(canonical_json_bytes(normalized_tuning_identities)):
+            raise GoldsetFinalizationError(
+                "candidate exclusions tuning identity ledger mismatch"
+            )
+        tuning_document_hashes = sorted(
+            row["document_sha256"] for row in normalized_tuning_identities
+        )
+        if _require_sha256(
+            exclusion_audit.get("tuning_document_set_sha256"),
+            field="candidate exclusions tuning document set digest",
+        ) != sha256_bytes(canonical_json_bytes(tuning_document_hashes)):
+            raise GoldsetFinalizationError(
+                "candidate exclusions tuning document set mismatch"
+            )
+        if exclusion_audit.get("tuning_hash_count_checked") != len(
+            normalized_tuning_identities
+        ):
+            raise GoldsetFinalizationError(
+                "candidate exclusions tuning identity count mismatch"
+            )
+        if (
+            exclusion_audit.get("remaining_records_sha256") != records_hash
+            or exclusion_audit.get("remaining_benchmark_payload_sha256")
+            != summary.get("benchmark_payload_sha256")
+            or exclusion_audit.get("remaining_case_count") != len(case_ids)
+            or exclusion_audit.get("remaining_unique_document_count") != len(digests)
+        ):
+            raise GoldsetFinalizationError(
+                "candidate exclusions remaining corpus binding mismatch"
+            )
+        _require_sha256(
+            exclusion_audit.get("remaining_source_index_sha256"),
+            field="candidate exclusions remaining source index digest",
+        )
+        excluded_case_ids = exclusion_audit.get("excluded_case_ids")
+        excluded_document_hashes = exclusion_audit.get("excluded_document_sha256")
+        if (
+            not isinstance(excluded_case_ids, list)
+            or excluded_case_ids != sorted(set(excluded_case_ids))
+            or not isinstance(excluded_document_hashes, list)
+            or excluded_document_hashes != sorted(set(excluded_document_hashes))
+        ):
+            raise GoldsetFinalizationError(
+                "candidate exclusions excluded corpus ledger is invalid"
+            )
+        for index, digest in enumerate(excluded_document_hashes):
+            _require_sha256(
+                digest,
+                field=f"candidate exclusions excluded document[{index}]",
+            )
+        if set(excluded_case_ids).intersection(case_ids) or set(
+            excluded_document_hashes
+        ).intersection(digests):
+            raise GoldsetFinalizationError(
+                "candidate exclusions overlap the remaining manifest"
+            )
+        if (
+            exclusion_audit.get("excluded_case_count") != len(excluded_case_ids)
+            or exclusion_audit.get("excluded_unique_document_count")
+            != len(excluded_document_hashes)
+            or exclusion_audit.get("original_case_count")
+            != len(case_ids) + len(excluded_case_ids)
+            or exclusion_audit.get("original_unique_document_count")
+            != len(digests) + len(excluded_document_hashes)
+        ):
+            raise GoldsetFinalizationError(
+                "candidate exclusions corpus counts are inconsistent"
+            )
+    elif candidate_exclusions_path is not None:
+        raise GoldsetFinalizationError(
+            "candidate exclusions were not declared by seed integrity"
         )
 
     do_not_tune_rows = _read_csv(
@@ -657,6 +896,7 @@ def finalize_reference(
     adjudicator_kind: str | None = None,
     adjudicator_provenance: str | None = None,
     human_gold_attestation: str | None = None,
+    candidate_exclusions_path: Path | None = None,
 ) -> dict[str, Any]:
     """Finalize exact consensus or third-party decisions into a sealed reference."""
 
@@ -665,6 +905,7 @@ def finalize_reference(
         integrity,
         manifest_path=manifest_path,
         do_not_tune_path=do_not_tune_path,
+        candidate_exclusions_path=candidate_exclusions_path,
     )
     reviews_a, reviewer_a_id = _validate_reviewer_rows(
         reviewer_a_rows, slot="A", record_by_id=record_by_id
@@ -823,6 +1064,10 @@ def finalize_reference(
         "attested": is_human_gold,
         "statement": HUMAN_ATTESTATION if is_human_gold else "",
     }
+    candidate_exclusion_provenance = {
+        "seed_integrity_version": SEED_INTEGRITY_VERSION,
+        **dict(integrity["candidate_exclusion_audit"]),
+    }
 
     split_counts = Counter(str(record["split"]) for record in final_records)
     resolution_counts = Counter(
@@ -838,6 +1083,7 @@ def finalize_reference(
         "human_gold_attestation": attestation,
         "automatic_predictions_are_gold": False,
         "usage_policy": USAGE_POLICY,
+        "candidate_exclusion_provenance": candidate_exclusion_provenance,
         "review_provenance": {
             "reviewer_a": {
                 "reviewer_id": reviewer_a_id,
@@ -952,6 +1198,9 @@ def write_final_reference(
         "human_gold_attestation_sha256": sha256_bytes(
             canonical_json_bytes(reference["human_gold_attestation"])
         ),
+        "candidate_exclusion_provenance": reference[
+            "candidate_exclusion_provenance"
+        ],
         "automatic_predictions_are_gold": False,
         "usage_policy": USAGE_POLICY,
         "local_only": True,
@@ -1321,6 +1570,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", default=str(DEFAULT_INPUT_DIR / "goldset_review_manifest.local.json"))
     parser.add_argument("--seed-integrity", default=str(DEFAULT_INPUT_DIR / "integrity.local.json"))
     parser.add_argument("--do-not-tune", default=str(DEFAULT_INPUT_DIR / "do_not_tune.local.csv"))
+    parser.add_argument(
+        "--candidate-exclusions",
+        help=(
+            "candidate_exclusions.local.json sealed by seed integrity; defaults to "
+            "the seed-integrity directory when that artifact is declared"
+        ),
+    )
     parser.add_argument("--reviewer-a", default=str(DEFAULT_INPUT_DIR / "reviewer_a.local.csv"))
     parser.add_argument("--reviewer-b", default=str(DEFAULT_INPUT_DIR / "reviewer_b.local.csv"))
     parser.add_argument("--adjudication", default=str(DEFAULT_INPUT_DIR / "adjudication.local.csv"))
@@ -1360,8 +1616,19 @@ def main(argv: list[str] | None = None) -> int:
         "packet_index": Path(args.source_packet_index).resolve(),
         "packet_integrity": Path(args.source_packet_integrity).resolve(),
     }
+    if args.candidate_exclusions:
+        paths["candidate_exclusions"] = Path(args.candidate_exclusions).resolve()
     manifest = _read_json_object(paths["manifest"], label="manifest")
     integrity = _read_json_object(paths["seed_integrity"], label="seed integrity")
+    artifact_hashes = integrity.get("artifact_sha256")
+    if (
+        isinstance(artifact_hashes, dict)
+        and "candidate_exclusions" in artifact_hashes
+        and "candidate_exclusions" not in paths
+    ):
+        paths["candidate_exclusions"] = (
+            paths["seed_integrity"].parent / "candidate_exclusions.local.json"
+        ).resolve()
     reviewer_a = _read_csv(paths["reviewer_a"], fields=REVIEWER_FIELDS, label="reviewer A")
     reviewer_b = _read_csv(paths["reviewer_b"], fields=REVIEWER_FIELDS, label="reviewer B")
     adjudication = _read_csv(
@@ -1382,6 +1649,7 @@ def main(argv: list[str] | None = None) -> int:
         adjudicator_kind=args.adjudicator_kind,
         adjudicator_provenance=args.adjudicator_provenance,
         human_gold_attestation=args.human_gold_attestation,
+        candidate_exclusions_path=paths.get("candidate_exclusions"),
     )
     _validate_adjudication_decision_integrity(
         paths["adjudication_integrity"],

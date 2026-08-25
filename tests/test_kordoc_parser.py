@@ -2326,6 +2326,42 @@ def test_document_line_budget_rejects_before_structural_extraction(
         structure_job_description({"markdown": markdown}, filename="too-many-lines.md")
 
 
+@pytest.mark.parametrize("line_count,line_width", [(1, 1_000_001), (5_000, 512)])
+def test_document_markdown_character_budget_rejects_before_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    line_count: int,
+    line_width: int,
+) -> None:
+    monkeypatch.setattr(
+        kordoc_parser,
+        "_parser_provenance",
+        lambda _parsed: (_ for _ in ()).throw(
+            AssertionError("preflight must run before extraction")
+        ),
+    )
+    markdown = "\n".join(["x" * line_width] * line_count)
+    assert len(markdown) > kordoc_parser._DOCUMENT_MAX_MARKDOWN_CHARS
+
+    with pytest.raises(
+        kordoc_parser.KordocStructureLimitError,
+        match="document Markdown size exceeds the safe limit",
+    ):
+        structure_job_description({"markdown": markdown}, filename="too-large.md")
+
+
+def test_document_markdown_exact_character_budget_is_accepted() -> None:
+    markdown = "x" * kordoc_parser._DOCUMENT_MAX_MARKDOWN_CHARS
+
+    result = structure_job_description(
+        {"markdown": markdown},
+        filename="exact-character-budget.md",
+    )
+
+    assert len(result["document"]["markdown"]) == (
+        kordoc_parser._DOCUMENT_MAX_MARKDOWN_CHARS
+    )
+
+
 def test_packed_single_cell_detail_candidate_group_is_bounded() -> None:
     packed = ",".join(
         f"detail-{index:03}"

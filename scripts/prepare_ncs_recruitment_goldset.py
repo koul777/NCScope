@@ -20,6 +20,10 @@ from scripts.ncs_recruitment_split import (
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset"
 WORKFLOW_VERSION = "ncs_recruitment_human_goldset_v2"
+SEED_INTEGRITY_VERSION = "ncs_recruitment_seed_integrity_v2"
+CANDIDATE_EXCLUSION_AUDIT_VERSION = (
+    "ncs_recruitment_candidate_exclusion_audit_v1"
+)
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 REVIEWER_FIELDS = [
@@ -205,21 +209,113 @@ def _extract_hashes(value: Any) -> set[str]:
     return output
 
 
-def load_tuning_hashes(paths: Iterable[Path]) -> set[str]:
-    output: set[str] = set()
+def _posting_ids(value: Any, *, plural: bool) -> set[str]:
+    if not plural:
+        if not isinstance(value, str) or not value.strip():
+            raise GoldsetPreparationError(
+                "posting_id must be a nonblank string"
+            )
+        return {value.strip()}
+
+    decoded = value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise GoldsetPreparationError(
+                "posting_ids must be a valid JSON array of nonblank strings"
+            ) from exc
+    if not isinstance(decoded, list) or not decoded:
+        raise GoldsetPreparationError(
+            "posting_ids must be a non-empty JSON array of nonblank strings"
+        )
+    normalized: list[str] = []
+    for item in decoded:
+        if not isinstance(item, str) or not item.strip():
+            raise GoldsetPreparationError(
+                "posting_ids must contain only nonblank strings"
+            )
+        normalized.append(item.strip())
+    if len(normalized) != len(set(normalized)):
+        raise GoldsetPreparationError("posting_ids must not contain duplicates")
+    return set(normalized)
+
+
+def _extract_tuning_identities(
+    value: Any,
+    *,
+    inherited_posting_ids: Iterable[str] = (),
+) -> tuple[set[str], dict[str, set[str]]]:
+    hashes: set[str] = set()
+    posting_ids_by_hash: dict[str, set[str]] = {}
+    if isinstance(value, dict):
+        active_posting_ids = set(inherited_posting_ids)
+        for key, item in value.items():
+            normalized_key = str(key).casefold()
+            if normalized_key in {"posting_id", "posting_ids"}:
+                active_posting_ids.update(
+                    _posting_ids(item, plural=normalized_key == "posting_ids")
+                )
+        for key, item in value.items():
+            if str(key).casefold() in {
+                "sha256",
+                "document_sha256",
+                "content_sha256",
+                "source_sha256",
+            }:
+                candidate = str(item or "").strip().lower()
+                if HEX64_RE.fullmatch(candidate):
+                    hashes.add(candidate)
+                    posting_ids_by_hash.setdefault(candidate, set()).update(
+                        active_posting_ids
+                    )
+        for item in value.values():
+            child_hashes, child_postings = _extract_tuning_identities(
+                item,
+                inherited_posting_ids=active_posting_ids,
+            )
+            hashes.update(child_hashes)
+            for digest, posting_ids in child_postings.items():
+                posting_ids_by_hash.setdefault(digest, set()).update(posting_ids)
+    elif isinstance(value, list):
+        for item in value:
+            child_hashes, child_postings = _extract_tuning_identities(
+                item,
+                inherited_posting_ids=inherited_posting_ids,
+            )
+            hashes.update(child_hashes)
+            for digest, posting_ids in child_postings.items():
+                posting_ids_by_hash.setdefault(digest, set()).update(posting_ids)
+    return hashes, posting_ids_by_hash
+
+
+def load_tuning_identities(
+    paths: Iterable[Path],
+) -> tuple[set[str], dict[str, set[str]]]:
+    hashes: set[str] = set()
+    posting_ids_by_hash: dict[str, set[str]] = {}
     for path in paths:
         if path.suffix.lower() == ".csv":
-            output.update(_extract_hashes(_load_rows(path)))
+            value: Any = _load_rows(path)
         elif path.suffix.lower() == ".json":
-            output.update(
-                _extract_hashes(json.loads(path.read_text(encoding="utf-8-sig")))
-            )
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
         else:
+            value = None
             for line in path.read_text(encoding="utf-8-sig").splitlines():
                 candidate = line.strip().lower()
                 if HEX64_RE.fullmatch(candidate):
-                    output.add(candidate)
-    return output
+                    hashes.add(candidate)
+        if value is None:
+            continue
+        path_hashes, path_postings = _extract_tuning_identities(value)
+        hashes.update(path_hashes)
+        for digest, posting_ids in path_postings.items():
+            posting_ids_by_hash.setdefault(digest, set()).update(posting_ids)
+    return hashes, posting_ids_by_hash
+
+
+def load_tuning_hashes(paths: Iterable[Path]) -> set[str]:
+    return load_tuning_identities(paths)[0]
 
 
 def _benchmark_cases(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -457,6 +553,8 @@ def exclude_tuning_overlap_candidates(
     source_rows: Sequence[Mapping[str, Any]],
     *,
     tuning_hashes: Iterable[str],
+    tuning_posting_ids_by_hash: Mapping[str, Iterable[str]] | None = None,
+    source_input_sha256: Mapping[str, Any] | None = None,
     verify_files: bool = True,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     """Drop explicitly identified tuning documents before blind review seeding.
@@ -464,7 +562,9 @@ def exclude_tuning_overlap_candidates(
     ``build_workflow`` remains fail-closed by default. This helper is an explicit,
     auditable pre-filter for a live collection window that contains a small number
     of known tuning documents. It removes every case sharing an excluded content
-    digest from both the benchmark envelope and the private source index.
+    digest from both the benchmark envelope and the private source index. Tuning
+    documents outside the candidate window must carry posting IDs so their sibling
+    attachments can be linked into the same exclusion component.
     """
 
     benchmark_cases = _benchmark_cases(benchmark_payload)
@@ -472,6 +572,67 @@ def exclude_tuning_overlap_candidates(
         require_sha256(value, field="tuning document sha256")
         for value in tuning_hashes
     }
+    normalized_tuning_postings: dict[str, set[str]] = {}
+    for raw_digest, raw_posting_ids in (
+        tuning_posting_ids_by_hash or {}
+    ).items():
+        digest = require_sha256(raw_digest, field="tuning document sha256")
+        if isinstance(raw_posting_ids, str):
+            raise GoldsetPreparationError(
+                "tuning_posting_ids_by_hash values must be iterables of strings"
+            )
+        try:
+            posting_id_values = list(raw_posting_ids)
+        except TypeError as exc:
+            raise GoldsetPreparationError(
+                "tuning_posting_ids_by_hash values must be iterables of strings"
+            ) from exc
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in posting_id_values
+        ):
+            raise GoldsetPreparationError(
+                "tuning posting IDs must contain only nonblank strings"
+            )
+        normalized_values = [value.strip() for value in posting_id_values]
+        if len(normalized_values) != len(set(normalized_values)):
+            raise GoldsetPreparationError(
+                "tuning posting IDs must not contain duplicates"
+            )
+        posting_ids = set(normalized_values)
+        normalized_tuning_postings.setdefault(digest, set()).update(posting_ids)
+        normalized_tuning_hashes.add(digest)
+    normalized_tuning_identities = [
+        {
+            "document_sha256": digest,
+            "posting_ids": sorted(normalized_tuning_postings.get(digest, set())),
+        }
+        for digest in sorted(normalized_tuning_hashes)
+    ]
+    normalized_source_inputs: dict[str, Any] = {}
+    if source_input_sha256 is not None:
+        normalized_source_inputs = {
+            "benchmark_json": require_sha256(
+                source_input_sha256.get("benchmark_json"),
+                field="source_input_sha256.benchmark_json",
+            ),
+            "source_index": require_sha256(
+                source_input_sha256.get("source_index"),
+                field="source_input_sha256.source_index",
+            ),
+        }
+        tuning_manifest_hashes = source_input_sha256.get("tuning_manifests")
+        if not isinstance(tuning_manifest_hashes, list):
+            raise GoldsetPreparationError(
+                "source_input_sha256.tuning_manifests must be a list"
+            )
+        normalized_source_inputs["tuning_manifests"] = [
+            require_sha256(
+                value,
+                field=f"source_input_sha256.tuning_manifests[{index}]",
+            )
+            for index, value in enumerate(tuning_manifest_hashes)
+        ]
     normalized_rows: list[dict[str, Any]] = []
     seen_case_ids: set[str] = set()
     for row in source_rows:
@@ -503,6 +664,27 @@ def exclude_tuning_overlap_candidates(
         ).strip()
         if posting_id:
             component["posting_ids"].add(posting_id)
+    source_document_hashes = set(component_inputs)
+    out_of_window_tuning_hashes = normalized_tuning_hashes - source_document_hashes
+    unidentified_out_of_window_hashes = sorted(
+        digest
+        for digest in out_of_window_tuning_hashes
+        if not normalized_tuning_postings.get(digest)
+    )
+    if unidentified_out_of_window_hashes:
+        raise GoldsetPreparationError(
+            "tuning documents outside the candidate corpus require posting_id "
+            "or posting_ids for component-wide exclusion "
+            f"({len(unidentified_out_of_window_hashes)} missing)"
+        )
+    for digest in normalized_tuning_hashes:
+        component = component_inputs.setdefault(
+            digest,
+            {"document_sha256": digest, "posting_ids": set()},
+        )
+        component["posting_ids"].update(
+            normalized_tuning_postings.get(digest, set())
+        )
     split_inputs = [
         {
             "document_sha256": digest,
@@ -545,7 +727,6 @@ def exclude_tuning_overlap_candidates(
         if isinstance(row, dict)
         and str(row.get("case_id") or "").strip() not in excluded_case_ids
     ]
-    source_document_hashes = {row["document_sha256"] for row in normalized_rows}
     remaining_document_hashes = {row["document_sha256"] for row in remaining_rows}
     audit = {
         "policy": "component_wide_known_tuning_exclusion_before_blind_review",
@@ -572,6 +753,34 @@ def exclude_tuning_overlap_candidates(
             }
         ),
         "tuning_hash_count_checked": len(normalized_tuning_hashes),
+        "tuning_identities": normalized_tuning_identities,
+        "tuning_document_set_sha256": sha256_bytes(
+            canonical_json_bytes(sorted(normalized_tuning_hashes))
+        ),
+        "tuning_identity_ledger_sha256": sha256_bytes(
+            canonical_json_bytes(normalized_tuning_identities)
+        ),
+        "tuning_document_with_manifest_posting_id_count": sum(
+            bool(normalized_tuning_postings.get(digest))
+            for digest in normalized_tuning_hashes
+        ),
+        "tuning_manifest_posting_id_count": len(
+            {
+                posting_id
+                for digest in normalized_tuning_hashes
+                for posting_id in normalized_tuning_postings.get(digest, set())
+            }
+        ),
+        "out_of_window_tuning_document_count": len(out_of_window_tuning_hashes),
+        "component_graph_document_count": len(component_inputs),
+        "input_artifacts_attested": source_input_sha256 is not None,
+        "input_artifact_sha256": normalized_source_inputs,
+        "remaining_benchmark_payload_sha256": sha256_bytes(
+            canonical_json_bytes(filtered_payload)
+        ),
+        "remaining_source_index_sha256": sha256_bytes(
+            canonical_json_bytes(remaining_rows)
+        ),
     }
     audit["audit_sha256"] = sha256_bytes(canonical_json_bytes(audit))
     return filtered_payload, remaining_rows, audit
@@ -740,7 +949,12 @@ def _write_csv(path: Path, fields: list[str], rows: Sequence[Mapping[str, Any]])
         writer.writerows(rows)
 
 
-def write_workflow(workflow: Mapping[str, Any], output_dir: Path) -> dict[str, Path]:
+def write_workflow(
+    workflow: Mapping[str, Any],
+    output_dir: Path,
+    *,
+    exclusion_audit: Mapping[str, Any] | None = None,
+) -> dict[str, Path]:
     validate_workflow(workflow)
     output_dir = validate_local_output_dir(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -750,10 +964,49 @@ def write_workflow(workflow: Mapping[str, Any], output_dir: Path) -> dict[str, P
     adjudication_path = output_dir / "adjudication.local.csv"
     exclusion_path = output_dir / "do_not_tune.local.csv"
     integrity_path = output_dir / "integrity.local.json"
+    candidate_exclusions_path = output_dir / "candidate_exclusions.local.json"
+
+    manifest_summary = dict(workflow["summary"])
+    final_exclusion_audit: dict[str, Any] | None = None
+    exclusion_binding: dict[str, Any] = {
+        "applied": False,
+        "version": CANDIDATE_EXCLUSION_AUDIT_VERSION,
+        "audit_sha256": None,
+    }
+    if exclusion_audit is not None:
+        sealed_audit = dict(exclusion_audit)
+        declared_audit_sha256 = require_sha256(
+            sealed_audit.pop("audit_sha256", None),
+            field="candidate exclusion audit_sha256",
+        )
+        if sha256_bytes(canonical_json_bytes(sealed_audit)) != declared_audit_sha256:
+            raise GoldsetPreparationError("candidate exclusion audit digest mismatch")
+        if sealed_audit.get("input_artifacts_attested") is not True:
+            raise GoldsetPreparationError(
+                "candidate exclusion audit must attest its source inputs"
+            )
+        sealed_audit["audit_version"] = CANDIDATE_EXCLUSION_AUDIT_VERSION
+        sealed_audit["remaining_records_sha256"] = workflow["summary"][
+            "records_sha256"
+        ]
+        final_audit_sha256 = sha256_bytes(canonical_json_bytes(sealed_audit))
+        final_exclusion_audit = {
+            **sealed_audit,
+            "audit_sha256": final_audit_sha256,
+        }
+        exclusion_binding = {
+            "applied": True,
+            "version": CANDIDATE_EXCLUSION_AUDIT_VERSION,
+            "audit_sha256": final_audit_sha256,
+        }
+        manifest_summary["benchmark_payload_sha256"] = sealed_audit[
+            "remaining_benchmark_payload_sha256"
+        ]
+    manifest_summary["candidate_exclusion_audit"] = exclusion_binding
 
     manifest_payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "summary": workflow["summary"],
+        "summary": manifest_summary,
         "mapping_state_values": list(MAPPING_STATES),
         "records": workflow["records"],
     }
@@ -783,7 +1036,14 @@ def write_workflow(workflow: Mapping[str, Any], output_dir: Path) -> dict[str, P
         "adjudication": adjudication_path,
         "do_not_tune": exclusion_path,
     }
+    if final_exclusion_audit is not None:
+        candidate_exclusions_path.write_text(
+            json.dumps(final_exclusion_audit, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        artifact_paths["candidate_exclusions"] = candidate_exclusions_path
     integrity = {
+        "seed_integrity_version": SEED_INTEGRITY_VERSION,
         "workflow_version": WORKFLOW_VERSION,
         "records_sha256": workflow["summary"]["records_sha256"],
         "artifact_sha256": {
@@ -792,6 +1052,7 @@ def write_workflow(workflow: Mapping[str, Any], output_dir: Path) -> dict[str, P
         "artifact_count": len(artifact_paths),
         "local_only": True,
         "automatic_predictions_are_gold": False,
+        "candidate_exclusion_audit": exclusion_binding,
     }
     integrity_path.write_text(
         json.dumps(integrity, ensure_ascii=False, indent=2) + "\n",
@@ -821,7 +1082,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--tuning-manifest",
         action="append",
         default=[],
-        help="CSV/JSON/text file containing tuning document SHA-256 values; repeatable",
+        help=(
+            "CSV/JSON/text file containing tuning document SHA-256 values; repeatable. "
+            "CSV/JSON rows should include posting_id or posting_ids when the tuning "
+            "document may be outside the candidate window"
+        ),
     )
     parser.add_argument(
         "--exclude-tuning-overlap",
@@ -839,20 +1104,41 @@ def main(argv: list[str] | None = None) -> int:
     benchmark_path = Path(args.benchmark_json).resolve()
     source_index_path = Path(args.source_index).resolve()
     output_dir = validate_local_output_dir(Path(args.output_dir))
+    tuning_manifest_paths = [
+        Path(value).resolve() for value in args.tuning_manifest
+    ]
+    if tuning_manifest_paths and not args.exclude_tuning_overlap:
+        raise GoldsetPreparationError(
+            "--tuning-manifest requires --exclude-tuning-overlap so posting "
+            "components and the exclusion audit cannot be bypassed"
+        )
+    source_input_sha256 = {
+        "benchmark_json": sha256_file(benchmark_path),
+        "source_index": sha256_file(source_index_path),
+        "tuning_manifests": sorted(
+            sha256_file(path) for path in tuning_manifest_paths
+        ),
+    }
     benchmark_payload = json.loads(benchmark_path.read_text(encoding="utf-8-sig"))
     if not isinstance(benchmark_payload, dict):
         raise GoldsetPreparationError("benchmark JSON must be an object")
     source_rows = load_source_index(source_index_path)
-    tuning_hashes = load_tuning_hashes(
-        Path(value).resolve() for value in args.tuning_manifest
+    tuning_hashes, tuning_posting_ids_by_hash = load_tuning_identities(
+        tuning_manifest_paths
     )
     exclusion_audit: dict[str, Any] | None = None
     if args.exclude_tuning_overlap:
+        if not tuning_manifest_paths or not tuning_hashes:
+            raise GoldsetPreparationError(
+                "--exclude-tuning-overlap requires a non-empty tuning manifest"
+            )
         benchmark_payload, source_rows, exclusion_audit = (
             exclude_tuning_overlap_candidates(
                 benchmark_payload,
                 source_rows,
                 tuning_hashes=tuning_hashes,
+                tuning_posting_ids_by_hash=tuning_posting_ids_by_hash,
+                source_input_sha256=source_input_sha256,
                 verify_files=True,
             )
         )
@@ -863,14 +1149,22 @@ def main(argv: list[str] | None = None) -> int:
         tuning_hashes=tuning_hashes,
         verify_files=True,
     )
-    paths = write_workflow(workflow, output_dir)
-    if exclusion_audit is not None:
-        exclusion_path = output_dir / "candidate_exclusions.local.json"
-        exclusion_path.write_text(
-            json.dumps(exclusion_audit, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+    current_source_input_sha256 = {
+        "benchmark_json": sha256_file(benchmark_path),
+        "source_index": sha256_file(source_index_path),
+        "tuning_manifests": sorted(
+            sha256_file(path) for path in tuning_manifest_paths
+        ),
+    }
+    if current_source_input_sha256 != source_input_sha256:
+        raise GoldsetPreparationError(
+            "goldset input artifacts changed during preparation"
         )
-        paths["candidate_exclusions"] = exclusion_path
+    paths = write_workflow(
+        workflow,
+        output_dir,
+        exclusion_audit=exclusion_audit,
+    )
     print(json.dumps(workflow["summary"], ensure_ascii=False, indent=2))
     for name, path in paths.items():
         print(f"{name}={path}")

@@ -28,6 +28,8 @@ def test_vercel_fastapi_entrypoint_and_duration_are_production_safe() -> None:
     ]
     bridge_source = (ROOT / "api" / "kordoc-parse.js").read_text(encoding="utf-8")
     assert 'import("kordoc")' in bridge_source
+    assert "parserModule?.VERSION" in bridge_source
+    assert 'mode: "authenticated_serverless_bridge"' in bridge_source
     assert 'process.env.KORDOC_OFFLINE = "1"' in bridge_source
     assert "application/octet-stream" in bridge_source
     assert "KORDOC_BRIDGE_SECRET" in bridge_source

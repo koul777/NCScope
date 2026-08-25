@@ -140,15 +140,22 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
 
     attestation = evidence["scoring_runtime_attestation"]
     assert attestation == {
-        "schema_version": "ncscope_evaluation_runtime_attestation_v1",
+        "schema_version": "ncscope_evaluation_runtime_attestation_v2",
         "fail_closed": True,
         "verified_on_every_response": True,
         "startup_and_completion_source_stability_checked": True,
+        "parser_execution_identity_verified": True,
         "server_source_keys": [
             "app_main",
             "kordoc_parser",
             "ncs_mcp_client",
+            "request_budget",
             "official_detail_catalog",
+            "kordoc_local_runner",
+            "kordoc_serverless_bridge",
+            "package_json",
+            "package_lock",
+            "vercel_config",
         ],
     }
 

@@ -24,6 +24,28 @@ SERVER_OPENAI_KEY = "sk-test-server-env-must-be-ignored"
 
 
 @pytest.fixture(autouse=True)
+def _attested_parser_execution_for_endpoint_mocks(mocker):
+    def bind(structured):
+        structured.setdefault(
+            "parser_executions",
+            [
+                {
+                    "schema_version": "ncscope_parser_execution_v1",
+                    "role": "selected",
+                    "parser": "plain_text",
+                    "mode": "builtin_plain_text",
+                    "build_identity": {"kind": "python_runtime_bundle"},
+                    "runtime_bundle_sha256": main._evaluation_runtime_attestation()[
+                        "runtime_bundle_sha256"
+                    ],
+                }
+            ],
+        )
+
+    mocker.patch("app.main._bind_parser_executions_to_runtime", side_effect=bind)
+
+
+@pytest.fixture(autouse=True)
 def _stub_independent_ai_quality_review(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         main,

@@ -1283,10 +1283,15 @@ _HTML_TABLE_MAX_LOGICAL_CELLS = 10_000
 _HTML_TABLE_MAX_TABLES = 128
 _MARKDOWN_TABLE_MAX_LOGICAL_CELLS = 2_048
 _DOCUMENT_MAX_TEXT_LINES = 5_000
+_DOCUMENT_MAX_MARKDOWN_CHARS = 1_000_000
 
 
 def _validate_markdown_table_document_budget(markdown: str) -> None:
     text = str(markdown or "")
+    if len(text) > _DOCUMENT_MAX_MARKDOWN_CHARS:
+        raise KordocStructureLimitError(
+            "document Markdown size exceeds the safe limit"
+        )
     for line_break_count, _match in enumerate(
         _TEXT_LINE_BREAK_RE.finditer(text),
         start=1,
@@ -3541,24 +3546,94 @@ def _kordoc_timeout_seconds() -> int:
         return 120
 
 
-def _stamp_kordoc_result(result: dict[str, Any]) -> dict[str, Any]:
-    """Mark a successfully parsed document without exposing bridge internals."""
+def _stamp_kordoc_result(
+    result: dict[str, Any],
+    *,
+    expected_mode: str,
+    expected_deployment_url: str = "",
+) -> dict[str, Any]:
+    """Validate and retain the actual Node execution identity."""
 
+    parser = str(result.get("parser") or "").strip()
+    parser_version = str(result.get("parser_version") or "").strip()
+    execution = result.get("parser_execution")
+    if (
+        parser != "kordoc"
+        or parser_version != _KORDOC_PARSER_VERSION
+        or not isinstance(execution, dict)
+        or execution.get("schema_version") != "ncscope_parser_execution_v1"
+        or execution.get("role") != "selected"
+        or execution.get("parser") != "kordoc"
+        or execution.get("mode") != expected_mode
+        or execution.get("parser_version") != parser_version
+    ):
+        raise KordocParseError("Kordoc runtime returned invalid execution provenance")
+    node_version = str(execution.get("node_version") or "").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", node_version):
+        raise KordocParseError("Kordoc runtime returned invalid execution provenance")
+    build_identity = execution.get("build_identity")
+    expected_kind = (
+        "local_source_bundle"
+        if expected_mode == "local_node_subprocess"
+        else "vercel_deployment"
+    )
+    if (
+        not isinstance(build_identity, dict)
+        or build_identity.get("kind") != expected_kind
+    ):
+        raise KordocParseError("Kordoc runtime returned invalid execution provenance")
+    sanitized_build_identity = {"kind": expected_kind}
+    deployment_url = str(build_identity.get("deployment_url") or "").strip().lower()
+    if expected_mode == "authenticated_serverless_bridge":
+        if (
+            not expected_deployment_url
+            or deployment_url != expected_deployment_url.strip().lower()
+            or not re.fullmatch(r"[a-z0-9.-]+\.vercel\.app", deployment_url)
+        ):
+            raise KordocParseError(
+                "Kordoc runtime returned invalid execution provenance"
+            )
+        sanitized_build_identity["deployment_url"] = deployment_url
+    deployment_id = str(build_identity.get("deployment_id") or "").strip()
+    git_commit_sha = str(build_identity.get("git_commit_sha") or "").strip().lower()
+    if deployment_id:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", deployment_id):
+            raise KordocParseError(
+                "Kordoc runtime returned invalid execution provenance"
+            )
+        sanitized_build_identity["deployment_id"] = deployment_id
+    if git_commit_sha:
+        if not re.fullmatch(r"[a-f0-9]{40}", git_commit_sha):
+            raise KordocParseError(
+                "Kordoc runtime returned invalid execution provenance"
+            )
+        sanitized_build_identity["git_commit_sha"] = git_commit_sha
+    sanitized_execution = {
+        "schema_version": "ncscope_parser_execution_v1",
+        "role": "selected",
+        "parser": "kordoc",
+        "mode": expected_mode,
+        "parser_version": parser_version,
+        "node_version": node_version,
+        "build_identity": sanitized_build_identity,
+    }
     stamped = dict(result)
-    stamped["parser"] = "kordoc"
-    stamped["parser_version"] = _KORDOC_PARSER_VERSION
+    stamped["parser"] = parser
+    stamped["parser_version"] = parser_version
+    stamped["parser_execution"] = sanitized_execution
     return stamped
 
 
 def _safe_bridge_url() -> str:
     """Build the private bridge URL only from trusted deployment settings."""
 
+    vercel_host = os.getenv("VERCEL_URL", "").strip()
     explicit = os.getenv("KORDOC_BRIDGE_URL", "").strip()
-    candidate = explicit
-    if not candidate:
-        vercel_host = os.getenv("VERCEL_URL", "").strip()
-        if vercel_host:
-            candidate = f"https://{vercel_host.rstrip('/')}{_KORDOC_BRIDGE_PATH}"
+    candidate = (
+        f"https://{vercel_host.rstrip('/')}{_KORDOC_BRIDGE_PATH}"
+        if vercel_host
+        else explicit
+    )
     if not candidate:
         return ""
 
@@ -3574,7 +3649,7 @@ def _safe_bridge_url() -> str:
         return ""
     if parts.path.rstrip("/") != _KORDOC_BRIDGE_PATH:
         return ""
-    if not local_host and not re.fullmatch(r"[a-z0-9.-]+", hostname):
+    if not local_host and not re.fullmatch(r"[a-z0-9.-]+\.vercel\.app", hostname):
         return ""
     return urlunsplit((parts.scheme, parts.netloc, _KORDOC_BRIDGE_PATH, "", ""))
 
@@ -3741,7 +3816,11 @@ def _parse_with_remote_kordoc(
         raise KordocParseError("Kordoc bridge could not parse the document")
     if str(result.get("parser") or "") != "kordoc":
         raise KordocParseError("Kordoc bridge returned invalid provenance")
-    return _stamp_kordoc_result(result)
+    return _stamp_kordoc_result(
+        result,
+        expected_mode="authenticated_serverless_bridge",
+        expected_deployment_url=str(urlsplit(bridge_url).hostname or ""),
+    )
 
 
 def _parse_with_local_kordoc(
@@ -3795,10 +3874,19 @@ def _parse_with_local_kordoc(
         raise KordocParseError("Kordoc returned invalid JSON") from exc
     if not result.get("success", True):
         raise KordocParseError("Kordoc could not parse the document")
-    return _stamp_kordoc_result(result)
+    return _stamp_kordoc_result(
+        result,
+        expected_mode="local_node_subprocess",
+    )
 
 
-def parse_with_kordoc(data: bytes, filename: str = "", ocr: bool = False) -> dict[str, Any]:
+def parse_with_kordoc(
+    data: bytes,
+    filename: str = "",
+    ocr: bool = False,
+    *,
+    allow_remote: bool = True,
+) -> dict[str, Any]:
     """Parse with local Kordoc first, using the Vercel bridge only if unavailable."""
 
     if not data:
@@ -3816,6 +3904,10 @@ def parse_with_kordoc(data: bytes, filename: str = "", ocr: bool = False) -> dic
             timeout=timeout,
         )
     except _LocalKordocUnavailable:
+        if not allow_remote:
+            raise KordocParseError(
+                "local Kordoc runtime is unavailable and remote parsing is disabled"
+            ) from None
         if not (os.getenv("KORDOC_BRIDGE_URL", "").strip() or os.getenv("VERCEL_URL", "").strip()):
             raise KordocParseError("Kordoc runtime is unavailable") from None
         return _parse_with_remote_kordoc(
@@ -3826,7 +3918,7 @@ def parse_with_kordoc(data: bytes, filename: str = "", ocr: bool = False) -> dic
         )
 
 
-def _parser_provenance(parsed: dict[str, Any]) -> dict[str, str]:
+def _parser_provenance(parsed: dict[str, Any]) -> dict[str, Any]:
     """Return a whitelisted parser label for public review payloads."""
 
     metadata = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
@@ -3844,6 +3936,37 @@ def _parser_provenance(parsed: dict[str, Any]) -> dict[str, str]:
     version = str(parsed.get("parser_version") or "").strip()
     if parser == "kordoc" and re.fullmatch(r"\d+\.\d+\.\d+", version):
         provenance["parser_version"] = version
+    executions = parsed.get("parser_executions")
+    if not isinstance(executions, list):
+        execution = parsed.get("parser_execution")
+        executions = [execution] if isinstance(execution, dict) else []
+    safe_executions = [dict(row) for row in executions if isinstance(row, dict)]
+    if not safe_executions and parser == "plain_text":
+        safe_executions = [
+            {
+                "schema_version": "ncscope_parser_execution_v1",
+                "role": "selected",
+                "parser": parser,
+                "mode": "builtin_plain_text",
+                "build_identity": {"kind": "python_runtime_bundle"},
+            }
+        ]
+    if not safe_executions and parser in {
+        "pdf_text_fallback",
+        "hwp_text_fallback",
+        "hwpx_text_fallback",
+    }:
+        safe_executions = [
+            {
+                "schema_version": "ncscope_parser_execution_v1",
+                "role": "selected",
+                "parser": parser,
+                "mode": "local_text_fallback",
+                "build_identity": {"kind": "python_runtime_bundle"},
+            }
+        ]
+    if safe_executions:
+        provenance["parser_executions"] = safe_executions
     return provenance
 
 

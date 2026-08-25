@@ -1,6 +1,29 @@
+import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
+
+
+@pytest.fixture(autouse=True)
+def _attested_parser_execution_for_endpoint_mocks(mocker):
+    def bind(structured):
+        structured.setdefault(
+            "parser_executions",
+            [
+                {
+                    "schema_version": "ncscope_parser_execution_v1",
+                    "role": "selected",
+                    "parser": "plain_text",
+                    "mode": "builtin_plain_text",
+                    "build_identity": {"kind": "python_runtime_bundle"},
+                    "runtime_bundle_sha256": main._evaluation_runtime_attestation()[
+                        "runtime_bundle_sha256"
+                    ],
+                }
+            ],
+        )
+
+    mocker.patch("app.main._bind_parser_executions_to_runtime", side_effect=bind)
 
 
 def test_parse_review_canonicalizes_split_table_label_before_human_review(mocker):
@@ -28,6 +51,34 @@ def test_parse_review_canonicalizes_split_table_label_before_human_review(mocker
 
     assert response.status_code == 200
     assert response.json()["fields"]["ncs_detail_candidates"] == ["프로젝트관리"]
+
+
+def test_parse_review_local_only_policy_is_enforced_before_document_parse(mocker):
+    parse_upload = mocker.patch(
+        "app.main._parse_upload_document",
+        return_value={"markdown": "업무 내용", "parser": "plain_text"},
+    )
+    mocker.patch(
+        "app.main.structure_job_description",
+        return_value={
+            "document": {"markdown": "업무 내용"},
+            "fields": {"ncs_detail_candidates": []},
+        },
+    )
+
+    with TestClient(main.app) as client:
+        policy = client.get("/api/jd/parse-review/runtime-policy")
+        response = client.post(
+            "/api/jd/parse-review",
+            headers={"X-NCScope-Parser-Policy": "local-only"},
+            files={"jd_file": ("private.txt", b"private", "text/plain")},
+        )
+
+    assert policy.status_code == 200
+    assert policy.json()["supported_parser_policies"] == ["local-only"]
+    assert response.status_code == 200
+    assert response.json()["parser_policy"] == "local-only"
+    assert parse_upload.call_args.kwargs == {"allow_remote_kordoc": False}
 
 
 def test_parse_review_uses_real_kordoc_structure_for_alias_and_full_code(mocker):

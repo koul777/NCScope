@@ -25,6 +25,10 @@ DEFAULT_SOURCE_DIR = ROOT / "tmp" / "ncs_recruitment_goldset" / "source_document
 DEFAULT_OUTPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset" / "score"
 REFERENCE_SCHEMA_VERSION = "ncs_recruitment_adjudicated_reference_v2"
 SCORE_SCHEMA_VERSION = "ncs_recruitment_reference_score_v2"
+SEED_INTEGRITY_VERSION = "ncs_recruitment_seed_integrity_v2"
+CANDIDATE_EXCLUSION_AUDIT_VERSION = (
+    "ncs_recruitment_candidate_exclusion_audit_v1"
+)
 USAGE_POLICY = "evaluation_only_no_training_or_rule_tuning"
 AI_EVALUATION_BASIS = "independent_ai_agent_adjudicated_reference_not_human_gold"
 HUMAN_EVALUATION_BASIS = "independent_human_double_review_adjudicated_gold"
@@ -122,18 +126,48 @@ def local_runtime_attestation() -> dict[str, Any]:
         "app_main": ROOT / "app" / "main.py",
         "kordoc_parser": ROOT / "app" / "services" / "kordoc_parser.py",
         "ncs_mcp_client": ROOT / "app" / "services" / "ncs_mcp_client.py",
+        "request_budget": ROOT / "app" / "services" / "request_budget.py",
         "official_detail_catalog": (
             ROOT / "app" / "data" / "ncs_detail_catalog.json"
         ),
+        "kordoc_local_runner": ROOT / "scripts" / "kordoc_parse.mjs",
+        "kordoc_serverless_bridge": ROOT / "api" / "kordoc-parse.js",
+        "package_json": ROOT / "package.json",
+        "package_lock": ROOT / "package-lock.json",
+        "vercel_config": ROOT / "vercel.json",
     }
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
-    return {
-        "schema_version": "ncscope_evaluation_runtime_attestation_v1",
+    package_lock = json.loads(
+        (ROOT / "package-lock.json").read_text(encoding="utf-8")
+    )
+    package_entry = (package_lock.get("packages") or {}).get("node_modules/kordoc")
+    if not isinstance(package_entry, dict):
+        raise GoldsetScoringError("Kordoc package lock entry is unavailable")
+    package_version = str(package_entry.get("version") or "").strip()
+    package_integrity = str(package_entry.get("integrity") or "").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", package_version) or not re.fullmatch(
+        r"sha512-[A-Za-z0-9+/]+={0,2}", package_integrity
+    ):
+        raise GoldsetScoringError("Kordoc package lock identity is invalid")
+    attestation = {
+        "schema_version": "ncscope_evaluation_runtime_attestation_v2",
         "app_version": str(package.get("version") or "").strip(),
         "source_artifact_sha256": {
             name: sha256_file(path) for name, path in source_paths.items()
         },
+        "parser_contract": {
+            "schema_version": "ncscope_kordoc_build_contract_v1",
+            "selection_policy": "local_node_then_authenticated_bridge_v1",
+            "package_name": "kordoc",
+            "package_version": package_version,
+            "package_integrity": package_integrity,
+            "offline_required": True,
+        },
     }
+    attestation["runtime_bundle_sha256"] = sha256_bytes(
+        canonical_json_bytes(attestation)
+    )
+    return attestation
 
 
 def local_scorer_source_artifact_sha256() -> dict[str, str]:
@@ -464,6 +498,53 @@ def _validate_record_provenance(
         )
 
 
+def _validate_candidate_exclusion_provenance(
+    reference: Mapping[str, Any],
+    integrity: Mapping[str, Any],
+    source_hashes: Mapping[str, Any],
+) -> None:
+    reference_provenance = reference.get("candidate_exclusion_provenance")
+    integrity_provenance = integrity.get("candidate_exclusion_provenance")
+    if reference_provenance != integrity_provenance:
+        raise GoldsetScoringError(
+            "candidate exclusion provenance does not match final integrity"
+        )
+    if not isinstance(reference_provenance, dict) or set(
+        reference_provenance
+    ) != {
+        "seed_integrity_version",
+        "applied",
+        "version",
+        "audit_sha256",
+    }:
+        raise GoldsetScoringError(
+            "candidate exclusion provenance is missing or invalid"
+        )
+    if (
+        reference_provenance.get("seed_integrity_version")
+        != SEED_INTEGRITY_VERSION
+        or reference_provenance.get("version")
+        != CANDIDATE_EXCLUSION_AUDIT_VERSION
+        or not isinstance(reference_provenance.get("applied"), bool)
+    ):
+        raise GoldsetScoringError("candidate exclusion provenance is invalid")
+    applied = reference_provenance["applied"]
+    candidate_source_declared = "candidate_exclusions" in source_hashes
+    if applied:
+        _require_sha256(
+            reference_provenance.get("audit_sha256"),
+            field="candidate exclusion provenance audit_sha256",
+        )
+    elif reference_provenance.get("audit_sha256") is not None:
+        raise GoldsetScoringError(
+            "unapplied candidate exclusion provenance declares an audit digest"
+        )
+    if applied != candidate_source_declared:
+        raise GoldsetScoringError(
+            "candidate exclusion provenance is not bound to source artifacts"
+        )
+
+
 def validate_reference_bundle(
     reference_json_path: Path,
     reference_csv_path: Path,
@@ -510,6 +591,11 @@ def validate_reference_bundle(
         if not str(name or "").strip():
             raise GoldsetScoringError("final source artifact name is blank")
         _require_sha256(digest, field=f"integrity.source_artifact_sha256.{name}")
+    _validate_candidate_exclusion_provenance(
+        reference,
+        integrity,
+        source_hashes,
+    )
 
     raw_records = reference.get("records")
     if not isinstance(raw_records, list) or not raw_records:
@@ -858,6 +944,73 @@ def _predict_from_parse_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_scoring_parser_execution_rows(
+    executions: Any,
+    *,
+    runtime_attestation: Mapping[str, Any],
+    allowed_modes: set[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(executions, list) or not executions:
+        raise GoldsetScoringInfrastructureError(
+            "parse-review parser execution attestation is missing"
+        )
+    if allowed_modes != {"local_node_subprocess", "builtin_plain_text"}:
+        raise GoldsetScoringInfrastructureError(
+            "parse-review scoring parser policy is invalid"
+        )
+    runtime_bundle_sha256 = runtime_attestation.get("runtime_bundle_sha256")
+    parser_contract = runtime_attestation.get("parser_contract")
+    if not isinstance(parser_contract, Mapping):
+        raise GoldsetScoringInfrastructureError(
+            "parse-review runtime parser contract is invalid"
+        )
+    expected_kordoc_version = parser_contract.get("package_version")
+    normalized: list[dict[str, Any]] = []
+    for execution in executions:
+        if (
+            not isinstance(execution, dict)
+            or execution.get("schema_version")
+            != "ncscope_parser_execution_v1"
+            or execution.get("role") != "selected"
+            or execution.get("runtime_bundle_sha256")
+            != runtime_bundle_sha256
+        ):
+            raise GoldsetScoringInfrastructureError(
+                "parse-review parser execution attestation is invalid"
+            )
+        parser = str(execution.get("parser") or "").strip()
+        mode = str(execution.get("mode") or "").strip()
+        if mode not in allowed_modes:
+            raise GoldsetScoringInfrastructureError(
+                "parse-review parser execution mode is not allowed for scoring"
+            )
+        build_identity = execution.get("build_identity")
+        if mode == "local_node_subprocess":
+            valid = (
+                parser == "kordoc"
+                and execution.get("parser_version") == expected_kordoc_version
+                and re.fullmatch(
+                    r"\d+\.\d+\.\d+",
+                    str(execution.get("node_version") or ""),
+                )
+                is not None
+                and build_identity == {"kind": "local_source_bundle"}
+            )
+        else:
+            valid = (
+                parser == "plain_text"
+                and build_identity == {"kind": "python_runtime_bundle"}
+                and not execution.get("parser_version")
+                and not execution.get("node_version")
+            )
+        if not valid:
+            raise GoldsetScoringInfrastructureError(
+                "parse-review parser execution identity is invalid"
+            )
+        normalized.append(dict(execution))
+    return normalized
+
+
 class LocalParseReviewClient:
     """Small loopback-only client for the local parse-review endpoint."""
 
@@ -891,6 +1044,12 @@ class LocalParseReviewClient:
         self._max_retry_after_seconds = max_retry_after_seconds
         self._expected_runtime_attestation = local_runtime_attestation()
         self._expected_scorer_sources = local_scorer_source_artifact_sha256()
+        self._parser_execution_identities: dict[tuple[str, str], str] = {}
+        self._allowed_parser_modes = {
+            "local_node_subprocess",
+            "builtin_plain_text",
+        }
+        self._local_only_preflight_verified = False
         self.evaluation_configuration = {
             "parser_endpoint": base_url.rstrip("/") + "/api/jd/parse-review",
             "timeout_seconds": timeout_seconds,
@@ -900,13 +1059,18 @@ class LocalParseReviewClient:
             "scorer_source_artifact_sha256": dict(
                 self._expected_scorer_sources
             ),
+            "parser_execution_identities": [],
+            "allowed_parser_modes": sorted(self._allowed_parser_modes),
         }
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(timeout_seconds),
             follow_redirects=False,
             trust_env=False,
-            headers={"User-Agent": "ncscope-private-reference-scorer/1.0"},
+            headers={
+                "User-Agent": "ncscope-private-reference-scorer/1.0",
+                "X-NCScope-Parser-Policy": "local-only",
+            },
         )
 
     def close(self) -> None:
@@ -939,12 +1103,14 @@ class LocalParseReviewClient:
         self.close()
 
     def parse(self, path: Path, data: bytes) -> Mapping[str, Any]:
+        self._ensure_local_only_preflight()
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         response: httpx.Response | None = None
         for attempt in range(self._max_retries + 1):
             try:
                 response = self._client.post(
                     "/api/jd/parse-review",
+                    headers={"X-NCScope-Parser-Policy": "local-only"},
                     files={"jd_file": (path.name, data, content_type)},
                 )
             except httpx.HTTPError as exc:
@@ -989,7 +1155,68 @@ class LocalParseReviewClient:
         self.evaluation_configuration["server_runtime_attestation"] = dict(
             runtime_attestation
         )
+        self._validate_parser_executions(payload)
         return payload
+
+    def _ensure_local_only_preflight(self) -> None:
+        if self._local_only_preflight_verified:
+            return
+        try:
+            response = self._client.get("/api/jd/parse-review/runtime-policy")
+        except httpx.HTTPError as exc:
+            raise GoldsetScoringInfrastructureError(
+                f"local parse-review policy preflight failed: {exc}"
+            ) from exc
+        if response.is_redirect or response.status_code != 200:
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review does not enforce the local-only parser policy"
+            )
+        try:
+            payload = response.json()
+        except (ValueError, UnicodeError) as exc:
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review policy preflight returned invalid JSON"
+            ) from exc
+        if (
+            not isinstance(payload, dict)
+            or payload.get("evaluation_runtime_attestation")
+            != self._expected_runtime_attestation
+            or payload.get("supported_parser_policies") != ["local-only"]
+            or payload.get("policy_header") != "x-ncscope-parser-policy"
+        ):
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review policy preflight runtime attestation is incompatible"
+            )
+        self._local_only_preflight_verified = True
+
+    def _validate_parser_executions(self, payload: Mapping[str, Any]) -> None:
+        executions = _validate_scoring_parser_execution_rows(
+            payload.get("parser_executions"),
+            runtime_attestation=self._expected_runtime_attestation,
+            allowed_modes=self._allowed_parser_modes,
+        )
+        for execution in executions:
+            parser = str(execution["parser"])
+            mode = str(execution["mode"])
+            identity_text = json.dumps(
+                execution,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            identity_key = (parser, mode)
+            previous = self._parser_execution_identities.setdefault(
+                identity_key,
+                identity_text,
+            )
+            if previous != identity_text:
+                raise GoldsetScoringInfrastructureError(
+                    "parse-review parser build identity drifted during evaluation"
+                )
+        self.evaluation_configuration["parser_execution_identities"] = [
+            json.loads(value)
+            for _, value in sorted(self._parser_execution_identities.items())
+        ]
 
 
 def _ratio_pct(numerator: int, denominator: int) -> float | None:
@@ -1446,6 +1673,44 @@ def write_score_report(
             raise GoldsetScoringError(
                 "score report scorer provenance does not match current sources"
             )
+        allowed_modes = runtime.get("allowed_parser_modes")
+        if allowed_modes != ["builtin_plain_text", "local_node_subprocess"]:
+            raise GoldsetScoringError(
+                "score report local-only parser policy is invalid"
+            )
+        try:
+            execution_identities = _validate_scoring_parser_execution_rows(
+                runtime.get("parser_execution_identities"),
+                runtime_attestation=server_attestation,
+                allowed_modes=set(allowed_modes),
+            )
+        except GoldsetScoringInfrastructureError as exc:
+            raise GoldsetScoringError(
+                "score report parser execution provenance is invalid"
+            ) from exc
+        canonical_identities: set[str] = set()
+        identity_by_parser_mode: dict[tuple[str, str], str] = {}
+        for row in execution_identities:
+            identity_text = json.dumps(
+                row,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            identity_key = (str(row["parser"]), str(row["mode"]))
+            previous = identity_by_parser_mode.setdefault(
+                identity_key,
+                identity_text,
+            )
+            if previous != identity_text:
+                raise GoldsetScoringError(
+                    "score report parser execution build identity drifted"
+                )
+            if identity_text in canonical_identities:
+                raise GoldsetScoringError(
+                    "score report parser execution provenance is duplicated"
+                )
+            canonical_identities.add(identity_text)
     output_dir = validate_local_output_dir(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "ncs_recruitment_reference_score.local.json"
