@@ -624,7 +624,8 @@ Vercel Python 함수는 Node 설치에 사용한 `package-lock.json` 자체를 �
 `app/data/node_package_lock_attestation.json`에 잠금파일 전체의 Git-text SHA-256과 Kordoc의
 정확한 버전·integrity를 함께 봉인합니다. 로컬·CI는 줄바꿈을 LF로 정규화해 이 스냅샷을
 원본 잠금파일과 매번 대조하고, 운영 runtime attestation은 번들에 남은 동일 스냅샷의
-해시를 검증합니다.
+해시를 검증합니다. Vercel이 함수 조립 중 다시 쓰는 `vercel.json`도 같은 원칙으로
+`app/data/vercel_config_attestation.json`에 원본 Git-text SHA-256을 봉인합니다.
 
 ## API 실패 계약
 

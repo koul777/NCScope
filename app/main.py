@@ -579,7 +579,9 @@ def _build_evaluation_runtime_attestation() -> dict[str, Any]:
         "package_lock": (
             root / "app" / "data" / "node_package_lock_attestation.json"
         ),
-        "vercel_config": root / "vercel.json",
+        "vercel_config": (
+            root / "app" / "data" / "vercel_config_attestation.json"
+        ),
     }
     lock_attestation = json.loads(
         source_paths["package_lock"].read_text(encoding="utf-8")
@@ -604,6 +606,20 @@ def _build_evaluation_runtime_attestation() -> dict[str, Any]:
         or not re.fullmatch(r"sha512-[A-Za-z0-9+/]+={0,2}", package_integrity)
     ):
         raise RuntimeError("Kordoc package lock attestation is invalid")
+    vercel_config_attestation = json.loads(
+        source_paths["vercel_config"].read_text(encoding="utf-8")
+    )
+    if not isinstance(vercel_config_attestation, dict):
+        raise RuntimeError("Vercel config attestation is invalid")
+    vercel_config_git_text_sha256 = str(
+        vercel_config_attestation.get("vercel_config_git_text_sha256") or ""
+    ).strip()
+    if (
+        vercel_config_attestation.get("schema_version")
+        != "ncscope_vercel_config_attestation_v1"
+        or not re.fullmatch(r"[0-9a-f]{64}", vercel_config_git_text_sha256)
+    ):
+        raise RuntimeError("Vercel config attestation is invalid")
 
     # Vercel consumes package-lock.json while building the Node function and
     # omits it from the Python function bundle. Whenever the original lockfile
@@ -627,6 +643,16 @@ def _build_evaluation_runtime_attestation() -> dict[str, Any]:
             != package_integrity
         ):
             raise RuntimeError("Kordoc package lock attestation is stale")
+        # Vercel also rewrites vercel.json while assembling the Python
+        # function. The original lockfile is the build-boundary marker: local
+        # and CI runs must verify the tracked source config, while the deployed
+        # function binds the verified snapshot that survives bundling.
+        vercel_config_text = (root / "vercel.json").read_text(encoding="utf-8")
+        if (
+            hashlib.sha256(vercel_config_text.encode("utf-8")).hexdigest()
+            != vercel_config_git_text_sha256
+        ):
+            raise RuntimeError("Vercel config attestation is stale")
     attestation = {
         "schema_version": "ncscope_evaluation_runtime_attestation_v2",
         "app_version": APP_VERSION,

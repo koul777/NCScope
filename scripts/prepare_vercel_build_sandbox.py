@@ -26,6 +26,7 @@ REQUIRED_RUNTIME_FILES = (
     "app/data/ncs_detail_catalog.json",
     "app/data/ncs_unit_catalog.json",
     "app/data/node_package_lock_attestation.json",
+    "app/data/vercel_config_attestation.json",
 )
 
 

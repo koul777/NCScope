@@ -1,7 +1,7 @@
 {
   "schema_version": "ncscope_release_evidence_v2",
   "release_version": "1.4.12",
-  "generated_at": "2026-08-25T17:51:29+09:00",
+  "generated_at": "2026-08-25T18:02:24+09:00",
   "evidence_scope": "sanitized aggregate release evidence; private source documents and MCP response bodies are excluded",
   "human_gold_accuracy_available": false,
   "stored_jd_parser": {
@@ -44,7 +44,7 @@
       "prepare_goldset": "e0a00f72c147d4dc83c37b0f078537855b9975dcb5f12e261bb855ac0be32202",
       "prepare_source_packets": "1b518199893a599f6115559d30be63999deb3fddbb915f26cabf23aacce9dce9",
       "finalize_goldset": "ec7b2167c93f891dc039da53666a0c721a65d79edba771d785d580c0d90ec9a1",
-      "score_goldset": "ec0ff258bfd3f83e35962e035b10b02826b27ca55010b201f1c0fbc0459eb7a4",
+      "score_goldset": "2e721b43fe951da81edf3f4e2242519874a18cadfb21b3a8eef3bb22628e1820",
       "official_detail_catalog": "a031d1817baa69e6b97bc89b2e75a592afb8067443152dc5ab46ceb2f4c58a8b"
     }
   },
@@ -95,7 +95,7 @@
   "release_run_source_raw_sha256": {
     "scope": "Windows release-run worktree bytes; use source_contract_git_text_sha256 for cross-platform repository identity",
     "digests": {
-      "app_main": "fe31b0e7e518d735affd5477f013a465ff2c128369fe6eeff8fff81510727e60",
+      "app_main": "2e6b631adb8d78a8c543c88c3e7f2f181e42eb97637e4fa075e1060e036f14a7",
       "benchmark_alio": "1962b86b4bbe94695e28794707733792d0fa71b7c145bddb323f63ce9820fe06",
       "kordoc_parser": "a0befb13562e7f166af38364c97976b6ef9720e8ab59db25911c09c3b3af2572",
       "ncs_mcp_client": "bbafa3813e06d9e2b09c2c20621114aefb6bfe11de2f171119875a6b23bf7430",
@@ -104,7 +104,7 @@
   },
   "source_contract_git_text_sha256": {
     "canonicalization": "UTF-8 with CRLF and lone CR normalized to LF",
-    "app_main": "80a652d2d45058c730b90aa20e3b74ceaece22849cb29a11b1af66f2fe63997a",
+    "app_main": "61ef51b0869eaddc3691c9065aadb7ef4d87aedfbb2dd27abe05e07cc69789b3",
     "benchmark_alio": "63048d7d0e482b14ec8f5c13914a6b9f04b06a32baaecbdc973c5280bc2cfaff",
     "kordoc_parser": "f4c628e2c71d29e80bbce4a08150f920fe3c83bcd4cc1104e5bd6597ccc16459",
     "ncs_mcp_client": "dfcda2e941ebbfd50b4d6638320c63156e04a4aebc7b1e637b00f41eedac6426",
@@ -114,9 +114,9 @@
     "ruff": "passed",
     "pytest": {
       "status": "passed",
-      "passed": 5161,
+      "passed": 5163,
       "skipped": 72,
-      "duration_seconds": 100.78
+      "duration_seconds": 100.61
     },
     "npm_audit_high_or_critical": 0
   }

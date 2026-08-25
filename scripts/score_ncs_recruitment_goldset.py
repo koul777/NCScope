@@ -136,7 +136,9 @@ def local_runtime_attestation() -> dict[str, Any]:
         "package_lock": (
             ROOT / "app" / "data" / "node_package_lock_attestation.json"
         ),
-        "vercel_config": ROOT / "vercel.json",
+        "vercel_config": (
+            ROOT / "app" / "data" / "vercel_config_attestation.json"
+        ),
     }
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     lock_attestation = json.loads(
@@ -162,6 +164,20 @@ def local_runtime_attestation() -> dict[str, Any]:
         or not re.fullmatch(r"sha512-[A-Za-z0-9+/]+={0,2}", package_integrity)
     ):
         raise GoldsetScoringError("Kordoc package lock attestation is invalid")
+    vercel_config_attestation = json.loads(
+        source_paths["vercel_config"].read_text(encoding="utf-8")
+    )
+    if not isinstance(vercel_config_attestation, dict):
+        raise GoldsetScoringError("Vercel config attestation is invalid")
+    vercel_config_git_text_sha256 = str(
+        vercel_config_attestation.get("vercel_config_git_text_sha256") or ""
+    ).strip()
+    if (
+        vercel_config_attestation.get("schema_version")
+        != "ncscope_vercel_config_attestation_v1"
+        or not re.fullmatch(r"[0-9a-f]{64}", vercel_config_git_text_sha256)
+    ):
+        raise GoldsetScoringError("Vercel config attestation is invalid")
     package_lock_text = (ROOT / "package-lock.json").read_text(encoding="utf-8")
     if sha256_bytes(package_lock_text.encode("utf-8")) != package_lock_git_text_sha256:
         raise GoldsetScoringError("Node package lock attestation is stale")
@@ -173,6 +189,12 @@ def local_runtime_attestation() -> dict[str, Any]:
         != package_integrity
     ):
         raise GoldsetScoringError("Kordoc package lock attestation is stale")
+    vercel_config_text = (ROOT / "vercel.json").read_text(encoding="utf-8")
+    if (
+        sha256_bytes(vercel_config_text.encode("utf-8"))
+        != vercel_config_git_text_sha256
+    ):
+        raise GoldsetScoringError("Vercel config attestation is stale")
     attestation = {
         "schema_version": "ncscope_evaluation_runtime_attestation_v2",
         "app_version": str(package.get("version") or "").strip(),

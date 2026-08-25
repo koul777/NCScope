@@ -132,6 +132,22 @@ def test_node_lock_runtime_attestation_matches_full_package_lock() -> None:
     }
 
 
+def test_vercel_config_runtime_attestation_matches_source_config() -> None:
+    config_path = ROOT / "vercel.json"
+    attestation = json.loads(
+        (
+            ROOT / "app" / "data" / "vercel_config_attestation.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert attestation == {
+        "schema_version": "ncscope_vercel_config_attestation_v1",
+        "vercel_config_git_text_sha256": hashlib.sha256(
+            config_path.read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 def test_runtime_attestation_accepts_vercel_bundle_without_root_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -174,6 +190,32 @@ def test_runtime_attestation_rejects_stale_or_non_object_lock_snapshot(
 
     monkeypatch.setattr(Path, "read_text", non_object_snapshot)
     with pytest.raises(RuntimeError, match="attestation is invalid"):
+        main._build_evaluation_runtime_attestation()
+
+
+def test_runtime_attestation_rejects_stale_or_non_object_vercel_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main
+
+    original_read_text = Path.read_text
+
+    def stale_config(path: Path, *args, **kwargs) -> str:
+        if path == ROOT / "vercel.json":
+            return "{}"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", stale_config)
+    with pytest.raises(RuntimeError, match="Vercel config attestation is stale"):
+        main._build_evaluation_runtime_attestation()
+
+    def non_object_snapshot(path: Path, *args, **kwargs) -> str:
+        if path == ROOT / "app" / "data" / "vercel_config_attestation.json":
+            return "[]"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", non_object_snapshot)
+    with pytest.raises(RuntimeError, match="Vercel config attestation is invalid"):
         main._build_evaluation_runtime_attestation()
 
 

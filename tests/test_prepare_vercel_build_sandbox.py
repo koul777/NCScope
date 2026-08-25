@@ -28,6 +28,7 @@ def test_prepare_sandbox_copies_only_required_inputs(tmp_path: Path) -> None:
         "app/data/ncs_detail_catalog.json",
         "app/data/ncs_unit_catalog.json",
         "app/data/node_package_lock_attestation.json",
+        "app/data/vercel_config_attestation.json",
         "app/__pycache__/main.cpython-312.pyc",
         "scripts/kordoc_parse.mjs",
         "scripts/tool.py",
@@ -65,6 +66,7 @@ def test_prepare_sandbox_copies_only_required_inputs(tmp_path: Path) -> None:
             "app/data/ncs_detail_catalog.json",
             "app/data/ncs_unit_catalog.json",
             "app/data/node_package_lock_attestation.json",
+            "app/data/vercel_config_attestation.json",
         ],
     )
 
@@ -73,6 +75,9 @@ def test_prepare_sandbox_copies_only_required_inputs(tmp_path: Path) -> None:
     assert (output_dir / "app" / "main.py").is_file()
     assert (
         output_dir / "app" / "data" / "node_package_lock_attestation.json"
+    ).is_file()
+    assert (
+        output_dir / "app" / "data" / "vercel_config_attestation.json"
     ).is_file()
     assert (output_dir / "scripts" / "kordoc_parse.mjs").is_file()
     assert not (output_dir / "scripts" / "tool.py").exists()

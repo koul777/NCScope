@@ -944,6 +944,22 @@ def test_runtime_attestation_rejects_non_object_lock_snapshot(
     ):
         mod.local_runtime_attestation()
 
+    vercel_snapshot_path = (
+        mod.ROOT / "app" / "data" / "vercel_config_attestation.json"
+    )
+
+    def non_object_vercel_snapshot(path: Path, *args, **kwargs) -> str:
+        if path == vercel_snapshot_path:
+            return "[]"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", non_object_vercel_snapshot)
+    with pytest.raises(
+        mod.GoldsetScoringError,
+        match="Vercel config attestation is invalid",
+    ):
+        mod.local_runtime_attestation()
+
 
 def test_private_scorer_rejects_remote_bridge_execution(tmp_path: Path) -> None:
     mod = load_module(f"score_goldset_remote_mode_{tmp_path.name}")

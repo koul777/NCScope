@@ -1,11 +1,11 @@
 {
   "schema_version": 3,
   "created_at": "2026-08-25T00:49:44.1976680+09:00",
-  "updated_at": "2026-08-25T17:51:29+09:00",
+  "updated_at": "2026-08-25T18:02:24+09:00",
   "original_freeze_sha256": "a031c53a37cab6c81c4dd9ff4c7f91b2022453d493cbb68d5ee69fb70f2e985c",
   "git_text_hash_canonicalization": "UTF-8 with CRLF and lone CR normalized to LF; historical raw-byte hashes remain unchanged",
   "git_text_sha256": {
-    "app/main.py": "80a652d2d45058c730b90aa20e3b74ceaece22849cb29a11b1af66f2fe63997a",
+    "app/main.py": "61ef51b0869eaddc3691c9065aadb7ef4d87aedfbb2dd27abe05e07cc69789b3",
     "tests/fixtures/stored_jd_final_blind_reference.json": "c609b6143444040f96d320084f7fe2fb5f19c688cd2bcf41aa895d04cb3df2f4",
     "scripts/benchmark_stored_jd_corpus.py": "3753c5b51d3bc1b8c9bc018a0f18a2a6628b7b86ff60c7dea24ab269f190e7c0",
     "scripts/benchmark_alio_jd.py": "63048d7d0e482b14ec8f5c13914a6b9f04b06a32baaecbdc973c5280bc2cfaff",
@@ -73,7 +73,7 @@
   "final_operational_benchmark_summary_sha256": "a1a198a300807fa30d6ff1de18837d152ad95c074ec953a466d60697707c91b6",
   "final_operational_non_timing_change_from_20260825_162035_count": 0,
   "final_raw_sha256": {
-    "app/main.py": "fe31b0e7e518d735affd5477f013a465ff2c128369fe6eeff8fff81510727e60",
+    "app/main.py": "2e6b631adb8d78a8c543c88c3e7f2f181e42eb97637e4fa075e1060e036f14a7",
     "tests/fixtures/stored_jd_final_blind_reference.json": "f70e7c7a407578b58edeb1e75ed62bb96ced1fd597f4058d94fb7bbd84ffbefc",
     "scripts/benchmark_stored_jd_corpus.py": "3753c5b51d3bc1b8c9bc018a0f18a2a6628b7b86ff60c7dea24ab269f190e7c0",
     "scripts/benchmark_alio_jd.py": "1962b86b4bbe94695e28794707733792d0fa71b7c145bddb323f63ce9820fe06",
