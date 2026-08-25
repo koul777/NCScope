@@ -392,6 +392,90 @@ def test_adjudication_decision_integrity_binds_completed_csv_and_counts(
         )
 
 
+def test_all_reviewer_evidence_must_exist_in_sealed_source_packet(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(FINALIZE_PATH, "finalize_all_packet_evidence")
+    item_id = "nrg-" + "a" * 64
+    packet = tmp_path / f"{item_id}.source.md"
+    packet.write_text(
+        "NCS detail: Office Administration\nDuties: document control",
+        encoding="utf-8",
+    )
+    packet_row = {
+        "item_id": item_id,
+        "document_sha256": "a" * 64,
+        "packet_path": str(packet.resolve()),
+        "packet_sha256": mod.sha256_file(packet),
+        "source_only": True,
+        "automatic_prediction_fields_included": False,
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    packet_index = tmp_path / "source_packet_index.json"
+    packet_index.write_text(
+        json.dumps(
+            {
+                "packet_version": mod.SOURCE_PACKET_VERSION,
+                "manifest_sha256": mod.sha256_file(manifest_path),
+                "source_only": True,
+                "automatic_prediction_fields_included": False,
+                "extraction_independent_from_scoring_parser": False,
+                "human_gold_eligible": False,
+                "record_count": 1,
+                "packets_sha256": mod.sha256_bytes(
+                    mod.canonical_json_bytes([packet_row])
+                ),
+                "packets": [packet_row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    packet_integrity = tmp_path / "source_packet_integrity.json"
+    packet_integrity.write_text(
+        json.dumps(
+            {
+                "packet_version": mod.SOURCE_PACKET_VERSION,
+                "index_sha256": mod.sha256_file(packet_index),
+                "packet_count": 1,
+                "extraction_independent_from_scoring_parser": False,
+                "human_gold_eligible": False,
+                "packet_files": {packet.name: mod.sha256_file(packet)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    records = [
+        {
+            "item_id": item_id,
+            "document_sha256": "a" * 64,
+            "resolution_type": "exact_two_reviewer_consensus",
+            "evidence": {
+                "reviewer_a": [{"quote": "NCS detail: Office Administration"}],
+                "reviewer_b": [{"quote": "Duties: document control"}],
+            },
+        }
+    ]
+
+    mod._validate_all_reference_evidence_against_packets(
+        packet_index,
+        packet_integrity,
+        manifest_path=manifest_path,
+        final_records=records,
+        is_human_gold=False,
+    )
+
+    records[0]["evidence"]["reviewer_b"][0]["quote"] = "fabricated quote"
+    with pytest.raises(mod.GoldsetFinalizationError, match="absent from source packet"):
+        mod._validate_all_reference_evidence_against_packets(
+            packet_index,
+            packet_integrity,
+            manifest_path=manifest_path,
+            final_records=records,
+            is_human_gold=False,
+        )
+
+
 def test_human_gold_requires_explicit_human_kinds_and_attestation(
     tmp_path: Path,
 ) -> None:
@@ -480,7 +564,7 @@ def test_disagreement_requires_distinct_completed_third_party_decision(
             "final_detail_names_json": '["경영기획"]',
             "final_detail_codes_json": '["02010101"]',
             "final_evidence_json": json.dumps(
-                [{"text": "공식 세분류 경영기획", "section": "NCS 분류"}],
+                [{"quote": "공식 세분류 경영기획", "section": "NCS 분류"}],
                 ensure_ascii=False,
             ),
             "adjudication_rationale": "문서의 명시된 8자리 코드와 공식 명칭을 우선했다.",

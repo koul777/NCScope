@@ -10,7 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import main
-from app.services import kordoc_parser
+from app.services import kordoc_parser, ncs_mcp_client
 from app.services.request_budget import (
     RequestBudgetExceeded,
     remaining_request_budget_sec,
@@ -107,6 +107,183 @@ def test_generation_budget_is_a_hard_wall_clock_deadline(
         "code": "generation_request_deadline_exhausted",
         "retryable": True,
     }
+
+
+def test_timed_out_generation_keeps_request_slot_until_worker_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    active_lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def blocking_worker() -> None:
+        nonlocal active, peak
+        with active_lock:
+            active += 1
+            peak = max(peak, active)
+        started.set()
+        try:
+            release.wait(timeout=3)
+        finally:
+            with active_lock:
+                active -= 1
+
+    async def downstream(_scope, _receive, send) -> None:
+        await main._to_thread_with_request_lease(blocking_worker)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("GENERATION_RATE_LIMIT_REQUESTS", "100")
+    monkeypatch.setattr(main, "_generation_request_budget_sec", lambda: 0.1)
+    middleware = main.ExpensiveRequestLimitMiddleware(downstream)
+    middleware._generation_slots = threading.BoundedSemaphore(1)
+
+    async def invoke() -> list[dict]:
+        sent: list[dict] = []
+
+        async def receive() -> dict:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/questions/generate",
+                "client": ("127.0.0.1", 1234),
+            },
+            receive,
+            send,
+        )
+        return sent
+
+    async def run() -> tuple[list[dict], list[dict], list[dict]]:
+        first = await invoke()
+        assert started.is_set()
+        second = await invoke()
+        release.set()
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            with active_lock:
+                if active == 0:
+                    break
+        third = await invoke()
+        return first, second, third
+
+    try:
+        first, second, third = asyncio.run(run())
+    finally:
+        release.set()
+
+    assert next(item for item in first if item["type"] == "http.response.start")["status"] == 504
+    assert next(item for item in second if item["type"] == "http.response.start")["status"] == 429
+    assert next(item for item in third if item["type"] == "http.response.start")["status"] == 200
+    assert peak == 1
+
+
+def test_request_lease_releases_when_thread_submission_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    semaphore = threading.BoundedSemaphore(1)
+    assert semaphore.acquire(blocking=False) is True
+    lease = main._RequestConcurrencyLease(semaphore.release)
+
+    async def failed_to_thread(*_args, **_kwargs):
+        raise RuntimeError("executor unavailable")
+
+    monkeypatch.setattr(main.asyncio, "to_thread", failed_to_thread)
+
+    async def run() -> None:
+        token = main._REQUEST_CONCURRENCY_LEASE.set(lease)
+        try:
+            with pytest.raises(RuntimeError, match="executor unavailable"):
+                await main._to_thread_with_request_lease(lambda: None)
+        finally:
+            main._REQUEST_CONCURRENCY_LEASE.reset(token)
+            lease.release()
+
+    asyncio.run(run())
+    assert semaphore.acquire(blocking=False) is True
+    semaphore.release()
+
+
+def test_request_lease_releases_when_worker_task_creation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    semaphore = threading.BoundedSemaphore(1)
+    assert semaphore.acquire(blocking=False) is True
+    lease = main._RequestConcurrencyLease(semaphore.release)
+
+    def failed_create_task(coroutine):
+        coroutine.close()
+        raise RuntimeError("task creation unavailable")
+
+    monkeypatch.setattr(main.asyncio, "create_task", failed_create_task)
+
+    async def run() -> None:
+        token = main._REQUEST_CONCURRENCY_LEASE.set(lease)
+        try:
+            with pytest.raises(RuntimeError, match="task creation unavailable"):
+                await main._to_thread_with_request_lease(lambda: None)
+        finally:
+            main._REQUEST_CONCURRENCY_LEASE.reset(token)
+            lease.release()
+
+    asyncio.run(run())
+    assert semaphore.acquire(blocking=False) is True
+    semaphore.release()
+
+
+def test_nested_mcp_workers_retain_outer_request_slot_until_they_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NCS_MCP_KSA_CONCURRENCY", "2")
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    slow_finished = threading.Event()
+    semaphore = threading.BoundedSemaphore(1)
+    assert semaphore.acquire(blocking=False) is True
+    lease = main._RequestConcurrencyLease(semaphore.release)
+
+    def mixed_call(_name: str, arguments: dict) -> dict:
+        if arguments["unit_code"] == "U0":
+            assert slow_started.wait(timeout=1.0)
+            raise ncs_mcp_client.NcsMcpError("primary fast failure")
+        slow_started.set()
+        try:
+            assert release_slow.wait(timeout=2.0)
+        finally:
+            slow_finished.set()
+        return {}
+
+    monkeypatch.setattr(ncs_mcp_client, "_call_tool", mixed_call)
+
+    async def run() -> None:
+        token = main._REQUEST_CONCURRENCY_LEASE.set(lease)
+        try:
+            with pytest.raises(ncs_mcp_client.NcsMcpError, match="primary fast failure"):
+                await main._to_thread_with_request_lease(
+                    ncs_mcp_client.get_ksa_by_units,
+                    [{"ncsClCd": "U0"}, {"ncsClCd": "U1"}],
+                    1,
+                )
+        finally:
+            main._REQUEST_CONCURRENCY_LEASE.reset(token)
+            lease.release()
+
+    try:
+        asyncio.run(run())
+        assert semaphore.acquire(blocking=False) is False
+    finally:
+        release_slow.set()
+        assert slow_finished.wait(timeout=1.0)
+    assert semaphore.acquire(timeout=1.0) is True
+    semaphore.release()
 
 
 def test_kordoc_timeout_is_clamped_to_shared_document_budget(

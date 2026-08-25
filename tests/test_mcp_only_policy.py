@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import io
+import lzma
 import threading
 import time
 import zipfile
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -256,6 +259,9 @@ def test_parse_review_returns_detail_candidates(mocker):
 
     assert resp.status_code == 200
     assert resp.json()["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
+    assert resp.json()["evaluation_runtime_attestation"] == (
+        main._evaluation_runtime_attestation()
+    )
 
 
 def test_parse_review_accepts_direct_hwp_with_kordoc(mocker):
@@ -270,6 +276,26 @@ def test_parse_review_accepts_direct_hwp_with_kordoc(mocker):
     assert resp.status_code == 200
     assert resp.json()["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
     parse.assert_called_once()
+
+
+def test_parse_review_rejects_runtime_files_changed_after_startup(mocker):
+    changed = main._evaluation_runtime_attestation()
+    changed["source_artifact_sha256"]["official_detail_catalog"] = "0" * 64
+    mocker.patch(
+        "app.main._build_evaluation_runtime_attestation",
+        return_value=changed,
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("jd.txt", JD_TEXT.encode("utf-8"), "text/plain")},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == (
+        "evaluation_runtime_changed_after_startup"
+    )
 
 
 def test_parse_review_recovers_hwp_table_terms_after_partial_kordoc_success(mocker):
@@ -587,6 +613,63 @@ def test_zip_parser_rejects_large_directory_when_eocd_count_is_forged() -> None:
 
     assert exc_info.value.status_code == 422
     assert "directory is too large" in str(exc_info.value.detail)
+
+
+def test_zip_parser_maps_unsupported_directory_version_to_422() -> None:
+    data = bytearray(_zip_bytes({"job_description.txt": JD_TEXT}))
+    central = data.find(b"PK\x01\x02")
+    assert central >= 0
+    data[central + 6 : central + 8] = (198).to_bytes(2, "little")
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._parse_upload_document(bytes(data), "unsupported-version.zip", "jd_file")
+
+    assert exc_info.value.status_code == 422
+    assert "not a readable ZIP archive" in str(exc_info.value.detail)
+
+
+def test_zip_parser_maps_corrupt_deflate_stream_to_422(mocker) -> None:
+    data = _zip_bytes({"job_description.txt": JD_TEXT})
+    mocker.patch(
+        "app.main.zipfile.ZipFile.read",
+        side_effect=zlib.error("invalid compressed stream"),
+    )
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._parse_upload_document(data, "corrupt-stream.zip", "jd_file")
+
+    assert exc_info.value.status_code == 422
+    assert "no parseable" in str(exc_info.value.detail)
+
+
+def test_zip_parser_maps_corrupt_lzma_stream_to_422(mocker) -> None:
+    data = _zip_bytes({"job_description.txt": JD_TEXT})
+    mocker.patch(
+        "app.main.zipfile.ZipFile.read",
+        side_effect=lzma.LZMAError("invalid LZMA stream"),
+    )
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._parse_upload_document(data, "corrupt-lzma.zip", "jd_file")
+
+    assert exc_info.value.status_code == 422
+    assert "no parseable" in str(exc_info.value.detail)
+
+
+def test_parse_review_maps_oversized_html_table_span_to_422() -> None:
+    data = b'<table><tr><td colspan="50000">detail</td></tr></table>'
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("oversized-table.txt", data, "text/plain")},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "document_structure_limit_exceeded",
+        "retryable": False,
+    }
 
 
 def test_parse_review_accepts_zip_with_hwp_member(mocker):
@@ -2377,6 +2460,67 @@ def test_mcp_ksa_retries_one_transient_unit_failure(mocker):
     assert rows[0]["responseUnitCode"] == "U1"
 
 
+def test_parallel_mcp_ksa_failure_does_not_submit_or_retry_full_backlog(
+    monkeypatch, mocker
+):
+    monkeypatch.setenv("NCS_MCP_KSA_CONCURRENCY", "4")
+    calls: list[str] = []
+    calls_lock = threading.Lock()
+
+    def fail_call(_name, arguments):
+        with calls_lock:
+            calls.append(str(arguments["unit_code"]))
+        raise ncs_mcp_client.NcsMcpError("offline")
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fail_call)
+
+    with pytest.raises(ncs_mcp_client.NcsMcpError, match="offline|batch cancelled"):
+        ncs_mcp_client.get_ksa_by_units(
+            [{"ncsClCd": f"U{index}"} for index in range(8)],
+            max_factors_per_unit=1,
+        )
+
+    assert len(calls) <= 5
+    assert set(calls).issubset({"U0", "U1", "U2", "U3"})
+
+
+def test_parallel_mcp_ksa_returns_primary_failure_without_waiting_for_active_peer(
+    monkeypatch, mocker
+):
+    monkeypatch.setenv("NCS_MCP_KSA_CONCURRENCY", "2")
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    slow_finished = threading.Event()
+
+    def mixed_call(_name, arguments):
+        code = str(arguments["unit_code"])
+        if code == "U0":
+            assert slow_started.wait(timeout=1.0)
+            raise ncs_mcp_client.NcsMcpError("primary fast failure")
+        slow_started.set()
+        try:
+            assert release_slow.wait(timeout=2.0)
+        finally:
+            slow_finished.set()
+        return {}
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=mixed_call)
+    started_at = time.monotonic()
+    try:
+        with pytest.raises(
+            ncs_mcp_client.NcsMcpError,
+            match="primary fast failure",
+        ):
+            ncs_mcp_client.get_ksa_by_units(
+                [{"ncsClCd": "U0"}, {"ncsClCd": "U1"}],
+                max_factors_per_unit=1,
+            )
+        assert time.monotonic() - started_at < 0.5
+    finally:
+        release_slow.set()
+        assert slow_finished.wait(timeout=1.0)
+
+
 def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     mocker.patch(
@@ -3096,6 +3240,79 @@ def test_mcp_status_applies_a_bounded_cold_probe_budget(monkeypatch):
     assert seen_remaining[0] is not None
     assert 0 < seen_remaining[0] <= ncs_mcp_client._STATUS_PROBE_BUDGET_SEC
     assert ncs_mcp_client.remaining_request_budget_sec() is None
+
+
+def test_mcp_status_returns_stale_value_without_waiting_for_active_probe(monkeypatch):
+    endpoint = "http://mcp.example/mcp"
+    stale = {
+        "configured": True,
+        "reachable": True,
+        "tools": ["ncs_search", "ncs_unit_detail"],
+        "ksaAvailable": True,
+        "lastError": None,
+    }
+    monkeypatch.setattr(ncs_mcp_client, "_endpoint", lambda: endpoint)
+    monkeypatch.setattr(
+        ncs_mcp_client,
+        "_status_cache",
+        (ncs_mcp_client.time.monotonic() - 100, endpoint, stale),
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_tool_names(*, force_refresh=False):
+        assert force_refresh is True
+        started.set()
+        release.wait(timeout=3)
+        return {"ncs_search", "ncs_unit_detail"}
+
+    monkeypatch.setattr(ncs_mcp_client, "_tool_names", slow_tool_names)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        probe = executor.submit(ncs_mcp_client.ncs_mcp_status)
+        assert started.wait(timeout=1)
+        before = time.monotonic()
+        concurrent = ncs_mcp_client.ncs_mcp_status()
+        elapsed = time.monotonic() - before
+        release.set()
+        refreshed = probe.result(timeout=2)
+
+    assert elapsed < 0.1
+    assert concurrent["reachable"] is True
+    assert concurrent["stale"] is True
+    assert concurrent["probeInProgress"] is True
+    assert concurrent["cacheAgeSeconds"] >= 100
+    assert refreshed["reachable"] is True
+
+
+def test_concurrent_force_refresh_shares_inflight_probe_without_waiting(monkeypatch):
+    endpoint = "http://mcp.example/mcp"
+    monkeypatch.setattr(ncs_mcp_client, "_endpoint", lambda: endpoint)
+    monkeypatch.setattr(ncs_mcp_client, "_status_cache", None)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_tool_names(*, force_refresh=False):
+        assert force_refresh is True
+        started.set()
+        release.wait(timeout=3)
+        return {"ncs_search", "ncs_unit_detail"}
+
+    monkeypatch.setattr(ncs_mcp_client, "_tool_names", slow_tool_names)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        probe = executor.submit(ncs_mcp_client.ncs_mcp_status, force_refresh=True)
+        assert started.wait(timeout=1)
+        before = time.monotonic()
+        concurrent = ncs_mcp_client.ncs_mcp_status(force_refresh=True)
+        elapsed = time.monotonic() - before
+        release.set()
+        refreshed = probe.result(timeout=2)
+
+    assert elapsed < 0.1
+    assert concurrent["reachable"] is False
+    assert concurrent["probeInProgress"] is True
+    assert refreshed["reachable"] is True
 
 
 def test_openai_http_error_does_not_expose_remote_body(monkeypatch):

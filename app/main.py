@@ -9,6 +9,7 @@ import io
 import ipaddress
 import json
 import logging
+import lzma
 import math
 import os
 import re
@@ -16,8 +17,10 @@ import secrets
 import threading
 import time
 import zipfile
+import zlib
 from collections import deque
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -49,6 +52,7 @@ from app.services.ai_strategy import build_strategy_with_openai, rank_postings_w
 from app.services.external_api import fetch_ncs, fetch_ncs_highschool_course, fetch_public_inst, fetch_recruitment
 from app.services.kordoc_parser import (
     KordocParseError,
+    KordocStructureLimitError,
     _is_full_ncs_code,
     _strip_full_ncs_code_prefix,
     kordoc_bridge_configuration_status,
@@ -70,6 +74,7 @@ from app.services.ncs_mcp_client import (
     ncs_mcp_status,
     search_units_by_detail,
     suggest_units_by_text,
+    use_detached_work_lease,
     use_ncs_mcp_request_session,
 )
 from app.services.jd_strategy import (
@@ -301,6 +306,88 @@ _DOCUMENT_WORK_SLOTS = threading.BoundedSemaphore(
 )
 
 
+class _RequestConcurrencyLease:
+    """Keep a request slot until every detached worker has actually stopped."""
+
+    def __init__(self, release_callback: Callable[[], None]) -> None:
+        self._release_callback = release_callback
+        self._lock = threading.Lock()
+        self._references = 1
+        self._released = False
+
+    def acquire_worker(self) -> None:
+        with self._lock:
+            if self._released:
+                raise RuntimeError("request concurrency lease is already released")
+            self._references += 1
+
+    def release(self) -> None:
+        should_release = False
+        with self._lock:
+            if self._references <= 0:
+                raise RuntimeError("request concurrency lease reference underflow")
+            self._references -= 1
+            if self._references == 0 and not self._released:
+                self._released = True
+                should_release = True
+        if should_release:
+            self._release_callback()
+
+
+_REQUEST_CONCURRENCY_LEASE: ContextVar[_RequestConcurrencyLease | None] = ContextVar(
+    "ncscope_request_concurrency_lease",
+    default=None,
+)
+
+
+def _consume_detached_worker_result(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.warning("detached_request_worker_failed", exc_info=True)
+
+
+async def _to_thread_with_request_lease(
+    function: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    lease = _REQUEST_CONCURRENCY_LEASE.get()
+    if lease is None:
+        return await asyncio.to_thread(function, *args, **kwargs)
+
+    lease.acquire_worker()
+
+    async def run_with_lease() -> Any:
+        try:
+            def run_with_nested_worker_lease() -> Any:
+                with use_detached_work_lease(lease.acquire_worker, lease.release):
+                    return function(*args, **kwargs)
+
+            return await asyncio.to_thread(run_with_nested_worker_lease)
+        finally:
+            lease.release()
+
+    worker_coroutine = run_with_lease()
+    try:
+        worker_task = asyncio.create_task(worker_coroutine)
+    except BaseException:
+        worker_coroutine.close()
+        lease.release()
+        raise
+    try:
+        return await asyncio.shield(worker_task)
+    except asyncio.CancelledError:
+        # asyncio cannot stop a function that is already running in a thread.
+        # Leave the task alive so its finally block retains/releases the shared
+        # request slot at the actual worker boundary instead of at HTTP timeout.
+        worker_task.add_done_callback(_consume_detached_worker_result)
+        raise
+
+
 class ExpensiveRequestLimitMiddleware:
     """Apply lightweight local backpressure to document/question APIs.
 
@@ -450,10 +537,19 @@ class ExpensiveRequestLimitMiddleware:
                 )
                 await response(scope, receive, send)
                 return
+        request_lease: _RequestConcurrencyLease | None = None
+        lease_token = None
+        if slot_acquired:
+            request_lease = _RequestConcurrencyLease(self._generation_slots.release)
+            lease_token = _REQUEST_CONCURRENCY_LEASE.set(request_lease)
         try:
             await call_app_with_budget()
         finally:
-            if slot_acquired:
+            if lease_token is not None:
+                _REQUEST_CONCURRENCY_LEASE.reset(lease_token)
+            if request_lease is not None:
+                request_lease.release()
+            elif slot_acquired:
                 self._generation_slots.release()
 
 
@@ -464,7 +560,66 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-APP_VERSION = "1.4.11"
+APP_VERSION = "1.4.12"
+
+
+def _build_evaluation_runtime_attestation() -> dict[str, Any]:
+    """Bind private evaluation responses to the code loaded by this process."""
+
+    root = Path(__file__).resolve().parents[1]
+    source_paths = {
+        "app_main": Path(__file__).resolve(),
+        "kordoc_parser": root / "app" / "services" / "kordoc_parser.py",
+        "ncs_mcp_client": root / "app" / "services" / "ncs_mcp_client.py",
+        "official_detail_catalog": root / "app" / "data" / "ncs_detail_catalog.json",
+    }
+    return {
+        "schema_version": "ncscope_evaluation_runtime_attestation_v1",
+        "app_version": APP_VERSION,
+        "source_artifact_sha256": {
+            name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for name, path in source_paths.items()
+        },
+    }
+
+
+# Build this once at module import. Reading files on every request would only
+# attest to the current worktree, not to the code actually loaded by a running
+# process after an on-disk edit.
+_EVALUATION_RUNTIME_ATTESTATION = _build_evaluation_runtime_attestation()
+
+
+def _evaluation_runtime_attestation() -> dict[str, Any]:
+    return {
+        "schema_version": _EVALUATION_RUNTIME_ATTESTATION["schema_version"],
+        "app_version": _EVALUATION_RUNTIME_ATTESTATION["app_version"],
+        "source_artifact_sha256": dict(
+            _EVALUATION_RUNTIME_ATTESTATION["source_artifact_sha256"]
+        ),
+    }
+
+
+def _ensure_evaluation_runtime_unchanged() -> None:
+    try:
+        current = _build_evaluation_runtime_attestation()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "evaluation_runtime_attestation_unavailable",
+                "retryable": False,
+            },
+        ) from exc
+    if current != _EVALUATION_RUNTIME_ATTESTATION:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "evaluation_runtime_changed_after_startup",
+                "retryable": False,
+            },
+        )
+
+
 app = FastAPI(title="NCScope", version=APP_VERSION, lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
@@ -6268,7 +6423,7 @@ async def _fetch_ncs_ksa_or_502_off_loop(
     max_units: int,
     max_factors_per_unit: int,
 ) -> list[dict[str, Any]]:
-    return await asyncio.to_thread(
+    return await _to_thread_with_request_lease(
         _fetch_ncs_ksa_or_502,
         ncs_matches=ncs_matches,
         max_units=max_units,
@@ -6364,7 +6519,7 @@ async def _supplement_ksa_for_question_plan_off_loop(
     ncs_ksa: list[dict[str, Any]] | None,
     max_factors_per_unit: int,
 ) -> list[dict[str, Any]]:
-    return await asyncio.to_thread(
+    return await _to_thread_with_request_lease(
         _supplement_ksa_for_question_plan,
         question_plan=question_plan,
         ncs_matches=ncs_matches,
@@ -6847,7 +7002,14 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                     continue
                 try:
                     member_bytes = archive.read(info)
-                except (RuntimeError, OSError, zipfile.BadZipFile):
+                except (
+                    RuntimeError,
+                    OSError,
+                    ValueError,
+                    zipfile.BadZipFile,
+                    lzma.LZMAError,
+                    zlib.error,
+                ):
                     warnings.append(f"{member_label}: ZIP member could not be read")
                     continue
                 try:
@@ -6890,7 +7052,7 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
                 members.append(member_record)
                 chunks.append(f"# ZIP member: {member_label}\n\n{markdown}")
                 warnings.extend(str(x) for x in (parsed.get("warnings") or []) if str(x).strip())
-    except zipfile.BadZipFile as exc:
+    except (zipfile.BadZipFile, NotImplementedError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"{label} is not a readable ZIP archive") from exc
 
     if not chunks:
@@ -7501,7 +7663,7 @@ async def _run_document_work_off_loop(
         if remaining is not None and remaining - 1.0 <= 0.1:
             cancel_before_worker_start()
             raise RequestBudgetExceeded("document parse deadline exhausted")
-        worker_task = asyncio.create_task(asyncio.to_thread(run_with_slot))
+        worker_task = asyncio.create_task(_to_thread_with_request_lease(run_with_slot))
         if remaining is None:
             return await worker_task
         return await asyncio.wait_for(worker_task, timeout=remaining - 1.0)
@@ -12590,7 +12752,7 @@ async def _generate_quality_gated_institution_strategy(
             for item in (result.get("interview_questions") or [])
             if isinstance(item, dict)
         ]
-        review = await asyncio.to_thread(
+        review = await _to_thread_with_request_lease(
             review_interview_questions_with_ai,
             questions=questions,
             ncs_matches=ncs_matches,
@@ -12705,7 +12867,7 @@ async def _generate_quality_gated_institution_strategy(
                 # timeout/recovery requests to outlive Vercel's proxy window.
                 # ``to_thread`` copies the current context into the worker so
                 # every provider attempt shares the same hard deadline.
-                generated = await asyncio.to_thread(
+                generated = await _to_thread_with_request_lease(
                     build_jd_strategy_with_openai,
                     **batch_kwargs,
                 )
@@ -13287,7 +13449,13 @@ def generation_provider_status(
 def health(request: Request, response: Response) -> dict:
     del request
     mcp = ncs_mcp_status()
-    mcp_ready = bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable"))
+    mcp_ready = bool(
+        mcp.get("configured")
+        and mcp.get("reachable")
+        and mcp.get("ksaAvailable")
+        and not mcp.get("stale")
+        and not mcp.get("probeInProgress")
+    )
     document_parsing = _document_parsing_configuration()
     ready = bool(mcp_ready and document_parsing["ready"])
     response.status_code = 200 if ready else 503
@@ -13580,7 +13748,13 @@ def ops_ax_readiness(x_admin_token: str | None = Header(default=None)) -> dict:
     decisions = metrics.get("decisions") if isinstance(metrics.get("decisions"), dict) else {}
     negative_reviews = int(decisions.get("reject") or 0) + int(decisions.get("needs_edit") or 0)
     signals = {
-        "ready_asset_evidence": bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable")),
+        "ready_asset_evidence": bool(
+            mcp.get("configured")
+            and mcp.get("reachable")
+            and mcp.get("ksaAvailable")
+            and not mcp.get("stale")
+            and not mcp.get("probeInProgress")
+        ),
         "ready_asset_pilot": bool(mcp.get("configured")),
         "ready_asset_ref": "GET /health · NCS_MCP configured/reachable/ksaAvailable",
         "enabled_output_evidence": int(metrics.get("runs") or 0) > 0,
@@ -13873,7 +14047,12 @@ def ncs_diagnose(sample_job_cd: str = Query(default="02020101")) -> dict:
     try:
         _ = sample_job_cd
         status = ncs_mcp_status()
-        ok = bool(status.get("reachable") and status.get("ksaAvailable"))
+        ok = bool(
+            status.get("reachable")
+            and status.get("ksaAvailable")
+            and not status.get("stale")
+            and not status.get("probeInProgress")
+        )
         return {
             "provider": "ncs-mcp",
             "ok": ok,
@@ -14171,6 +14350,7 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
 async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(...)) -> dict:
     """Parse a JD with Kordoc and return editable human-review fields."""
 
+    _ensure_evaluation_runtime_unchanged()
     data = await _read_upload_limited(jd_file, "jd_file")
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
@@ -14183,11 +14363,20 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
         _PARSED_STRUCTURAL_SCLASS_CACHE_KEY,
         None,
     )
-    structured = await _run_document_work_off_loop(
-        structure_job_description,
-        parsed,
-        filename=jd_file.filename or "",
-    )
+    try:
+        structured = await _run_document_work_off_loop(
+            structure_job_description,
+            parsed,
+            filename=jd_file.filename or "",
+        )
+    except KordocStructureLimitError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "document_structure_limit_exceeded",
+                "retryable": False,
+            },
+        ) from exc
     structured_fields = structured.get("fields") if isinstance(structured.get("fields"), dict) else None
     if structured_fields is not None:
         _sanitize_parse_review_ability_artifacts(structured)
@@ -14421,6 +14610,8 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                 source_ability_scopes
             )
         )
+    _ensure_evaluation_runtime_unchanged()
+    structured["evaluation_runtime_attestation"] = _evaluation_runtime_attestation()
     _ensure_parse_review_response_size(structured)
     review_session = _create_review_session(data, structured, jd_file.filename or "")
     _record_audit_event(
@@ -14446,11 +14637,20 @@ async def parse_notice_review_endpoint(
         raise HTTPException(status_code=400, detail="notice_file is empty")
     filename = notice_file.filename or ""
     parsed = await _parse_upload_document_off_loop(data, filename, "notice_file")
-    structured = await _run_document_work_off_loop(
-        structure_job_notice,
-        parsed,
-        filename=filename,
-    )
+    try:
+        structured = await _run_document_work_off_loop(
+            structure_job_notice,
+            parsed,
+            filename=filename,
+        )
+    except KordocStructureLimitError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "document_structure_limit_exceeded",
+                "retryable": False,
+            },
+        ) from exc
     _ensure_parse_review_response_size(structured)
     review_session = _create_review_session(data, structured, filename)
     _record_audit_event(
@@ -14906,7 +15106,7 @@ async def jd_strategy_upload(
                 max(80, len(reviewed_ability_units) * 4, detail_search_unit_limit),
             )
         try:
-            ncs_items = await asyncio.to_thread(
+            ncs_items = await _to_thread_with_request_lease(
                 search_units_by_detail,
                 mcp_lookup_terms,
                 max_units=detail_search_unit_limit,
@@ -14940,7 +15140,7 @@ async def jd_strategy_upload(
             if not ncs_items or unmatched_lookup_terms:
                 suggestion_terms = unmatched_lookup_terms or mcp_lookup_terms
                 try:
-                    suggestions = await asyncio.to_thread(
+                    suggestions = await _to_thread_with_request_lease(
                         suggest_units_by_text,
                         suggestion_terms,
                         max_units=12,
@@ -15005,7 +15205,7 @@ async def jd_strategy_upload(
                                 )
                             return recovered
 
-                        recovery_candidates = await asyncio.to_thread(
+                        recovery_candidates = await _to_thread_with_request_lease(
                             fetch_recovery_candidates
                         )
                     except NcsMcpError:

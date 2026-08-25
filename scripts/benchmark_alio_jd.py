@@ -4,11 +4,13 @@ import argparse
 import csv
 import html
 import io
+import lzma
 import os
 import re
 import sys
 import time
 import zipfile
+import zlib
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -318,7 +320,14 @@ def parse_benchmark_document(
                     continue
                 try:
                     member_bytes = archive.read(info)
-                except (RuntimeError, OSError, zipfile.BadZipFile) as exc:
+                except (
+                    RuntimeError,
+                    OSError,
+                    ValueError,
+                    zipfile.BadZipFile,
+                    lzma.LZMAError,
+                    zlib.error,
+                ) as exc:
                     warnings.append(f"{member_label}: ZIP member could not be read: {exc}")
                     continue
                 try:
@@ -342,7 +351,7 @@ def parse_benchmark_document(
                     continue
                 members.append({"filename": member_label, "suffix": member_suffix})
                 chunks.append(f"# ZIP member: {member_label}\n\n{markdown}")
-    except zipfile.BadZipFile as exc:
+    except (zipfile.BadZipFile, NotImplementedError, ValueError) as exc:
         raise KordocParseError("not a readable ZIP archive") from exc
     if not chunks:
         raise KordocParseError("ZIP contains no parseable PDF/HWP/HWPX/DOCX/TXT/image files")

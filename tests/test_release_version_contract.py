@@ -9,8 +9,8 @@ from app.main import app, health
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "1.4.11"
-DISPLAY_VERSION = "v1.4.11"
+RELEASE_VERSION = "1.4.12"
+DISPLAY_VERSION = "v1.4.12"
 
 
 def test_local_release_artifacts_stay_gitignored() -> None:

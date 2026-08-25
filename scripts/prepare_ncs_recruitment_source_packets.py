@@ -24,7 +24,7 @@ from scripts.prepare_ncs_recruitment_goldset import (  # noqa: E402
 )
 
 
-PACKET_VERSION = "ncs_recruitment_source_only_review_packet_v1"
+PACKET_VERSION = "ncs_recruitment_source_only_review_packet_v2"
 ITEM_ID_RE = re.compile(r"^nrg-([0-9a-f]{64})$")
 
 
@@ -136,6 +136,9 @@ def build_source_packets(
         "record_count": len(packet_rows),
         "source_only": True,
         "automatic_prediction_fields_included": False,
+        "extraction_independent_from_scoring_parser": False,
+        "human_gold_eligible": False,
+        "extraction_policy": "kordoc_ocr_false_shared_parser_family_requires_human_source_cross_check",
         "packets_sha256": hashlib.sha256(canonical_json_bytes(packet_rows)).hexdigest(),
         "packets": packet_rows,
     }
@@ -148,6 +151,8 @@ def build_source_packets(
         "packet_version": PACKET_VERSION,
         "index_sha256": sha256_file(index_path),
         "packet_count": len(packet_rows),
+        "extraction_independent_from_scoring_parser": False,
+        "human_gold_eligible": False,
         "packet_files": {
             Path(row["packet_path"]).name: row["packet_sha256"] for row in packet_rows
         },

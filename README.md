@@ -18,7 +18,17 @@
 
 <p align="center"><a href="https://ncscope.vercel.app"><strong>NCScope 실행하기</strong></a></p>
 
-# NCScope v1.4.11
+# NCScope v1.4.12
+
+## v1.4.12 안정성·평가 무결성 보강
+
+- ZIP/HWP/PDF 파싱은 손상된 압축 스트림과 지원하지 않는 ZIP 방식을 예측 가능한 `422` 오류로 종료합니다.
+- HTML/Markdown 표, 줄 수, 세분류 후보 수에 구조 예산을 적용해 작은 악성 입력이 작업 슬롯을 오래 점유하지 못하게 했습니다. 최종 configured-MCP 재검사는 저장 문서 206/206 파싱, KSA 555/555를 성공했고 직전 정상 실행 대비 비타이밍 필드 변경은 0건입니다.
+- 요청 시간 초과 뒤에도 실제 스레드와 중첩 MCP 작업이 끝날 때까지 동시성 슬롯을 유지하며, MCP 상태 확인은 single-flight 캐시를 사용합니다.
+- KSA 병렬 조회는 첫 실제 오류를 보존하고 새 backlog를 중단합니다. 남은 작업이 실행 중이면 외부 요청 슬롯과 MCP 세션은 작업 종료 시점까지 유지됩니다.
+- 공정채용 평가 분할은 문서 SHA-256뿐 아니라 동일 공고의 모든 첨부를 connected component로 묶습니다. workflow/reference v2는 `posting_ids`, 재계산 가능한 `split_group_sha256`, split 정책을 필수로 검증합니다.
+- 평가기는 공식 세분류명과 8자리 코드를 독립 집합이 아닌 `(세분류명, 코드)` 쌍으로도 채점합니다. 또한 원시 parse 응답 digest와 실제 loopback 서버가 로드한 버전·코드·카탈로그 hash를 매 응답에서 fail-closed 검증해 결과 무결성에 묶습니다.
+- 현재 source packet은 운영 파서와 같은 Kordoc 계열 추출을 사용하므로 `human_gold_eligible=false`입니다. 독립 원문 렌더/OCR 교차검증이 추가되기 전에는 AI adjudicated reference로만 해석해야 합니다.
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 
@@ -256,13 +266,13 @@ python scripts/audit_stored_jd_coordinate_contract.py `
 
 # KSA 강한 계약: benchmark-selected probe 집합의 지식·기술·태도 3종과 수행준거 확인
 python scripts/audit_stored_jd_ksa_contract.py `
-  tmp/stored_jd_benchmark/stored_jd_benchmark_20260825_150529.csv `
+  tmp/stored_jd_benchmark/stored_jd_benchmark_20260825_163108.csv `
   --expected-unit-codes 555 `
   --expected-benchmark-rows 206 `
-  --expected-benchmark-sha256 3c80a95aedc73ba494b46f2ccbf90253e10912df591b720740ea779be8040b86 `
+  --expected-benchmark-sha256 c28e9b935f3c7c7115886b7ac33f88b06e9d09053f81d4d916ff3c4dbdbac96e `
   --expected-catalog-sha256 8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357 `
   --expected-code-set-sha256 5de2eacab7202672ffb31711276acdc3eb324d95ab257ac9bd22a4becd05f61e `
-  --expected-client-sha256 e23ddf7f9c02dd5c38e9fe9ef44fe285314e6044303ffdcc359aa532361e8a2b `
+  --expected-client-sha256 bbafa3813e06d9e2b09c2c20621114aefb6bfe11de2f171119875a6b23bf7430 `
   --expected-audit-script-sha256 b2ce756a9cfb39d68b27db4d6027bf93326d9475f65c1fb56cd98a891be5629d `
   --max-runtime-seconds 600 `
   --require-input-digests
@@ -273,7 +283,7 @@ python scripts/audit_stored_jd_ksa_contract.py `
   --expected-unit-codes 13282 `
   --expected-catalog-sha256 8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357 `
   --expected-code-set-sha256 cc09e69442e780b319fb772a7459fd49066f1f57790bf9140e8243e29d066a01 `
-  --expected-client-sha256 e23ddf7f9c02dd5c38e9fe9ef44fe285314e6044303ffdcc359aa532361e8a2b `
+  --expected-client-sha256 bbafa3813e06d9e2b09c2c20621114aefb6bfe11de2f171119875a6b23bf7430 `
   --expected-audit-script-sha256 b2ce756a9cfb39d68b27db4d6027bf93326d9475f65c1fb56cd98a891be5629d `
   --max-runtime-seconds 600 `
   --require-input-digests `
@@ -296,8 +306,8 @@ catalog·13,282개 코드 집합·client·감사 스크립트
 해시에 결박되지만, 현재 MCP 계약이 upstream DB 식별자나 버전을 노출하지 않으므로 해당
 DB 자체의 독립 provenance 인증으로 해석하지 않습니다.
 
-v1.4.11의 206건 파싱, 비인간 동결셋 점수, 선택 probe 및 active catalog 전수 감사의
-공개 가능한 집계·해시는 [release evidence](reports/ncscope_1_4_11_release_evidence.json)에
+v1.4.12의 206건 파싱, 비인간 동결셋 점수, 선택 probe 및 active catalog 전수 감사의
+공개 가능한 집계·해시는 [release evidence](reports/ncscope_1_4_12_release_evidence.json)에
 묶었습니다. 원문 문서와 MCP 응답 본문은 포함하지 않습니다.
 
 현재 좌표 회귀는 세분류·능력단위 2,197/2,197건의 논리 좌표 형상과 `raw_cell_text`의
@@ -375,9 +385,10 @@ python scripts/prepare_ncs_recruitment_source_packets.py `
 리뷰어 CSV는 `item_id`, 문서 해시와 빈 답안 필드만 포함합니다. validation/holdout split,
 로컬 원본 경로, 출처 URL, 공고명, 파일명과 NCScope 자동 예측은 리뷰어에게 제공하지
 않습니다. 두 리뷰어는 상대 답을 보지 않고 source-only 패킷에서 `mapping_state`, 공식
-세분류명·코드와 정확한 원문 근거를 기입합니다. 분할은 문서 SHA-256으로 결정되어 같은
-내용이 validation과 holdout에 동시에 들어가지 않으며, 지정한 모든 튜닝·기존 평가
-manifest와 해시가 겹치면 생성을 거부하거나 명시적 제외 감사 원장을 남깁니다.
+세분류명·코드와 정확한 원문 근거를 기입합니다. 분할은 문서 SHA-256과 공고 ID의 연결
+요소로 결정되어 같은 내용이나 같은 공고의 다른 첨부가 validation과 holdout에 동시에
+들어가지 않습니다. 튜닝 문서와 연결된 공고의 모든 첨부도 함께 제외하고 감사 원장에
+문서·공고·split-group 해시를 남깁니다.
 
 두 답이 완료되면 다음처럼 일치 항목을 잠그고 불일치만 제3자에게 전달합니다.
 
@@ -411,6 +422,8 @@ python scripts/finalize_ncs_recruitment_goldset.py `
   --adjudication-integrity tmp/ncs_recruitment_goldset/seed/adjudication_work/completed/adjudication_decisions_integrity.local.json `
   --adjudication-worklist-integrity tmp/ncs_recruitment_goldset/seed/adjudication_work/adjudication_worklist_integrity.local.json `
   --adjudication-disputes tmp/ncs_recruitment_goldset/seed/adjudication_work/adjudication_disputes.local.json `
+  --source-packet-index tmp/ncs_recruitment_goldset/seed/source_packet_index.local.json `
+  --source-packet-integrity tmp/ncs_recruitment_goldset/seed/source_packet_integrity.local.json `
   --output-dir tmp/ncs_recruitment_goldset/final `
   --reviewer-a-kind ai_agent `
   --reviewer-b-kind ai_agent `
@@ -428,8 +441,11 @@ python scripts/finalize_ncs_recruitment_goldset.py `
 쌍만 허용하며, 현행 공식명만 적고 `legacy_or_nonstandard`로 분류하는 답도 거부합니다.
 AI 에이전트가 검수한 결과는 항상
 `independent_ai_agent_adjudicated_reference_not_human_gold`로 표시되고 사람 골드가
-되지 않습니다. 사람 골드는 두 독립 리뷰어와 조정자가 모두 실제 사람이고 명시적
-attestation까지 제공된 경우에만 생성됩니다. 인간 골드 attestation은 최종 reference와
+되지 않습니다. 현재 source packet은 점수 계산 경로와 같은 Kordoc 추출 계열이므로
+`human_gold_eligible=false`로 봉인됩니다. 두 독립 원문 렌더/OCR 채널과 사람 교차검증을
+추가하기 전에는 사람 리뷰어를 지정해도 최종 사람 골드로 봉인할 수 없습니다. 향후 이
+독립 추출 요건을 충족한 뒤에도 두 독립 리뷰어와 조정자가 모두 실제 사람이고 명시적
+attestation을 제공해야 합니다. 인간 골드 attestation은 최종 reference와
 `final_integrity.local.json`에 함께 저장되고 canonical JSON SHA-256으로 봉인되며, 누락·변조 시
 점수 계산기가 fail-closed로 중단합니다. AI 또는 혼합 검수는 긍정적인 인간 골드
 attestation을 가질 수 없습니다. 이 attestation은 변조 탐지를 위한 자체 선언형 운영
@@ -437,8 +453,9 @@ attestation을 가질 수 없습니다. 이 attestation은 변조 탐지를 위�
 
 봉인한 로컬 기준표는 실제 API를 통해 다시 파싱해 점수화합니다. HTTP 429나 전송 장애는
 문서 오답으로 넣지 않고 전체 실행을 중단하거나 제한된 `Retry-After` 재시도를 수행합니다.
-핵심 지표는 기준 상태가 `official_current`인 문서만의 세분류명·코드 P/R/F1과 문서
-exact이며, legacy·자체개발·미명시·모호·판독불가는 별도 all-state 진단으로 남깁니다.
+핵심 지표는 기준 상태가 `official_current`인 문서만의 세분류명·코드와 `(세분류명, 코드)`
+쌍 P/R/F1, 문서 exact입니다. 이름 집합과 코드 집합이 각각 같아도 쌍이 뒤바뀌면 오답이며,
+legacy·자체개발·미명시·모호·판독불가는 별도 all-state 진단으로 남깁니다.
 
 ```powershell
 python scripts/score_ncs_recruitment_goldset.py `
@@ -468,6 +485,10 @@ P/R/F1 100/97.52/98.74, 문서 exact 97.67%(42/43)였습니다. validation의 �
 34문서는 명칭·코드·문서 exact가 모두 100%, 한 번만 확인한 holdout 현행 공식 9문서는
 명칭 F1 85.71, 코드 F1 92.31, 문서 exact 88.89%(8/9)입니다. holdout은 이 확인 뒤
 규칙 튜닝에 사용하지 않습니다.
+이 52문서와 아래 198문서의 split 성능은 과거 v1 `document_sha256` split을
+점수화한 역사적 결과입니다. v2 connected-component split의 현행 성능으로
+해석하면 안 되며, v2의 새 validation/holdout 점수는 사람 골드 봉인 후에만
+공개합니다.
 
 같은 날 게시판 앞 구간과 충분히 떨어진 신규 80개 공고에서 고유 직무기술서 198개
 (199 cases)를 다시 봉인했습니다. 알려진 튜닝·기존 평가 문서 SHA-256 238개와 겹치는
@@ -475,12 +496,12 @@ P/R/F1 100/97.52/98.74, 문서 exact 97.67%(42/43)였습니다. validation의 �
 세 번째 AI가 source-only 원문으로 조정했습니다. 이 기준표도
 `independent_ai_agent_adjudicated_reference_not_human_gold`이며 사람 골드가 아닙니다.
 
-튜닝 전 한 번만 실행한 전체 기준선은 198/198 파싱 성공, 현행 공식 세분류 170문서의
+과거 v1 split에서 튜닝 전 한 번만 실행한 전체 기준선은 198/198 파싱 성공, 현행 공식 세분류 170문서의
 명칭 F1 96.40, 코드 F1 98.56, 문서 exact 84.12%(143/170)였습니다. 전체 상태 진단은
 명칭 F1 94.29, 코드 F1 95.81, 문서 exact 74.75%(148/198)입니다. 이 최초 실행 뒤
 holdout 39문서의 개별 오류는 열람하거나 규칙 수정에 사용하지 않았습니다.
 
-validation 159문서에서만 일반화 가능한 문서 구조 오류를 고친 재평가는 현행 공식
+과거 v1 validation 159문서에서만 일반화 가능한 문서 구조 오류를 고친 재평가는 현행 공식
 137문서의 명칭 F1 99.76, 코드 F1 99.88, 문서 exact 99.27%(136/137)였고 전체 상태
 진단은 명칭 F1 96.94, 코드 F1 96.80, 문서 exact 87.42%(139/159)였습니다. 남은 공식
 1건은 정확한 세분류 코드 후보가 능력단위 근거와 함께 제시되지만 자동 확정 금지 정책으로

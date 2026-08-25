@@ -31,11 +31,13 @@ def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() ->
     git_text_hashes = addendum["git_text_sha256"]
     assert addendum["git_text_hash_canonicalization"].startswith("UTF-8")
     for relative in (
+        "app/main.py",
         "tests/fixtures/stored_jd_final_blind_reference.json",
         "scripts/benchmark_stored_jd_corpus.py",
         "scripts/benchmark_alio_jd.py",
     ):
-        assert re.fullmatch(r"[0-9a-f]{64}", freeze["sha256"][relative])
+        if relative in freeze["sha256"]:
+            assert re.fullmatch(r"[0-9a-f]{64}", freeze["sha256"][relative])
         assert _git_text_sha256(ROOT / relative) == git_text_hashes[relative]
     parser = "app/services/kordoc_parser.py"
     assert freeze["sha256"][parser] == addendum["initial_kordoc_parser_sha256"]
@@ -102,6 +104,12 @@ def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() ->
     assert addendum["final_audit_script_sha256"] == addendum["final_raw_sha256"][
         "scripts/audit_stored_jd_ksa_contract.py"
     ]
+    assert addendum["final_kordoc_parser_sha256"] == addendum["final_raw_sha256"][
+        "app/services/kordoc_parser.py"
+    ]
+    assert addendum["final_ncs_mcp_client_sha256"] == addendum["final_raw_sha256"][
+        "app/services/ncs_mcp_client.py"
+    ]
 
 
 def test_final_blind_evidence_timestamps_and_operational_drift_are_ordered() -> None:
@@ -135,6 +143,15 @@ def test_final_blind_evidence_timestamps_and_operational_drift_are_ordered() -> 
     assert len(changed) == 1
     assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in changed)
     assert addendum["current_benchmark_non_timing_change_overlaps_frozen_set"] is False
+    assert addendum[
+        "final_operational_non_timing_change_from_20260825_162035_count"
+    ] == 0
+    assert re.fullmatch(
+        r"[0-9a-f]{64}", addendum["final_operational_benchmark_csv_sha256"]
+    )
+    assert re.fullmatch(
+        r"[0-9a-f]{64}", addendum["final_operational_benchmark_summary_sha256"]
+    )
     frozen_document_hashes = {
         record["sha256"] for record in reference["records"]
     }

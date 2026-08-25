@@ -12,6 +12,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+
+from scripts.ncs_recruitment_split import SPLIT_KEY, compute_split_groups
 from urllib.parse import urlparse
 
 import httpx
@@ -21,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FINAL_DIR = ROOT / "tmp" / "ncs_recruitment_goldset" / "final"
 DEFAULT_SOURCE_DIR = ROOT / "tmp" / "ncs_recruitment_goldset" / "source_documents"
 DEFAULT_OUTPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset" / "score"
-REFERENCE_SCHEMA_VERSION = "ncs_recruitment_adjudicated_reference_v1"
-SCORE_SCHEMA_VERSION = "ncs_recruitment_reference_score_v1"
+REFERENCE_SCHEMA_VERSION = "ncs_recruitment_adjudicated_reference_v2"
+SCORE_SCHEMA_VERSION = "ncs_recruitment_reference_score_v2"
 USAGE_POLICY = "evaluation_only_no_training_or_rule_tuning"
 AI_EVALUATION_BASIS = "independent_ai_agent_adjudicated_reference_not_human_gold"
 HUMAN_EVALUATION_BASIS = "independent_human_double_review_adjudicated_gold"
@@ -45,6 +47,8 @@ FINAL_CSV_FIELDS = [
     "split",
     "document_sha256",
     "case_ids_json",
+    "posting_ids_json",
+    "split_group_sha256",
     "mapping_state",
     "detail_names_json",
     "detail_codes_json",
@@ -70,9 +74,12 @@ ERROR_CSV_FIELDS = [
     "predicted_detail_names_json",
     "reference_detail_codes_json",
     "predicted_detail_codes_json",
+    "reference_detail_pairs_json",
+    "predicted_detail_pairs_json",
     "state_match",
     "name_exact",
     "code_exact",
+    "pair_exact",
     "document_exact",
     "error_types_json",
     "error_message",
@@ -108,6 +115,34 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def local_runtime_attestation() -> dict[str, Any]:
+    source_paths = {
+        "app_main": ROOT / "app" / "main.py",
+        "kordoc_parser": ROOT / "app" / "services" / "kordoc_parser.py",
+        "ncs_mcp_client": ROOT / "app" / "services" / "ncs_mcp_client.py",
+        "official_detail_catalog": (
+            ROOT / "app" / "data" / "ncs_detail_catalog.json"
+        ),
+    }
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    return {
+        "schema_version": "ncscope_evaluation_runtime_attestation_v1",
+        "app_version": str(package.get("version") or "").strip(),
+        "source_artifact_sha256": {
+            name: sha256_file(path) for name, path in source_paths.items()
+        },
+    }
+
+
+def local_scorer_source_artifact_sha256() -> dict[str, str]:
+    return {
+        "score_script": sha256_file(Path(__file__).resolve()),
+        "split_contract": sha256_file(
+            ROOT / "scripts" / "ncs_recruitment_split.py"
+        ),
+    }
 
 
 def _require_sha256(value: Any, *, field: str) -> str:
@@ -234,6 +269,16 @@ def _validate_reference_record(
     split = str(raw.get("split") or "")
     if split not in SPLITS:
         raise GoldsetScoringError(f"{item_id}: invalid validation/holdout split")
+    split_group_sha256 = _require_sha256(
+        raw.get("split_group_sha256"),
+        field=f"{item_id}.split_group_sha256",
+    )
+    raw_posting_ids = raw.get("posting_ids")
+    if not isinstance(raw_posting_ids, list):
+        raise GoldsetScoringError(f"{item_id}: posting_ids must be a list")
+    posting_ids = [str(value or "").strip() for value in raw_posting_ids]
+    if any(not value for value in posting_ids) or len(posting_ids) != len(set(posting_ids)):
+        raise GoldsetScoringError(f"{item_id}: posting_ids are blank or duplicated")
     state = str(raw.get("mapping_state") or "")
     if state not in MAPPING_STATES:
         raise GoldsetScoringError(f"{item_id}: invalid mapping_state")
@@ -309,6 +354,8 @@ def _validate_reference_record(
         "item_id": item_id,
         "document_sha256": digest,
         "split": split,
+        "split_group_sha256": split_group_sha256,
+        "posting_ids": posting_ids,
         "mapping_state": state,
         "detail_names": names,
         "detail_codes": codes,
@@ -487,6 +534,15 @@ def validate_reference_bundle(
         if isinstance(raw, dict) and "item_id" in raw
     }
     _validate_record_provenance(reference, records)
+    posting_assignments: dict[str, tuple[str, str]] = {}
+    for record in records:
+        assignment = (record["split_group_sha256"], record["split"])
+        for posting_id in record["posting_ids"]:
+            previous = posting_assignments.setdefault(posting_id, assignment)
+            if previous != assignment:
+                raise GoldsetScoringError(
+                    "posting ID leaked across validation/holdout split groups"
+                )
     if set(record["split"] for record in records) != set(SPLITS):
         raise GoldsetScoringError(
             "final reference must contain non-empty validation and holdout splits"
@@ -500,6 +556,34 @@ def validate_reference_bundle(
     summary = reference.get("summary")
     if not isinstance(summary, dict):
         raise GoldsetScoringError("final reference summary is missing")
+    try:
+        holdout_modulus = int(summary.get("holdout_modulus"))
+    except (TypeError, ValueError) as exc:
+        raise GoldsetScoringError("final reference holdout modulus is invalid") from exc
+    if summary.get("split_key") != SPLIT_KEY:
+        raise GoldsetScoringError("final reference split key mismatch")
+    try:
+        expected_assignments = compute_split_groups(
+            records,
+            holdout_modulus=holdout_modulus,
+        )
+    except ValueError as exc:
+        raise GoldsetScoringError(str(exc)) from exc
+    for record in records:
+        expected = expected_assignments[record["document_sha256"]]
+        if (
+            record["split_group_sha256"] != expected["split_group_sha256"]
+            or record["split"] != expected["split"]
+        ):
+            raise GoldsetScoringError(
+                "final reference split group is not reproducible"
+            )
+    if summary.get("split_group_count") != len(
+        {record["split_group_sha256"] for record in records}
+    ):
+        raise GoldsetScoringError("final reference split group count mismatch")
+    if summary.get("posting_id_cross_split_overlap_count") != 0:
+        raise GoldsetScoringError("final reference posting split overlap is invalid")
     split_counts = dict(Counter(record["split"] for record in records))
     resolution_counts = dict(
         sorted(Counter(record["resolution_type"] for record in records).items())
@@ -546,6 +630,7 @@ def validate_reference_bundle(
         expected_scalars = {
             "split": record["split"],
             "document_sha256": record["document_sha256"],
+            "split_group_sha256": record["split_group_sha256"],
             "mapping_state": record["mapping_state"],
             "resolution_type": str(record["resolution_type"]),
             "reviewer_a_id": str(record["reviewer_a_id"]),
@@ -567,6 +652,7 @@ def validate_reference_bundle(
             # but that normalization must not make identical JSON/CSV outputs
             # appear inconsistent.
             "case_ids_json": raw_record["case_ids"],
+            "posting_ids_json": raw_record["posting_ids"],
             "detail_names_json": raw_record["detail_names"],
             "detail_codes_json": raw_record["detail_codes"],
         }
@@ -696,6 +782,7 @@ def _predict_from_parse_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     mapping_states: list[str] = []
     exact_names: set[str] = set()
     exact_codes: set[str] = set()
+    exact_pairs: set[tuple[str, str]] = set()
     unresolved_names: set[str] = set()
     for index, raw in enumerate(raw_rows):
         if not isinstance(raw, dict):
@@ -707,10 +794,14 @@ def _predict_from_parse_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         source_name = _normalized_text(raw.get("sourceName"))
         if state == "official_current_exact":
             names = _normalized_string_list(
-                raw.get("officialDetailNames"), field=f"parse row {index} official names"
+                raw.get("officialDetailNames"),
+                field=f"parse row {index} official names",
+                sort_values=False,
             )
             codes = _normalized_string_list(
-                raw.get("officialDetailCodes"), field=f"parse row {index} official codes"
+                raw.get("officialDetailCodes"),
+                field=f"parse row {index} official codes",
+                sort_values=False,
             )
             if not names or len(names) != len(codes) or any(
                 not DETAIL_CODE_RE.fullmatch(code) for code in codes
@@ -720,6 +811,7 @@ def _predict_from_parse_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 )
             exact_names.update(names)
             exact_codes.update(codes)
+            exact_pairs.update(zip(names, codes))
         elif state in {
             "source_declared_self_developed",
             "not_in_current_official_catalog",
@@ -761,6 +853,7 @@ def _predict_from_parse_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "mapping_state": predicted_state,
         "detail_names": sorted(predicted_names),
         "detail_codes": sorted(exact_codes),
+        "detail_pairs": [list(pair) for pair in sorted(exact_pairs)],
         "raw_mapping_states": sorted(state_set),
     }
 
@@ -796,6 +889,18 @@ class LocalParseReviewClient:
             )
         self._max_retries = max_retries
         self._max_retry_after_seconds = max_retry_after_seconds
+        self._expected_runtime_attestation = local_runtime_attestation()
+        self._expected_scorer_sources = local_scorer_source_artifact_sha256()
+        self.evaluation_configuration = {
+            "parser_endpoint": base_url.rstrip("/") + "/api/jd/parse-review",
+            "timeout_seconds": timeout_seconds,
+            "max_retries": max_retries,
+            "max_retry_after_seconds": max_retry_after_seconds,
+            "server_runtime_attestation": None,
+            "scorer_source_artifact_sha256": dict(
+                self._expected_scorer_sources
+            ),
+        }
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(timeout_seconds),
@@ -806,6 +911,26 @@ class LocalParseReviewClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def finalize_runtime_attestation(self) -> dict[str, Any]:
+        verified = self.evaluation_configuration.get("server_runtime_attestation")
+        if verified is None:
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review runtime attestation was never verified"
+            )
+        if verified != self._expected_runtime_attestation:
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review runtime attestation drifted during evaluation"
+            )
+        if local_runtime_attestation() != self._expected_runtime_attestation:
+            raise GoldsetScoringInfrastructureError(
+                "evaluation sources changed during the scoring run"
+            )
+        if local_scorer_source_artifact_sha256() != self._expected_scorer_sources:
+            raise GoldsetScoringInfrastructureError(
+                "scorer sources changed during the scoring run"
+            )
+        return dict(verified)
 
     def __enter__(self) -> "LocalParseReviewClient":
         return self
@@ -855,6 +980,15 @@ class LocalParseReviewClient:
             raise GoldsetScoringInfrastructureError(
                 "local parse-review returned a non-object payload"
             )
+        runtime_attestation = payload.get("evaluation_runtime_attestation")
+        if runtime_attestation != self._expected_runtime_attestation:
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review runtime attestation does not match the "
+                "current evaluation sources"
+            )
+        self.evaluation_configuration["server_runtime_attestation"] = dict(
+            runtime_attestation
+        )
         return payload
 
 
@@ -898,6 +1032,7 @@ def _aggregate_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "parse_success_pct": None,
             "detail_name": _label_metrics(0, 0, 0),
             "detail_code": _label_metrics(0, 0, 0),
+            "detail_pair": _label_metrics(0, 0, 0),
             "mapping_state_accuracy_pct": None,
             "mapping_state_exact_count": 0,
             "document_exact_pct": None,
@@ -905,18 +1040,28 @@ def _aggregate_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         }
     name_tp = name_fp = name_fn = 0
     code_tp = code_fp = code_fn = 0
+    pair_tp = pair_fp = pair_fn = 0
     state_matches = document_exact = parse_success = 0
     for row in rows:
         reference_names = set(row["reference_detail_names"])
         predicted_names = set(row["predicted_detail_names"])
         reference_codes = set(row["reference_detail_codes"])
         predicted_codes = set(row["predicted_detail_codes"])
+        reference_pairs = {
+            tuple(pair) for pair in row["reference_detail_pairs"]
+        }
+        predicted_pairs = {
+            tuple(pair) for pair in row["predicted_detail_pairs"]
+        }
         name_tp += len(reference_names & predicted_names)
         name_fp += len(predicted_names - reference_names)
         name_fn += len(reference_names - predicted_names)
         code_tp += len(reference_codes & predicted_codes)
         code_fp += len(predicted_codes - reference_codes)
         code_fn += len(reference_codes - predicted_codes)
+        pair_tp += len(reference_pairs & predicted_pairs)
+        pair_fp += len(predicted_pairs - reference_pairs)
+        pair_fn += len(reference_pairs - predicted_pairs)
         state_matches += int(bool(row["state_match"]))
         document_exact += int(bool(row["document_exact"]))
         parse_success += int(row["parse_status"] == "ok")
@@ -927,6 +1072,7 @@ def _aggregate_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "parse_success_pct": _ratio_pct(parse_success, count),
         "detail_name": _label_metrics(name_tp, name_fp, name_fn),
         "detail_code": _label_metrics(code_tp, code_fp, code_fn),
+        "detail_pair": _label_metrics(pair_tp, pair_fp, pair_fn),
         "mapping_state_accuracy_pct": _ratio_pct(state_matches, count),
         "mapping_state_exact_count": state_matches,
         "document_exact_pct": _ratio_pct(document_exact, count),
@@ -945,6 +1091,7 @@ def _aggregate_official_current_core(
             "eligible_document_count": 0,
             "detail_name": _label_metrics(0, 0, 0),
             "detail_code": _label_metrics(0, 0, 0),
+            "detail_pair": _label_metrics(0, 0, 0),
             "mapping_state_accuracy_pct": None,
             "mapping_state_exact_count": 0,
             "document_exact_pct": None,
@@ -955,6 +1102,7 @@ def _aggregate_official_current_core(
         "eligible_document_count": len(eligible),
         "detail_name": metrics["detail_name"],
         "detail_code": metrics["detail_code"],
+        "detail_pair": metrics["detail_pair"],
         "mapping_state_accuracy_pct": metrics["mapping_state_accuracy_pct"],
         "mapping_state_exact_count": metrics["mapping_state_exact_count"],
         "document_exact_pct": metrics["document_exact_pct"],
@@ -995,16 +1143,19 @@ def score_reference(
             )
         parse_status = "ok"
         parse_error = ""
+        raw_parse_payload_sha256 = ""
         prediction = {
             "mapping_state": "unreadable",
             "detail_names": [],
             "detail_codes": [],
+            "detail_pairs": [],
             "raw_mapping_states": [],
         }
         try:
             payload = parse_document(path, data)
             if not isinstance(payload, Mapping):
                 raise GoldsetScoringError("parse function returned a non-object payload")
+            raw_parse_payload_sha256 = sha256_bytes(canonical_json_bytes(payload))
             prediction = _predict_from_parse_payload(payload)
         except GoldsetScoringInfrastructureError:
             # A partial run caused by transport/backpressure is not a model
@@ -1017,10 +1168,21 @@ def score_reference(
         reference_codes = set(record["detail_codes"])
         predicted_names = set(prediction["detail_names"])
         predicted_codes = set(prediction["detail_codes"])
+        reference_pairs = set(zip(record["detail_names"], record["detail_codes"]))
+        predicted_pairs = {
+            (str(pair[0]), str(pair[1])) for pair in prediction["detail_pairs"]
+        }
         state_match = prediction["mapping_state"] == record["mapping_state"]
         name_exact = predicted_names == reference_names
         code_exact = predicted_codes == reference_codes
-        exact = parse_status == "ok" and state_match and name_exact and code_exact
+        pair_exact = predicted_pairs == reference_pairs
+        exact = (
+            parse_status == "ok"
+            and state_match
+            and name_exact
+            and code_exact
+            and pair_exact
+        )
         error_types: list[str] = []
         if parse_status != "ok":
             error_types.append("parse_error")
@@ -1030,6 +1192,8 @@ def score_reference(
             error_types.append("detail_name_mismatch")
         if not code_exact:
             error_types.append("detail_code_mismatch")
+        if not pair_exact:
+            error_types.append("detail_pair_mismatch")
         results.append(
             {
                 "item_id": record["item_id"],
@@ -1042,12 +1206,16 @@ def score_reference(
                 "predicted_detail_names": sorted(predicted_names),
                 "reference_detail_codes": sorted(reference_codes),
                 "predicted_detail_codes": sorted(predicted_codes),
+                "reference_detail_pairs": [list(pair) for pair in sorted(reference_pairs)],
+                "predicted_detail_pairs": [list(pair) for pair in sorted(predicted_pairs)],
                 "state_match": state_match,
                 "name_exact": name_exact,
                 "code_exact": code_exact,
+                "pair_exact": pair_exact,
                 "document_exact": exact,
                 "error_types": error_types,
                 "error_message": parse_error,
+                "raw_parse_payload_sha256": raw_parse_payload_sha256,
                 "raw_predicted_mapping_states": prediction["raw_mapping_states"],
             }
         )
@@ -1072,6 +1240,11 @@ def score_reference(
             else "ai_adjudicated_reference_comparison_not_human_gold_accuracy"
         ),
         "automatic_predictions_are_reference_labels": False,
+        "evaluation_runtime": {
+            "parser_endpoint": "injected_parse_function_unattested",
+            "runtime_attested": False,
+            "scorer_source_artifact_sha256": {},
+        },
         "usage_policy": USAGE_POLICY,
         "evaluated_splits": sorted(selected_splits),
         "summary": {
@@ -1150,10 +1323,10 @@ def _markdown_report(score: Mapping[str, Any]) -> str:
         "",
         "## Official-current detail core",
         "",
-        "Only records independently labeled `official_current` enter these name/code precision, recall, and exact-match denominators. Legacy, self-developed, ambiguous, absent, and unreadable records remain in the all-state diagnostics below.",
+        "Only records independently labeled `official_current` enter these name/code/pair precision, recall, and exact-match denominators. A pair is the ordered official detail name with its code; matching the two sets separately is insufficient.",
         "",
-        "| Split | Eligible docs | Name P/R/F1 | Code P/R/F1 | State exact | Document exact |",
-        "|---|---:|---|---|---:|---:|",
+        "| Split | Eligible docs | Name P/R/F1 | Code P/R/F1 | Pair P/R/F1 | State exact | Document exact |",
+        "|---|---:|---|---|---|---:|---:|",
     ]
     for label, metrics in [
         ("overall", summary["official_current_core"]),
@@ -1164,6 +1337,7 @@ def _markdown_report(score: Mapping[str, Any]) -> str:
     ]:
         name = metrics["detail_name"]
         code = metrics["detail_code"]
+        pair = metrics["detail_pair"]
         lines.append(
             "| "
             + " | ".join(
@@ -1176,6 +1350,10 @@ def _markdown_report(score: Mapping[str, Any]) -> str:
                     ),
                     "/".join(
                         _metric_text(code[key])
+                        for key in ("precision_pct", "recall_pct", "f1_pct")
+                    ),
+                    "/".join(
+                        _metric_text(pair[key])
                         for key in ("precision_pct", "recall_pct", "f1_pct")
                     ),
                     _metric_text(metrics["mapping_state_accuracy_pct"]),
@@ -1191,8 +1369,8 @@ def _markdown_report(score: Mapping[str, Any]) -> str:
             "",
         "Automatic predictions were produced only after the sealed reference was loaded and validated. They were not used to write or alter reference labels.",
         "",
-        "| Split | Docs | Name P/R/F1 | Code P/R/F1 | State exact | Document exact |",
-        "|---|---:|---|---|---:|---:|",
+        "| Split | Docs | Name P/R/F1 | Code P/R/F1 | Pair P/R/F1 | State exact | Document exact |",
+        "|---|---:|---|---|---|---:|---:|",
         ]
     )
     for label, metrics in [
@@ -1201,6 +1379,7 @@ def _markdown_report(score: Mapping[str, Any]) -> str:
     ]:
         name = metrics["detail_name"]
         code = metrics["detail_code"]
+        pair = metrics["detail_pair"]
         lines.append(
             "| "
             + " | ".join(
@@ -1213,6 +1392,10 @@ def _markdown_report(score: Mapping[str, Any]) -> str:
                     ),
                     "/".join(
                         _metric_text(code[key])
+                        for key in ("precision_pct", "recall_pct", "f1_pct")
+                    ),
+                    "/".join(
+                        _metric_text(pair[key])
                         for key in ("precision_pct", "recall_pct", "f1_pct")
                     ),
                     _metric_text(metrics["mapping_state_accuracy_pct"]),
@@ -1244,7 +1427,25 @@ def write_score_report(
     *,
     reference_paths: Mapping[str, Path],
     source_paths: Mapping[str, Path],
+    require_runtime_attestation: bool = True,
 ) -> dict[str, Path]:
+    if require_runtime_attestation:
+        runtime = score.get("evaluation_runtime")
+        if not isinstance(runtime, Mapping) or runtime.get("runtime_attested") is not True:
+            raise GoldsetScoringError(
+                "score report requires an attested parse-review runtime"
+            )
+        server_attestation = runtime.get("server_runtime_attestation")
+        if server_attestation != local_runtime_attestation():
+            raise GoldsetScoringError(
+                "score report runtime attestation does not match current sources"
+            )
+        if runtime.get(
+            "scorer_source_artifact_sha256"
+        ) != local_scorer_source_artifact_sha256():
+            raise GoldsetScoringError(
+                "score report scorer provenance does not match current sources"
+            )
     output_dir = validate_local_output_dir(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "ncs_recruitment_reference_score.local.json"
@@ -1278,9 +1479,16 @@ def write_score_report(
                     "predicted_detail_codes_json": json.dumps(
                         row["predicted_detail_codes"], ensure_ascii=False
                     ),
+                    "reference_detail_pairs_json": json.dumps(
+                        row["reference_detail_pairs"], ensure_ascii=False
+                    ),
+                    "predicted_detail_pairs_json": json.dumps(
+                        row["predicted_detail_pairs"], ensure_ascii=False
+                    ),
                     "state_match": _bool_text(row["state_match"]),
                     "name_exact": _bool_text(row["name_exact"]),
                     "code_exact": _bool_text(row["code_exact"]),
+                    "pair_exact": _bool_text(row["pair_exact"]),
                     "document_exact": _bool_text(row["document_exact"]),
                     "error_types_json": json.dumps(row["error_types"]),
                     "error_message": row["error_message"],
@@ -1305,6 +1513,20 @@ def write_score_report(
             name: sha256_file(path) for name, path in sorted(reference_paths.items())
         },
         "private_source_document_sha256": sorted(source_paths),
+        "evaluation_runtime": score["evaluation_runtime"],
+        "parse_payload_ledger_sha256": sha256_bytes(
+            canonical_json_bytes(
+                [
+                    {
+                        "item_id": row["item_id"],
+                        "raw_parse_payload_sha256": row[
+                            "raw_parse_payload_sha256"
+                        ],
+                    }
+                    for row in score["records"]
+                ]
+            )
+        ),
         "output_artifact_sha256": {
             name: sha256_file(path) for name, path in sorted(report_paths.items())
         },
@@ -1383,6 +1605,12 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.source_index).resolve() if args.source_index else None
             ),
         )
+        score["evaluation_runtime"].update(client.evaluation_configuration)
+        score["evaluation_runtime"]["evaluated_splits"] = score["evaluated_splits"]
+        score["evaluation_runtime"]["server_runtime_attestation"] = (
+            client.finalize_runtime_attestation()
+        )
+        score["evaluation_runtime"]["runtime_attested"] = True
     output_paths = write_score_report(
         score,
         Path(args.output_dir),

@@ -108,7 +108,7 @@ def test_build_workflow_collapses_content_duplicates_and_starts_without_gold(
     )
     assert duplicate_record["case_ids"] == ["case-a", "case-b"]
     assert duplicate_record["split"] == mod.deterministic_split(
-        duplicate_record["document_sha256"]
+        duplicate_record["split_group_sha256"]
     )
 
     for rows in (workflow["reviewer_a"], workflow["reviewer_b"]):
@@ -127,6 +127,68 @@ def test_build_workflow_collapses_content_duplicates_and_starts_without_gold(
     assert "automatic-1" not in json.dumps(workflow["reviewer_a"])
     assert "source-1" not in json.dumps(workflow["reviewer_a"])
     mod.validate_workflow(workflow)
+
+
+def test_build_workflow_keeps_same_posting_documents_in_one_split(
+    tmp_path: Path,
+) -> None:
+    mod = load_module()
+    first = tmp_path / "posting-part-a.pdf"
+    second = tmp_path / "posting-part-b.pdf"
+    third = tmp_path / "other-posting.pdf"
+    first.write_bytes(b"first posting attachment")
+    second.write_bytes(b"second posting attachment")
+    third.write_bytes(b"other posting attachment")
+    payload = benchmark_payload(["case-a", "case-b", "case-c"])
+    payload["cases"][0]["posting_id"] = "shared-posting"
+    payload["cases"][1]["posting_id"] = "shared-posting"
+
+    workflow = mod.build_workflow(
+        payload,
+        [
+            source_row("case-a", first),
+            source_row("case-b", second),
+            source_row("case-c", third),
+        ],
+    )
+
+    by_case = {
+        case_id: record
+        for record in workflow["records"]
+        for case_id in record["case_ids"]
+    }
+    assert by_case["case-a"]["split"] == by_case["case-b"]["split"]
+    assert (
+        by_case["case-a"]["split_group_sha256"]
+        == by_case["case-b"]["split_group_sha256"]
+    )
+    assert workflow["summary"]["posting_id_cross_split_overlap_count"] == 0
+    mod.validate_workflow(workflow)
+
+
+def test_workflow_recomputes_and_rejects_supplied_component_digest(
+    tmp_path: Path,
+) -> None:
+    mod = load_module()
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    payload = benchmark_payload(["case-a", "case-b"])
+    payload["cases"][0]["posting_id"] = "shared-posting"
+    payload["cases"][1]["posting_id"] = "shared-posting"
+    workflow = mod.build_workflow(
+        payload,
+        [source_row("case-a", first), source_row("case-b", second)],
+    )
+    workflow["records"][0]["split_group_sha256"] = "a" * 64
+    workflow["records"][0]["split"] = mod.deterministic_split("a" * 64)
+    workflow["summary"]["records_sha256"] = mod.sha256_bytes(
+        mod.canonical_json_bytes(workflow["records"])
+    )
+
+    with pytest.raises(mod.GoldsetPreparationError, match="deterministic split"):
+        mod.validate_workflow(workflow)
 
 
 def test_build_workflow_rejects_tuning_overlap_and_hash_mismatch(tmp_path: Path) -> None:
@@ -184,6 +246,37 @@ def test_explicit_tuning_overlap_filter_removes_cases_with_a_local_audit(
     assert workflow["summary"]["benchmark_case_count"] == 1
 
 
+def test_tuning_filter_removes_entire_shared_posting_component(tmp_path: Path) -> None:
+    mod = load_module()
+    tuning_document = tmp_path / "tuning.pdf"
+    sibling_document = tmp_path / "sibling.pdf"
+    remaining_document = tmp_path / "remaining.pdf"
+    tuning_document.write_bytes(b"known tuning")
+    sibling_document.write_bytes(b"same posting sibling")
+    remaining_document.write_bytes(b"independent evaluation")
+    payload = benchmark_payload(["case-tuning", "case-sibling", "case-remaining"])
+    payload["cases"][0]["posting_id"] = "shared-posting"
+    payload["cases"][1]["posting_id"] = "shared-posting"
+
+    filtered_payload, filtered_rows, audit = mod.exclude_tuning_overlap_candidates(
+        payload,
+        [
+            source_row("case-tuning", tuning_document),
+            source_row("case-sibling", sibling_document),
+            source_row("case-remaining", remaining_document),
+        ],
+        tuning_hashes={mod.sha256_file(tuning_document)},
+    )
+
+    assert [row["case_id"] for row in filtered_payload["cases"]] == [
+        "case-remaining"
+    ]
+    assert [row["case_id"] for row in filtered_rows] == ["case-remaining"]
+    assert audit["excluded_case_ids"] == ["case-sibling", "case-tuning"]
+    assert audit["excluded_posting_ids"] == ["shared-posting"]
+    assert len(audit["excluded_split_group_sha256"]) == 1
+
+
 def test_tuning_overlap_filter_rejects_all_candidates_removed(tmp_path: Path) -> None:
     mod = load_module()
     document = tmp_path / "tuning.pdf"
@@ -204,6 +297,17 @@ def test_build_workflow_requires_exact_source_index_coverage(tmp_path: Path) -> 
     payload = benchmark_payload(["case-a", "case-b"])
 
     with pytest.raises(mod.GoldsetPreparationError, match="missing 1"):
+        mod.build_workflow(payload, [source_row("case-a", document)])
+
+
+def test_build_workflow_requires_posting_id_for_component_split(tmp_path: Path) -> None:
+    mod = load_module()
+    document = tmp_path / "jd.pdf"
+    document.write_bytes(b"one document")
+    payload = benchmark_payload(["case-a"])
+    payload["cases"][0]["posting_id"] = ""
+
+    with pytest.raises(mod.GoldsetPreparationError, match="nonblank posting_id"):
         mod.build_workflow(payload, [source_row("case-a", document)])
 
 

@@ -11,12 +11,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from scripts.ncs_recruitment_split import SPLIT_KEY, compute_split_groups
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset"
 DEFAULT_OUTPUT_DIR = DEFAULT_INPUT_DIR / "final"
-WORKFLOW_VERSION = "ncs_recruitment_human_goldset_v1"
-FINAL_SCHEMA_VERSION = "ncs_recruitment_adjudicated_reference_v1"
+WORKFLOW_VERSION = "ncs_recruitment_human_goldset_v2"
+FINAL_SCHEMA_VERSION = "ncs_recruitment_adjudicated_reference_v2"
+SOURCE_PACKET_VERSION = "ncs_recruitment_source_only_review_packet_v2"
 USAGE_POLICY = "evaluation_only_no_training_or_rule_tuning"
 AI_EVALUATION_BASIS = "independent_ai_agent_adjudicated_reference_not_human_gold"
 HUMAN_EVALUATION_BASIS = "independent_human_double_review_adjudicated_gold"
@@ -88,6 +91,8 @@ FINAL_CSV_FIELDS = [
     "split",
     "document_sha256",
     "case_ids_json",
+    "posting_ids_json",
+    "split_group_sha256",
     "mapping_state",
     "detail_names_json",
     "detail_codes_json",
@@ -263,14 +268,7 @@ def _normalize_evidence(value: Any, *, field: str) -> list[dict[str, Any]]:
         item_field = f"{field}[{index}]"
         if not isinstance(item, dict):
             raise GoldsetFinalizationError(f"{item_field} must be an object")
-        text = next(
-            (
-                str(item.get(key) or "").strip()
-                for key in ("quote", "text", "note", "reason")
-                if str(item.get(key) or "").strip()
-            ),
-            "",
-        )
+        text = str(item.get("quote") or "").strip()
         locator = next(
             (
                 item.get(key)
@@ -281,7 +279,7 @@ def _normalize_evidence(value: Any, *, field: str) -> list[dict[str, Any]]:
         )
         if not text or locator is None:
             raise GoldsetFinalizationError(
-                f"{item_field} requires evidence text and page/section/locator"
+                f"{item_field} requires quote and page/section/locator"
             )
         output.append(dict(item))
     return output
@@ -405,6 +403,7 @@ def _validate_seed(
     item_ids: set[str] = set()
     digests: set[str] = set()
     case_ids: set[str] = set()
+    posting_assignments: dict[str, tuple[str, str]] = {}
     normalized_records: list[dict[str, Any]] = []
     for raw in records:
         if not isinstance(raw, dict):
@@ -418,7 +417,14 @@ def _validate_seed(
             raise GoldsetFinalizationError("manifest item ID is blank, duplicate, or invalid")
         if digest in digests:
             raise GoldsetFinalizationError("duplicate document leaked across manifest rows")
-        if split != deterministic_split(digest, holdout_modulus=holdout_modulus):
+        split_group_digest = _require_sha256(
+            raw.get("split_group_sha256"),
+            field=f"{item_id or '<blank>'}.split_group_sha256",
+        )
+        if split != deterministic_split(
+            split_group_digest,
+            holdout_modulus=holdout_modulus,
+        ):
             raise GoldsetFinalizationError("validation/holdout split invariant failed")
         if raw.get("usage_policy") != USAGE_POLICY or raw.get("is_gold") is not False:
             raise GoldsetFinalizationError("manifest record violates do-not-tune/gold policy")
@@ -434,12 +440,63 @@ def _validate_seed(
         item_ids.add(item_id)
         digests.add(digest)
         case_ids.update(normalized_case_ids)
-        normalized_records.append(dict(raw))
+        raw_posting_ids = raw.get("posting_ids")
+        if not isinstance(raw_posting_ids, list):
+            raise GoldsetFinalizationError(f"{item_id}: posting_ids must be a list")
+        normalized_posting_ids = [
+            str(posting_id or "").strip() for posting_id in raw_posting_ids
+        ]
+        if any(not value for value in normalized_posting_ids) or len(
+            normalized_posting_ids
+        ) != len(set(normalized_posting_ids)):
+            raise GoldsetFinalizationError(
+                f"{item_id}: posting_ids are blank or duplicated"
+            )
+        for normalized_posting_id in normalized_posting_ids:
+            assignment = (split_group_digest, split)
+            previous = posting_assignments.setdefault(
+                normalized_posting_id,
+                assignment,
+            )
+            if previous != assignment:
+                raise GoldsetFinalizationError(
+                    "posting ID leaked across validation/holdout split groups"
+                )
+        normalized_records.append(
+            {
+                **raw,
+                "posting_ids": normalized_posting_ids,
+                "split_group_sha256": split_group_digest,
+            }
+        )
+
+    try:
+        expected_assignments = compute_split_groups(
+            normalized_records,
+            holdout_modulus=holdout_modulus,
+        )
+    except ValueError as exc:
+        raise GoldsetFinalizationError(str(exc)) from exc
+    for record in normalized_records:
+        expected = expected_assignments[str(record["document_sha256"])]
+        if (
+            record["split_group_sha256"] != expected["split_group_sha256"]
+            or record["split"] != expected["split"]
+        ):
+            raise GoldsetFinalizationError(
+                "manifest split group is not reproducible from document/posting IDs"
+            )
 
     if int(summary.get("unique_document_count") or -1) != len(normalized_records):
         raise GoldsetFinalizationError("manifest unique document count mismatch")
     if int(summary.get("benchmark_case_count") or -1) != len(case_ids):
         raise GoldsetFinalizationError("manifest benchmark case coverage mismatch")
+    if summary.get("split_key") != SPLIT_KEY:
+        raise GoldsetFinalizationError("manifest split key mismatch")
+    if int(summary.get("split_group_count") or -1) != len(
+        {record["split_group_sha256"] for record in normalized_records}
+    ):
+        raise GoldsetFinalizationError("manifest split group count mismatch")
     records_hash = sha256_bytes(canonical_json_bytes(records))
     if summary.get("records_sha256") != records_hash:
         raise GoldsetFinalizationError("manifest records SHA-256 mismatch")
@@ -714,6 +771,8 @@ def finalize_reference(
                 "split": record["split"],
                 "document_sha256": record["document_sha256"],
                 "case_ids": list(record["case_ids"]),
+                "posting_ids": list(record["posting_ids"]),
+                "split_group_sha256": str(record["split_group_sha256"]),
                 **answer,
                 "evidence": final_evidence,
                 "resolution_type": resolution_type,
@@ -803,7 +862,10 @@ def finalize_reference(
         "policy": {
             "consensus_rule": "exact normalized answer agreement by two independent reviewers",
             "disagreement_rule": "distinct third reviewer must complete adjudication",
-            "split_assignment": "immutable SHA-256/modulus assignment from prepared manifest",
+            "split_assignment": (
+                "immutable posting/document connected-component SHA-256/modulus "
+                "assignment from prepared manifest"
+            ),
             "tuning": USAGE_POLICY,
         },
         "summary": {
@@ -812,6 +874,12 @@ def finalize_reference(
             "split_counts": dict(sorted(split_counts.items())),
             "resolution_counts": dict(sorted(resolution_counts.items())),
             "disagreement_count": disagreement_count,
+            "holdout_modulus": int(manifest["summary"]["holdout_modulus"]),
+            "split_key": SPLIT_KEY,
+            "split_group_count": len(
+                {record["split_group_sha256"] for record in final_records}
+            ),
+            "posting_id_cross_split_overlap_count": 0,
         },
         "source_records_sha256": manifest["summary"]["records_sha256"],
         "records_sha256": sha256_bytes(canonical_json_bytes(final_records)),
@@ -849,6 +917,10 @@ def write_final_reference(
                 "split": record["split"],
                 "document_sha256": record["document_sha256"],
                 "case_ids_json": json.dumps(record["case_ids"], ensure_ascii=False),
+                "posting_ids_json": json.dumps(
+                    record["posting_ids"], ensure_ascii=False
+                ),
+                "split_group_sha256": record["split_group_sha256"],
                 "mapping_state": record["mapping_state"],
                 "detail_names_json": json.dumps(
                     record["detail_names"], ensure_ascii=False
@@ -1104,6 +1176,141 @@ def _validate_adjudication_decision_integrity(
                 )
 
 
+def _validate_all_reference_evidence_against_packets(
+    packet_index_path: Path,
+    packet_integrity_path: Path,
+    *,
+    manifest_path: Path,
+    final_records: Sequence[Mapping[str, Any]],
+    is_human_gold: bool,
+) -> None:
+    index = _read_json_object(packet_index_path, label="source packet index")
+    integrity = _read_json_object(
+        packet_integrity_path,
+        label="source packet integrity",
+    )
+    if (
+        index.get("packet_version") != SOURCE_PACKET_VERSION
+        or integrity.get("packet_version") != SOURCE_PACKET_VERSION
+        or index.get("manifest_sha256") != sha256_file(manifest_path)
+        or index.get("source_only") is not True
+        or index.get("automatic_prediction_fields_included") is not False
+        or index.get("extraction_independent_from_scoring_parser") is not False
+        or index.get("human_gold_eligible") is not False
+        or integrity.get("extraction_independent_from_scoring_parser") is not False
+        or integrity.get("human_gold_eligible") is not False
+    ):
+        raise GoldsetFinalizationError(
+            "source packet version/manifest/source-only binding is invalid"
+        )
+    if is_human_gold:
+        raise GoldsetFinalizationError(
+            "current shared-parser source packets are not eligible for human gold"
+        )
+    if sha256_file(packet_index_path) != _require_sha256(
+        integrity.get("index_sha256"),
+        field="source packet integrity.index_sha256",
+    ):
+        raise GoldsetFinalizationError("source packet index integrity mismatch")
+    raw_packets = index.get("packets")
+    packet_files = integrity.get("packet_files")
+    if not isinstance(raw_packets, list) or not isinstance(packet_files, dict):
+        raise GoldsetFinalizationError("source packet inventory is invalid")
+    if index.get("record_count") != len(raw_packets) or integrity.get(
+        "packet_count"
+    ) != len(raw_packets):
+        raise GoldsetFinalizationError("source packet count integrity mismatch")
+    if len(packet_files) != len(raw_packets):
+        raise GoldsetFinalizationError("source packet filename inventory is not one-to-one")
+    if _require_sha256(
+        index.get("packets_sha256"),
+        field="source packet index.packets_sha256",
+    ) != sha256_bytes(canonical_json_bytes(raw_packets)):
+        raise GoldsetFinalizationError("source packet row ledger mismatch")
+
+    packet_by_id: dict[str, tuple[str, str]] = {}
+    for raw in raw_packets:
+        if not isinstance(raw, dict):
+            raise GoldsetFinalizationError("source packet row is invalid")
+        item_id = str(raw.get("item_id") or "").strip()
+        document_sha256 = _require_sha256(
+            raw.get("document_sha256"),
+            field=f"source packet.{item_id or '<blank>'}.document_sha256",
+        )
+        packet_path = Path(str(raw.get("packet_path") or "")).resolve()
+        packet_sha256 = _require_sha256(
+            raw.get("packet_sha256"),
+            field=f"source packet.{item_id or '<blank>'}.packet_sha256",
+        )
+        if (
+            raw.get("source_only") is not True
+            or raw.get("automatic_prediction_fields_included") is not False
+        ):
+            raise GoldsetFinalizationError(
+                f"{item_id}: source packet row is not source-only"
+            )
+        if not item_id or item_id in packet_by_id or not packet_path.is_file():
+            raise GoldsetFinalizationError("source packet item/path coverage is invalid")
+        if sha256_file(packet_path) != packet_sha256:
+            raise GoldsetFinalizationError(f"{item_id}: source packet integrity mismatch")
+        if packet_files.get(packet_path.name) != packet_sha256:
+            raise GoldsetFinalizationError(f"{item_id}: packet file ledger mismatch")
+        try:
+            packet_text = packet_path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            raise GoldsetFinalizationError(
+                f"{item_id}: source packet is unreadable"
+            ) from exc
+        packet_by_id[item_id] = (
+            document_sha256,
+            packet_text.replace("\r\n", "\n").replace("\r", "\n"),
+        )
+
+    if set(packet_files) != {
+        Path(str(raw.get("packet_path") or "")).name
+        for raw in raw_packets
+        if isinstance(raw, dict)
+    }:
+        raise GoldsetFinalizationError("source packet file inventory mismatch")
+
+    records_by_id = {
+        str(record.get("item_id") or ""): record for record in final_records
+    }
+    if set(packet_by_id) != set(records_by_id):
+        raise GoldsetFinalizationError("source packet/final-record coverage mismatch")
+    for item_id, record in records_by_id.items():
+        packet_document_sha256, packet_text = packet_by_id[item_id]
+        if packet_document_sha256 != str(record.get("document_sha256") or ""):
+            raise GoldsetFinalizationError(f"{item_id}: source packet digest mismatch")
+        evidence = record.get("evidence")
+        if not isinstance(evidence, dict):
+            raise GoldsetFinalizationError(f"{item_id}: final evidence is missing")
+        required_channels = {"reviewer_a", "reviewer_b"}
+        if record.get("resolution_type") == "third_party_adjudication":
+            required_channels.add("adjudicator")
+        if not required_channels.issubset(evidence):
+            raise GoldsetFinalizationError(
+                f"{item_id}: final evidence channel coverage is incomplete"
+            )
+        for channel in required_channels:
+            rows = evidence.get(channel)
+            if not isinstance(rows, list) or not rows:
+                raise GoldsetFinalizationError(
+                    f"{item_id}: {channel} source evidence is missing"
+                )
+            for index_number, item in enumerate(rows):
+                quote = (
+                    str(item.get("quote") or "").strip()
+                    if isinstance(item, dict)
+                    else ""
+                )
+                normalized_quote = quote.replace("\r\n", "\n").replace("\r", "\n")
+                if not quote or normalized_quote not in packet_text:
+                    raise GoldsetFinalizationError(
+                        f"{item_id}: {channel} evidence[{index_number}] is absent from source packet"
+                    )
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1120,6 +1327,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--adjudication-integrity", required=True)
     parser.add_argument("--adjudication-worklist-integrity", required=True)
     parser.add_argument("--adjudication-disputes", required=True)
+    parser.add_argument("--source-packet-index", required=True)
+    parser.add_argument("--source-packet-integrity", required=True)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--reviewer-a-kind", required=True, choices=("human", "ai_agent"))
     parser.add_argument("--reviewer-b-kind", required=True, choices=("human", "ai_agent"))
@@ -1148,6 +1357,8 @@ def main(argv: list[str] | None = None) -> int:
             args.adjudication_worklist_integrity
         ).resolve(),
         "adjudication_disputes": Path(args.adjudication_disputes).resolve(),
+        "packet_index": Path(args.source_packet_index).resolve(),
+        "packet_integrity": Path(args.source_packet_integrity).resolve(),
     }
     manifest = _read_json_object(paths["manifest"], label="manifest")
     integrity = _read_json_object(paths["seed_integrity"], label="seed integrity")
@@ -1183,10 +1394,19 @@ def main(argv: list[str] | None = None) -> int:
             "do_not_tune": paths["do_not_tune"],
             "reviewer_a": paths["reviewer_a"],
             "reviewer_b": paths["reviewer_b"],
+            "packet_index": paths["packet_index"],
+            "packet_integrity": paths["packet_integrity"],
         },
         final_records=reference["records"],
         expected_record_count=int(reference["summary"]["record_count"]),
         expected_disagreement_count=int(reference["summary"]["disagreement_count"]),
+    )
+    _validate_all_reference_evidence_against_packets(
+        paths["packet_index"],
+        paths["packet_integrity"],
+        manifest_path=paths["manifest"],
+        final_records=reference["records"],
+        is_human_gold=bool(reference["is_human_gold"]),
     )
     output_paths = write_final_reference(
         reference,

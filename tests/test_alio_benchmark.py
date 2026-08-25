@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import io
 import importlib.util
+import lzma
 from pathlib import Path
 import sys
 import zipfile
+import zlib
 
 import pytest
 
@@ -300,6 +302,56 @@ def test_benchmark_zip_rejects_large_directory_with_forged_count() -> None:
         parse_benchmark_document(
             bytes(data),
             filename="forged-count.zip",
+            max_bytes=1024 * 1024,
+        )
+
+
+def test_benchmark_zip_maps_unsupported_directory_version_to_parse_error() -> None:
+    data = bytearray(_zip_bytes({"job_description.txt": "detail: office administration"}))
+    central = data.find(b"PK\x01\x02")
+    assert central >= 0
+    data[central + 6 : central + 8] = (198).to_bytes(2, "little")
+
+    with pytest.raises(KordocParseError, match="not a readable ZIP archive"):
+        parse_benchmark_document(
+            bytes(data),
+            filename="unsupported-version.zip",
+            max_bytes=1024 * 1024,
+        )
+
+
+def test_benchmark_zip_maps_corrupt_deflate_stream_to_parse_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _zip_bytes({"job_description.txt": "detail: office administration"})
+
+    def corrupt_read(*_args, **_kwargs) -> bytes:
+        raise zlib.error("invalid compressed stream")
+
+    monkeypatch.setattr(benchmark_alio_jd.zipfile.ZipFile, "read", corrupt_read)
+
+    with pytest.raises(KordocParseError, match="no parseable"):
+        parse_benchmark_document(
+            data,
+            filename="corrupt-stream.zip",
+            max_bytes=1024 * 1024,
+        )
+
+
+def test_benchmark_zip_maps_corrupt_lzma_stream_to_parse_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _zip_bytes({"job_description.txt": "detail: office administration"})
+
+    def corrupt_read(*_args, **_kwargs) -> bytes:
+        raise lzma.LZMAError("invalid LZMA stream")
+
+    monkeypatch.setattr(benchmark_alio_jd.zipfile.ZipFile, "read", corrupt_read)
+
+    with pytest.raises(KordocParseError, match="no parseable"):
+        parse_benchmark_document(
+            data,
+            filename="corrupt-lzma.zip",
             max_bytes=1024 * 1024,
         )
 

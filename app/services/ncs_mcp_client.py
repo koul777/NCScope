@@ -13,13 +13,13 @@ import re
 import threading
 import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -38,6 +38,7 @@ _STATUS_PROBE_BUDGET_SEC = 8.0
 _tools_cache: tuple[float, str, set[str]] | None = None
 _status_cache: tuple[float, str, dict[str, Any]] | None = None
 _status_cache_lock = threading.Lock()
+_status_probe_lock = threading.Lock()
 _last_error: str | None = None
 
 
@@ -54,6 +55,8 @@ class _McpRequestSession:
     transport_generation: int = 0
     state_lock: threading.Lock = field(default_factory=threading.Lock)
     initialize_lock: threading.RLock = field(default_factory=threading.RLock)
+    retained_workers: int = 0
+    close_requested: bool = False
 
     def next_request_id(self) -> int:
         with self.state_lock:
@@ -110,15 +113,37 @@ class _McpRequestSession:
                 self.initialized = False
                 self.session_id = ""
 
-    def close(self) -> None:
+    def retain_worker(self) -> None:
         with self.state_lock:
-            clients = [*self.retired_clients]
-            if self.client is not None:
-                clients.append(self.client)
-            self.client = None
-            self.retired_clients = []
-            self.initialized = False
-            self.session_id = ""
+            self.retained_workers += 1
+
+    def _drain_clients_locked(self) -> list[httpx.Client]:
+        clients = [*self.retired_clients]
+        if self.client is not None:
+            clients.append(self.client)
+        self.client = None
+        self.retired_clients = []
+        self.initialized = False
+        self.session_id = ""
+        return clients
+
+    def release_worker(self) -> None:
+        clients: list[httpx.Client] = []
+        with self.state_lock:
+            if self.retained_workers <= 0:
+                raise RuntimeError("MCP request-session worker lease underflow")
+            self.retained_workers -= 1
+            if self.close_requested and self.retained_workers == 0:
+                clients = self._drain_clients_locked()
+        for client in clients:
+            client.close()
+
+    def close(self) -> None:
+        clients: list[httpx.Client] = []
+        with self.state_lock:
+            self.close_requested = True
+            if self.retained_workers == 0:
+                clients = self._drain_clients_locked()
         for client in clients:
             client.close()
 
@@ -127,6 +152,32 @@ _request_session: ContextVar[_McpRequestSession | None] = ContextVar(
     "ncs_mcp_request_session",
     default=None,
 )
+_detached_work_lease: ContextVar[
+    tuple[Callable[[], None], Callable[[], None]] | None
+] = ContextVar("ncs_mcp_detached_work_lease", default=None)
+
+
+@contextmanager
+def use_detached_work_lease(
+    retain_worker: Callable[[], None],
+    release_worker: Callable[[], None],
+):
+    """Propagate an outer HTTP concurrency lease into nested MCP workers."""
+
+    token = _detached_work_lease.set((retain_worker, release_worker))
+    try:
+        yield
+    finally:
+        _detached_work_lease.reset(token)
+
+
+def _retain_detached_work() -> Callable[[], None]:
+    lease = _detached_work_lease.get()
+    if lease is None:
+        return lambda: None
+    retain_worker, release_worker = lease
+    retain_worker()
+    return release_worker
 
 
 @contextmanager
@@ -215,7 +266,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                         "params": {
                             "protocolVersion": MCP_PROTOCOL_VERSION,
                             "capabilities": {},
-                            "clientInfo": {"name": "ncscope", "version": "1.4.11"},
+                            "clientInfo": {"name": "ncscope", "version": "1.4.12"},
                         },
                     },
                     timeout=request_timeout,
@@ -1091,11 +1142,17 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
         if isinstance(unit, dict)
         and str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
     ]
+    parallel_stop = threading.Event()
+    retry_budget_lock = threading.Lock()
+    parallel_retry_budget = 1
 
     def fetch_unit(unit: dict[str, Any]) -> list[dict[str, Any]]:
+        nonlocal parallel_retry_budget
         code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
         result: dict[str, Any] | None = None
         for attempt in range(2):
+            if concurrency > 1 and parallel_stop.is_set():
+                raise NcsMcpError("NCS MCP KSA batch cancelled after peer failure")
             try:
                 result = _call_tool(
                     "ncs_unit_detail",
@@ -1108,7 +1165,15 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
                 break
             except NcsMcpError:
                 if attempt == 1:
+                    if concurrency > 1:
+                        parallel_stop.set()
                     raise
+                if concurrency > 1:
+                    with retry_budget_lock:
+                        if parallel_retry_budget <= 0:
+                            parallel_stop.set()
+                            raise
+                        parallel_retry_budget -= 1
         if result is None:  # pragma: no cover - defensive; both attempts either return or raise.
             raise NcsMcpError("NCS MCP unit detail request returned no result")
         detail = _detail_payload(result)
@@ -1164,24 +1229,73 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
     except (TypeError, ValueError):
         configured_concurrency = 1
     concurrency = max(1, min(8, configured_concurrency, len(selected_units) or 1))
-    with use_ncs_mcp_request_session():
+    with use_ncs_mcp_request_session() as request_session:
         if concurrency == 1:
             per_unit_rows = [fetch_unit(unit) for unit in selected_units]
         else:
             per_unit_rows = []
-            batch_size = concurrency * 4
-            with ThreadPoolExecutor(
+            batch_size = concurrency
+            executor = ThreadPoolExecutor(
                 max_workers=concurrency,
                 thread_name_prefix="ncs-mcp-ksa",
-            ) as executor:
+            )
+            shutdown_without_wait = False
+            try:
                 # Bound the submitted backlog while retaining the confirmed
                 # NCS-unit order and sharing one initialized MCP transport.
                 for offset in range(0, len(selected_units), batch_size):
-                    futures = [
-                        executor.submit(copy_context().run, fetch_unit, unit)
-                        for unit in selected_units[offset : offset + batch_size]
+                    futures = []
+                    for unit in selected_units[offset : offset + batch_size]:
+                        request_session.retain_worker()
+                        release_detached_work = _retain_detached_work()
+                        try:
+                            future = executor.submit(
+                                copy_context().run,
+                                fetch_unit,
+                                unit,
+                            )
+                        except BaseException:
+                            request_session.release_worker()
+                            release_detached_work()
+                            raise
+
+                        def release_worker_leases(
+                            _future,
+                            session=request_session,
+                            release_outer=release_detached_work,
+                        ) -> None:
+                            try:
+                                session.release_worker()
+                            finally:
+                                release_outer()
+
+                        future.add_done_callback(release_worker_leases)
+                        futures.append(future)
+                    completed, pending = wait(futures, return_when=FIRST_EXCEPTION)
+                    failures = [
+                        future.exception()
+                        for future in completed
+                        if not future.cancelled() and future.exception() is not None
                     ]
+                    failure = next(
+                        (
+                            error
+                            for error in failures
+                            if "batch cancelled after peer failure" not in str(error)
+                        ),
+                        failures[0] if failures else None,
+                    )
+                    if failure is not None:
+                        parallel_stop.set()
+                        for future in pending:
+                            future.cancel()
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        shutdown_without_wait = True
+                        raise failure
                     per_unit_rows.extend(future.result() for future in futures)
+            finally:
+                if not shutdown_without_wait:
+                    executor.shutdown(wait=True, cancel_futures=True)
 
     output: list[dict[str, Any]] = []
     for rows in per_unit_rows:
@@ -1196,6 +1310,11 @@ def ncs_mcp_status(*, force_refresh: bool = False) -> dict[str, Any]:
     endpoint = _endpoint()
     now = time.monotonic()
     with _status_cache_lock:
+        stale_status = (
+            dict(_status_cache[2])
+            if _status_cache and _status_cache[1] == endpoint
+            else None
+        )
         if (
             not force_refresh
             and _status_cache
@@ -1205,6 +1324,42 @@ def ncs_mcp_status(*, force_refresh: bool = False) -> dict[str, Any]:
             cached = dict(_status_cache[2])
             cached["tools"] = list(cached.get("tools") or [])
             return cached
+
+    acquired_probe = _status_probe_lock.acquire(blocking=False)
+    if not acquired_probe:
+        if stale_status is not None:
+            stale_status["tools"] = list(stale_status.get("tools") or [])
+            stale_status["stale"] = True
+            stale_status["probeInProgress"] = True
+            stale_status["cacheAgeSeconds"] = max(
+                0.0,
+                round(now - float(_status_cache[0]), 3),
+            ) if _status_cache else None
+            return stale_status
+        return {
+            "configured": bool(endpoint),
+            "reachable": False,
+            "tools": [],
+            "ksaAvailable": False,
+            "lastError": "ncs_mcp_probe_in_progress",
+            "stale": False,
+            "probeInProgress": True,
+        }
+
+    try:
+        # A different caller may have populated the cache between our first
+        # snapshot and acquiring the single-flight probe lease.
+        if not force_refresh:
+            refreshed_now = time.monotonic()
+            with _status_cache_lock:
+                if (
+                    _status_cache
+                    and _status_cache[1] == endpoint
+                    and refreshed_now - _status_cache[0] < _STATUS_TTL
+                ):
+                    cached = dict(_status_cache[2])
+                    cached["tools"] = list(cached.get("tools") or [])
+                    return cached
 
         try:
             # The status cache is deliberately much shorter than discovery's
@@ -1230,5 +1385,8 @@ def ncs_mcp_status(*, force_refresh: bool = False) -> dict[str, Any]:
                 "ksaAvailable": False,
                 "lastError": "ncs_mcp_unreachable",
             }
-        _status_cache = (time.monotonic(), endpoint, status)
+        with _status_cache_lock:
+            _status_cache = (time.monotonic(), endpoint, status)
         return {**status, "tools": list(status["tools"])}
+    finally:
+        _status_probe_lock.release()

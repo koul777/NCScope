@@ -49,6 +49,8 @@ def _record(
         "item_id": f"nrg-{digest}",
         "split": split,
         "document_sha256": digest,
+        "posting_ids": [],
+        "split_group_sha256": "",
         "case_ids": [case_id],
         "mapping_state": mapping_state,
         "detail_names": names,
@@ -114,6 +116,28 @@ def _write_bundle(tmp_path: Path, mod):
             codes=[],
         ),
     ]
+    holdout_modulus = 0
+    for candidate_modulus in range(2, 100):
+        assignments = mod.compute_split_groups(
+            records,
+            holdout_modulus=candidate_modulus,
+        )
+        validation_assignment = assignments[records[0]["document_sha256"]]
+        holdout_assignment = assignments[records[1]["document_sha256"]]
+        if (
+            validation_assignment["split"] == "gold_validation"
+            and holdout_assignment["split"] == "gold_holdout"
+        ):
+            holdout_modulus = candidate_modulus
+            break
+    assert holdout_modulus >= 2
+    for record in records:
+        record.update(
+            mod.compute_split_groups(
+                records,
+                holdout_modulus=holdout_modulus,
+            )[record["document_sha256"]]
+        )
     reference = {
         "schema_version": mod.REFERENCE_SCHEMA_VERSION,
         "generated_at_utc": "2026-08-25T00:00:00+00:00",
@@ -148,6 +172,10 @@ def _write_bundle(tmp_path: Path, mod):
             "split_counts": {"gold_holdout": 1, "gold_validation": 1},
             "resolution_counts": {"exact_two_reviewer_consensus": 2},
             "disagreement_count": 0,
+            "holdout_modulus": holdout_modulus,
+            "split_key": mod.SPLIT_KEY,
+            "split_group_count": 2,
+            "posting_id_cross_split_overlap_count": 0,
         },
         "source_records_sha256": "a" * 64,
         "records_sha256": mod.sha256_bytes(mod.canonical_json_bytes(records)),
@@ -171,6 +199,8 @@ def _write_bundle(tmp_path: Path, mod):
                     "split": record["split"],
                     "document_sha256": record["document_sha256"],
                     "case_ids_json": json.dumps(record["case_ids"]),
+                    "posting_ids_json": json.dumps(record["posting_ids"]),
+                    "split_group_sha256": record["split_group_sha256"],
                     "mapping_state": record["mapping_state"],
                     "detail_names_json": json.dumps(
                         record["detail_names"], ensure_ascii=False
@@ -324,6 +354,83 @@ def test_scores_validation_and_holdout_without_calling_it_human_gold(
         "recall_pct",
         "f1_pct",
     ]
+
+
+def test_document_exact_requires_correct_official_name_code_pairing(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(f"score_goldset_pairing_{tmp_path.name}")
+    catalog = json.loads(
+        (ROOT / "app" / "data" / "ncs_detail_catalog.json").read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    active = [row for row in catalog["details"] if row.get("usage_yn") == "Y"][:2]
+    assert len(active) == 2
+    data = b"paired detail labels"
+    source_path = tmp_path / "paired.txt"
+    source_path.write_bytes(data)
+    record = _record(
+        mod,
+        data,
+        split="gold_validation",
+        case_id="case-paired",
+        mapping_state="official_current",
+        names=[active[0]["name"], active[1]["name"]],
+        codes=[active[0]["code"], active[1]["code"]],
+    )
+
+    def parse(_path: Path, _data: bytes):
+        return {
+            "fields": {
+                "ncs_detail_mapping_states": [
+                    {
+                        "mappingState": "official_current_exact",
+                        "officialDetailNames": [active[0]["name"], active[1]["name"]],
+                        "officialDetailCodes": [active[1]["code"], active[0]["code"]],
+                    }
+                ]
+            }
+        }
+
+    score = mod.score_reference(
+        {"records": [record]},
+        {mod.sha256_bytes(data): source_path},
+        parse,
+    )
+
+    row = score["records"][0]
+    assert row["name_exact"] is True
+    assert row["code_exact"] is True
+    assert row["pair_exact"] is False
+    assert row["document_exact"] is False
+    assert row["error_types"] == ["detail_pair_mismatch"]
+    pair_metrics = score["summary"]["overall"]["detail_pair"]
+    assert pair_metrics["true_positive"] == 0
+    assert pair_metrics["false_positive"] == 2
+    assert pair_metrics["false_negative"] == 2
+    assert pair_metrics["f1_pct"] == 0.0
+
+
+def test_legacy_v1_reference_is_rejected_even_when_resealed(tmp_path: Path) -> None:
+    mod = load_module(f"score_goldset_legacy_v1_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+    reference = deepcopy(seeded["reference"])
+    reference["schema_version"] = "ncs_recruitment_adjudicated_reference_v1"
+    _reseal_reference(mod, seeded, reference)
+    integrity = json.loads(seeded["integrity"].read_text(encoding="utf-8"))
+    integrity["schema_version"] = "ncs_recruitment_adjudicated_reference_v1"
+    seeded["integrity"].write_text(
+        json.dumps(integrity, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(mod.GoldsetScoringError, match="schema version"):
+        mod.validate_reference_bundle(
+            seeded["reference_json"],
+            seeded["reference_csv"],
+            seeded["integrity"],
+        )
 
 
 def test_validation_only_mode_never_reads_or_parses_holdout_source(
@@ -626,6 +733,7 @@ def test_writes_private_reports_only_below_tmp_and_seals_output_hashes(
         fake_root / "tmp" / "score",
         reference_paths=reference_paths,
         source_paths=source_paths,
+        require_runtime_attestation=False,
     )
     assert set(paths) == {"score_json", "error_csv", "score_markdown", "integrity"}
     assert all(path.is_file() for path in paths.values())
@@ -645,7 +753,35 @@ def test_writes_private_reports_only_below_tmp_and_seals_output_hashes(
             fake_root / "tracked",
             reference_paths=reference_paths,
             source_paths=source_paths,
+            require_runtime_attestation=False,
         )
+
+
+def test_unattested_score_is_rejected_before_output_directory_creation(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(f"score_goldset_unattested_write_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+    score, source_paths = mod.evaluate_bundle(
+        seeded["reference_json"],
+        seeded["reference_csv"],
+        seeded["integrity"],
+        seeded["source_dir"],
+        lambda _path, _data: _not_stated_payload(),
+    )
+    output_dir = tmp_path / "tmp" / "unattested-score"
+    with pytest.raises(mod.GoldsetScoringError, match="attested"):
+        mod.write_score_report(
+            score,
+            output_dir,
+            reference_paths={
+                "reference_json": seeded["reference_json"],
+                "reference_csv": seeded["reference_csv"],
+                "reference_integrity": seeded["integrity"],
+            },
+            source_paths=source_paths,
+        )
+    assert not output_dir.exists()
 
 
 def test_parse_client_rejects_non_loopback_endpoints_without_network(
@@ -669,7 +805,15 @@ def test_parse_client_retries_rate_limit_with_bounded_retry_after(
         attempts += 1
         if attempts == 1:
             return httpx.Response(429, headers={"Retry-After": "999"})
-        return httpx.Response(200, json={"fields": {"ncs_detail_mapping_states": []}})
+        return httpx.Response(
+            200,
+            json={
+                "fields": {"ncs_detail_mapping_states": []},
+                "evaluation_runtime_attestation": (
+                    client._expected_runtime_attestation
+                ),
+            },
+        )
 
     sleeps: list[float] = []
     client = mod.LocalParseReviewClient(
@@ -690,6 +834,62 @@ def test_parse_client_retries_rate_limit_with_bounded_retry_after(
     assert payload["fields"]["ncs_detail_mapping_states"] == []
     assert attempts == 2
     assert sleeps == [3.0]
+
+
+def test_parse_client_rejects_unattested_or_stale_loopback_runtime(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(f"score_goldset_attestation_{tmp_path.name}")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "fields": {"ncs_detail_mapping_states": []},
+                "evaluation_runtime_attestation": {
+                    "schema_version": "ncscope_evaluation_runtime_attestation_v1",
+                    "app_version": "stale",
+                    "source_artifact_sha256": {},
+                },
+            },
+        )
+
+    client = mod.LocalParseReviewClient("http://127.0.0.1:8000")
+    client._client.close()
+    client._client = httpx.Client(
+        base_url="http://127.0.0.1:8000",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+    try:
+        with pytest.raises(
+            mod.GoldsetScoringInfrastructureError,
+            match="runtime attestation",
+        ):
+            client.parse(tmp_path / "document.pdf", b"source")
+    finally:
+        client.close()
+
+
+def test_parse_client_finalize_rejects_sources_changed_during_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_module(f"score_goldset_finalize_drift_{tmp_path.name}")
+    client = mod.LocalParseReviewClient("http://127.0.0.1:8000")
+    client.evaluation_configuration["server_runtime_attestation"] = dict(
+        client._expected_runtime_attestation
+    )
+    changed = deepcopy(client._expected_runtime_attestation)
+    changed["source_artifact_sha256"]["official_detail_catalog"] = "0" * 64
+    monkeypatch.setattr(mod, "local_runtime_attestation", lambda: changed)
+    try:
+        with pytest.raises(
+            mod.GoldsetScoringInfrastructureError,
+            match="sources changed",
+        ):
+            client.finalize_runtime_attestation()
+    finally:
+        client.close()
 
 
 def test_infrastructure_error_aborts_score_instead_of_polluting_accuracy(

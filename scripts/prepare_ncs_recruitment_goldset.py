@@ -10,10 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from scripts.ncs_recruitment_split import (
+    SPLIT_KEY,
+    compute_split_groups,
+    deterministic_split as shared_deterministic_split,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset"
-WORKFLOW_VERSION = "ncs_recruitment_human_goldset_v1"
+WORKFLOW_VERSION = "ncs_recruitment_human_goldset_v2"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 REVIEWER_FIELDS = [
@@ -100,16 +106,30 @@ def require_sha256(value: Any, *, field: str = "sha256") -> str:
 
 
 def deterministic_split(document_sha256: str, *, holdout_modulus: int = 5) -> str:
-    """Assign content-identical documents to one stable, evaluation-only split."""
+    """Assign one sealed document/posting group to a stable evaluation split."""
 
     digest = require_sha256(document_sha256, field="document_sha256")
     if holdout_modulus < 2:
         raise GoldsetPreparationError("holdout_modulus must be at least 2")
-    return (
-        "gold_holdout"
-        if int(digest[:16], 16) % holdout_modulus == 0
-        else "gold_validation"
-    )
+    return shared_deterministic_split(digest, holdout_modulus=holdout_modulus)
+
+
+def _assign_split_groups(
+    records: list[dict[str, Any]],
+    *,
+    holdout_modulus: int,
+) -> None:
+    """Keep every document connected by posting ID in the same split."""
+
+    try:
+        assignments = compute_split_groups(
+            records,
+            holdout_modulus=holdout_modulus,
+        )
+    except ValueError as exc:
+        raise GoldsetPreparationError(str(exc)) from exc
+    for record in records:
+        record.update(assignments[str(record["document_sha256"])])
 
 
 def validate_local_output_dir(output_dir: Path, *, root: Path | None = None) -> Path:
@@ -213,9 +233,14 @@ def _benchmark_cases(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         case_id = str(row.get("case_id") or "").strip()
         if not case_id:
             raise GoldsetPreparationError("every benchmark case must have case_id")
+        posting_id = str(row.get("posting_id") or "").strip()
+        if not posting_id:
+            raise GoldsetPreparationError(
+                f"benchmark case {case_id} must have a nonblank posting_id"
+            )
         if case_id in output:
             raise GoldsetPreparationError(f"duplicate benchmark case_id: {case_id}")
-        output[case_id] = dict(row)
+        output[case_id] = {**row, "posting_id": posting_id}
     if not output:
         raise GoldsetPreparationError("benchmark contains no cases")
     return output
@@ -362,9 +387,6 @@ def build_workflow(
             {
                 "item_id": f"nrg-{document_digest}",
                 "document_sha256": document_digest,
-                "split": deterministic_split(
-                    document_digest, holdout_modulus=holdout_modulus
-                ),
                 "usage_policy": "evaluation_only_no_training_or_rule_tuning",
                 "annotation_status": "pending_two_independent_human_reviews",
                 "is_gold": False,
@@ -390,6 +412,7 @@ def build_workflow(
             }
         )
 
+    _assign_split_groups(records, holdout_modulus=holdout_modulus)
     records_digest = sha256_bytes(canonical_json_bytes(records))
     reviewer_a = [_reviewer_row(record, "A") for record in records]
     reviewer_b = [_reviewer_row(record, "B") for record in records]
@@ -405,7 +428,11 @@ def build_workflow(
         "duplicate_case_count": len(benchmark_cases) - len(records),
         "split_counts": dict(sorted(split_counts.items())),
         "holdout_modulus": holdout_modulus,
-        "split_key": "document_sha256",
+        "split_key": SPLIT_KEY,
+        "split_group_count": len(
+            {str(record["split_group_sha256"]) for record in records}
+        ),
+        "posting_id_cross_split_overlap_count": 0,
         "usage_policy": "evaluation_only_no_training_or_rule_tuning",
         "human_review_policy": "two_independent_reviewers_then_adjudication",
         "automatic_predictions_are_gold": False,
@@ -464,10 +491,45 @@ def exclude_tuning_overlap_candidates(
             f"source index is missing {len(missing)} benchmark case(s)"
         )
 
+    component_inputs: dict[str, dict[str, Any]] = {}
+    for row in normalized_rows:
+        digest = row["document_sha256"]
+        component = component_inputs.setdefault(
+            digest,
+            {"document_sha256": digest, "posting_ids": set()},
+        )
+        posting_id = str(
+            benchmark_cases[row["case_id"]].get("posting_id") or ""
+        ).strip()
+        if posting_id:
+            component["posting_ids"].add(posting_id)
+    split_inputs = [
+        {
+            "document_sha256": digest,
+            "posting_ids": sorted(component["posting_ids"]),
+        }
+        for digest, component in sorted(component_inputs.items())
+    ]
+    try:
+        component_assignments = compute_split_groups(
+            split_inputs,
+            holdout_modulus=5,
+        )
+    except ValueError as exc:
+        raise GoldsetPreparationError(str(exc)) from exc
+    excluded_group_hashes = {
+        component_assignments[digest]["split_group_sha256"]
+        for digest in normalized_tuning_hashes.intersection(component_assignments)
+    }
+    excluded_document_hashes = {
+        digest
+        for digest, assignment in component_assignments.items()
+        if assignment["split_group_sha256"] in excluded_group_hashes
+    }
     excluded_rows = [
         row
         for row in normalized_rows
-        if row["document_sha256"] in normalized_tuning_hashes
+        if row["document_sha256"] in excluded_document_hashes
     ]
     excluded_case_ids = {row["case_id"] for row in excluded_rows}
     remaining_rows = [
@@ -486,7 +548,7 @@ def exclude_tuning_overlap_candidates(
     source_document_hashes = {row["document_sha256"] for row in normalized_rows}
     remaining_document_hashes = {row["document_sha256"] for row in remaining_rows}
     audit = {
-        "policy": "explicit_known_tuning_digest_exclusion_before_blind_review",
+        "policy": "component_wide_known_tuning_exclusion_before_blind_review",
         "original_case_count": len(normalized_rows),
         "remaining_case_count": len(remaining_rows),
         "excluded_case_count": len(excluded_rows),
@@ -498,6 +560,16 @@ def exclude_tuning_overlap_candidates(
         "excluded_case_ids": sorted(excluded_case_ids),
         "excluded_document_sha256": sorted(
             {row["document_sha256"] for row in excluded_rows}
+        ),
+        "excluded_split_group_sha256": sorted(excluded_group_hashes),
+        "excluded_posting_ids": sorted(
+            {
+                str(benchmark_cases[row["case_id"]].get("posting_id") or "").strip()
+                for row in excluded_rows
+                if str(
+                    benchmark_cases[row["case_id"]].get("posting_id") or ""
+                ).strip()
+            }
         ),
         "tuning_hash_count_checked": len(normalized_tuning_hashes),
     }
@@ -526,6 +598,13 @@ def validate_workflow(workflow: Mapping[str, Any]) -> None:
     if len(set(digests)) != len(digests):
         raise GoldsetPreparationError("duplicate content leaked into multiple manifest rows")
     holdout_modulus = int((workflow.get("summary") or {}).get("holdout_modulus") or 0)
+    try:
+        expected_assignments = compute_split_groups(
+            records,
+            holdout_modulus=holdout_modulus,
+        )
+    except ValueError as exc:
+        raise GoldsetPreparationError(str(exc)) from exc
     all_case_ids: list[str] = []
     record_by_id: dict[str, Mapping[str, Any]] = {}
     for row, digest in zip(records, digests):
@@ -533,8 +612,14 @@ def validate_workflow(workflow: Mapping[str, Any]) -> None:
         item_id = str(row.get("item_id") or "")
         if item_id != f"nrg-{digest}":
             raise GoldsetPreparationError("manifest item ID/content digest mismatch")
-        if row.get("split") != deterministic_split(
-            digest, holdout_modulus=holdout_modulus
+        split_group_digest = require_sha256(
+            row.get("split_group_sha256"),
+            field="split_group_sha256",
+        )
+        expected_assignment = expected_assignments[digest]
+        if (
+            split_group_digest != expected_assignment["split_group_sha256"]
+            or row.get("split") != expected_assignment["split"]
         ):
             raise GoldsetPreparationError("manifest deterministic split mismatch")
         if row.get("is_gold") is not False:
@@ -546,6 +631,19 @@ def validate_workflow(workflow: Mapping[str, Any]) -> None:
         record_by_id[item_id] = row
     if len(set(all_case_ids)) != len(all_case_ids):
         raise GoldsetPreparationError("benchmark case leaked into multiple manifest records")
+
+    posting_assignment: dict[str, tuple[str, str]] = {}
+    for row in records:
+        assignment = (str(row["split_group_sha256"]), str(row["split"]))
+        for posting_id in row.get("posting_ids") or []:
+            normalized = str(posting_id or "").strip()
+            if not normalized:
+                continue
+            previous = posting_assignment.setdefault(normalized, assignment)
+            if previous != assignment:
+                raise GoldsetPreparationError(
+                    "posting ID leaked across validation/holdout split groups"
+                )
 
     expected_ids = set(item_ids)
     for name, rows in (
@@ -612,6 +710,10 @@ def validate_workflow(workflow: Mapping[str, Any]) -> None:
             raise GoldsetPreparationError("adjudicated gold answers must start blank")
 
     summary = workflow.get("summary") or {}
+    if summary.get("workflow_version") != WORKFLOW_VERSION:
+        raise GoldsetPreparationError("workflow version mismatch")
+    if summary.get("split_key") != SPLIT_KEY:
+        raise GoldsetPreparationError("split key mismatch")
     if summary.get("automatic_predictions_are_gold") is not False:
         raise GoldsetPreparationError("automatic predictions must never be marked gold")
     if summary.get("is_gold") is not False:
@@ -620,6 +722,12 @@ def validate_workflow(workflow: Mapping[str, Any]) -> None:
         raise GoldsetPreparationError("benchmark case count integrity mismatch")
     if int(summary.get("unique_document_count") or -1) != len(records):
         raise GoldsetPreparationError("unique document count integrity mismatch")
+    if int(summary.get("split_group_count") or -1) != len(
+        {str(row["split_group_sha256"]) for row in records}
+    ):
+        raise GoldsetPreparationError("split group count integrity mismatch")
+    if summary.get("posting_id_cross_split_overlap_count") != 0:
+        raise GoldsetPreparationError("posting split leakage summary is invalid")
     expected_digest = sha256_bytes(canonical_json_bytes(records))
     if summary.get("records_sha256") != expected_digest:
         raise GoldsetPreparationError("manifest records integrity digest mismatch")

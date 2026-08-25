@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import time
 import unicodedata
+from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,16 @@ logger = logging.getLogger(__name__)
 
 class KordocParseError(RuntimeError):
     """Raised when Kordoc cannot parse an uploaded document."""
+
+
+class KordocStructureLimitError(KordocParseError):
+    """Raised when document structure metadata exceeds safe expansion limits."""
+
+
+_DETAIL_CANDIDATE_CELL_MAX_CHARS = 4_096
+_DETAIL_COMPOSITE_MAX_SEGMENTS = 128
+_DETAIL_CANDIDATE_MAX_COUNT = 256
+_TEXT_LINE_BREAK_RE = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
 
 
 class _LocalKordocUnavailable(KordocParseError):
@@ -1196,6 +1207,10 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
     text = _clean_detail_candidate_text(value)
     if not text:
         return []
+    if len(text) > _DETAIL_CANDIDATE_CELL_MAX_CHARS:
+        raise KordocStructureLimitError(
+            "NCS detail candidate cell exceeds the safe limit"
+        )
 
     # A slash normally separates multiple detail labels, but it is also part
     # of official NCS names such as ``QM/QC관리``.  Keep acronym-to-acronym
@@ -1208,6 +1223,10 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
         for part in re.split(r"\s*(?:[,，、;/|]+)\s*", split_text)
         if _clean_detail_candidate_text(part.replace(protected_slash, "/"))
     ]
+    if len(separated) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
+        raise KordocStructureLimitError(
+            "NCS detail candidate group exceeds the safe limit"
+        )
     if len(separated) > 1 and all(_looks_like_detail_candidate(part) for part in separated):
         return separated
 
@@ -1216,6 +1235,10 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
         for part in re.split(r"\s+(?=\d{1,2}\s*[,.)：:\-])", text)
         if _clean_detail_candidate_text(part)
     ]
+    if len(numbered) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
+        raise KordocStructureLimitError(
+            "NCS detail candidate group exceeds the safe limit"
+        )
     if len(numbered) > 1 and all(_looks_like_detail_candidate(part) for part in numbered):
         return numbered
 
@@ -1254,6 +1277,80 @@ def _official_numbered_detail_cell_segments(value: Any) -> list[str]:
     return segments
 
 
+_HTML_TABLE_MAX_SPAN = 256
+_HTML_TABLE_MAX_COLUMNS = 256
+_HTML_TABLE_MAX_LOGICAL_CELLS = 10_000
+_HTML_TABLE_MAX_TABLES = 128
+_MARKDOWN_TABLE_MAX_LOGICAL_CELLS = 2_048
+_DOCUMENT_MAX_TEXT_LINES = 5_000
+
+
+def _validate_markdown_table_document_budget(markdown: str) -> None:
+    text = str(markdown or "")
+    for line_break_count, _match in enumerate(
+        _TEXT_LINE_BREAK_RE.finditer(text),
+        start=1,
+    ):
+        if line_break_count >= _DOCUMENT_MAX_TEXT_LINES:
+            raise KordocStructureLimitError(
+                "document line count exceeds the safe limit"
+            )
+    logical_cell_count = 0
+    table_count = 0
+    current_rows = 0
+
+    def flush() -> None:
+        nonlocal current_rows, table_count
+        if current_rows >= 2:
+            table_count += 1
+            if table_count > _HTML_TABLE_MAX_TABLES:
+                raise KordocStructureLimitError(
+                    "Markdown table count exceeds the safe limit"
+                )
+        current_rows = 0
+
+    for raw_line in text.splitlines():
+        cells = _split_table_row(raw_line.strip())
+        if not cells:
+            flush()
+            continue
+        if _is_separator_row(cells):
+            continue
+        if len(cells) > _HTML_TABLE_MAX_COLUMNS:
+            raise KordocStructureLimitError(
+                "Markdown table width exceeds the safe limit"
+            )
+        logical_cell_count += len(cells)
+        if logical_cell_count > _MARKDOWN_TABLE_MAX_LOGICAL_CELLS:
+            raise KordocStructureLimitError(
+                "Markdown table size exceeds the safe limit"
+            )
+        current_rows += 1
+    flush()
+
+
+def _bounded_html_cell_span(attrs: str, attribute: str) -> int:
+    match = re.search(
+        rf"\b{re.escape(attribute)}\s*=\s*[\"']?(\d+)",
+        attrs,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return 1
+    digits = match.group(1)
+    if len(digits) > 4:
+        raise KordocStructureLimitError("HTML table span exceeds the safe limit")
+    value = max(1, int(digits))
+    if value > _HTML_TABLE_MAX_SPAN:
+        raise KordocStructureLimitError("HTML table span exceeds the safe limit")
+    return value
+
+
+def _validate_html_grid_width(column: int, colspan: int) -> None:
+    if column + colspan > _HTML_TABLE_MAX_COLUMNS:
+        raise KordocStructureLimitError("HTML table width exceeds the safe limit")
+
+
 def _html_table_grid(raw_table: str) -> list[tuple[list[str], set[int]]]:
     """Expand simple Kordoc HTML tables into logical column coordinates.
 
@@ -1266,7 +1363,13 @@ def _html_table_grid(raw_table: str) -> list[tuple[list[str], set[int]]]:
 
     rows: list[tuple[list[str], set[int]]] = []
     carry: dict[int, tuple[str, int]] = {}
-    for raw_row in re.findall(r"<tr[^>]*>(.*?)</tr>", raw_table, flags=re.IGNORECASE | re.DOTALL):
+    logical_cell_count = 0
+    for raw_row_match in re.finditer(
+        r"<tr[^>]*>(.*?)</tr>",
+        raw_table,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        raw_row = raw_row_match.group(1)
         logical: dict[int, str] = {column: value for column, (value, _remaining) in carry.items()}
         fresh_columns: set[int] = set()
         next_carry: dict[int, tuple[str, int]] = {
@@ -1275,22 +1378,23 @@ def _html_table_grid(raw_table: str) -> list[tuple[list[str], set[int]]]:
             if remaining > 1
         }
         column = 0
-        raw_cells = re.findall(
+        raw_cells = re.finditer(
             r"<t[dh](?P<attrs>[^>]*)>(?P<body>.*?)</t[dh]>",
             raw_row,
             flags=re.IGNORECASE | re.DOTALL,
         )
-        for attrs, body in raw_cells:
+        for raw_cell_match in raw_cells:
+            attrs = raw_cell_match.group("attrs")
+            body = raw_cell_match.group("body")
             while column in logical:
                 column += 1
             text = _clean_text(
                 html.unescape(re.sub(r"<[^>]+>", " ", body)),
                 normalize_nfkc=False,
             )
-            colspan_match = re.search(r"\bcolspan\s*=\s*[\"']?(\d+)", attrs, flags=re.IGNORECASE)
-            rowspan_match = re.search(r"\browspan\s*=\s*[\"']?(\d+)", attrs, flags=re.IGNORECASE)
-            colspan = max(1, int(colspan_match.group(1))) if colspan_match else 1
-            rowspan = max(1, int(rowspan_match.group(1))) if rowspan_match else 1
+            colspan = _bounded_html_cell_span(attrs, "colspan")
+            rowspan = _bounded_html_cell_span(attrs, "rowspan")
+            _validate_html_grid_width(column, colspan)
             for offset in range(colspan):
                 target = column + offset
                 logical[target] = text
@@ -1303,8 +1407,28 @@ def _html_table_grid(raw_table: str) -> list[tuple[list[str], set[int]]]:
         if not logical:
             continue
         width = max(logical) + 1
+        logical_cell_count += width
+        if logical_cell_count > _HTML_TABLE_MAX_LOGICAL_CELLS:
+            raise KordocStructureLimitError("HTML table size exceeds the safe limit")
         rows.append(([logical.get(index, "") for index in range(width)], fresh_columns))
     return rows
+
+
+def _validate_html_table_document_budget(markdown: str) -> None:
+    table_count = 0
+    logical_cell_count = 0
+    for table_match in re.finditer(
+        r"<table[^>]*>(.*?)</table>",
+        str(markdown or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        table_count += 1
+        if table_count > _HTML_TABLE_MAX_TABLES:
+            raise KordocStructureLimitError("HTML table count exceeds the safe limit")
+        for row, _fresh_columns in _html_table_grid(table_match.group(1)):
+            logical_cell_count += len(row)
+            if logical_cell_count > _HTML_TABLE_MAX_LOGICAL_CELLS:
+                raise KordocStructureLimitError("HTML document table size exceeds the safe limit")
 
 
 def _html_table_position_grid(raw_table: str) -> list[list[dict[str, Any]]]:
@@ -1319,9 +1443,11 @@ def _html_table_position_grid(raw_table: str) -> list[list[dict[str, Any]]]:
 
     rows: list[list[dict[str, Any]]] = []
     carry: dict[int, tuple[dict[str, Any], int]] = {}
-    for row_index, raw_row in enumerate(
-        re.findall(r"<tr[^>]*>(.*?)</tr>", raw_table, flags=re.IGNORECASE | re.DOTALL)
+    logical_cell_count = 0
+    for row_index, raw_row_match in enumerate(
+        re.finditer(r"<tr[^>]*>(.*?)</tr>", raw_table, flags=re.IGNORECASE | re.DOTALL)
     ):
+        raw_row = raw_row_match.group(1)
         logical: dict[int, dict[str, Any]] = {}
         next_carry: dict[int, tuple[dict[str, Any], int]] = {}
         for column, (origin, remaining) in carry.items():
@@ -1335,22 +1461,23 @@ def _html_table_position_grid(raw_table: str) -> list[list[dict[str, Any]]]:
                 next_carry[column] = (origin, remaining - 1)
 
         column = 0
-        raw_cells = re.findall(
+        raw_cells = re.finditer(
             r"<t[dh](?P<attrs>[^>]*)>(?P<body>.*?)</t[dh]>",
             raw_row,
             flags=re.IGNORECASE | re.DOTALL,
         )
-        for source_column, (attrs, body) in enumerate(raw_cells):
+        for source_column, raw_cell_match in enumerate(raw_cells):
+            attrs = raw_cell_match.group("attrs")
+            body = raw_cell_match.group("body")
             while column in logical:
                 column += 1
             text = _clean_text(
                 html.unescape(re.sub(r"<[^>]+>", " ", body)),
                 normalize_nfkc=False,
             )
-            colspan_match = re.search(r"\bcolspan\s*=\s*[\"']?(\d+)", attrs, flags=re.IGNORECASE)
-            rowspan_match = re.search(r"\browspan\s*=\s*[\"']?(\d+)", attrs, flags=re.IGNORECASE)
-            colspan = max(1, int(colspan_match.group(1))) if colspan_match else 1
-            rowspan = max(1, int(rowspan_match.group(1))) if rowspan_match else 1
+            colspan = _bounded_html_cell_span(attrs, "colspan")
+            rowspan = _bounded_html_cell_span(attrs, "rowspan")
+            _validate_html_grid_width(column, colspan)
             origin = {
                 "text": text,
                 "origin_row": row_index,
@@ -1373,6 +1500,9 @@ def _html_table_position_grid(raw_table: str) -> list[list[dict[str, Any]]]:
         carry = next_carry
         if logical:
             width = max(logical) + 1
+            logical_cell_count += width
+            if logical_cell_count > _HTML_TABLE_MAX_LOGICAL_CELLS:
+                raise KordocStructureLimitError("HTML table size exceeds the safe limit")
             rows.append(
                 [
                     logical.get(
@@ -1400,10 +1530,15 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
 
     tables: list[list[list[dict[str, Any]]]] = []
     current_rows: list[list[str]] = []
+    logical_cell_count = 0
 
     def flush() -> None:
         nonlocal current_rows
         if len(current_rows) >= 2:
+            if len(tables) >= _HTML_TABLE_MAX_TABLES:
+                raise KordocStructureLimitError(
+                    "Markdown table count exceeds the safe limit"
+                )
             tables.append(
                 [
                     [
@@ -1432,6 +1567,15 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
             continue
         if _is_separator_row(cells):
             continue
+        if len(cells) > _HTML_TABLE_MAX_COLUMNS:
+            raise KordocStructureLimitError(
+                "Markdown table width exceeds the safe limit"
+            )
+        logical_cell_count += len(cells)
+        if logical_cell_count > _MARKDOWN_TABLE_MAX_LOGICAL_CELLS:
+            raise KordocStructureLimitError(
+                "Markdown table size exceeds the safe limit"
+            )
         current_rows.append(cells)
     flush()
     return tables
@@ -2812,8 +2956,16 @@ def _inline_ncs_detail_value(value: Any) -> str | None:
 
 def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     candidates: list[str] = []
+
+    def ensure_candidate_budget() -> None:
+        if len(candidates) > _DETAIL_CANDIDATE_MAX_COUNT:
+            raise KordocStructureLimitError(
+                "NCS detail candidate count exceeds the safe limit"
+            )
+
     pipe_detail_index: int | None = None
     for line in markdown.splitlines():
+        ensure_candidate_budget()
         cells = _split_table_row(line)
         if cells:
             if _is_separator_row(cells):
@@ -2850,6 +3002,7 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
         header_sections: dict[int, str] = {}
         classification_context = False
         for cells, fresh_columns in _html_table_grid(raw_table):
+            ensure_candidate_budget()
             if not any(cells):
                 continue
             # Some institution templates put a non-NCS "general job
@@ -3008,6 +3161,7 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
                 candidates.extend(official_segments)
             elif _looks_like_detail_candidate(value):
                 candidates.extend(_split_items(value, normalize_nfkc=False))
+    ensure_candidate_budget()
     seen: set[str] = set()
     clean_candidates = []
     for item in candidates:
@@ -3166,6 +3320,10 @@ def _dedup_detail_candidates(values: list[str]) -> list[str]:
                 continue
             seen.add(key)
             output.append(text)
+            if len(output) > _DETAIL_CANDIDATE_MAX_COUNT:
+                raise KordocStructureLimitError(
+                    "NCS detail candidate count exceeds the safe limit"
+                )
     return output
 
 
@@ -3190,6 +3348,24 @@ def _line_expands_to_detail(line: str, detail: str) -> bool:
         if any(_norm(item) == detail_key for item in expanded):
             return True
     return False
+
+
+def _detail_search_surface(value: str) -> tuple[str, frozenset[str]]:
+    normalized = _norm(value)
+    expanded_keys: set[str] = set()
+    for cell in (_split_table_row(value) or [_clean_text(value)]):
+        try:
+            expanded = _expand_composite_detail_candidate(cell)
+        except KordocStructureLimitError:
+            # This path indexes every evidence line, including long duty prose.
+            # Candidate limits are enforced at extraction/dedup boundaries;
+            # oversized non-candidate evidence keeps normalized substring search.
+            expanded = []
+        for item in expanded:
+            key = _norm(item)
+            if key:
+                expanded_keys.add(key)
+    return normalized, frozenset(expanded_keys)
 
 
 def _contextual_evidence_snippet(markdown: str) -> str:
@@ -3231,8 +3407,29 @@ def _detail_candidate_evidence(
     markdown: str,
     detail_source: str,
 ) -> list[dict[str, Any]]:
+    if not detail_candidates:
+        return []
     evidence_rows: list[dict[str, Any]] = []
-    lines = list(enumerate(str(markdown or "").splitlines(), start=1))
+    line_records = [
+        (line_no, line, *_detail_search_surface(line))
+        for line_no, line in enumerate(str(markdown or "").splitlines(), start=1)
+    ]
+    section_records = [
+        (item, item_text, *_detail_search_surface(item_text))
+        for item in sections.get("ncs_detail", [])
+        if (item_text := str(item.get("text") or "").strip())
+    ]
+    line_exact_index: dict[str, list[tuple[int, str, bool]]] = defaultdict(list)
+    for line_no, line, line_key, expanded_keys in line_records:
+        preferred = _row_has_detail_evidence_context(line)
+        for indexed_key in {line_key, *expanded_keys}:
+            if indexed_key:
+                line_exact_index[indexed_key].append((line_no, line, preferred))
+    section_exact_index: dict[str, list[tuple[dict[str, Any], str]]] = defaultdict(list)
+    for item, item_text, item_key, expanded_keys in section_records:
+        for indexed_key in {item_key, *expanded_keys}:
+            if indexed_key:
+                section_exact_index[indexed_key].append((item, item_text))
     for detail in detail_candidates:
         text = str(detail or "").strip()
         key = _norm(text)
@@ -3253,9 +3450,14 @@ def _detail_candidate_evidence(
             "page": 0,
             "line": 0,
         }
-        for item in sections.get("ncs_detail", []):
-            item_text = str(item.get("text") or "").strip()
-            if key and (key in _norm(item_text) or _line_expands_to_detail(item_text, text)):
+        exact_section_matches = section_exact_index.get(key, [])
+        section_search_records = (
+            [(item, item_text, key, frozenset({key})) for item, item_text in exact_section_matches]
+            if exact_section_matches
+            else section_records
+        )
+        for item, item_text, item_key, expanded_keys in section_search_records:
+            if key in item_key or key in expanded_keys:
                 evidence.update(
                     {
                         "source": str(item.get("source") or "kordoc"),
@@ -3278,10 +3480,13 @@ def _detail_candidate_evidence(
                         evidence[coordinate_key] = item.get(coordinate_key)
                 break
         if not evidence["snippet"]:
-            matching_lines: list[tuple[int, str, bool]] = []
-            for line_no, line in lines:
-                if key and (key in _norm(line) or _line_expands_to_detail(line, text)):
-                    matching_lines.append((line_no, line, _row_has_detail_evidence_context(line)))
+            matching_lines = list(line_exact_index.get(key, []))
+            if not matching_lines:
+                for line_no, line, line_key, expanded_keys in line_records:
+                    if key in line_key or key in expanded_keys:
+                        matching_lines.append(
+                            (line_no, line, _row_has_detail_evidence_context(line))
+                        )
             for line_no, line, _preferred in sorted(matching_lines, key=lambda item: (not item[2], item[0])):
                 evidence.update(
                     {
@@ -3644,6 +3849,8 @@ def _parser_provenance(parsed: dict[str, Any]) -> dict[str, str]:
 
 def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dict[str, Any]:
     markdown = str(parsed.get("markdown") or "")
+    _validate_html_table_document_budget(markdown)
+    _validate_markdown_table_document_budget(markdown)
     provenance = _parser_provenance(parsed)
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in _SECTION_ALIASES}
     section_text_keys: dict[str, set[str]] = {key: set() for key in _SECTION_ALIASES}

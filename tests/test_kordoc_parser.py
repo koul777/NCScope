@@ -4,12 +4,74 @@ import pytest
 
 from app.services import kordoc_parser
 from app.services.kordoc_parser import (
+    KordocStructureLimitError,
     _looks_like_detail_candidate,
     _loads_kordoc_json,
     _split_ability_unit_entries,
     structure_job_description,
     structure_job_notice,
 )
+
+
+@pytest.mark.parametrize("span", ["257", "9" * 5000])
+def test_html_table_span_above_safe_limit_is_rejected(span: str) -> None:
+    markdown = f"<table><tr><td colspan=\"{span}\">detail</td></tr></table>"
+
+    with pytest.raises(KordocStructureLimitError, match="span exceeds"):
+        structure_job_description({"markdown": markdown}, filename="oversized-table.txt")
+
+
+def test_html_table_logical_cell_budget_is_rejected() -> None:
+    raw_table = "".join(
+        "<tr><td colspan=\"256\">detail</td></tr>" for _ in range(40)
+    )
+
+    with pytest.raises(KordocStructureLimitError, match="size exceeds"):
+        kordoc_parser._html_table_position_grid(raw_table)
+
+
+def test_html_table_document_aggregate_budget_is_rejected() -> None:
+    table = "<table>" + "".join(
+        "<tr><td colspan=\"256\">detail</td></tr>" for _ in range(20)
+    ) + "</table>"
+
+    with pytest.raises(KordocStructureLimitError, match="document table size exceeds"):
+        structure_job_description(
+            {"markdown": table + table},
+            filename="many-expanded-tables.txt",
+        )
+
+
+def test_detail_candidate_evidence_normalizes_each_source_surface_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_norm = kordoc_parser._norm
+    norm_calls = 0
+
+    def counted_norm(value) -> str:
+        nonlocal norm_calls
+        norm_calls += 1
+        return original_norm(value)
+
+    monkeypatch.setattr(kordoc_parser, "_norm", counted_norm)
+    details = [f"detail-{index:03}" for index in range(400)]
+    sections = {
+        "ncs_detail": [
+            {"text": detail, "source": "test", "page": 1, "line": index + 1}
+            for index, detail in enumerate(details)
+        ]
+    }
+    markdown = "\n".join(f"| detail | {detail} |" for detail in details)
+
+    evidence = kordoc_parser._detail_candidate_evidence(
+        details,
+        sections,
+        markdown,
+        "explicit",
+    )
+
+    assert len(evidence) == len(details)
+    assert norm_calls < 10_000
 
 
 def _evidence_by_detail(result: dict) -> dict[str, dict]:
@@ -2210,3 +2272,81 @@ def test_large_coordinate_ability_table_normalization_stays_near_linear(
 
     assert len(result["fields"]["ability_units"]) == row_count
     assert calls < 50_000
+
+
+def test_empty_detail_candidates_skip_evidence_surface_precomputation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_surface(_value: object):
+        raise AssertionError("empty candidate evidence must return before preprocessing")
+
+    monkeypatch.setattr(kordoc_parser, "_detail_search_surface", unexpected_surface)
+
+    assert kordoc_parser._detail_candidate_evidence(
+        [],
+        {"ncs_detail": []},
+        "\n".join(f"ordinary line {index}" for index in range(30_000)),
+        "",
+    ) == []
+
+
+def test_markdown_table_logical_cell_budget_is_enforced() -> None:
+    columns = 10
+    row = "|" + "|".join(f"cell-{index}" for index in range(columns)) + "|"
+    markdown = "\n".join([row] * (kordoc_parser._HTML_TABLE_MAX_LOGICAL_CELLS // columns + 1))
+
+    with pytest.raises(
+        kordoc_parser.KordocStructureLimitError,
+        match="Markdown table size exceeds the safe limit",
+    ):
+        structure_job_description({"markdown": markdown}, filename="oversized-table.md")
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\x85", "\u2028"])
+def test_document_line_budget_rejects_before_structural_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    line_break: str,
+) -> None:
+    monkeypatch.setattr(
+        kordoc_parser,
+        "_parser_provenance",
+        lambda _parsed: (_ for _ in ()).throw(
+            AssertionError("preflight must run before extraction")
+        ),
+    )
+    markdown = line_break.join(
+        f"ordinary line {index}"
+        for index in range(kordoc_parser._DOCUMENT_MAX_TEXT_LINES + 1)
+    )
+
+    with pytest.raises(
+        kordoc_parser.KordocStructureLimitError,
+        match="document line count exceeds the safe limit",
+    ):
+        structure_job_description({"markdown": markdown}, filename="too-many-lines.md")
+
+
+def test_packed_single_cell_detail_candidate_group_is_bounded() -> None:
+    packed = ",".join(
+        f"detail-{index:03}"
+        for index in range(kordoc_parser._DETAIL_COMPOSITE_MAX_SEGMENTS + 1)
+    )
+    markdown = f"| NCS 세분류명 |\n|---|\n| 세분류 | {packed} |"
+
+    with pytest.raises(
+        kordoc_parser.KordocStructureLimitError,
+        match="NCS detail candidate group exceeds the safe limit",
+    ):
+        structure_job_description({"markdown": markdown}, filename="packed-details.md")
+
+
+def test_long_non_candidate_evidence_line_does_not_trigger_candidate_budget() -> None:
+    markdown = (
+        "| NCS 세분류명 | 사무행정 |\n"
+        "필요업무: "
+        + ",".join(f"ordinary-duty-{index}" for index in range(300))
+    )
+
+    result = structure_job_description({"markdown": markdown}, filename="long-duty.md")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["사무행정"]
