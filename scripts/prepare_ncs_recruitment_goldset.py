@@ -18,10 +18,7 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 REVIEWER_FIELDS = [
     "item_id",
-    "split",
     "document_sha256",
-    "local_document_path",
-    "source_url",
     "reviewer_slot",
     "reviewer_id",
     "reviewed_at_utc",
@@ -269,10 +266,7 @@ def _normalize_source_row(
 def _reviewer_row(record: Mapping[str, Any], slot: str) -> dict[str, str]:
     return {
         "item_id": str(record["item_id"]),
-        "split": str(record["split"]),
         "document_sha256": str(record["document_sha256"]),
-        "local_document_path": str(record["local_document_path"]),
-        "source_url": str(record.get("source_url") or ""),
         "reviewer_slot": slot,
         "reviewer_id": "",
         "reviewed_at_utc": "",
@@ -563,14 +557,26 @@ def validate_workflow(workflow: Mapping[str, Any]) -> None:
             raise GoldsetPreparationError(f"{name} item IDs do not match manifest")
         for row in rows:
             record = record_by_id[str(row.get("item_id") or "")]
-            for field in (
-                "split",
-                "document_sha256",
-                "local_document_path",
-            ):
+            expected_fields = (
+                ("document_sha256",)
+                if name.startswith("reviewer_")
+                else ("split", "document_sha256", "local_document_path")
+            )
+            for field in expected_fields:
                 if str(row.get(field) or "") != str(record.get(field) or ""):
                     raise GoldsetPreparationError(
                         f"{name} {field} does not match manifest"
+                    )
+            if name.startswith("reviewer_"):
+                if list(row) != REVIEWER_FIELDS:
+                    raise GoldsetPreparationError(
+                        f"{name} template schema does not match the blind reviewer schema"
+                    )
+                if set(row).intersection(
+                    {"split", "local_document_path", "source_url"}
+                ):
+                    raise GoldsetPreparationError(
+                        f"{name} template exposes reviewer-forbidden metadata"
                     )
     if {str(row.get("reviewer_slot")) for row in reviewer_a} != {"A"}:
         raise GoldsetPreparationError("reviewer A template has invalid reviewer_slot")

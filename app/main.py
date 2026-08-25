@@ -636,16 +636,34 @@ def _normalize_ncs_detail_term(value: Any) -> str:
 
 
 def _parse_sclass_terms(raw: str | None) -> list[str]:
-    protected_slash = "\ufff0"
-    split_value = re.sub(
-        r"(?<=[A-Za-z])/(?=[A-Za-z])",
-        protected_slash,
-        str(raw or ""),
-    )
-    parts = [
-        part.replace(protected_slash, "/")
-        for part in re.split(r"[\n,;/|]+", split_value)
-    ]
+    text = str(raw or "")
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    closers = set(pairs.values())
+    for index, char in enumerate(text):
+        if char in pairs:
+            depth += 1
+            continue
+        if char in closers and depth:
+            depth -= 1
+            continue
+        if depth:
+            continue
+        is_acronym_slash = (
+            char == "/"
+            and index > 0
+            and index + 1 < len(text)
+            and text[index - 1].isascii()
+            and text[index - 1].isalpha()
+            and text[index + 1].isascii()
+            and text[index + 1].isalpha()
+        )
+        if char in "\n,，、;/|" and not is_acronym_slash:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
     out: list[str] = []
     seen: set[str] = set()
     for part in parts:
@@ -1081,18 +1099,36 @@ def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
             for value in (row.get("officialDetailNames") or [])
             if str(value or "").strip()
         ]
-        source_key = _norm_detail_coverage_key(str(row.get("sourceName") or ""))
+        source_key = _norm_sclass_key(str(row.get("sourceName") or ""))
+        source_surface = re.sub(
+            r"\s+", "", str(row.get("sourceName") or "")
+        ).casefold()
+        official_surface = (
+            re.sub(r"\s+", "", official_names[0]).casefold()
+            if len(official_names) == 1
+            else ""
+        )
         if (
             source_key
             and row.get("mappingState") == "official_current_exact"
             and row.get("resolvedCatalogExact") is True
             and len(official_names) == 1
+            and (
+                row.get("matchMethod")
+                == "official_detail_with_exact_ordinal_unit_decoration"
+                or source_surface == official_surface
+            )
         ):
             resolved_decorations_by_key[source_key] = official_names[0]
 
     canonical_terms: list[str] = []
     for term in reviewed_terms:
-        official_name = next(
+        official_name = resolved_decorations_by_key.get(
+            _norm_sclass_key(term),
+            "",
+        )
+        if not official_name:
+            official_name = next(
             (
                 official_by_key[key]
                 for variant in variants_by_term[term]
@@ -1100,11 +1136,6 @@ def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
             ),
             "",
         )
-        if not official_name:
-            official_name = resolved_decorations_by_key.get(
-                _norm_detail_coverage_key(term),
-                "",
-            )
         canonical_terms.append(official_name or term)
     return canonical_terms
 

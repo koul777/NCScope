@@ -113,6 +113,8 @@ def test_build_workflow_collapses_content_duplicates_and_starts_without_gold(
 
     for rows in (workflow["reviewer_a"], workflow["reviewer_b"]):
         for row in rows:
+            assert list(row) == mod.REVIEWER_FIELDS
+            assert set(row).isdisjoint({"split", "local_document_path", "source_url"})
             assert row["mapping_state"] == ""
             assert row["detail_names_json"] == ""
             assert row["detail_codes_json"] == ""
@@ -256,7 +258,12 @@ def test_write_workflow_emits_only_local_templates_with_artifact_hashes(
         "do_not_tune",
     }
     with paths["reviewer_a"].open("r", encoding="utf-8-sig", newline="") as handle:
-        reviewer_rows = list(csv.DictReader(handle))
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == mod.REVIEWER_FIELDS
+        reviewer_rows = list(reader)
+    assert set(reviewer_rows[0]).isdisjoint(
+        {"split", "local_document_path", "source_url"}
+    )
     assert reviewer_rows[0]["review_status"] == "pending_independent_review"
     assert reviewer_rows[0]["detail_codes_json"] == ""
 

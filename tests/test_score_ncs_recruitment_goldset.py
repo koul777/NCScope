@@ -7,6 +7,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
+import httpx
 import pytest
 
 
@@ -264,6 +265,13 @@ def test_scores_validation_and_holdout_without_calling_it_human_gold(
         "ai_adjudicated_reference_comparison_not_human_gold_accuracy"
     )
     assert score["summary"]["overall"]["document_exact_pct"] == 100.0
+    assert score["summary"]["official_current_core"]["eligible_document_count"] == 1
+    assert score["summary"]["official_current_core"]["document_exact_pct"] == 100.0
+    holdout_core = score["summary"]["official_current_core_by_split"][
+        "gold_holdout"
+    ]
+    assert holdout_core["eligible_document_count"] == 0
+    assert holdout_core["document_exact_pct"] is None
     assert score["summary"]["by_split"]["gold_validation"]["detail_name"] == {
         "precision_pct": 100.0,
         "recall_pct": 100.0,
@@ -483,3 +491,55 @@ def test_parse_client_rejects_non_loopback_endpoints_without_network(
         mod.LocalParseReviewClient("https://example.com")
     with pytest.raises(mod.GoldsetScoringError, match="path/query"):
         mod.LocalParseReviewClient("http://127.0.0.1:8000/not-local-root")
+
+
+def test_parse_client_retries_rate_limit_with_bounded_retry_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_module(f"score_goldset_retry_{tmp_path.name}")
+    attempts = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "999"})
+        return httpx.Response(200, json={"fields": {"ncs_detail_mapping_states": []}})
+
+    sleeps: list[float] = []
+    client = mod.LocalParseReviewClient(
+        "http://127.0.0.1:8000", max_retries=2, max_retry_after_seconds=3
+    )
+    client._client.close()
+    client._client = httpx.Client(
+        base_url="http://127.0.0.1:8000",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    try:
+        payload = client.parse(tmp_path / "document.pdf", b"source")
+    finally:
+        client.close()
+
+    assert payload["fields"]["ncs_detail_mapping_states"] == []
+    assert attempts == 2
+    assert sleeps == [3.0]
+
+
+def test_infrastructure_error_aborts_score_instead_of_polluting_accuracy(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(f"score_goldset_infra_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+    reference = mod.validate_reference_bundle(
+        seeded["reference_json"], seeded["reference_csv"], seeded["integrity"]
+    )
+    required = {row["document_sha256"] for row in reference["records"]}
+    source_paths = mod.index_source_documents(seeded["source_dir"], required)
+
+    def unavailable(_path: Path, _data: bytes):
+        raise mod.GoldsetScoringInfrastructureError("HTTP 429")
+
+    with pytest.raises(mod.GoldsetScoringInfrastructureError, match="HTTP 429"):
+        mod.score_reference(reference, source_paths, unavailable)

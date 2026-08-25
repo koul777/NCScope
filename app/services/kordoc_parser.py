@@ -175,6 +175,7 @@ _INLINE_SECTION_TRANSITION_ALIASES: dict[str, tuple[str, ...]] = {
 def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
     text = "".join(char for char in text if unicodedata.category(char) != "Co")
+    text = re.sub(r"[·ᆞ․‧•∙⋅・ㆍ]", "", text)
     return re.sub(r"[\s:：·•\-_/\\()\[\]{}]+", "", text).lower()
 
 
@@ -422,6 +423,10 @@ def _looks_like_detail_candidate(value: str) -> bool:
         "직업윤리",
         "디지털능력",
         "자기관리능력",
+        "해당사항 없음",
+        "해당 없음",
+        "없음",
+        "미정",
     }
     if not key or key in {_norm(x) for x in non_values}:
         return False
@@ -464,6 +469,11 @@ def _looks_like_detail_candidate(value: str) -> bool:
     compact = re.sub(r"\s+", "", text)
     if re.search(r"[○●□■※]", text):
         return False
+    # Current official detail names are authoritative even when they are
+    # longer than the generic prose heuristic or contain words such as "및".
+    # This preserves labels like 지능형교통체계(ITS) 운영 및 유지관리.
+    if key in _official_ncs_detail_name_keys():
+        return True
     if len(compact) > 18 and any(marker in text for marker in ("업무", "부대업무", "잡역", " 및 ")):
         return False
     if len(text) > 40:
@@ -582,6 +592,8 @@ def _detail_candidate_filter_reason(value: Any) -> str:
     if _is_blank_or_dash_cell(value):
         return "blank_or_dash_detail_cell"
     key = _norm(text)
+    if key in {_norm(item) for item in ("해당사항 없음", "해당 없음", "없음", "미정")}:
+        return "declared_no_mapping"
     if _row_declares_no_ncs_mapping([text]) or ("세분류" in key and "미개발" in key):
         return "declared_no_mapping"
     if "미개발" in key:
@@ -675,7 +687,11 @@ def _ncs_detail_absence_diagnostics(markdown: str) -> dict[str, Any]:
                 value = cells[pipe_detail_index] if pipe_detail_index < len(cells) else cells[-1]
                 note_detail_value(value, line)
                 continue
-        match = re.search(r"세분류\s*[:：]\s*(.*)$", line)
+        match = re.search(
+            r"(?:NCS\s*)?세분류(?:명|\(\s*직무(?:명)?\s*\))?\s*[:：]\s*(.*)$",
+            line,
+            flags=re.IGNORECASE,
+        )
         if match:
             add_state("saw_detail_header")
             value = match.group(1)
@@ -1051,6 +1067,14 @@ def _clean_detail_candidate_text(value: str) -> str:
     )
     text = re.sub(r"^[,;/|]+", "", text)
     text = re.sub(r"[,;/|:：\\\-]+$", "", text)
+    # A rowspan/colspan conversion can append the next bullet list to the
+    # terminal detail cell. Preserve only an official detail prefix before
+    # that list; never promote the neighbouring duties as detail candidates.
+    bullet_match = re.search(r"\s*[ㅇᄋ○◦]\s*", text)
+    if bullet_match:
+        prefix = text[: bullet_match.start()].strip(" ,;/|:：\\-")
+        if _norm(prefix) in _official_ncs_detail_name_keys():
+            text = prefix
     return _clean_text(text, normalize_nfkc=False)
 
 
@@ -2930,9 +2954,23 @@ def _plain_classification_detail_candidates(markdown: str) -> list[str]:
     output: list[str] = []
     seen: set[str] = set()
     active = False
+    inside_html_table = False
+    html_detail_table = False
     official_keys = _official_ncs_detail_name_keys()
     for raw_line in str(markdown or "").splitlines():
         line = raw_line.strip()
+        lowered = line.lower()
+        if lowered.startswith("<table"):
+            inside_html_table = True
+            html_detail_table = False
+        if inside_html_table:
+            visible = _clean_text(html.unescape(re.sub(r"<[^>]+>", " ", line)))
+            if "세분류" in _norm(visible):
+                html_detail_table = True
+            if "</table" in lowered:
+                inside_html_table = False
+                active = html_detail_table
+            continue
         heading = re.sub(r"^#{1,6}\s*", "", line)
         heading = re.sub(r"^(?:[-*•·‧○◦▪□■]\s*)+", "", heading)
         heading_key = _norm(heading)
@@ -2941,7 +2979,7 @@ def _plain_classification_detail_candidates(markdown: str) -> list[str]:
             continue
         if not active:
             continue
-        if line.startswith("#") or line.lower().startswith("<table"):
+        if line.startswith("#"):
             active = False
             continue
         matches = list(re.finditer(r"(?<!\d)\d{1,2}\s*[.．]\s*", line))

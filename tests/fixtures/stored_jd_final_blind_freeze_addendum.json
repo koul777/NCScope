@@ -1,14 +1,14 @@
 {
   "schema_version": 3,
   "created_at": "2026-08-25T00:49:44.1976680+09:00",
-  "updated_at": "2026-08-25T05:00:00+09:00",
+  "updated_at": "2026-08-25T11:37:29+09:00",
   "original_freeze_sha256": "a031c53a37cab6c81c4dd9ff4c7f91b2022453d493cbb68d5ee69fb70f2e985c",
   "git_text_hash_canonicalization": "UTF-8 with CRLF and lone CR normalized to LF; historical raw-byte hashes remain unchanged",
   "git_text_sha256": {
     "tests/fixtures/stored_jd_final_blind_reference.json": "c609b6143444040f96d320084f7fe2fb5f19c688cd2bcf41aa895d04cb3df2f4",
     "scripts/benchmark_stored_jd_corpus.py": "3753c5b51d3bc1b8c9bc018a0f18a2a6628b7b86ff60c7dea24ab269f190e7c0",
     "scripts/benchmark_alio_jd.py": "d8af01ec4fc4af081ea78614b39512d226e49fd6d5980869ae57bfe1b3e6fd3b",
-    "app/services/kordoc_parser.py": "fcc406ca91b14bba70f65a7602dfa3ae438b67dc58359cd76215d1a7a5fd208c",
+    "app/services/kordoc_parser.py": "446cff1d2dfe929c0d75424c69f08ec9539e751061c11a845d3a1203375cd903",
     "app/services/ncs_mcp_client.py": "3557ffe780e97b6a32325aa1bcc890914a65e177b640cee6fdcfcbbc61ddd947",
     "scripts/score_stored_jd_holdout.py": "8b1502cafa4c8cccf0b1429dcab334dc81f55677a61565675519b69134ac7217",
     "tests/fixtures/stored_jd_final_blind_result.json": "0ce1ccb71ad563ea982d37f384a26ce3f5365b836c09c70eb3b6028d9734e6b6"
@@ -33,8 +33,8 @@
   "current_non_independent_recheck_detail_code_recall_pct": 100.0,
   "current_non_independent_recheck_release_acceptance": true,
   "initial_kordoc_parser_sha256": "80a01e74ebefe2e85d1cd614e2937cb22d0fb13c792f4b7a111342fefd8dbf3f",
-  "final_kordoc_parser_sha256": "83b2b08386892f8be772230c5c50d187842571c910bea76d9578957bd01ccf1c",
-  "kordoc_parser_change": "corrected code-anchored recovered value_cell coordinates to the matched ability-name cell, separated recovered provenance, preserved per-table markdown indexes, and added row context for raw-cell alignment auditing",
+  "final_kordoc_parser_sha256": "8b983d45018780e0c47141fffaf56dfc251555507df862cae7f3f0f1d4ef949e",
+  "kordoc_parser_change": "corrected code-anchored recovered value_cell coordinates to the matched ability-name cell, separated recovered provenance, preserved per-table markdown indexes, and added row context for raw-cell alignment auditing; later recruitment-detail hardening rejects explicit no-mapping placeholders, preserves long current official names and middle-dot variants, recovers numbered official details after converted tables, and trims bullet lists appended to an official detail cell. The append-only stored-JD blind result is not revised or re-claimed after these semantic changes",
   "coordinate_provenance_change_affected_frozen_scoring_count": 0,
   "initial_scorer_sha256": "44c6c3f362de36edf374a2f6357db05a09ba96d3e70f006e355a075a8ca97cc9",
   "previous_final_scorer_sha256": "79f52e1556fa05002088921473b3991e68f71bb954936c1d33e0ea14345e743d",

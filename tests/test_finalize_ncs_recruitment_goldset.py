@@ -205,6 +205,42 @@ def test_official_current_requires_exact_catalog_name_code_pair(
         )
 
 
+def test_legacy_state_rejects_names_that_are_all_current_official(
+    tmp_path: Path,
+) -> None:
+    mod, paths, manifest, integrity, reviewer_a, reviewer_b, adjudication = seed(
+        tmp_path
+    )
+    current_name = next(iter(mod.CURRENT_OFFICIAL_DETAILS.values()))
+    for row in reviewer_a:
+        complete_review(
+            row,
+            reviewer_id="agent-a",
+            mapping_state="legacy_or_nonstandard",
+            names=[current_name],
+            codes=[],
+        )
+    for row in reviewer_b:
+        complete_review(
+            row,
+            reviewer_id="agent-b",
+            mapping_state="legacy_or_nonstandard",
+            names=[current_name],
+            codes=[],
+        )
+
+    with pytest.raises(mod.GoldsetFinalizationError, match="all resolve to current"):
+        finalize_call(
+            mod,
+            paths,
+            manifest,
+            integrity,
+            reviewer_a,
+            reviewer_b,
+            adjudication,
+        )
+
+
 def test_human_gold_requires_explicit_human_kinds_and_attestation(
     tmp_path: Path,
 ) -> None:

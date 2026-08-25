@@ -1140,6 +1140,64 @@ def test_structure_job_description_filters_detail_label_noise() -> None:
     assert result["fields"]["ncs_detail_candidates"] == ["원자력발전설비운영"]
 
 
+@pytest.mark.parametrize("placeholder", ["해당사항 없음", "해당 없음", "없음", "미정"])
+def test_structure_job_description_treats_no_detail_placeholders_as_absence(
+    placeholder: str,
+) -> None:
+    result = structure_job_description(
+        {"markdown": f"NCS 세분류명: {placeholder}"}, filename="jd.pdf"
+    )
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+    assert result["fields"]["ncs_detail_absence_declared_no_mapping"] is True
+
+
+def test_structure_job_description_preserves_long_current_official_detail_name() -> None:
+    markdown = "| 세분류 | 지능형교통체계(ITS) 운영 및 유지관리 |"
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "지능형교통체계(ITS) 운영 및 유지관리"
+    ]
+
+
+def test_structure_job_description_recovers_numbered_official_detail_dangling_after_table() -> None:
+    markdown = """
+<table>
+<tr><th>NCS 분류체계</th></tr>
+<tr><td>세분류</td><td>04. 화공안전관리</td></tr>
+</table>
+
+05. 가스안전관리
+
+#### 주요사업
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "화공안전관리",
+        "가스안전관리",
+    ]
+
+
+def test_structure_job_description_trims_bullet_list_appended_to_official_detail_cell() -> None:
+    markdown = """
+<table>
+<tr><th>대분류</th><th>중분류</th><th>소분류</th><th>세분류</th></tr>
+<tr><td>10.영업판매</td><td>02.부동산</td><td>04.감정평가</td>
+<td>01.부동산ㆍ동산 감정평가 ㅇ청약관리, ㅇ도시재생사업 ㅇ부동산 R&amp;D</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="jd.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "부동산ㆍ동산 감정평가"
+    ]
+
+
 def test_structure_job_description_filters_job_definition_header_from_detail_values() -> None:
     markdown = """
 | 세분류 | 직무정의 | 경영기획 | 사무행정 |

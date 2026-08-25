@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import re
+import unicodedata
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -131,6 +132,17 @@ CURRENT_OFFICIAL_DETAILS = _load_current_official_details(
     OFFICIAL_DETAIL_CATALOG
 )
 CURRENT_OFFICIAL_DETAIL_CODES = frozenset(CURRENT_OFFICIAL_DETAILS)
+
+
+def _detail_name_key(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    text = re.sub(r"[·ᆞ․‧•∙⋅・ㆍ]", "", text)
+    return re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
+
+
+CURRENT_OFFICIAL_DETAIL_NAME_KEYS = frozenset(
+    _detail_name_key(name) for name in CURRENT_OFFICIAL_DETAILS.values()
+)
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -332,6 +344,13 @@ def _normalize_answer(
         if not names or codes:
             raise GoldsetFinalizationError(
                 f"{prefix}: {mapping_state} requires source names and no official codes"
+            )
+        if mapping_state == "legacy_or_nonstandard" and all(
+            _detail_name_key(name) in CURRENT_OFFICIAL_DETAIL_NAME_KEYS
+            for name in names
+        ):
+            raise GoldsetFinalizationError(
+                f"{prefix}: legacy_or_nonstandard names all resolve to current official details"
             )
         names = sorted(set(names))
     elif names or codes:

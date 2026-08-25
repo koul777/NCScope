@@ -6,6 +6,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import time
 import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
@@ -80,6 +81,10 @@ ParseFunction = Callable[[Path, bytes], Mapping[str, Any]]
 
 class GoldsetScoringError(ValueError):
     """Raised when the scorer cannot prove an evaluation invariant."""
+
+
+class GoldsetScoringInfrastructureError(GoldsetScoringError):
+    """Raised when an external parser run is unavailable and the score is invalid."""
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -651,7 +656,14 @@ def _predict_from_parse_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 class LocalParseReviewClient:
     """Small loopback-only client for the local parse-review endpoint."""
 
-    def __init__(self, base_url: str, *, timeout_seconds: float = 120.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 120.0,
+        max_retries: int = 8,
+        max_retry_after_seconds: float = 60.0,
+    ) -> None:
         parsed = urlparse(base_url)
         host = (parsed.hostname or "").lower()
         if parsed.scheme not in {"http", "https"} or host not in {
@@ -664,6 +676,14 @@ class LocalParseReviewClient:
             )
         if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
             raise GoldsetScoringError("parse-review base URL must not contain a path/query")
+        if max_retries < 0 or max_retries > 20:
+            raise GoldsetScoringError("max retries must be between 0 and 20")
+        if max_retry_after_seconds < 0 or max_retry_after_seconds > 300:
+            raise GoldsetScoringError(
+                "max retry-after seconds must be between 0 and 300"
+            )
+        self._max_retries = max_retries
+        self._max_retry_after_seconds = max_retry_after_seconds
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(timeout_seconds),
@@ -683,25 +703,46 @@ class LocalParseReviewClient:
 
     def parse(self, path: Path, data: bytes) -> Mapping[str, Any]:
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        try:
-            response = self._client.post(
-                "/api/jd/parse-review",
-                files={"jd_file": (path.name, data, content_type)},
+        response: httpx.Response | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._client.post(
+                    "/api/jd/parse-review",
+                    files={"jd_file": (path.name, data, content_type)},
+                )
+            except httpx.HTTPError as exc:
+                raise GoldsetScoringInfrastructureError(
+                    f"local parse-review transport failed: {exc}"
+                ) from exc
+            if response.status_code != 429 or attempt >= self._max_retries:
+                break
+            try:
+                retry_after = float(response.headers.get("Retry-After", "1"))
+            except ValueError:
+                retry_after = 1.0
+            time.sleep(max(0.0, min(self._max_retry_after_seconds, retry_after)))
+        if response is None:
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review did not produce a response"
             )
-        except httpx.HTTPError as exc:
-            raise GoldsetScoringError(f"local parse-review transport failed: {exc}") from exc
         if response.is_redirect:
-            raise GoldsetScoringError("local parse-review redirect was rejected")
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review redirect was rejected"
+            )
         if response.status_code < 200 or response.status_code >= 300:
-            raise GoldsetScoringError(
+            raise GoldsetScoringInfrastructureError(
                 f"local parse-review returned HTTP {response.status_code}"
             )
         try:
             payload = response.json()
         except (ValueError, UnicodeError) as exc:
-            raise GoldsetScoringError("local parse-review returned invalid JSON") from exc
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review returned invalid JSON"
+            ) from exc
         if not isinstance(payload, dict):
-            raise GoldsetScoringError("local parse-review returned a non-object payload")
+            raise GoldsetScoringInfrastructureError(
+                "local parse-review returned a non-object payload"
+            )
         return payload
 
 
@@ -771,6 +812,34 @@ def _aggregate_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _aggregate_official_current_core(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    eligible = [
+        row for row in rows if row["reference_mapping_state"] == "official_current"
+    ]
+    if not eligible:
+        return {
+            "eligible_document_count": 0,
+            "detail_name": _label_metrics(0, 0, 0),
+            "detail_code": _label_metrics(0, 0, 0),
+            "mapping_state_accuracy_pct": None,
+            "mapping_state_exact_count": 0,
+            "document_exact_pct": None,
+            "document_exact_count": 0,
+        }
+    metrics = _aggregate_metrics(eligible)
+    return {
+        "eligible_document_count": len(eligible),
+        "detail_name": metrics["detail_name"],
+        "detail_code": metrics["detail_code"],
+        "mapping_state_accuracy_pct": metrics["mapping_state_accuracy_pct"],
+        "mapping_state_exact_count": metrics["mapping_state_exact_count"],
+        "document_exact_pct": metrics["document_exact_pct"],
+        "document_exact_count": metrics["document_exact_count"],
+    }
+
+
 def score_reference(
     reference: Mapping[str, Any],
     source_paths: Mapping[str, Path],
@@ -805,6 +874,10 @@ def score_reference(
             if not isinstance(payload, Mapping):
                 raise GoldsetScoringError("parse function returned a non-object payload")
             prediction = _predict_from_parse_payload(payload)
+        except GoldsetScoringInfrastructureError:
+            # A partial run caused by transport/backpressure is not a model
+            # error and must never be mixed into accuracy denominators.
+            raise
         except Exception as exc:  # Per-document failures belong in the error ledger.
             parse_status = "error"
             parse_error = f"{type(exc).__name__}: {exc}"[:500]
@@ -874,6 +947,13 @@ def score_reference(
             "split_counts": dict(sorted(Counter(row["split"] for row in results).items())),
             "overall": _aggregate_metrics(results),
             "by_split": by_split,
+            "official_current_core": _aggregate_official_current_core(results),
+            "official_current_core_by_split": {
+                split: _aggregate_official_current_core(
+                    [row for row in results if row["split"] == split]
+                )
+                for split in SPLITS
+            },
         },
         "error_cases": errors,
         "records": results,
@@ -912,11 +992,53 @@ def _markdown_report(score: Mapping[str, Any]) -> str:
         f"- Records: {summary['record_count']}",
         f"- Error cases: {summary['error_case_count']}",
         "",
+        "## Official-current detail core",
+        "",
+        "Only records independently labeled `official_current` enter these name/code precision, recall, and exact-match denominators. Legacy, self-developed, ambiguous, absent, and unreadable records remain in the all-state diagnostics below.",
+        "",
+        "| Split | Eligible docs | Name P/R/F1 | Code P/R/F1 | State exact | Document exact |",
+        "|---|---:|---|---|---:|---:|",
+    ]
+    for label, metrics in [
+        ("overall", summary["official_current_core"]),
+        *[
+            (split, summary["official_current_core_by_split"][split])
+            for split in SPLITS
+        ],
+    ]:
+        name = metrics["detail_name"]
+        code = metrics["detail_code"]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    label,
+                    str(metrics["eligible_document_count"]),
+                    "/".join(
+                        _metric_text(name[key])
+                        for key in ("precision_pct", "recall_pct", "f1_pct")
+                    ),
+                    "/".join(
+                        _metric_text(code[key])
+                        for key in ("precision_pct", "recall_pct", "f1_pct")
+                    ),
+                    _metric_text(metrics["mapping_state_accuracy_pct"]),
+                    _metric_text(metrics["document_exact_pct"]),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## All-state diagnostics",
+            "",
         "Automatic predictions were produced only after the sealed reference was loaded and validated. They were not used to write or alter reference labels.",
         "",
         "| Split | Docs | Name P/R/F1 | Code P/R/F1 | State exact | Document exact |",
         "|---|---:|---|---|---:|---:|",
-    ]
+        ]
+    )
     for label, metrics in [
         ("overall", summary["overall"]),
         *[(split, summary["by_split"][split]) for split in SPLITS],
@@ -1060,6 +1182,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
+    parser.add_argument("--max-retries", type=int, default=8)
+    parser.add_argument("--max-retry-after-seconds", type=float, default=60.0)
     return parser
 
 
@@ -1071,7 +1195,10 @@ def main(argv: list[str] | None = None) -> int:
         "reference_integrity": Path(args.reference_integrity).resolve(),
     }
     with LocalParseReviewClient(
-        args.base_url, timeout_seconds=args.timeout_seconds
+        args.base_url,
+        timeout_seconds=args.timeout_seconds,
+        max_retries=args.max_retries,
+        max_retry_after_seconds=args.max_retry_after_seconds,
     ) as client:
         score, source_paths = evaluate_bundle(
             reference_paths["reference_json"],

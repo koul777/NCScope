@@ -30,6 +30,16 @@ def test_detail_term_splitters_preserve_official_acronym_slash_names():
     ]
 
 
+def test_detail_term_splitter_preserves_delimiters_inside_official_parentheses():
+    assert _parse_sclass_terms("조선비계(족장, 발판, scaffolding), 사무행정") == [
+        "조선비계(족장, 발판, scaffolding)",
+        "사무행정",
+    ]
+    assert _canonicalize_detail_lookup_terms(
+        ["조선비계(족장, 발판, scaffolding)"]
+    ) == ["조선비계(족장, 발판, scaffolding)"]
+
+
 def test_pdf_sclass_page_limit_covers_multi_role_job_descriptions(monkeypatch):
     monkeypatch.delenv("PDF_SCLASS_MAX_PAGES", raising=False)
     assert _pdf_sclass_page_limit() == 24
@@ -168,6 +178,10 @@ def test_all_official_sclass_names_have_unique_normalized_keys_and_round_trip():
     for name in sorted(official_names):
         transport_spelling = " ".join(name)
         assert _canonicalize_detail_lookup_terms([transport_spelling]) == [name]
+
+
+def test_current_detail_catalog_surface_wins_over_legacy_sclass_spelling():
+    assert _canonicalize_detail_lookup_terms(["문화·예술경영"]) == ["문화·예술경영"]
 
 
 def test_all_282_official_code_and_name_pairs_round_trip_without_code_leakage():
