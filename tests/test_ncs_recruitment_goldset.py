@@ -147,6 +147,54 @@ def test_build_workflow_rejects_tuning_overlap_and_hash_mismatch(tmp_path: Path)
         mod.build_workflow(payload, [mismatched])
 
 
+def test_explicit_tuning_overlap_filter_removes_cases_with_a_local_audit(
+    tmp_path: Path,
+) -> None:
+    mod = load_module()
+    tuning_document = tmp_path / "tuning.pdf"
+    evaluation_document = tmp_path / "evaluation.pdf"
+    tuning_document.write_bytes(b"known tuning content")
+    evaluation_document.write_bytes(b"new evaluation content")
+    payload = benchmark_payload(["case-tuning", "case-evaluation"])
+
+    filtered_payload, filtered_rows, audit = mod.exclude_tuning_overlap_candidates(
+        payload,
+        [
+            source_row("case-tuning", tuning_document),
+            source_row("case-evaluation", evaluation_document),
+        ],
+        tuning_hashes={mod.sha256_file(tuning_document)},
+    )
+
+    assert [row["case_id"] for row in filtered_payload["cases"]] == [
+        "case-evaluation"
+    ]
+    assert [row["case_id"] for row in filtered_rows] == ["case-evaluation"]
+    assert audit["excluded_case_ids"] == ["case-tuning"]
+    assert audit["excluded_case_count"] == 1
+    assert audit["remaining_unique_document_count"] == 1
+    assert len(audit["audit_sha256"]) == 64
+    workflow = mod.build_workflow(
+        filtered_payload,
+        filtered_rows,
+        tuning_hashes={mod.sha256_file(tuning_document)},
+    )
+    assert workflow["summary"]["benchmark_case_count"] == 1
+
+
+def test_tuning_overlap_filter_rejects_all_candidates_removed(tmp_path: Path) -> None:
+    mod = load_module()
+    document = tmp_path / "tuning.pdf"
+    document.write_bytes(b"only tuning content")
+
+    with pytest.raises(mod.GoldsetPreparationError, match="removed every"):
+        mod.exclude_tuning_overlap_candidates(
+            benchmark_payload(["case-tuning"]),
+            [source_row("case-tuning", document)],
+            tuning_hashes={mod.sha256_file(document)},
+        )
+
+
 def test_build_workflow_requires_exact_source_index_coverage(tmp_path: Path) -> None:
     mod = load_module()
     document = tmp_path / "jd.pdf"

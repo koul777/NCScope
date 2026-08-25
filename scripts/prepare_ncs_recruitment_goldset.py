@@ -431,6 +431,86 @@ def build_workflow(
     return workflow
 
 
+def exclude_tuning_overlap_candidates(
+    benchmark_payload: Mapping[str, Any],
+    source_rows: Sequence[Mapping[str, Any]],
+    *,
+    tuning_hashes: Iterable[str],
+    verify_files: bool = True,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Drop explicitly identified tuning documents before blind review seeding.
+
+    ``build_workflow`` remains fail-closed by default. This helper is an explicit,
+    auditable pre-filter for a live collection window that contains a small number
+    of known tuning documents. It removes every case sharing an excluded content
+    digest from both the benchmark envelope and the private source index.
+    """
+
+    benchmark_cases = _benchmark_cases(benchmark_payload)
+    normalized_tuning_hashes = {
+        require_sha256(value, field="tuning document sha256")
+        for value in tuning_hashes
+    }
+    normalized_rows: list[dict[str, Any]] = []
+    seen_case_ids: set[str] = set()
+    for row in source_rows:
+        normalized = _normalize_source_row(
+            row,
+            benchmark_case_ids=set(benchmark_cases),
+            verify_files=verify_files,
+        )
+        case_id = normalized["case_id"]
+        if case_id in seen_case_ids:
+            raise GoldsetPreparationError(f"duplicate source-index case_id: {case_id}")
+        seen_case_ids.add(case_id)
+        normalized_rows.append(normalized)
+    missing = sorted(set(benchmark_cases) - seen_case_ids)
+    if missing:
+        raise GoldsetPreparationError(
+            f"source index is missing {len(missing)} benchmark case(s)"
+        )
+
+    excluded_rows = [
+        row
+        for row in normalized_rows
+        if row["document_sha256"] in normalized_tuning_hashes
+    ]
+    excluded_case_ids = {row["case_id"] for row in excluded_rows}
+    remaining_rows = [
+        row for row in normalized_rows if row["case_id"] not in excluded_case_ids
+    ]
+    if not remaining_rows:
+        raise GoldsetPreparationError("tuning-overlap exclusion removed every candidate")
+
+    filtered_payload = dict(benchmark_payload)
+    filtered_payload["cases"] = [
+        dict(row)
+        for row in benchmark_payload.get("cases", [])
+        if isinstance(row, dict)
+        and str(row.get("case_id") or "").strip() not in excluded_case_ids
+    ]
+    source_document_hashes = {row["document_sha256"] for row in normalized_rows}
+    remaining_document_hashes = {row["document_sha256"] for row in remaining_rows}
+    audit = {
+        "policy": "explicit_known_tuning_digest_exclusion_before_blind_review",
+        "original_case_count": len(normalized_rows),
+        "remaining_case_count": len(remaining_rows),
+        "excluded_case_count": len(excluded_rows),
+        "original_unique_document_count": len(source_document_hashes),
+        "remaining_unique_document_count": len(remaining_document_hashes),
+        "excluded_unique_document_count": len(
+            {row["document_sha256"] for row in excluded_rows}
+        ),
+        "excluded_case_ids": sorted(excluded_case_ids),
+        "excluded_document_sha256": sorted(
+            {row["document_sha256"] for row in excluded_rows}
+        ),
+        "tuning_hash_count_checked": len(normalized_tuning_hashes),
+    }
+    audit["audit_sha256"] = sha256_bytes(canonical_json_bytes(audit))
+    return filtered_payload, remaining_rows, audit
+
+
 def validate_workflow(workflow: Mapping[str, Any]) -> None:
     records = workflow.get("records")
     reviewer_a = workflow.get("reviewer_a")
@@ -629,6 +709,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=[],
         help="CSV/JSON/text file containing tuning document SHA-256 values; repeatable",
     )
+    parser.add_argument(
+        "--exclude-tuning-overlap",
+        action="store_true",
+        help=(
+            "explicitly remove known tuning-document digest overlaps from both "
+            "benchmark cases and source index, writing a local exclusion audit"
+        ),
+    )
     return parser
 
 
@@ -644,6 +732,16 @@ def main(argv: list[str] | None = None) -> int:
     tuning_hashes = load_tuning_hashes(
         Path(value).resolve() for value in args.tuning_manifest
     )
+    exclusion_audit: dict[str, Any] | None = None
+    if args.exclude_tuning_overlap:
+        benchmark_payload, source_rows, exclusion_audit = (
+            exclude_tuning_overlap_candidates(
+                benchmark_payload,
+                source_rows,
+                tuning_hashes=tuning_hashes,
+                verify_files=True,
+            )
+        )
     workflow = build_workflow(
         benchmark_payload,
         source_rows,
@@ -652,6 +750,13 @@ def main(argv: list[str] | None = None) -> int:
         verify_files=True,
     )
     paths = write_workflow(workflow, output_dir)
+    if exclusion_audit is not None:
+        exclusion_path = output_dir / "candidate_exclusions.local.json"
+        exclusion_path.write_text(
+            json.dumps(exclusion_audit, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        paths["candidate_exclusions"] = exclusion_path
     print(json.dumps(workflow["summary"], ensure_ascii=False, indent=2))
     for name, path in paths.items():
         print(f"{name}={path}")
