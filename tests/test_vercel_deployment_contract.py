@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -108,6 +109,72 @@ def test_kordoc_onnx_runtime_is_deduplicated_for_function_size() -> None:
     assert installed_onnx_runtimes == {"node_modules/onnxruntime-node": "1.24.3"}
     assert "node_modules/@img/sharp-linux-x64" in package_lock["packages"]
     assert "node_modules/@img/sharp-libvips-linux-x64" in package_lock["packages"]
+
+
+def test_node_lock_runtime_attestation_matches_full_package_lock() -> None:
+    package_lock_path = ROOT / "package-lock.json"
+    package_lock = json.loads(package_lock_path.read_text(encoding="utf-8"))
+    attestation = json.loads(
+        (
+            ROOT / "app" / "data" / "node_package_lock_attestation.json"
+        ).read_text(encoding="utf-8")
+    )
+    package_entry = package_lock["packages"]["node_modules/kordoc"]
+
+    assert attestation == {
+        "schema_version": "ncscope_node_lock_attestation_v1",
+        "package_lock_git_text_sha256": hashlib.sha256(
+            package_lock_path.read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest(),
+        "package_name": "kordoc",
+        "package_version": package_entry["version"],
+        "package_integrity": package_entry["integrity"],
+    }
+
+
+def test_runtime_attestation_accepts_vercel_bundle_without_root_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main
+
+    original_is_file = Path.is_file
+
+    def without_root_lock(path: Path) -> bool:
+        if path == ROOT / "package-lock.json":
+            return False
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", without_root_lock)
+
+    assert main._build_evaluation_runtime_attestation() == (
+        main._evaluation_runtime_attestation()
+    )
+
+
+def test_runtime_attestation_rejects_stale_or_non_object_lock_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main
+
+    original_read_text = Path.read_text
+
+    def stale_lock(path: Path, *args, **kwargs) -> str:
+        if path == ROOT / "package-lock.json":
+            return "{}"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", stale_lock)
+    with pytest.raises(RuntimeError, match="attestation is stale"):
+        main._build_evaluation_runtime_attestation()
+
+    def non_object_snapshot(path: Path, *args, **kwargs) -> str:
+        if path == ROOT / "app" / "data" / "node_package_lock_attestation.json":
+            return "[]"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", non_object_snapshot)
+    with pytest.raises(RuntimeError, match="attestation is invalid"):
+        main._build_evaluation_runtime_attestation()
 
 
 def test_python_upload_and_pdf_runtime_uses_audited_security_pins() -> None:

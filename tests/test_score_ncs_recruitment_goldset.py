@@ -922,6 +922,29 @@ def test_runtime_attestation_v2_seals_parser_build_closure(tmp_path: Path) -> No
     )
 
 
+def test_runtime_attestation_rejects_non_object_lock_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = load_module(f"score_goldset_non_object_lock_{tmp_path.name}")
+    original_read_text = Path.read_text
+    snapshot_path = (
+        mod.ROOT / "app" / "data" / "node_package_lock_attestation.json"
+    )
+
+    def non_object_snapshot(path: Path, *args, **kwargs) -> str:
+        if path == snapshot_path:
+            return "[]"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", non_object_snapshot)
+
+    with pytest.raises(
+        mod.GoldsetScoringError,
+        match="package lock attestation is invalid",
+    ):
+        mod.local_runtime_attestation()
+
+
 def test_private_scorer_rejects_remote_bridge_execution(tmp_path: Path) -> None:
     mod = load_module(f"score_goldset_remote_mode_{tmp_path.name}")
     client = mod.LocalParseReviewClient("http://127.0.0.1:8000")

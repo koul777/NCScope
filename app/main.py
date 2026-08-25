@@ -576,19 +576,57 @@ def _build_evaluation_runtime_attestation() -> dict[str, Any]:
         "kordoc_local_runner": root / "scripts" / "kordoc_parse.mjs",
         "kordoc_serverless_bridge": root / "api" / "kordoc-parse.js",
         "package_json": root / "package.json",
-        "package_lock": root / "package-lock.json",
+        "package_lock": (
+            root / "app" / "data" / "node_package_lock_attestation.json"
+        ),
         "vercel_config": root / "vercel.json",
     }
-    package_lock = json.loads(source_paths["package_lock"].read_text(encoding="utf-8"))
-    package_entry = (package_lock.get("packages") or {}).get("node_modules/kordoc")
-    if not isinstance(package_entry, dict):
-        raise RuntimeError("Kordoc package lock entry is unavailable")
-    package_version = str(package_entry.get("version") or "").strip()
-    package_integrity = str(package_entry.get("integrity") or "").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+", package_version) or not re.fullmatch(
-        r"sha512-[A-Za-z0-9+/]+={0,2}", package_integrity
+    lock_attestation = json.loads(
+        source_paths["package_lock"].read_text(encoding="utf-8")
+    )
+    if not isinstance(lock_attestation, dict):
+        raise RuntimeError("Kordoc package lock attestation is invalid")
+    package_lock_git_text_sha256 = str(
+        lock_attestation.get("package_lock_git_text_sha256") or ""
+    ).strip()
+    package_version = str(
+        lock_attestation.get("package_version") or ""
+    ).strip()
+    package_integrity = str(
+        lock_attestation.get("package_integrity") or ""
+    ).strip()
+    if (
+        lock_attestation.get("schema_version")
+        != "ncscope_node_lock_attestation_v1"
+        or lock_attestation.get("package_name") != "kordoc"
+        or not re.fullmatch(r"[0-9a-f]{64}", package_lock_git_text_sha256)
+        or not re.fullmatch(r"\d+\.\d+\.\d+", package_version)
+        or not re.fullmatch(r"sha512-[A-Za-z0-9+/]+={0,2}", package_integrity)
     ):
-        raise RuntimeError("Kordoc package lock identity is invalid")
+        raise RuntimeError("Kordoc package lock attestation is invalid")
+
+    # Vercel consumes package-lock.json while building the Node function and
+    # omits it from the Python function bundle. Whenever the original lockfile
+    # is present (local development and CI), fail closed unless the tracked
+    # runtime snapshot matches its canonical Git-text digest and Kordoc entry.
+    package_lock_path = root / "package-lock.json"
+    if package_lock_path.is_file():
+        package_lock_text = package_lock_path.read_text(encoding="utf-8")
+        if (
+            hashlib.sha256(package_lock_text.encode("utf-8")).hexdigest()
+            != package_lock_git_text_sha256
+        ):
+            raise RuntimeError("Node package lock attestation is stale")
+        package_lock = json.loads(package_lock_text)
+        package_entry = (package_lock.get("packages") or {}).get(
+            "node_modules/kordoc"
+        )
+        if not isinstance(package_entry, dict) or (
+            str(package_entry.get("version") or "").strip() != package_version
+            or str(package_entry.get("integrity") or "").strip()
+            != package_integrity
+        ):
+            raise RuntimeError("Kordoc package lock attestation is stale")
     attestation = {
         "schema_version": "ncscope_evaluation_runtime_attestation_v2",
         "app_version": APP_VERSION,

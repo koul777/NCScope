@@ -25,6 +25,7 @@ REQUIRED_RUNTIME_FILES = (
     "app/services/alio_sclass_profile.py",
     "app/data/ncs_detail_catalog.json",
     "app/data/ncs_unit_catalog.json",
+    "app/data/node_package_lock_attestation.json",
 )
 
 

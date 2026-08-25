@@ -620,6 +620,11 @@ Windows에서 만든 `.vercel/output`에는 `sharp` 같은 네이티브 Node 의
 묶일 수 있으므로 운영에는 `vercel deploy --prebuilt`를 사용하지 않습니다. 커밋 뒤 깨끗한
 샌드박스에서 `vercel deploy --prod --force --yes`로 Vercel의 Linux 원격 소스 빌드를
 실행하고, 실제 Kordoc 문서 smoke와 206개 로컬/운영 동일성 검사를 통과한 배포만 유지합니다.
+Vercel Python 함수는 Node 설치에 사용한 `package-lock.json` 자체를 번들에서 제거하므로,
+`app/data/node_package_lock_attestation.json`에 잠금파일 전체의 Git-text SHA-256과 Kordoc의
+정확한 버전·integrity를 함께 봉인합니다. 로컬·CI는 줄바꿈을 LF로 정규화해 이 스냅샷을
+원본 잠금파일과 매번 대조하고, 운영 runtime attestation은 번들에 남은 동일 스냅샷의
+해시를 검증합니다.
 
 ## API 실패 계약
 

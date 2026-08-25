@@ -27,6 +27,7 @@ def test_prepare_sandbox_copies_only_required_inputs(tmp_path: Path) -> None:
         "app/services/alio_sclass_profile.py",
         "app/data/ncs_detail_catalog.json",
         "app/data/ncs_unit_catalog.json",
+        "app/data/node_package_lock_attestation.json",
         "app/__pycache__/main.cpython-312.pyc",
         "scripts/kordoc_parse.mjs",
         "scripts/tool.py",
@@ -63,12 +64,16 @@ def test_prepare_sandbox_copies_only_required_inputs(tmp_path: Path) -> None:
             "app/services/alio_sclass_profile.py",
             "app/data/ncs_detail_catalog.json",
             "app/data/ncs_unit_catalog.json",
+            "app/data/node_package_lock_attestation.json",
         ],
     )
 
     assert result["copied_dirs"] == ["api", "app"]
     assert (output_dir / "api" / "index.py").is_file()
     assert (output_dir / "app" / "main.py").is_file()
+    assert (
+        output_dir / "app" / "data" / "node_package_lock_attestation.json"
+    ).is_file()
     assert (output_dir / "scripts" / "kordoc_parse.mjs").is_file()
     assert not (output_dir / "scripts" / "tool.py").exists()
     assert not (output_dir / "app" / "__pycache__").exists()
