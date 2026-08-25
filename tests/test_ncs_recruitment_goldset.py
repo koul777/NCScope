@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +15,29 @@ SCRIPT_PATH = (
     / "scripts"
     / "prepare_ncs_recruitment_goldset.py"
 )
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    [
+        "prepare_ncs_recruitment_goldset.py",
+        "finalize_ncs_recruitment_goldset.py",
+        "score_ncs_recruitment_goldset.py",
+    ],
+)
+def test_gold_workflow_scripts_support_documented_direct_cli(script_name: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / script_name), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "usage:" in completed.stdout
 
 
 def load_module():

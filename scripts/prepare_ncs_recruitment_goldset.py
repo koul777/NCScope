@@ -5,19 +5,23 @@ import csv
 import hashlib
 import json
 import re
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from scripts.ncs_recruitment_split import (
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.ncs_recruitment_split import (  # noqa: E402
     SPLIT_KEY,
     compute_split_groups,
     deterministic_split as shared_deterministic_split,
 )
 
 
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset"
 WORKFLOW_VERSION = "ncs_recruitment_human_goldset_v2"
 SEED_INTEGRITY_VERSION = "ncs_recruitment_seed_integrity_v2"

@@ -6,20 +6,25 @@ import hashlib
 import json
 import mimetypes
 import re
+import sys
 import time
 import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
-
-from scripts.ncs_recruitment_split import SPLIT_KEY, compute_split_groups
 from urllib.parse import urlparse
 
 import httpx
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.ncs_recruitment_split import SPLIT_KEY, compute_split_groups  # noqa: E402
+
+
 DEFAULT_FINAL_DIR = ROOT / "tmp" / "ncs_recruitment_goldset" / "final"
 DEFAULT_SOURCE_DIR = ROOT / "tmp" / "ncs_recruitment_goldset" / "source_documents"
 DEFAULT_OUTPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset" / "score"

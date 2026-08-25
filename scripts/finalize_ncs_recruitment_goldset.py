@@ -5,16 +5,20 @@ import csv
 import hashlib
 import json
 import re
+import sys
 import unicodedata
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from scripts.ncs_recruitment_split import SPLIT_KEY, compute_split_groups
-
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.ncs_recruitment_split import SPLIT_KEY, compute_split_groups  # noqa: E402
+
+
 DEFAULT_INPUT_DIR = ROOT / "tmp" / "ncs_recruitment_goldset"
 DEFAULT_OUTPUT_DIR = DEFAULT_INPUT_DIR / "final"
 WORKFLOW_VERSION = "ncs_recruitment_human_goldset_v2"
