@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -78,6 +79,13 @@ def test_builds_consensus_and_disagreement_without_predictions() -> None:
     assert disputes[0]["item_id"] == "two"
     assert disputes[0]["automatic_predictions_included"] is False
     assert "split" not in disputes[0]
+    decisions = mod.build_adjudicator_decision_template(disputes)
+    assert list(decisions[0]) == mod.ADJUDICATOR_DECISION_FIELDS
+    assert set(decisions[0]).isdisjoint(
+        {"split", "local_document_path", "source_url"}
+    )
+    assert decisions[0]["item_id"] == "two"
+    assert decisions[0]["final_mapping_state"] == ""
 
 
 def test_packet_index_rejects_tampering_and_incomplete_coverage(tmp_path: Path) -> None:
@@ -102,11 +110,62 @@ def test_packet_index_rejects_tampering_and_incomplete_coverage(tmp_path: Path) 
         ],
     }
     index = tmp_path / "index.json"
-    import json
-
     index.write_text(json.dumps(payload), encoding="utf-8")
     assert set(mod._load_packet_index(index, record_by_id=record_by_id)) == {"one"}
 
     packet.write_text("changed", encoding="utf-8")
     with pytest.raises(mod.AdjudicationPreparationError, match="integrity"):
         mod._load_packet_index(index, record_by_id=record_by_id)
+
+
+def test_packet_integrity_binds_the_index_and_exact_file_ledger(
+    tmp_path: Path,
+) -> None:
+    mod = load_module("adjudication_packet_integrity")
+    packet = tmp_path / "one.source.md"
+    packet.write_text("source", encoding="utf-8")
+    packet_digest = hashlib.sha256(packet.read_bytes()).hexdigest()
+    packets = {
+        "one": {
+            "packet_path": str(packet),
+            "packet_sha256": packet_digest,
+        }
+    }
+    index = tmp_path / "index.json"
+    index.write_text('{"source_only":true}', encoding="utf-8")
+    integrity = tmp_path / "integrity.json"
+    integrity.write_text(
+        json.dumps(
+            {
+                "index_sha256": hashlib.sha256(index.read_bytes()).hexdigest(),
+                "packet_count": 1,
+                "packet_files": {packet.name: packet_digest},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mod._validate_packet_integrity(
+        integrity, packet_index_path=index, packets=packets
+    )
+
+    index.write_text('{"source_only":false}', encoding="utf-8")
+    with pytest.raises(mod.AdjudicationPreparationError, match="index integrity"):
+        mod._validate_packet_integrity(
+            integrity, packet_index_path=index, packets=packets
+        )
+
+    integrity.write_text(
+        json.dumps(
+            {
+                "index_sha256": hashlib.sha256(index.read_bytes()).hexdigest(),
+                "packet_count": 1,
+                "packet_files": {packet.name: "f" * 64},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(mod.AdjudicationPreparationError, match="file ledger"):
+        mod._validate_packet_integrity(
+            integrity, packet_index_path=index, packets=packets
+        )

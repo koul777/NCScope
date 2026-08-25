@@ -394,7 +394,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.4.9"
 app = FastAPI(title="NCScope", version=APP_VERSION, lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
@@ -1214,19 +1214,25 @@ def _recover_hangul_fallback_detail_candidates(
         for value in (structured_fields.get("ncs_detail_candidates") or [])
         if str(value or "").strip()
     ]
+    # For a single document, a structural candidate already has stronger
+    # row/column evidence than the flattened Hangul/PDF term stream. Broad
+    # exact-name enrichment can otherwise promote an adjacent 소분류 whose
+    # name also happens to be a valid 세분류 elsewhere in the catalog. ZIP
+    # inputs remain eligible because another member may supply the missing
+    # classified job.
+    fallback_kind = str(metadata.get("fallback") or "").casefold()
+    if (
+        existing_candidates
+        and not metadata.get("members")
+        and fallback_kind not in {"hwp-text", "hwpx-text"}
+    ):
+        return
     # A single PDF fallback already ran the structural table extractor. The
     # old enrichment pass queried every flattened classification term even
     # though it only appended results and never validated or removed an
     # existing candidate. Generation revalidates the human-selected label
     # against NCS MCP, so repeating broad MCP searches here adds latency but
     # no release authority. Keep recovery for HWP/HWPX and mixed ZIP inputs.
-    if (
-        str(metadata.get("fallback") or "").casefold() == "pdf-text"
-        and not metadata.get("members")
-        and existing_candidates
-        and not supplemental_terms
-    ):
-        return
     used_fallback = _used_local_hangul_text_fallback(parsed)
     if not used_fallback and not supplemental_terms and not generic_terms:
         return

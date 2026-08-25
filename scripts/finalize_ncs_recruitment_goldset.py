@@ -21,6 +21,8 @@ USAGE_POLICY = "evaluation_only_no_training_or_rule_tuning"
 AI_EVALUATION_BASIS = "independent_ai_agent_adjudicated_reference_not_human_gold"
 HUMAN_EVALUATION_BASIS = "independent_human_double_review_adjudicated_gold"
 HUMAN_ATTESTATION = "confirmed_independent_human_review"
+ADJUDICATION_WORKLIST_VERSION = "ncs_recruitment_adjudication_worklist_v2"
+ADJUDICATION_APPLIED_VERSION = "ncs_recruitment_adjudication_decisions_v2"
 OFFICIAL_DETAIL_CATALOG = ROOT / "app" / "data" / "ncs_detail_catalog.json"
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -884,6 +886,212 @@ def write_final_reference(
     return {**output_paths, "integrity": integrity_path}
 
 
+def _validate_adjudication_decision_integrity(
+    path: Path,
+    *,
+    adjudication_path: Path,
+    worklist_integrity_path: Path,
+    dispute_path: Path,
+    upstream_paths: Mapping[str, Path],
+    final_records: Sequence[Mapping[str, Any]],
+    expected_record_count: int,
+    expected_disagreement_count: int,
+) -> None:
+    payload = _read_json_object(path, label="adjudication decision integrity")
+    if payload.get("applied_version") != ADJUDICATION_APPLIED_VERSION:
+        raise GoldsetFinalizationError(
+            "adjudication decision integrity applied version is invalid"
+        )
+    _require_utc_timestamp(
+        payload.get("generated_at_utc"),
+        field="adjudication decision integrity.generated_at_utc",
+    )
+    if (
+        payload.get("source_only") is not True
+        or payload.get("automatic_predictions_included") is not False
+    ):
+        raise GoldsetFinalizationError(
+            "adjudication decision integrity is not source-only"
+        )
+    input_hashes = payload.get("input_sha256")
+    if not isinstance(input_hashes, dict):
+        raise GoldsetFinalizationError(
+            "adjudication decision integrity input ledger is invalid"
+        )
+    for field in (
+        "worklist",
+        "disputes",
+        "decisions_completed",
+        "worklist_integrity",
+        "decision_template_original",
+    ):
+        _require_sha256(
+            input_hashes.get(field),
+            field=f"adjudication decision integrity input.{field}",
+        )
+    if sha256_file(worklist_integrity_path) != input_hashes["worklist_integrity"]:
+        raise GoldsetFinalizationError(
+            "adjudication worklist integrity chain mismatch"
+        )
+    if sha256_file(dispute_path) != input_hashes["disputes"]:
+        raise GoldsetFinalizationError("adjudication dispute integrity mismatch")
+
+    worklist_integrity = _read_json_object(
+        worklist_integrity_path, label="adjudication worklist integrity"
+    )
+    if worklist_integrity.get("worklist_version") != ADJUDICATION_WORKLIST_VERSION:
+        raise GoldsetFinalizationError("adjudication worklist version is invalid")
+    _require_utc_timestamp(
+        worklist_integrity.get("generated_at_utc"),
+        field="adjudication worklist integrity.generated_at_utc",
+    )
+    if (
+        worklist_integrity.get("source_only") is not True
+        or worklist_integrity.get("automatic_predictions_included") is not False
+    ):
+        raise GoldsetFinalizationError(
+            "adjudication worklist integrity is not source-only"
+        )
+    if worklist_integrity.get("record_count") != expected_record_count:
+        raise GoldsetFinalizationError("adjudication worklist record count mismatch")
+    if worklist_integrity.get("disagreement_count") != expected_disagreement_count:
+        raise GoldsetFinalizationError(
+            "adjudication worklist disagreement count mismatch"
+        )
+    if worklist_integrity.get("agreement_count") != (
+        expected_record_count - expected_disagreement_count
+    ):
+        raise GoldsetFinalizationError("adjudication worklist agreement count mismatch")
+    worklist_inputs = worklist_integrity.get("input_sha256")
+    worklist_outputs = worklist_integrity.get("output_sha256")
+    if not isinstance(worklist_inputs, dict) or not isinstance(worklist_outputs, dict):
+        raise GoldsetFinalizationError("adjudication worklist hash ledger is invalid")
+    for name in (
+        "manifest",
+        "seed_integrity",
+        "do_not_tune",
+        "reviewer_a",
+        "reviewer_b",
+        "adjudication_template",
+        "packet_index",
+        "packet_integrity",
+    ):
+        _require_sha256(
+            worklist_inputs.get(name),
+            field=f"adjudication worklist input.{name}",
+        )
+    for name, upstream_path in upstream_paths.items():
+        expected = _require_sha256(
+            worklist_inputs.get(name),
+            field=f"adjudication worklist input.{name}",
+        )
+        if sha256_file(upstream_path) != expected:
+            raise GoldsetFinalizationError(
+                f"adjudication worklist upstream mismatch: {name}"
+            )
+    if _require_sha256(
+        worklist_outputs.get("adjudication_csv"),
+        field="adjudication worklist output.adjudication_csv",
+    ) != input_hashes["worklist"]:
+        raise GoldsetFinalizationError("adjudication worklist input chain mismatch")
+    if _require_sha256(
+        worklist_outputs.get("dispute_json"),
+        field="adjudication worklist output.dispute_json",
+    ) != input_hashes["disputes"]:
+        raise GoldsetFinalizationError("adjudication dispute chain mismatch")
+    if _require_sha256(
+        worklist_outputs.get("decision_template"),
+        field="adjudication worklist output.decision_template",
+    ) != input_hashes["decision_template_original"]:
+        raise GoldsetFinalizationError("adjudication decision template chain mismatch")
+
+    output_hashes = payload.get("output_sha256")
+    if not isinstance(output_hashes, dict):
+        raise GoldsetFinalizationError(
+            "adjudication decision integrity output ledger is invalid"
+        )
+    expected_digest = _require_sha256(
+        output_hashes.get("adjudication_completed"),
+        field="adjudication decision integrity output hash",
+    )
+    if sha256_file(adjudication_path) != expected_digest:
+        raise GoldsetFinalizationError("completed adjudication integrity mismatch")
+    if payload.get("record_count") != expected_record_count:
+        raise GoldsetFinalizationError("completed adjudication record count mismatch")
+    if payload.get("adjudicated_count") != expected_disagreement_count:
+        raise GoldsetFinalizationError(
+            "completed adjudication disagreement count mismatch"
+        )
+
+    disputes = _read_json_object(dispute_path, label="adjudication disputes")
+    if (
+        disputes.get("source_only") is not True
+        or disputes.get("automatic_predictions_included") is not False
+    ):
+        raise GoldsetFinalizationError("adjudication disputes are not source-only")
+    raw_disputes = disputes.get("disputes")
+    if not isinstance(raw_disputes, list) or disputes.get(
+        "disagreement_count"
+    ) != len(raw_disputes):
+        raise GoldsetFinalizationError("adjudication dispute rows are invalid")
+    dispute_by_id: dict[str, Mapping[str, Any]] = {}
+    for raw in raw_disputes:
+        if not isinstance(raw, dict):
+            raise GoldsetFinalizationError("adjudication dispute row is invalid")
+        item_id = str(raw.get("item_id") or "").strip()
+        if not item_id or item_id in dispute_by_id:
+            raise GoldsetFinalizationError(
+                "adjudication dispute item ID is blank or duplicated"
+            )
+        dispute_by_id[item_id] = raw
+    adjudicated_records = {
+        str(record.get("item_id") or ""): record
+        for record in final_records
+        if record.get("resolution_type") == "third_party_adjudication"
+    }
+    if set(dispute_by_id) != set(adjudicated_records):
+        raise GoldsetFinalizationError(
+            "adjudication dispute/final-record coverage mismatch"
+        )
+    for item_id, record in adjudicated_records.items():
+        dispute = dispute_by_id[item_id]
+        if str(dispute.get("document_sha256") or "") != str(
+            record.get("document_sha256") or ""
+        ):
+            raise GoldsetFinalizationError(f"{item_id}: dispute digest mismatch")
+        packet_path = Path(str(dispute.get("source_packet_path") or "")).resolve()
+        packet_digest = _require_sha256(
+            dispute.get("source_packet_sha256"),
+            field=f"dispute.{item_id}.source_packet_sha256",
+        )
+        if not packet_path.is_file() or sha256_file(packet_path) != packet_digest:
+            raise GoldsetFinalizationError(
+                f"{item_id}: adjudication source packet integrity mismatch"
+            )
+        try:
+            packet_text = packet_path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            raise GoldsetFinalizationError(
+                f"{item_id}: adjudication source packet is unreadable"
+            ) from exc
+        normalized_packet = packet_text.replace("\r\n", "\n").replace("\r", "\n")
+        evidence = record.get("evidence")
+        adjudicator_evidence = (
+            evidence.get("adjudicator") if isinstance(evidence, dict) else None
+        )
+        if not isinstance(adjudicator_evidence, list) or not adjudicator_evidence:
+            raise GoldsetFinalizationError(
+                f"{item_id}: adjudicator source evidence is missing"
+            )
+        for index, item in enumerate(adjudicator_evidence):
+            quote = str(item.get("quote") or "").strip() if isinstance(item, dict) else ""
+            normalized_quote = quote.replace("\r\n", "\n").replace("\r", "\n")
+            if not quote or normalized_quote not in normalized_packet:
+                raise GoldsetFinalizationError(
+                    f"{item_id}: adjudicator evidence[{index}] is absent from source packet"
+                )
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -897,6 +1105,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reviewer-a", default=str(DEFAULT_INPUT_DIR / "reviewer_a.local.csv"))
     parser.add_argument("--reviewer-b", default=str(DEFAULT_INPUT_DIR / "reviewer_b.local.csv"))
     parser.add_argument("--adjudication", default=str(DEFAULT_INPUT_DIR / "adjudication.local.csv"))
+    parser.add_argument("--adjudication-integrity", required=True)
+    parser.add_argument("--adjudication-worklist-integrity", required=True)
+    parser.add_argument("--adjudication-disputes", required=True)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--reviewer-a-kind", required=True, choices=("human", "ai_agent"))
     parser.add_argument("--reviewer-b-kind", required=True, choices=("human", "ai_agent"))
@@ -920,6 +1131,11 @@ def main(argv: list[str] | None = None) -> int:
         "reviewer_a": Path(args.reviewer_a).resolve(),
         "reviewer_b": Path(args.reviewer_b).resolve(),
         "adjudication": Path(args.adjudication).resolve(),
+        "adjudication_integrity": Path(args.adjudication_integrity).resolve(),
+        "adjudication_worklist_integrity": Path(
+            args.adjudication_worklist_integrity
+        ).resolve(),
+        "adjudication_disputes": Path(args.adjudication_disputes).resolve(),
     }
     manifest = _read_json_object(paths["manifest"], label="manifest")
     integrity = _read_json_object(paths["seed_integrity"], label="seed integrity")
@@ -943,6 +1159,22 @@ def main(argv: list[str] | None = None) -> int:
         adjudicator_kind=args.adjudicator_kind,
         adjudicator_provenance=args.adjudicator_provenance,
         human_gold_attestation=args.human_gold_attestation,
+    )
+    _validate_adjudication_decision_integrity(
+        paths["adjudication_integrity"],
+        adjudication_path=paths["adjudication"],
+        worklist_integrity_path=paths["adjudication_worklist_integrity"],
+        dispute_path=paths["adjudication_disputes"],
+        upstream_paths={
+            "manifest": paths["manifest"],
+            "seed_integrity": paths["seed_integrity"],
+            "do_not_tune": paths["do_not_tune"],
+            "reviewer_a": paths["reviewer_a"],
+            "reviewer_b": paths["reviewer_b"],
+        },
+        final_records=reference["records"],
+        expected_record_count=int(reference["summary"]["record_count"]),
+        expected_disagreement_count=int(reference["summary"]["disagreement_count"]),
     )
     output_paths = write_final_reference(
         reference,

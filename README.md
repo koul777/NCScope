@@ -18,7 +18,7 @@
 
 <p align="center"><a href="https://ncscope.vercel.app"><strong>NCScope 실행하기</strong></a></p>
 
-# NCScope v1.4.8
+# NCScope v1.4.9
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 
@@ -262,7 +262,7 @@ python scripts/audit_stored_jd_ksa_contract.py `
   --expected-benchmark-sha256 13aca798e616260fa5d2842e9199e0f9d0f571ec52265baaae64c3f1dfdbe03e `
   --expected-catalog-sha256 8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357 `
   --expected-code-set-sha256 652f6d546007d185a9a90da8a0f1124a6d580281a31d22cf8de7e93c61626dfd `
-  --expected-client-sha256 eb5e070c08feb417371a1b0aed95f2d505feb5043f2c99718e078aef8aff9477 `
+  --expected-client-sha256 ca7a250ae5f8cf48d76bffd919744f4d15c9fe2fe09cf8bf772aa49c5e6a3e59 `
   --expected-audit-script-sha256 797d95f4c5492bdbf8b0f545a5ddefb72671d82eec05588956c4f8ad19c0f2a0 `
   --require-input-digests
 
@@ -272,7 +272,7 @@ python scripts/audit_stored_jd_ksa_contract.py `
   --expected-unit-codes 13282 `
   --expected-catalog-sha256 8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357 `
   --expected-code-set-sha256 cc09e69442e780b319fb772a7459fd49066f1f57790bf9140e8243e29d066a01 `
-  --expected-client-sha256 eb5e070c08feb417371a1b0aed95f2d505feb5043f2c99718e078aef8aff9477 `
+  --expected-client-sha256 ca7a250ae5f8cf48d76bffd919744f4d15c9fe2fe09cf8bf772aa49c5e6a3e59 `
   --expected-audit-script-sha256 797d95f4c5492bdbf8b0f545a5ddefb72671d82eec05588956c4f8ad19c0f2a0 `
   --require-input-digests `
   --max-factors-per-unit 3
@@ -348,19 +348,133 @@ $benchmark = Get-ChildItem tmp/ncs_recruitment_live/ncs_recruitment_live_*.json 
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 1
 
-# Reviewer A/B 독립 양식, 조정 양식, do-not-tune 원장, 무결성 해시 생성
+# Reviewer A/B 블라인드 양식, 조정 양식, do-not-tune 원장, 무결성 해시 생성
 python scripts/prepare_ncs_recruitment_goldset.py `
   $benchmark.FullName `
   tmp/ncs_recruitment_goldset/source_documents/source_index.local.csv `
-  --tuning-manifest tmp/private_tuning_document_hashes.txt
+  --output-dir tmp/ncs_recruitment_goldset/seed `
+  --tuning-manifest tmp/<tuning-eval-manifest-1>.csv `
+  --tuning-manifest tmp/<tuning-eval-manifest-2>.csv `
+  --exclude-tuning-overlap
+
+# 자동 예측·split·원본 경로를 제외한 source-only 패킷 생성
+python scripts/prepare_ncs_recruitment_source_packets.py `
+  tmp/ncs_recruitment_goldset/seed/goldset_review_manifest.local.json `
+  --output-dir tmp/ncs_recruitment_goldset/seed
 ```
 
 출력은 `reviewer_a.local.csv`, `reviewer_b.local.csv`, `adjudication.local.csv`,
 `do_not_tune.local.csv`, `goldset_review_manifest.local.json`, `integrity.local.json`입니다.
-두 리뷰어는 상대 답을 보지 않고 `mapping_state`, 공식 세분류명·코드와 원문 근거를
-기입합니다. 두 답을 모두 받은 뒤 불일치만 제3자가 조정하고, 조정 완료 전에는 모든
-항목이 `is_gold=false`입니다. 분할은 문서 SHA-256으로 결정되어 같은 내용이 validation과
-holdout에 동시에 들어가지 않으며, 튜닝 manifest와 해시가 겹치면 생성을 거부합니다.
+리뷰어 CSV는 `item_id`, 문서 해시와 빈 답안 필드만 포함합니다. validation/holdout split,
+로컬 원본 경로, 출처 URL, 공고명, 파일명과 NCScope 자동 예측은 리뷰어에게 제공하지
+않습니다. 두 리뷰어는 상대 답을 보지 않고 source-only 패킷에서 `mapping_state`, 공식
+세분류명·코드와 정확한 원문 근거를 기입합니다. 분할은 문서 SHA-256으로 결정되어 같은
+내용이 validation과 holdout에 동시에 들어가지 않으며, 지정한 모든 튜닝·기존 평가
+manifest와 해시가 겹치면 생성을 거부하거나 명시적 제외 감사 원장을 남깁니다.
+
+두 답이 완료되면 다음처럼 일치 항목을 잠그고 불일치만 제3자에게 전달합니다.
+
+```powershell
+python scripts/prepare_ncs_recruitment_adjudication.py `
+  --manifest tmp/ncs_recruitment_goldset/seed/goldset_review_manifest.local.json `
+  --seed-integrity tmp/ncs_recruitment_goldset/seed/integrity.local.json `
+  --do-not-tune tmp/ncs_recruitment_goldset/seed/do_not_tune.local.csv `
+  --reviewer-a tmp/ncs_recruitment_goldset/seed/reviewer_a_completed.local.csv `
+  --reviewer-b tmp/ncs_recruitment_goldset/seed/reviewer_b_completed.local.csv `
+  --adjudication-template tmp/ncs_recruitment_goldset/seed/adjudication.local.csv `
+  --packet-index tmp/ncs_recruitment_goldset/seed/source_packet_index.local.json `
+  --packet-integrity tmp/ncs_recruitment_goldset/seed/source_packet_integrity.local.json `
+  --output-dir tmp/ncs_recruitment_goldset/seed/adjudication_work
+
+# 제3자는 split·로컬 경로가 없는 adjudicator_decisions.local.csv만 작성
+python scripts/apply_ncs_recruitment_adjudication.py `
+  --worklist tmp/ncs_recruitment_goldset/seed/adjudication_work/adjudication_ready.local.csv `
+  --disputes tmp/ncs_recruitment_goldset/seed/adjudication_work/adjudication_disputes.local.json `
+  --decisions tmp/ncs_recruitment_goldset/seed/adjudication_work/adjudicator_decisions.local.csv `
+  --worklist-integrity tmp/ncs_recruitment_goldset/seed/adjudication_work/adjudication_worklist_integrity.local.json `
+  --output-dir tmp/ncs_recruitment_goldset/seed/adjudication_work/completed
+
+python scripts/finalize_ncs_recruitment_goldset.py `
+  --manifest tmp/ncs_recruitment_goldset/seed/goldset_review_manifest.local.json `
+  --seed-integrity tmp/ncs_recruitment_goldset/seed/integrity.local.json `
+  --do-not-tune tmp/ncs_recruitment_goldset/seed/do_not_tune.local.csv `
+  --reviewer-a tmp/ncs_recruitment_goldset/seed/reviewer_a_completed.local.csv `
+  --reviewer-b tmp/ncs_recruitment_goldset/seed/reviewer_b_completed.local.csv `
+  --adjudication tmp/ncs_recruitment_goldset/seed/adjudication_work/completed/adjudication_completed.local.csv `
+  --adjudication-integrity tmp/ncs_recruitment_goldset/seed/adjudication_work/completed/adjudication_decisions_integrity.local.json `
+  --adjudication-worklist-integrity tmp/ncs_recruitment_goldset/seed/adjudication_work/adjudication_worklist_integrity.local.json `
+  --adjudication-disputes tmp/ncs_recruitment_goldset/seed/adjudication_work/adjudication_disputes.local.json `
+  --output-dir tmp/ncs_recruitment_goldset/final `
+  --reviewer-a-kind ai_agent `
+  --reviewer-b-kind ai_agent `
+  --reviewer-a-provenance '<source-only reviewer A provenance>' `
+  --reviewer-b-provenance '<source-only reviewer B provenance>' `
+  --adjudicator-kind ai_agent `
+  --adjudicator-provenance '<disagreement-only adjudicator provenance>'
+```
+
+봉인기는 두 답의 exact consensus만 자동 채택하고, 불일치는 서로 다른 제3자의 완료
+판정이 없으면 실패합니다. 제3자 양식도 split, 로컬 원본 경로와 자동 예측을 포함하지
+않으며, 완료 결정은 원래 내부 worklist와 별도 무결성 단계에서 병합됩니다. 최종 근거는
+봉인된 source packet에 실제 존재하는 정확한 인용문이어야 합니다. 현행 공식
+상태는 배포 카탈로그의 정확한 8자리 코드·표기
+쌍만 허용하며, 현행 공식명만 적고 `legacy_or_nonstandard`로 분류하는 답도 거부합니다.
+AI 에이전트가 검수한 결과는 항상
+`independent_ai_agent_adjudicated_reference_not_human_gold`로 표시되고 사람 골드가
+되지 않습니다. 사람 골드는 두 독립 리뷰어와 조정자가 모두 실제 사람이고 명시적
+attestation까지 제공된 경우에만 생성됩니다.
+
+봉인한 로컬 기준표는 실제 API를 통해 다시 파싱해 점수화합니다. HTTP 429나 전송 장애는
+문서 오답으로 넣지 않고 전체 실행을 중단하거나 제한된 `Retry-After` 재시도를 수행합니다.
+핵심 지표는 기준 상태가 `official_current`인 문서만의 세분류명·코드 P/R/F1과 문서
+exact이며, legacy·자체개발·미명시·모호·판독불가는 별도 all-state 진단으로 남깁니다.
+
+```powershell
+python scripts/score_ncs_recruitment_goldset.py `
+  --reference-json tmp/ncs_recruitment_goldset/final/ncs_recruitment_final_reference.local.json `
+  --reference-csv tmp/ncs_recruitment_goldset/final/ncs_recruitment_final_reference.local.csv `
+  --reference-integrity tmp/ncs_recruitment_goldset/final/final_integrity.local.json `
+  --source-dir tmp/ncs_recruitment_goldset/source_documents `
+  --output-dir tmp/ncs_recruitment_goldset/score `
+  --base-url http://127.0.0.1:8000
+
+# 최초 전체 확인 뒤의 개선 루프: 전체 봉인 해시는 검증하되 holdout은 읽거나 파싱하지 않음
+python scripts/score_ncs_recruitment_goldset.py `
+  --reference-json tmp/ncs_recruitment_goldset/final/ncs_recruitment_final_reference.local.json `
+  --reference-csv tmp/ncs_recruitment_goldset/final/ncs_recruitment_final_reference.local.csv `
+  --reference-integrity tmp/ncs_recruitment_goldset/final/final_integrity.local.json `
+  --source-dir tmp/ncs_recruitment_goldset/source_documents `
+  --source-index tmp/ncs_recruitment_goldset/source_documents/source_index.local.csv `
+  --output-dir tmp/ncs_recruitment_goldset/score-validation `
+  --base-url http://127.0.0.1:8000 `
+  --split gold_validation
+```
+
+2026-08-25(KST) 독립 AI 2인+제3자 조정으로 봉인한 첫 52문서 참고 기준표는 47건
+exact consensus, 5건 제3자 조정이며 사람 골드가 아닙니다. 현행 공식 세분류 43문서의
+API 재평가는 파싱 성공 52/52, 세분류명 P/R/F1 97.52/97.52/97.52, 코드
+P/R/F1 100/97.52/98.74, 문서 exact 97.67%(42/43)였습니다. validation의 현행 공식
+34문서는 명칭·코드·문서 exact가 모두 100%, 한 번만 확인한 holdout 현행 공식 9문서는
+명칭 F1 85.71, 코드 F1 92.31, 문서 exact 88.89%(8/9)입니다. holdout은 이 확인 뒤
+규칙 튜닝에 사용하지 않습니다.
+
+같은 날 게시판 앞 구간과 충분히 떨어진 신규 80개 공고에서 고유 직무기술서 198개
+(199 cases)를 다시 봉인했습니다. 알려진 튜닝·기존 평가 문서 SHA-256 238개와 겹치는
+문서는 0개이며, 두 독립 AI 리뷰어가 171건에 exact consensus를 이루고 나머지 27건은
+세 번째 AI가 source-only 원문으로 조정했습니다. 이 기준표도
+`independent_ai_agent_adjudicated_reference_not_human_gold`이며 사람 골드가 아닙니다.
+
+튜닝 전 한 번만 실행한 전체 기준선은 198/198 파싱 성공, 현행 공식 세분류 170문서의
+명칭 F1 96.40, 코드 F1 98.56, 문서 exact 84.12%(143/170)였습니다. 전체 상태 진단은
+명칭 F1 94.29, 코드 F1 95.81, 문서 exact 74.75%(148/198)입니다. 이 최초 실행 뒤
+holdout 39문서의 개별 오류는 열람하거나 규칙 수정에 사용하지 않았습니다.
+
+validation 159문서에서만 일반화 가능한 문서 구조 오류를 고친 재평가는 현행 공식
+137문서의 명칭 F1 99.76, 코드 F1 99.88, 문서 exact 99.27%(136/137)였고 전체 상태
+진단은 명칭 F1 96.94, 코드 F1 96.80, 문서 exact 87.42%(139/159)였습니다. 남은 공식
+1건은 정확한 세분류 코드 후보가 능력단위 근거와 함께 제시되지만 자동 확정 금지 정책으로
+보수적으로 제외된 경우입니다. 비공식 상태가 섞인 문서는 현재 문서 단위 단일 상태 스키마와
+제품의 라벨별 상태 표현이 다르므로 전체 상태 값은 진단용으로만 사용합니다.
 
 2026-08-25(KST) 현재 20개 공고·52개 직무기술서 실전 진단은 처리 실패 0건, 공고 선언
 합집합 기준 세분류 P 98.17/R 82.31, 공고 완전일치 60%(12/20)입니다. 이 수치는 같은

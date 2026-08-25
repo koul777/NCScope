@@ -16,7 +16,18 @@ if str(ROOT) not in sys.path:
 from scripts import finalize_ncs_recruitment_goldset as finalizer  # noqa: E402
 
 
-WORKLIST_VERSION = "ncs_recruitment_adjudication_worklist_v1"
+WORKLIST_VERSION = "ncs_recruitment_adjudication_worklist_v2"
+ADJUDICATOR_DECISION_FIELDS = [
+    "item_id",
+    "document_sha256",
+    "adjudicator_id",
+    "adjudicated_at_utc",
+    "final_mapping_state",
+    "final_detail_names_json",
+    "final_detail_codes_json",
+    "final_evidence_json",
+    "adjudication_rationale",
+]
 
 
 class AdjudicationPreparationError(ValueError):
@@ -80,6 +91,35 @@ def _load_packet_index(
     if set(output) != set(record_by_id):
         raise AdjudicationPreparationError("source packet coverage is incomplete")
     return output
+
+
+def _validate_packet_integrity(
+    path: Path,
+    *,
+    packet_index_path: Path,
+    packets: Mapping[str, Mapping[str, Any]],
+) -> None:
+    payload = _read_json(path, label="source packet integrity")
+    index_digest = finalizer._require_sha256(
+        payload.get("index_sha256"), field="source packet integrity.index_sha256"
+    )
+    if finalizer.sha256_file(packet_index_path) != index_digest:
+        raise AdjudicationPreparationError("source packet index integrity mismatch")
+    if payload.get("packet_count") != len(packets):
+        raise AdjudicationPreparationError("source packet integrity count mismatch")
+    raw_packet_files = payload.get("packet_files")
+    if not isinstance(raw_packet_files, dict):
+        raise AdjudicationPreparationError(
+            "source packet integrity file ledger is invalid"
+        )
+    expected_packet_files = {
+        Path(str(packet["packet_path"])).name: str(packet["packet_sha256"])
+        for packet in packets.values()
+    }
+    if raw_packet_files != expected_packet_files:
+        raise AdjudicationPreparationError(
+            "source packet integrity file ledger mismatch"
+        )
 
 
 def build_worklist(
@@ -157,6 +197,25 @@ def build_worklist(
     return worklist, disputes
 
 
+def build_adjudicator_decision_template(
+    disputes: Sequence[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "item_id": str(dispute["item_id"]),
+            "document_sha256": str(dispute["document_sha256"]),
+            "adjudicator_id": "",
+            "adjudicated_at_utc": "",
+            "final_mapping_state": "",
+            "final_detail_names_json": "",
+            "final_detail_codes_json": "",
+            "final_evidence_json": "",
+            "adjudication_rationale": "",
+        }
+        for dispute in disputes
+    ]
+
+
 def prepare_adjudication(
     *,
     manifest_path: Path,
@@ -166,6 +225,7 @@ def prepare_adjudication(
     reviewer_b_path: Path,
     adjudication_template_path: Path,
     packet_index_path: Path,
+    packet_integrity_path: Path,
     output_dir: Path,
 ) -> dict[str, Any]:
     output_dir = finalizer.validate_local_output_dir(output_dir)
@@ -200,6 +260,11 @@ def prepare_adjudication(
         template_rows, record_by_id=record_by_id
     )
     packets = _load_packet_index(packet_index_path, record_by_id=record_by_id)
+    _validate_packet_integrity(
+        packet_integrity_path,
+        packet_index_path=packet_index_path,
+        packets=packets,
+    )
     worklist, disputes = build_worklist(
         records, reviews_a, reviews_b, adjudication_rows, packets
     )
@@ -227,12 +292,20 @@ def prepare_adjudication(
         json.dumps(dispute_payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    decision_path = output_dir / "adjudicator_decisions.local.csv"
+    with decision_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=ADJUDICATOR_DECISION_FIELDS)
+        writer.writeheader()
+        writer.writerows(build_adjudicator_decision_template(disputes))
     integrity_path = output_dir / "adjudication_worklist_integrity.local.json"
     integrity_payload = {
         "worklist_version": WORKLIST_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_only": True,
         "automatic_predictions_included": False,
+        "record_count": len(records),
+        "agreement_count": len(records) - len(disputes),
+        "disagreement_count": len(disputes),
         "input_sha256": {
             "manifest": finalizer.sha256_file(manifest_path),
             "seed_integrity": finalizer.sha256_file(seed_integrity_path),
@@ -241,10 +314,12 @@ def prepare_adjudication(
             "reviewer_b": finalizer.sha256_file(reviewer_b_path),
             "adjudication_template": finalizer.sha256_file(adjudication_template_path),
             "packet_index": finalizer.sha256_file(packet_index_path),
+            "packet_integrity": finalizer.sha256_file(packet_integrity_path),
         },
         "output_sha256": {
             "adjudication_csv": finalizer.sha256_file(csv_path),
             "dispute_json": finalizer.sha256_file(dispute_path),
+            "decision_template": finalizer.sha256_file(decision_path),
         },
     }
     integrity_path.write_text(
@@ -254,6 +329,7 @@ def prepare_adjudication(
     return {
         "adjudication_csv": csv_path,
         "dispute_json": dispute_path,
+        "decision_template": decision_path,
         "integrity": integrity_path,
         "record_count": len(records),
         "agreement_count": len(records) - len(disputes),
@@ -275,6 +351,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reviewer-b", required=True)
     parser.add_argument("--adjudication-template", required=True)
     parser.add_argument("--packet-index", required=True)
+    parser.add_argument("--packet-integrity", required=True)
     parser.add_argument("--output-dir", required=True)
     return parser
 
@@ -290,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             reviewer_b_path=Path(args.reviewer_b).resolve(),
             adjudication_template_path=Path(args.adjudication_template).resolve(),
             packet_index_path=Path(args.packet_index).resolve(),
+            packet_integrity_path=Path(args.packet_integrity).resolve(),
             output_dir=Path(args.output_dir),
         )
     except (

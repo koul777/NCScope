@@ -125,13 +125,19 @@ def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def _read_csv(path: Path, *, label: str) -> list[dict[str, str]]:
+def _read_csv(
+    path: Path,
+    *,
+    label: str,
+    fields: Sequence[str] | None = None,
+) -> list[dict[str, str]]:
+    expected_fields = list(fields) if fields is not None else FINAL_CSV_FIELDS
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            if reader.fieldnames != FINAL_CSV_FIELDS:
+            if reader.fieldnames != expected_fields:
                 raise GoldsetScoringError(
-                    f"{label} columns do not match the sealed final-reference schema"
+                    f"{label} columns do not match the required schema"
                 )
             return [dict(row) for row in reader]
     except (OSError, UnicodeError, csv.Error) as exc:
@@ -459,6 +465,11 @@ def validate_reference_bundle(
         )
         for raw in raw_records
     ]
+    raw_records_by_id = {
+        str(raw["item_id"]): raw
+        for raw in raw_records
+        if isinstance(raw, dict) and "item_id" in raw
+    }
     _validate_record_provenance(reference, records)
     if set(record["split"] for record in records) != set(SPLITS):
         raise GoldsetScoringError(
@@ -504,6 +515,7 @@ def validate_reference_bundle(
         raise GoldsetScoringError("final reference JSON/CSV coverage mismatch")
     for record in records:
         row = csv_by_id[record["item_id"]]
+        raw_record = raw_records_by_id[record["item_id"]]
         expected_scalars = {
             "split": record["split"],
             "document_sha256": record["document_sha256"],
@@ -522,9 +534,14 @@ def validate_reference_bundle(
                 f"{record['item_id']}: final reference JSON/CSV scalar mismatch"
             )
         expected_arrays = {
-            "case_ids_json": record["case_ids"],
-            "detail_names_json": record["detail_names"],
-            "detail_codes_json": record["detail_codes"],
+            # Compare the two sealed serializations exactly before returning the
+            # normalized in-memory record. NFKC can legitimately change a
+            # source-stated legacy label (for example, halfwidth middle dots),
+            # but that normalization must not make identical JSON/CSV outputs
+            # appear inconsistent.
+            "case_ids_json": raw_record["case_ids"],
+            "detail_names_json": raw_record["detail_names"],
+            "detail_codes_json": raw_record["detail_codes"],
         }
         for field, expected in expected_arrays.items():
             if _json_array(row.get(field), field=f"CSV.{record['item_id']}.{field}") != expected:
@@ -545,10 +562,78 @@ def validate_reference_bundle(
 
 
 def index_source_documents(
-    source_dir: Path, required_hashes: set[str]
+    source_dir: Path,
+    required_hashes: set[str],
+    *,
+    source_index_path: Path | None = None,
+    allow_directory_scan: bool = True,
 ) -> dict[str, Path]:
     if not source_dir.is_dir():
         raise GoldsetScoringError(f"private source directory does not exist: {source_dir}")
+    resolved_source_dir = source_dir.resolve()
+    if source_index_path is not None:
+        rows = _read_csv(
+            source_index_path,
+            fields=["case_id", "local_document_path", "document_sha256"],
+            label="private source index",
+        )
+        indexed_paths: dict[str, set[Path]] = {}
+        for row in rows:
+            digest = _require_sha256(
+                row.get("document_sha256"), field="private source index hash"
+            )
+            if digest not in required_hashes:
+                continue
+            raw_path = str(row.get("local_document_path") or "").strip()
+            if not raw_path:
+                raise GoldsetScoringError(
+                    f"private source index path is blank for SHA-256 {digest}"
+                )
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = resolved_source_dir / candidate
+            candidate = candidate.resolve()
+            if not candidate.is_relative_to(resolved_source_dir):
+                raise GoldsetScoringError(
+                    f"private source index path escapes source directory: {candidate}"
+                )
+            indexed_paths.setdefault(digest, set()).add(candidate)
+        missing_index = sorted(required_hashes - set(indexed_paths))
+        if missing_index:
+            raise GoldsetScoringError(
+                "private source index coverage is incomplete for "
+                f"{len(missing_index)} document hash(es)"
+            )
+        matches: dict[str, Path] = {}
+        for digest, candidates in sorted(indexed_paths.items()):
+            # Duplicate cases may legitimately point to byte-identical copies.
+            # Select one deterministically and read only the requested split.
+            path = sorted(candidates, key=lambda value: str(value).casefold())[0]
+            if path.is_symlink():
+                raise GoldsetScoringError(
+                    f"private source index contains a symlink: {path}"
+                )
+            if not path.is_file():
+                raise GoldsetScoringError(
+                    f"private source document is missing: {path}"
+                )
+            try:
+                actual_digest = sha256_file(path)
+            except OSError as exc:
+                raise GoldsetScoringError(
+                    f"private source document is unreadable: {path}"
+                ) from exc
+            if actual_digest != digest:
+                raise GoldsetScoringError(
+                    f"private source document integrity mismatch: {path}"
+                )
+            matches[digest] = path
+        return matches
+    if not allow_directory_scan:
+        raise GoldsetScoringError(
+            "split-only evaluation requires a private source index so unselected "
+            "documents are never read"
+        )
     matches: dict[str, Path] = {}
     for path in sorted(source_dir.rglob("*")):
         if path.is_symlink():
@@ -780,7 +865,17 @@ def _label_metrics(tp: int, fp: int, fn: int) -> dict[str, Any]:
 
 def _aggregate_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if not rows:
-        raise GoldsetScoringError("cannot score an empty split")
+        return {
+            "document_count": 0,
+            "parse_success_count": 0,
+            "parse_success_pct": None,
+            "detail_name": _label_metrics(0, 0, 0),
+            "detail_code": _label_metrics(0, 0, 0),
+            "mapping_state_accuracy_pct": None,
+            "mapping_state_exact_count": 0,
+            "document_exact_pct": None,
+            "document_exact_count": 0,
+        }
     name_tp = name_fp = name_fn = 0
     code_tp = code_fp = code_fn = 0
     state_matches = document_exact = parse_success = 0
@@ -844,14 +939,24 @@ def score_reference(
     reference: Mapping[str, Any],
     source_paths: Mapping[str, Path],
     parse_document: ParseFunction,
+    *,
+    include_splits: set[str] | None = None,
 ) -> dict[str, Any]:
     """Reparse private documents and compare predictions to a sealed reference."""
 
     raw_records = reference.get("records")
     if not isinstance(raw_records, list) or not raw_records:
         raise GoldsetScoringError("validated reference records are empty")
+    selected_splits = set(SPLITS) if include_splits is None else set(include_splits)
+    if not selected_splits or not selected_splits.issubset(SPLITS):
+        raise GoldsetScoringError("include_splits must contain only known split names")
+    selected_records = [
+        record for record in raw_records if record.get("split") in selected_splits
+    ]
+    if not selected_records:
+        raise GoldsetScoringError("selected evaluation splits contain no records")
     results: list[dict[str, Any]] = []
-    for record in raw_records:
+    for record in selected_records:
         digest = str(record["document_sha256"])
         path = source_paths.get(digest)
         if path is None:
@@ -941,6 +1046,7 @@ def score_reference(
         ),
         "automatic_predictions_are_reference_labels": False,
         "usage_policy": USAGE_POLICY,
+        "evaluated_splits": sorted(selected_splits),
         "summary": {
             "record_count": len(results),
             "error_case_count": len(errors),
@@ -966,15 +1072,38 @@ def evaluate_bundle(
     integrity_path: Path,
     source_dir: Path,
     parse_document: ParseFunction,
+    *,
+    include_splits: set[str] | None = None,
+    source_index_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Path]]:
     """Validate a sealed bundle before invoking an injected parser even once."""
 
     reference = validate_reference_bundle(
         reference_json_path, reference_csv_path, integrity_path
     )
-    required_hashes = {record["document_sha256"] for record in reference["records"]}
-    source_paths = index_source_documents(source_dir, required_hashes)
-    return score_reference(reference, source_paths, parse_document), source_paths
+    selected_splits = set(SPLITS) if include_splits is None else set(include_splits)
+    if not selected_splits or not selected_splits.issubset(SPLITS):
+        raise GoldsetScoringError("include_splits must contain only known split names")
+    required_hashes = {
+        record["document_sha256"]
+        for record in reference["records"]
+        if record["split"] in selected_splits
+    }
+    source_paths = index_source_documents(
+        source_dir,
+        required_hashes,
+        source_index_path=source_index_path,
+        allow_directory_scan=include_splits is None,
+    )
+    return (
+        score_reference(
+            reference,
+            source_paths,
+            parse_document,
+            include_splits=selected_splits,
+        ),
+        source_paths,
+    )
 
 
 def _metric_text(value: Any) -> str:
@@ -1179,11 +1308,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_FINAL_DIR / "final_integrity.local.json"),
     )
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE_DIR))
+    parser.add_argument(
+        "--source-index",
+        help=(
+            "private source_index.local.csv; required with --split so files in "
+            "unselected splits are never scanned or hashed"
+        ),
+    )
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument("--max-retries", type=int, default=8)
     parser.add_argument("--max-retry-after-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--split",
+        action="append",
+        choices=SPLITS,
+        help=(
+            "evaluate only the selected split after validating the complete sealed "
+            "reference; repeatable. Omit for the one-time full evaluation"
+        ),
+    )
     return parser
 
 
@@ -1206,6 +1351,10 @@ def main(argv: list[str] | None = None) -> int:
             reference_paths["reference_integrity"],
             Path(args.source_dir).resolve(),
             client.parse,
+            include_splits=set(args.split) if args.split else None,
+            source_index_path=(
+                Path(args.source_index).resolve() if args.source_index else None
+            ),
         )
     output_paths = write_score_report(
         score,

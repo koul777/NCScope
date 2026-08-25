@@ -73,6 +73,27 @@ def _write_bundle(tmp_path: Path, mod):
     holdout_data = b"private holdout document"
     (source_dir / "validation.pdf").write_bytes(validation_data)
     (source_dir / "holdout.txt").write_bytes(holdout_data)
+    source_index = source_dir / "source_index.local.csv"
+    with source_index.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["case_id", "local_document_path", "document_sha256"],
+        )
+        writer.writeheader()
+        writer.writerows(
+            [
+                {
+                    "case_id": "case-validation",
+                    "local_document_path": str((source_dir / "validation.pdf").resolve()),
+                    "document_sha256": mod.sha256_bytes(validation_data),
+                },
+                {
+                    "case_id": "case-holdout",
+                    "local_document_path": str((source_dir / "holdout.txt").resolve()),
+                    "document_sha256": mod.sha256_bytes(holdout_data),
+                },
+            ]
+        )
     records = [
         _record(
             mod,
@@ -189,6 +210,7 @@ def _write_bundle(tmp_path: Path, mod):
         "reference_csv": reference_csv,
         "integrity": integrity_path,
         "source_dir": source_dir,
+        "source_index": source_index,
         "validation_data": validation_data,
         "holdout_data": holdout_data,
         "code": code,
@@ -295,6 +317,75 @@ def test_scores_validation_and_holdout_without_calling_it_human_gold(
     ]
 
 
+def test_validation_only_mode_never_reads_or_parses_holdout_source(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(f"score_goldset_validation_only_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+    calls: list[bytes] = []
+    real_sha256_file = mod.sha256_file
+
+    def audited_sha256(path: Path) -> str:
+        assert path.name != "holdout.txt"
+        return real_sha256_file(path)
+
+    mod.sha256_file = audited_sha256
+
+    def parse(_path: Path, data: bytes):
+        calls.append(data)
+        return _exact_payload(seeded["name"], seeded["code"])
+
+    score, source_paths = mod.evaluate_bundle(
+        seeded["reference_json"],
+        seeded["reference_csv"],
+        seeded["integrity"],
+        seeded["source_dir"],
+        parse,
+        include_splits={"gold_validation"},
+        source_index_path=seeded["source_index"],
+    )
+
+    assert calls == [seeded["validation_data"]]
+    assert set(source_paths) == {mod.sha256_bytes(seeded["validation_data"])}
+    assert score["evaluated_splits"] == ["gold_validation"]
+    assert score["summary"]["record_count"] == 1
+    assert score["summary"]["by_split"]["gold_holdout"]["document_count"] == 0
+
+
+def test_split_filter_rejects_unknown_or_empty_selection(tmp_path: Path) -> None:
+    mod = load_module(f"score_goldset_bad_split_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+
+    for selected in (set(), {"not-a-split"}):
+        with pytest.raises(mod.GoldsetScoringError, match="known split"):
+            mod.evaluate_bundle(
+                seeded["reference_json"],
+                seeded["reference_csv"],
+                seeded["integrity"],
+                seeded["source_dir"],
+                lambda _path, _data: _not_stated_payload(),
+                include_splits=selected,
+                source_index_path=seeded["source_index"],
+            )
+
+
+def test_split_filter_requires_source_index_before_scanning_sources(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(f"score_goldset_missing_index_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+
+    with pytest.raises(mod.GoldsetScoringError, match="requires a private source index"):
+        mod.evaluate_bundle(
+            seeded["reference_json"],
+            seeded["reference_csv"],
+            seeded["integrity"],
+            seeded["source_dir"],
+            lambda _path, _data: _not_stated_payload(),
+            include_splits={"gold_validation"},
+        )
+
+
 def test_mismatches_and_parse_failures_are_preserved_in_error_ledger(
     tmp_path: Path,
 ) -> None:
@@ -361,6 +452,52 @@ def test_json_csv_integrity_provenance_and_split_contracts_fail_closed(
         mod.validate_reference_bundle(
             seeded["reference_json"], seeded["reference_csv"], seeded["integrity"]
         )
+
+
+def test_json_csv_comparison_precedes_nfkc_label_normalization(tmp_path: Path) -> None:
+    mod = load_module(f"score_goldset_nfkc_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+    reference = deepcopy(seeded["reference"])
+    record = reference["records"][0]
+    record["mapping_state"] = "self_developed"
+    record["detail_names"] = ["사용자정의･직무"]
+    record["detail_codes"] = []
+    reference["records_sha256"] = mod.sha256_bytes(
+        mod.canonical_json_bytes(reference["records"])
+    )
+
+    with seeded["reference_csv"].open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as handle:
+        rows = [dict(row) for row in csv.DictReader(handle)]
+    rows[0]["mapping_state"] = "self_developed"
+    rows[0]["detail_names_json"] = json.dumps(
+        ["사용자정의･직무"], ensure_ascii=False
+    )
+    rows[0]["detail_codes_json"] = "[]"
+    with seeded["reference_csv"].open(
+        "w", encoding="utf-8-sig", newline=""
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=mod.FINAL_CSV_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    _reseal_reference(mod, seeded, reference)
+    integrity = json.loads(seeded["integrity"].read_text(encoding="utf-8"))
+    integrity["records_sha256"] = reference["records_sha256"]
+    integrity["output_artifact_sha256"]["reference_csv"] = mod.sha256_file(
+        seeded["reference_csv"]
+    )
+    seeded["integrity"].write_text(
+        json.dumps(integrity, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    validated = mod.validate_reference_bundle(
+        seeded["reference_json"], seeded["reference_csv"], seeded["integrity"]
+    )
+
+    assert validated["records"][0]["detail_names"] == ["사용자정의・직무"]
 
 
 def test_record_resolution_and_reviewer_provenance_fail_closed(

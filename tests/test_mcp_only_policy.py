@@ -436,6 +436,30 @@ def test_single_pdf_fallback_keeps_structural_candidates_without_broad_mcp_searc
     search.assert_not_called()
 
 
+def test_single_hwp_keeps_structural_candidates_without_flattened_broadening(mocker):
+    parsed = {
+        "markdown": "NCS 분류체계와 구조화된 표",
+        "metadata": {
+            "hangul_classification_terms": [
+                "전기기기제작",
+                "전기기기설계",
+                "전기설비설계",
+            ],
+        },
+    }
+    fields = {
+        "ncs_detail_candidates": ["전기기기설계", "전기설비설계"],
+        "ncs_detail_source": "explicit",
+    }
+    search = mocker.patch("app.main.search_units_by_detail")
+
+    main._recover_hangul_fallback_detail_candidates(parsed, fields)
+
+    assert fields["ncs_detail_candidates"] == ["전기기기설계", "전기설비설계"]
+    assert fields["ncs_detail_source"] == "explicit"
+    search.assert_not_called()
+
+
 def test_parse_review_keeps_kordoc_result_when_optional_hwp_reader_crashes(mocker):
     mocker.patch("app.main.parse_with_kordoc", return_value={"markdown": JD_TEXT})
     mocker.patch("app.main.extract_hwp_text", side_effect=RuntimeError("bad ole crc"))

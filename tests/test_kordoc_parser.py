@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.kordoc_parser import (
+    _looks_like_detail_candidate,
     _loads_kordoc_json,
     _split_ability_unit_entries,
     structure_job_description,
@@ -2058,3 +2059,89 @@ def test_structural_ability_cell_uses_declared_detail_and_source_boundaries() ->
     ]
     assert all(item["raw_cell_text"] for item in positioned)
     assert all(item["scope"]["status"] == "single_detail" for item in positioned)
+
+
+def test_detail_header_does_not_promote_adjacent_ncs_code_header() -> None:
+    markdown = """
+<table>
+<tr><td colspan="2">대분류</td><td colspan="8">중분류 소분류</td><td colspan="5">세분류</td><td colspan="4">NCS 코드</td></tr>
+<tr><td colspan="2">06. 보건·의료</td><td colspan="8">01. 보건 02. 보건지원</td><td colspan="5">01. 병원행정</td><td colspan="4">06010201</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="wide-table.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["병원행정"]
+    assert "NCS 코드" not in result["fields"]["ncs_detail_candidates"]
+
+
+@pytest.mark.parametrize("header", ["NCS CODE", "NCS 분류코드", "NCS 코드(8자리)"])
+def test_detail_header_rejects_common_ncs_code_header_variants(header: str) -> None:
+    assert _looks_like_detail_candidate(header) is False
+
+
+def test_detail_cell_trims_etc_only_after_exact_official_detail() -> None:
+    markdown = """
+<table>
+<tr><td>대분류</td><td>12. 이용·숙박·여행·오락·스포츠</td></tr>
+<tr><td>중분류</td><td>04. 스포츠</td></tr>
+<tr><td>소분류</td><td>03. 스포츠경기·지도</td></tr>
+<tr><td>세분류</td><td>06. 경기지원 등</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="etc-detail.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["경기지원"]
+
+
+def test_general_job_information_detail_does_not_pollute_later_ncs_detail() -> None:
+    markdown = """
+<table>
+<tr><td rowspan="2">일반직무정보</td><td>대분류</td><td>중분류</td><td>소분류</td><td>세분류</td></tr>
+<tr><td>전산(IT)</td><td>정보시스템운영</td><td>정보시스템구축</td><td>정보시스템 설계‧개발</td></tr>
+<tr><td rowspan="2">NCS 분류체계</td><td>대분류</td><td>중분류</td><td>소분류</td><td>세분류</td></tr>
+<tr><td>정보통신</td><td>정보기술</td><td>정보기술개발</td><td>응용SW엔지니어링</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="dual-hierarchy.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["응용SW엔지니어링"]
+
+
+def test_flattened_parenthesized_hierarchy_recovers_terminal_detail_only() -> None:
+    markdown = """
+<table>
+<tr><td>국가NCS<br>www.ncs.go.kr</td><td>(대분류)11.경비청소 - (중분류)02.청소 - (소분류)01.청소 - (세분류)01.환경미화</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="flat-hierarchy.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["환경미화"]
+
+
+def test_flattened_parenthesized_detail_requires_same_row_ncs_context() -> None:
+    markdown = """
+<table>
+<tr><td>일반직무정보</td></tr>
+<tr><td>(대분류)지원 - (중분류)경영 - (소분류)운영지원 - (세분류)환경미화</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="general-only.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+
+
+def test_flattened_parenthesized_detail_stops_before_ability_unit_tail() -> None:
+    markdown = """
+<table>
+<tr><td>국가NCS</td><td>(대분류)11.경비청소 - (중분류)02.청소 - (소분류)01.청소 - (세분류)01.환경미화 (능력단위)01.청소현장현황파악 / 사무행정</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="flat-tail.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["환경미화"]

@@ -377,6 +377,11 @@ def _looks_like_detail_candidate(value: str) -> bool:
         if text.count(opener) != text.count(closer):
             return False
     key = _norm(text)
+    # A wide classification table can place the adjacent code-column header
+    # after the detail header in the same physical row. It is metadata, never
+    # a source-stated NCS detail.
+    if re.fullmatch(r"ncs(?:분류)?(?:코드|code)(?:8자리)?", key):
+        return False
     non_values = {
         "대분류",
         "중분류",
@@ -1067,6 +1072,12 @@ def _clean_detail_candidate_text(value: str) -> str:
     )
     text = re.sub(r"^[,;/|]+", "", text)
     text = re.sub(r"[,;/|:：\\\-]+$", "", text)
+    # Institutions commonly suffix a terminal official detail with ``등`` to
+    # indicate a non-exhaustive list. Remove it only when the remaining text
+    # is an exact current official detail, preserving arbitrary source labels.
+    without_etc = re.sub(r"\s+등\s*$", "", text).strip()
+    if without_etc != text and _norm(without_etc) in _official_ncs_detail_name_keys():
+        text = without_etc
     # A rowspan/colspan conversion can append the next bullet list to the
     # terminal detail cell. Preserve only an official detail prefix before
     # that list; never promote the neighbouring duties as detail candidates.
@@ -2813,6 +2824,42 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
         classification_context = False
         for cells, fresh_columns in _html_table_grid(raw_table):
             if not any(cells):
+                continue
+            # Some institution templates put a non-NCS "general job
+            # information" hierarchy immediately before the real NCS
+            # hierarchy in the same table. Its terminal column is also named
+            # 세분류, but it must not be mixed into the NCS declaration.
+            if any(
+                _norm(cell) in {_norm("일반직무정보"), _norm("일반 직무 정보")}
+                for cell in cells
+            ):
+                continue
+            # Other templates flatten all four hierarchy levels into one
+            # source cell: ``(대분류)... - ... - (세분류)01.환경미화``.
+            # Require explicit NCS context in the same physical row. A nearby
+            # general-job hierarchy can use the same parenthesized labels but
+            # is not an NCS declaration. Stop before the next structure label
+            # or slash so ability units and notes cannot become detail names.
+            embedded_details: list[str] = []
+            if (
+                _row_has_ncs_classification_context(cells)
+                and not _row_declares_no_ncs_mapping(cells)
+            ):
+                for cell in cells:
+                    match = re.search(
+                        r"[\(（]\s*세분류\s*[\)）]\s*(.+?)"
+                        r"(?=\s*(?:[/|]|[\(（]\s*(?:능력단위|비고|대분류|중분류|소분류|세분류)\s*[\)）]|$))",
+                        str(cell or ""),
+                        flags=re.IGNORECASE,
+                    )
+                    if not match:
+                        continue
+                    embedded_details.extend(
+                        _split_items(match.group(1), normalize_nfkc=False)
+                    )
+            if embedded_details:
+                candidates.extend(embedded_details)
+                classification_context = True
                 continue
             classification_context = classification_context or _row_contains_classification_marker(cells)
             # A value such as ``정책연구 (*NCS 미개발 분야)`` is both an

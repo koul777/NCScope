@@ -241,6 +241,157 @@ def test_legacy_state_rejects_names_that_are_all_current_official(
         )
 
 
+def test_adjudication_decision_integrity_binds_completed_csv_and_counts(
+    tmp_path: Path,
+) -> None:
+    mod = load_module(FINALIZE_PATH, "finalize_decision_integrity")
+    completed = tmp_path / "adjudication_completed.csv"
+    completed.write_text("sealed decisions", encoding="utf-8")
+    worklist = tmp_path / "worklist.csv"
+    worklist.write_text("sealed worklist", encoding="utf-8")
+    decision_template = tmp_path / "decision_template.csv"
+    decision_template.write_text("sealed template", encoding="utf-8")
+    packet = tmp_path / "source.md"
+    packet.write_text("세분류 01. 경영기획", encoding="utf-8")
+    disputes = tmp_path / "disputes.json"
+    dispute_payload = {
+        "source_only": True,
+        "automatic_predictions_included": False,
+        "disagreement_count": 1,
+        "disputes": [
+            {
+                "item_id": "one",
+                "document_sha256": "a" * 64,
+                "source_packet_path": str(packet),
+                "source_packet_sha256": mod.sha256_file(packet),
+            }
+        ],
+    }
+    disputes.write_text(json.dumps(dispute_payload), encoding="utf-8")
+    upstream_paths = {}
+    for name in ("manifest", "seed_integrity", "do_not_tune", "reviewer_a", "reviewer_b"):
+        upstream = tmp_path / name
+        upstream.write_text(name, encoding="utf-8")
+        upstream_paths[name] = upstream
+    worklist_integrity = tmp_path / "worklist_integrity.json"
+    worklist_integrity.write_text(
+        json.dumps(
+            {
+                "worklist_version": mod.ADJUDICATION_WORKLIST_VERSION,
+                "generated_at_utc": "2026-08-25T03:00:00+00:00",
+                "source_only": True,
+                "automatic_predictions_included": False,
+                "record_count": 2,
+                "agreement_count": 1,
+                "disagreement_count": 1,
+                "input_sha256": {
+                    **{
+                        name: mod.sha256_file(upstream)
+                        for name, upstream in upstream_paths.items()
+                    },
+                    "adjudication_template": "c" * 64,
+                    "packet_index": "d" * 64,
+                    "packet_integrity": "e" * 64,
+                },
+                "output_sha256": {
+                    "adjudication_csv": mod.sha256_file(worklist),
+                    "dispute_json": mod.sha256_file(disputes),
+                    "decision_template": mod.sha256_file(decision_template),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    integrity = tmp_path / "decision_integrity.json"
+    payload = {
+        "applied_version": mod.ADJUDICATION_APPLIED_VERSION,
+        "generated_at_utc": "2026-08-25T03:30:00+00:00",
+        "source_only": True,
+        "automatic_predictions_included": False,
+        "record_count": 2,
+        "adjudicated_count": 1,
+        "input_sha256": {
+            "worklist": mod.sha256_file(worklist),
+            "disputes": mod.sha256_file(disputes),
+            "decisions_completed": "b" * 64,
+            "worklist_integrity": mod.sha256_file(worklist_integrity),
+            "decision_template_original": mod.sha256_file(decision_template),
+        },
+        "output_sha256": {
+            "adjudication_completed": mod.sha256_file(completed),
+        },
+    }
+    integrity.write_text(json.dumps(payload), encoding="utf-8")
+    final_records = [
+        {
+            "item_id": "one",
+            "document_sha256": "a" * 64,
+            "resolution_type": "third_party_adjudication",
+            "evidence": {
+                "adjudicator": [
+                    {"quote": "세분류 01. 경영기획", "section": "NCS 분류체계"}
+                ]
+            },
+        }
+    ]
+
+    mod._validate_adjudication_decision_integrity(
+        integrity,
+        adjudication_path=completed,
+        worklist_integrity_path=worklist_integrity,
+        dispute_path=disputes,
+        upstream_paths=upstream_paths,
+        final_records=final_records,
+        expected_record_count=2,
+        expected_disagreement_count=1,
+    )
+
+    final_records[0]["evidence"]["adjudicator"][0]["quote"] = "fabricated quote"
+    with pytest.raises(mod.GoldsetFinalizationError, match="absent from source"):
+        mod._validate_adjudication_decision_integrity(
+            integrity,
+            adjudication_path=completed,
+            worklist_integrity_path=worklist_integrity,
+            dispute_path=disputes,
+            upstream_paths=upstream_paths,
+            final_records=final_records,
+            expected_record_count=2,
+            expected_disagreement_count=1,
+        )
+    final_records[0]["evidence"]["adjudicator"][0]["quote"] = (
+        "세분류 01. 경영기획"
+    )
+
+    payload["applied_version"] = "untrusted_self_report"
+    integrity.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(mod.GoldsetFinalizationError, match="applied version"):
+        mod._validate_adjudication_decision_integrity(
+            integrity,
+            adjudication_path=completed,
+            worklist_integrity_path=worklist_integrity,
+            dispute_path=disputes,
+            upstream_paths=upstream_paths,
+            final_records=[],
+            expected_record_count=2,
+            expected_disagreement_count=1,
+        )
+
+    payload["applied_version"] = mod.ADJUDICATION_APPLIED_VERSION
+    payload["adjudicated_count"] = 0
+    integrity.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(mod.GoldsetFinalizationError, match="disagreement count"):
+        mod._validate_adjudication_decision_integrity(
+            integrity,
+            adjudication_path=completed,
+            worklist_integrity_path=worklist_integrity,
+            dispute_path=disputes,
+            upstream_paths=upstream_paths,
+            final_records=final_records,
+            expected_record_count=2,
+            expected_disagreement_count=1,
+        )
+
+
 def test_human_gold_requires_explicit_human_kinds_and_attestation(
     tmp_path: Path,
 ) -> None:

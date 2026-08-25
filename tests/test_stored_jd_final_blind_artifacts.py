@@ -77,6 +77,18 @@ def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() ->
     assert addendum["affected_frozen_record_sha256"] == [
         "3712a58f2e8bdc31d3276df674dd81f0a9735af1cda6f8a1a800f333c7e293ce"
     ]
+    assert addendum["current_non_independent_recheck_changed_frozen_record_count"] == (
+        addendum["affected_frozen_record_count"]
+    )
+    assert addendum[
+        "current_non_independent_recheck_changed_frozen_record_sha256"
+    ] == addendum["affected_frozen_record_sha256"]
+    for field in (
+        "current_non_independent_recheck_baseline_benchmark_csv_sha256",
+        "current_non_independent_recheck_benchmark_csv_sha256",
+        "current_non_independent_recheck_score_sha256",
+    ):
+        assert re.fullmatch(r"[0-9a-f]{64}", addendum[field])
     result = "tests/fixtures/stored_jd_final_blind_result.json"
     assert _git_text_sha256(ROOT / result) == git_text_hashes[result]
 
