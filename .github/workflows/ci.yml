@@ -29,8 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-mock ruff
+          pip install -r requirements-dev.txt pip-audit==2.10.1
           npm ci
 
       - name: Compile Python modules
@@ -55,3 +54,6 @@ jobs:
 
       - name: Run Ruff
         run: ruff check --select F821 app scripts tests
+
+      - name: Audit Python dependencies
+        run: python -m pip_audit -r requirements-dev.txt --progress-spinner off

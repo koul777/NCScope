@@ -1,7 +1,7 @@
 {
   "schema_version": "ncscope_release_evidence_v2",
   "release_version": "1.4.12",
-  "generated_at": "2026-08-25T18:54:35+09:00",
+  "generated_at": "2026-08-25T19:27:54+09:00",
   "evidence_scope": "sanitized aggregate release evidence; private source documents and MCP response bodies are excluded",
   "human_gold_accuracy_available": false,
   "stored_jd_parser": {
@@ -33,6 +33,60 @@
       "document_state_accuracy_pct": 97.22,
       "ksa_code_f1_pct": 100.0
     }
+  },
+  "current_public_recruitment_candidate": {
+    "captured_at": "2026-08-25T18:48:01+09:00",
+    "postings": 20,
+    "documents": 68,
+    "parse_success": 68,
+    "parse_errors": 0,
+    "posting_union_diagnostic": {
+      "precision_pct": 99.18,
+      "recall_pct": 94.53,
+      "exact_pct": 60.0
+    },
+    "coordinate_shape": "407/407",
+    "ksa_availability": "1515/1515",
+    "sequential_loopback_parse_ms": {
+      "mean": 780.59,
+      "p50": 675.15,
+      "p95": 1489.53,
+      "max": 5647.89
+    },
+    "known_candidate_sha256_overlap": 0,
+    "validation_documents": 44,
+    "holdout_documents": 24,
+    "ai_reviewed_reference": {
+      "evaluation_basis": "independent_ai_agent_adjudicated_reference_not_human_gold",
+      "records": 68,
+      "exact_two_reviewer_consensus": 65,
+      "third_party_ai_adjudication": 3,
+      "reference_json_sha256": "2eab70f7d3db0513f5eaecc90469447fb95653774b75a58793b931e5d0418351",
+      "score_json_sha256": "49c765924c9714430d3e9b27f4c1e82ced56ed3a20f0c7a1e42da6ed78d8e130",
+      "official_current_core": {
+        "documents": 57,
+        "detail_name_f1_pct": 99.69,
+        "detail_code_f1_pct": 100.0,
+        "detail_pair_f1_pct": 100.0,
+        "document_exact_pct": 98.25
+      },
+      "official_current_holdout": {
+        "documents": 21,
+        "detail_name_f1_pct": 99.44,
+        "detail_code_f1_pct": 100.0,
+        "detail_pair_f1_pct": 100.0,
+        "document_exact_pct": 95.24
+      },
+      "all_state_diagnostic": {
+        "documents": 68,
+        "detail_name_f1_pct": 97.97,
+        "detail_code_f1_pct": 92.57,
+        "mapping_state_accuracy_pct": 83.82,
+        "document_exact_pct": 83.82
+      }
+    },
+    "human_gold_eligible": false,
+    "interpretation": "current public source-only review candidate; posting-union diagnostic and loopback timing are not human-gold accuracy or Vercel latency"
   },
   "gold_reference_workflow": {
     "workflow_version": "v2",
@@ -116,7 +170,17 @@
       "status": "passed",
       "passed": 5167,
       "skipped": 72,
-      "duration_seconds": 75.05
+      "duration_seconds": 85.88,
+      "pytest_version": "9.0.3",
+      "pytest_asyncio_version": "1.4.0"
+    },
+    "python_dependency_audit": {
+      "status": "passed",
+      "known_vulnerabilities": 0,
+      "requirements": [
+        "requirements.txt",
+        "requirements-dev.txt"
+      ]
     },
     "npm_audit_high_or_critical": 0
   }

@@ -30,6 +30,7 @@
 - 평가기는 공식 세분류명과 8자리 코드를 독립 집합이 아닌 `(세분류명, 코드)` 쌍으로도 채점합니다. 또한 원시 parse 응답 digest와 실제 loopback 서버의 Python 소스·Node local/remote bridge·package/lock·배포 설정 hash를 runtime attestation v2로 매 응답에서 검증합니다. 각 문서에는 실제 local/bridge/fallback 실행 mode와 Kordoc·Node 버전도 별도 봉인합니다.
 - 비공개 정확도 채점기는 원문을 보내기 전에 loopback 서버의 `local-only` 정책과 동일 runtime bundle을 byte-free preflight로 확인합니다. 운영 bridge는 현재 Vercel 배포 URL과 실행 identity가 일치할 때만 같은 runtime으로 봉인됩니다.
 - 현재 source packet은 운영 파서와 같은 Kordoc 계열 추출을 사용하므로 `human_gold_eligible=false`입니다. 독립 원문 렌더/OCR 교차검증이 추가되기 전에는 AI adjudicated reference로만 해석해야 합니다.
+- 개발·CI 도구는 `pytest 9.0.3`, `pytest-asyncio 1.4.0`으로 올렸고, 격리 환경의 `pip-audit`에서 운영·개발 requirements 모두 알려진 취약점 0건을 확인했습니다.
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 
@@ -608,11 +609,26 @@ KSA probe 가용 8,817/8,817입니다. 이 합계는 첫 20개 튜닝 표본을 
 게시판이 갱신된 뒤 상위 20개 공고를 다시 캡처했습니다. 공개 직무기술서 68/68개를
 현재 v1.4.12 로컬 Kordoc으로 처리했고 공고 합집합 기준 P 99.18/R 94.53,
 완전일치 60%(12/20), 좌표 형상 407/407, KSA probe 1,515/1,515였습니다.
+동일한 순차 loopback 실행은 총 10.91 MiB를 53.08초에 처리해 문서당 평균 781ms,
+p50 675ms, p95 1.49초였습니다. HWP 9건은 평균 305ms·최대 384ms, PDF 59건은
+평균 853ms·p95 1.62초였고, PDF 초기화가 포함된 단일 최댓값은 5.65초였습니다. 이는
+운영 네트워크 지연이 아니라 동일 머신의 파서 실행시간이며 Vercel 응답시간과 섞지 않습니다.
 기존 평가 후보 250개와 문서 SHA-256 중복은 0개였으며, 공고-문서 연결요소 기준으로
 validation 44개와 holdout 24개를 교차 누출 없이 준비했습니다. 자동 예측과 split을
 숨긴 source-only 패킷도 68개 생성했지만 같은 Kordoc 추출 계열이므로
 `human_gold_eligible=false`입니다. 이는 신규 사람 검수 후보의 준비 현황이지 사람 골드
 정확도나 앞선 게시판 전수 관측과 직접 합산할 장기 추정치가 아닙니다.
+
+이 68개 source-only 패킷을 서로의 답을 보지 않은 두 AI 에이전트가 독립 검토한 뒤,
+65건 exact consensus와 3건의 별도 AI 중재로 참고 기준표를 봉인했습니다. 현행 공식
+세분류 57문서에서 명칭 P/R/F1은 99.39/100/99.69, 코드와 `(명칭, 코드)` 쌍 F1은
+모두 100%, 문서 exact는 98.25%(56/57)였습니다. 한 번만 확인한 holdout의 현행 공식
+21문서는 명칭 P/R/F1 98.89/100/99.44, 코드·쌍 F1 100%, 문서 exact
+95.24%(20/21)였습니다. 전체 68문서의 상태 포함 진단은 명칭 F1 97.97, 코드·쌍 F1
+92.57, 상태·문서 exact 83.82%입니다. 후자는 현행 공식 라벨과 자체개발·구버전 라벨이
+한 문서에 섞인 경우를 문서 단위 단일 상태로 표현하는 스키마 차이까지 포함합니다.
+이 결과 역시 `independent_ai_agent_adjudicated_reference_not_human_gold`이며 holdout
+개별 오류는 규칙 수정에 사용하지 않습니다.
 
 로컬/운영 동일성은 문서명과 본문을 보고서에 남기지 않는 HMAC 계약으로 검사합니다.
 원격 문서 업로드가 발생하므로 공개 문서 처리 승인을 확인한 뒤에만 명시적 플래그를

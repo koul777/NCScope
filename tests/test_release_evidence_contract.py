@@ -32,6 +32,7 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
         "human_gold_accuracy_available",
         "stored_jd_parser",
         "frozen_agent_reviewed_reference",
+        "current_public_recruitment_candidate",
         "gold_reference_workflow",
         "scoring_runtime_attestation",
         "configured_ncs_mcp_contract",
@@ -39,6 +40,26 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
         "source_contract_git_text_sha256",
         "verification",
     }
+
+    current_candidate = evidence["current_public_recruitment_candidate"]
+    assert current_candidate["postings"] == 20
+    assert current_candidate["documents"] == 68
+    assert current_candidate["parse_success"] == 68
+    assert current_candidate["parse_errors"] == 0
+    assert current_candidate["known_candidate_sha256_overlap"] == 0
+    assert current_candidate["validation_documents"] == 44
+    assert current_candidate["holdout_documents"] == 24
+    assert current_candidate["human_gold_eligible"] is False
+    assert current_candidate["sequential_loopback_parse_ms"]["p95"] > 0
+    ai_reference = current_candidate["ai_reviewed_reference"]
+    assert ai_reference["evaluation_basis"].endswith("not_human_gold")
+    assert ai_reference["records"] == 68
+    assert ai_reference["exact_two_reviewer_consensus"] == 65
+    assert ai_reference["third_party_ai_adjudication"] == 3
+    assert HEX64.fullmatch(ai_reference["reference_json_sha256"])
+    assert HEX64.fullmatch(ai_reference["score_json_sha256"])
+    assert ai_reference["official_current_core"]["detail_pair_f1_pct"] == 100.0
+    assert ai_reference["official_current_holdout"]["documents"] == 21
     serialized = json.dumps(evidence, ensure_ascii=False)
     assert "C:\\\\" not in serialized
     assert "tmp/" not in serialized
@@ -165,4 +186,11 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
     assert verification["pytest"]["passed"] >= 5000
     assert verification["pytest"]["skipped"] >= 0
     assert verification["pytest"]["duration_seconds"] > 0
+    assert verification["pytest"]["pytest_version"] == "9.0.3"
+    assert verification["pytest"]["pytest_asyncio_version"] == "1.4.0"
+    assert verification["python_dependency_audit"] == {
+        "status": "passed",
+        "known_vulnerabilities": 0,
+        "requirements": ["requirements.txt", "requirements-dev.txt"],
+    }
     assert verification["npm_audit_high_or_critical"] == 0
