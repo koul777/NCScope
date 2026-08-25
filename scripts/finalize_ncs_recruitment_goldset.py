@@ -103,7 +103,7 @@ class GoldsetFinalizationError(ValueError):
     """Raised when finalization cannot prove every required invariant."""
 
 
-def _load_current_official_detail_codes(path: Path) -> frozenset[str]:
+def _load_current_official_details(path: Path) -> dict[str, str]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -113,19 +113,24 @@ def _load_current_official_detail_codes(path: Path) -> frozenset[str]:
     rows = payload.get("details") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise GoldsetFinalizationError("current official detail catalog has no details list")
-    codes = {
-        str(row.get("code") or "").strip()
+    details = {
+        str(row.get("code") or "").strip(): str(row.get("name") or "").strip()
         for row in rows
         if isinstance(row, dict) and str(row.get("usage_yn") or "").upper() == "Y"
     }
-    if not codes or any(not DETAIL_CODE_RE.fullmatch(code) for code in codes):
+    if (
+        not details
+        or any(not DETAIL_CODE_RE.fullmatch(code) for code in details)
+        or any(not name for name in details.values())
+    ):
         raise GoldsetFinalizationError("current official detail catalog is invalid")
-    return frozenset(codes)
+    return details
 
 
-CURRENT_OFFICIAL_DETAIL_CODES = _load_current_official_detail_codes(
+CURRENT_OFFICIAL_DETAILS = _load_current_official_details(
     OFFICIAL_DETAIL_CATALOG
 )
+CURRENT_OFFICIAL_DETAIL_CODES = frozenset(CURRENT_OFFICIAL_DETAILS)
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -308,6 +313,15 @@ def _normalize_answer(
                 f"{prefix}: detail code is not in the current official catalog"
             )
         pairs = sorted(zip(codes, names))
+        mismatched_pairs = [
+            (code, name)
+            for code, name in pairs
+            if CURRENT_OFFICIAL_DETAILS.get(code) != name
+        ]
+        if mismatched_pairs:
+            raise GoldsetFinalizationError(
+                f"{prefix}: official detail name/code pair does not match the current catalog"
+            )
         if len({code for code, _ in pairs}) != len(pairs):
             raise GoldsetFinalizationError(f"{prefix}: duplicate official detail code")
         if len(set(pairs)) != len(pairs):

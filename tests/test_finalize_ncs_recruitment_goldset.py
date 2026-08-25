@@ -172,6 +172,39 @@ def test_ai_consensus_is_a_reference_but_never_human_gold(tmp_path: Path) -> Non
     )
 
 
+def test_official_current_requires_exact_catalog_name_code_pair(
+    tmp_path: Path,
+) -> None:
+    mod, paths, manifest, integrity, reviewer_a, reviewer_b, adjudication = seed(
+        tmp_path
+    )
+    for row in reviewer_a:
+        complete_review(
+            row,
+            reviewer_id="agent-a",
+            names=["사무행정"],
+            codes=["02010101"],
+        )
+    for row in reviewer_b:
+        complete_review(
+            row,
+            reviewer_id="agent-b",
+            names=["사무행정"],
+            codes=["02010101"],
+        )
+
+    with pytest.raises(mod.GoldsetFinalizationError, match="name/code pair"):
+        finalize_call(
+            mod,
+            paths,
+            manifest,
+            integrity,
+            reviewer_a,
+            reviewer_b,
+            adjudication,
+        )
+
+
 def test_human_gold_requires_explicit_human_kinds_and_attestation(
     tmp_path: Path,
 ) -> None:
