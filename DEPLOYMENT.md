@@ -112,7 +112,7 @@ NCS_MCP_URL=https://ncscope-ncs-mcp.vercel.app/api/mcp
 INTERVIEW_GENERATION_PROVIDER=openai_api
 DATABASE_URL=sqlite:////tmp/ncscope.db
 MAX_UPLOAD_MB=4
-MAX_REQUEST_BODY_MB=4
+MAX_REQUEST_BODY_MB=4.25
 KORDOC_OFFLINE=1
 NCS_MCP_TIMEOUT_SEC=5
 NCS_MCP_KSA_CONCURRENCY=4
@@ -132,6 +132,7 @@ INSTITUTION_QUALITY_RETRY_ENABLED=true
 INSTITUTION_GENERATION_BATCH_SIZE=5
 INSTITUTION_GENERATION_BATCH_CONCURRENCY=1
 GENERATION_REQUEST_BUDGET_SEC=285
+DOCUMENT_PARSE_REQUEST_BUDGET_SEC=285
 GENERATION_MAX_MAIN_QUESTIONS=5
 OPENAI_QUALITY_REVIEW_MODEL=gpt-5.6-sol
 OPENAI_QUALITY_REVIEW_REASONING_EFFORT=high
@@ -149,7 +150,13 @@ Vercel에서는 Python 함수가 같은 배포의 `/api/kordoc-parse` Node 함�
 ```powershell
 vercel env add KORDOC_BRIDGE_ED25519_PRIVATE_KEY production
 vercel env add KORDOC_BRIDGE_ED25519_PRIVATE_KEY preview
+vercel env add REVIEW_SESSION_SIGNING_KEY production
+vercel env add REVIEW_SESSION_SIGNING_KEY preview
 ```
+
+`REVIEW_SESSION_SIGNING_KEY`는 서로 다른 Vercel 인스턴스에서도 검토 세션을 검증하기
+위한 필수 비밀값입니다. 32바이트 이상의 무작위 값을 사용하고 Production과 Preview에
+각각 설정하며 저장소, 로그, 명령 인자에는 기록하지 않습니다.
 
 값은 패딩을 제거한 base64url 형식의 Ed25519 32바이트 개인키이며, 저장소의
 `ED25519_PUBLIC_KEY_RAW`와 한 쌍이어야 합니다. 개인키를 `vercel.json`, README,

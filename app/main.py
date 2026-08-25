@@ -160,7 +160,7 @@ from app.services.ai_question_quality_review import (
     review_interview_questions_with_ai,
 )
 from app.services.external_ai_privacy import sanitize_external_ai_source_text
-from app.services.request_budget import use_request_budget
+from app.services.request_budget import RequestBudgetExceeded, use_request_budget
 from app.services.auto_runner import start_auto_runner
 from app.services.ax_readiness import assess_ax_readiness
 from app.services.alio_ingestion import (
@@ -283,6 +283,14 @@ def _generation_request_budget_sec() -> float:
     return max(30.0, min(285.0, configured))
 
 
+def _document_parse_request_budget_sec() -> float:
+    try:
+        configured = float(os.getenv("DOCUMENT_PARSE_REQUEST_BUDGET_SEC", "285"))
+    except (TypeError, ValueError):
+        configured = 285.0
+    return max(30.0, min(285.0, configured))
+
+
 class ExpensiveRequestLimitMiddleware:
     """Apply lightweight local backpressure to document/question APIs.
 
@@ -338,13 +346,34 @@ class ExpensiveRequestLimitMiddleware:
             return True, 0
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or not settings.rate_limit_enabled():
+        if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
 
         path = str(scope.get("path") or "")
-        if not self._is_expensive(path):
-            await self.app(scope, receive, send)
+        method = str(scope.get("method") or "").upper()
+        budgeted_generation = method == "POST" and (
+            path == "/api/jd/strategy/upload"
+            or path.startswith("/api/questions/generate")
+        )
+        budgeted_document_parse = method == "POST" and path in {
+            "/api/jd/parse-review",
+            "/api/notice/parse-review",
+            "/api/jd/sclass",
+        }
+
+        async def call_app_with_budget() -> None:
+            if budgeted_generation:
+                with use_request_budget(_generation_request_budget_sec()):
+                    await self.app(scope, receive, send)
+            elif budgeted_document_parse:
+                with use_request_budget(_document_parse_request_budget_sec()):
+                    await self.app(scope, receive, send)
+            else:
+                await self.app(scope, receive, send)
+
+        if not settings.rate_limit_enabled() or not self._is_expensive(path):
+            await call_app_with_budget()
             return
 
         is_generation = scope.get("method") == "POST" and (
@@ -372,16 +401,8 @@ class ExpensiveRequestLimitMiddleware:
                 )
                 await response(scope, receive, send)
                 return
-        budgeted_generation = scope.get("method") == "POST" and (
-            path == "/api/jd/strategy/upload"
-            or path.startswith("/api/questions/generate")
-        )
         try:
-            if budgeted_generation:
-                with use_request_budget(_generation_request_budget_sec()):
-                    await self.app(scope, receive, send)
-            else:
-                await self.app(scope, receive, send)
+            await call_app_with_budget()
         finally:
             if slot_acquired:
                 self._generation_slots.release()
@@ -394,7 +415,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-APP_VERSION = "1.4.9"
+APP_VERSION = "1.4.10"
 app = FastAPI(title="NCScope", version=APP_VERSION, lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
@@ -6422,6 +6443,7 @@ _REVIEW_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _REVIEW_SESSION_TOKEN_RE = re.compile(r"^v1\.[A-Za-z0-9_-]{43}$")
 _REVIEW_SESSION_LOCK = threading.Lock()
 _REVIEW_SESSION_BY_ID: dict[str, dict[str, Any]] = {}
+_PARSED_STRUCTURAL_SCLASS_CACHE_KEY = "_ncscope_structural_sclass_result"
 
 
 def _suffix_of(name: str) -> str:
@@ -6525,6 +6547,7 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
                 # and other fully classified jobs. Preserve structural detail
                 # cells even when the fallback text has lost table boundaries;
                 # the later MCP exact lookup rejects proprietary labels.
+                structural_result: dict[str, Any] | None = None
                 try:
                     structural_result = extract_sclass_from_pdf_bytes(
                         data,
@@ -6549,6 +6572,13 @@ def _parse_single_document_upload(data: bytes, filename: str, label: str) -> dic
                         "fallback": "pdf-text",
                         "classification_terms": local_terms,
                     },
+                    # This is an internal hand-off only. The public endpoint
+                    # removes it before structuring/serializing the response,
+                    # so a failed Kordoc pass does not run the same structural
+                    # PDF extraction twice.
+                    _PARSED_STRUCTURAL_SCLASS_CACHE_KEY: structural_result
+                    if isinstance(structural_result, dict)
+                    else None,
                     "warnings": ["Kordoc parse failed; used PDF text fallback."],
                 }
         if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
@@ -7119,6 +7149,28 @@ def _verified_signed_review_session(
         "filename": filename,
         "created_at": created_at,
     }
+
+
+async def _parse_upload_document_off_loop(
+    data: bytes,
+    filename: str,
+    label: str,
+) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(
+            _parse_upload_document,
+            data,
+            filename,
+            label,
+        )
+    except RequestBudgetExceeded as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "document_parse_deadline_exhausted",
+                "retryable": True,
+            },
+        ) from exc
 
 
 def _public_review_session(session: dict[str, Any]) -> dict[str, Any]:
@@ -12874,9 +12926,26 @@ def health(request: Request) -> dict:
     del request
     mcp = ncs_mcp_status()
     mcp_ready = bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable"))
+    serverless = bool(os.getenv("VERCEL", "").strip() or os.getenv("VERCEL_URL", "").strip())
+    bridge_configured = bool(
+        os.getenv("KORDOC_BRIDGE_URL", "").strip()
+        or os.getenv("VERCEL_URL", "").strip()
+    )
+    bridge_auth_configured = bool(
+        os.getenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", "").strip()
+        or os.getenv("KORDOC_BRIDGE_SECRET", "").strip()
+    )
+    stateless_review_configured = bool(
+        os.getenv("REVIEW_SESSION_SIGNING_KEY", "").strip()
+    )
+    document_parsing_ready = not serverless or (
+        bridge_configured
+        and bridge_auth_configured
+        and stateless_review_configured
+    )
     return {
         "version": app.version,
-        "status": "ok" if mcp_ready else "degraded",
+        "status": "ok" if mcp_ready and document_parsing_ready else "degraded",
         "keys": {
             "public_inst": bool(settings.public_inst_key()),
             "ncs": bool(settings.ncs_key()),
@@ -12888,6 +12957,16 @@ def health(request: Request) -> dict:
         "question_generation": _generation_provider_descriptor(),
         "ncs_source": "remote-mcp",
         "ncs_mcp": mcp,
+        "document_parsing": {
+            "mode": "serverless_bridge" if serverless else "local_runtime",
+            "ready": document_parsing_ready,
+            "bridge_configured": bridge_configured if serverless else None,
+            "bridge_auth_configured": bridge_auth_configured if serverless else None,
+            "stateless_review_configured": (
+                stateless_review_configured if serverless else None
+            ),
+            "request_budget_sec": int(_document_parse_request_budget_sec()),
+        },
     }
 
 
@@ -13729,7 +13808,11 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
 
     if name.endswith(".pdf"):
         try:
-            return extract_sclass_from_pdf_bytes(data, filename=(jd_file.filename or ""))
+            return await asyncio.to_thread(
+                extract_sclass_from_pdf_bytes,
+                data,
+                filename=(jd_file.filename or ""),
+            )
         except RuntimeError as e:
             raise _internal_http_error("jd_sclass_extract_failed", e) from e
     elif name.endswith(".txt"):
@@ -13746,8 +13829,20 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
     data = await _read_upload_limited(jd_file, "jd_file")
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
-    parsed = _parse_upload_document(data, jd_file.filename or "", "jd_file")
-    structured = structure_job_description(parsed, filename=jd_file.filename or "")
+    parsed = await _parse_upload_document_off_loop(
+        data,
+        jd_file.filename or "",
+        "jd_file",
+    )
+    cached_structural_result = parsed.pop(
+        _PARSED_STRUCTURAL_SCLASS_CACHE_KEY,
+        None,
+    )
+    structured = await asyncio.to_thread(
+        structure_job_description,
+        parsed,
+        filename=jd_file.filename or "",
+    )
     structured_fields = structured.get("fields") if isinstance(structured.get("fields"), dict) else None
     if structured_fields is not None:
         _sanitize_parse_review_ability_artifacts(structured)
@@ -13785,10 +13880,13 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
             and str(jd_file.filename or "").lower().endswith(".pdf")
         ):
             try:
-                structural_result = extract_sclass_from_pdf_bytes(
-                    data,
-                    filename=jd_file.filename or "",
-                )
+                structural_result = cached_structural_result
+                if not isinstance(structural_result, dict):
+                    structural_result = await asyncio.to_thread(
+                        extract_sclass_from_pdf_bytes,
+                        data,
+                        filename=jd_file.filename or "",
+                    )
                 # The legacy structural endpoint returns 소분류 matches for
                 # compatibility, but the review dropdown must contain the
                 # actual 세분류 column. Prefer the table-level detail trace;
@@ -13995,8 +14093,8 @@ async def parse_notice_review_endpoint(
     if not data:
         raise HTTPException(status_code=400, detail="notice_file is empty")
     filename = notice_file.filename or ""
-    parsed = _parse_upload_document(data, filename, "notice_file")
-    structured = structure_job_notice(parsed, filename=filename)
+    parsed = await _parse_upload_document_off_loop(data, filename, "notice_file")
+    structured = await asyncio.to_thread(structure_job_notice, parsed, filename=filename)
     review_session = _create_review_session(data, structured, filename)
     _record_audit_event(
         request,
@@ -14123,7 +14221,11 @@ async def jd_strategy_upload(
             raise HTTPException(status_code=400, detail=f"{label} is empty")
         if not parse_document:
             return "", data, name
-        parsed = _parse_upload_document(data, upload.filename or "", label)
+        parsed = await _parse_upload_document_off_loop(
+            data,
+            upload.filename or "",
+            label,
+        )
         text = str(parsed.get("markdown") or "")
         if text.strip():
             return text, data, name
@@ -14238,7 +14340,7 @@ async def jd_strategy_upload(
             )
             notice_text = str((notice_session or {}).get("markdown") or "").strip()
         else:
-            parsed_notice = _parse_upload_document(
+            parsed_notice = await _parse_upload_document_off_loop(
                 notice_bytes,
                 notice_file.filename or "",
                 "notice_file",
@@ -14268,7 +14370,7 @@ async def jd_strategy_upload(
             )
         if not presentation_material_bytes:
             raise HTTPException(status_code=400, detail="presentation_material_file is empty")
-        parsed_presentation_material = _parse_upload_document(
+        parsed_presentation_material = await _parse_upload_document_off_loop(
             presentation_material_bytes,
             presentation_material_filename,
             "presentation_material_file",

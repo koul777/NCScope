@@ -81,6 +81,8 @@ def test_health_depends_on_mcp_and_reports_openai_byok(monkeypatch) -> None:
     assert payload["keys"]["openai_request_scoped"] is True
     assert payload["question_generation"]["provider"] == "openai_api"
     assert payload["question_generation"]["requires_request_api_key"] is True
+    assert payload["document_parsing"]["mode"] == "local_runtime"
+    assert payload["document_parsing"]["ready"] is True
 
 
 def test_health_is_degraded_only_when_mcp_is_not_ready(monkeypatch) -> None:
@@ -94,3 +96,30 @@ def test_health_is_degraded_only_when_mcp_is_not_ready(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "degraded"
+
+
+def test_health_requires_stateless_document_contract_on_vercel(monkeypatch) -> None:
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("KORDOC_BRIDGE_URL", "https://example.vercel.app/api/kordoc-parse")
+    monkeypatch.setenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", "configured")
+    monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
+    monkeypatch.setattr(
+        main,
+        "ncs_mcp_status",
+        lambda: {"configured": True, "reachable": True, "ksaAvailable": True},
+    )
+
+    with TestClient(main.app) as client:
+        response = client.get("/health")
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["status"] == "degraded"
+    assert payload["document_parsing"] == {
+        "mode": "serverless_bridge",
+        "ready": False,
+        "bridge_configured": True,
+        "bridge_auth_configured": True,
+        "stateless_review_configured": False,
+        "request_budget_sec": 285,
+    }

@@ -59,6 +59,7 @@ def test_deployment_profile_values_are_synchronized_with_vercel_config() -> None
         "INSTITUTION_GENERATION_BATCH_SIZE",
         "INSTITUTION_GENERATION_BATCH_CONCURRENCY",
         "GENERATION_REQUEST_BUDGET_SEC",
+        "DOCUMENT_PARSE_REQUEST_BUDGET_SEC",
         "GENERATION_MAX_MAIN_QUESTIONS",
         "OPENAI_QUALITY_REVIEW_MODEL",
         "OPENAI_QUALITY_REVIEW_REASONING_EFFORT",
@@ -70,6 +71,7 @@ def test_deployment_profile_values_are_synchronized_with_vercel_config() -> None
 
     assert not any(key.startswith("OPENROUTER_") for key in environment)
     assert "KORDOC_BRIDGE_ED25519_PRIVATE_KEY" in deployment
+    assert "REVIEW_SESSION_SIGNING_KEY" in deployment
     assert "ED25519_PUBLIC_KEY_RAW" in deployment
     assert "KORDOC_BRIDGE_ED25519_PRIVATE_KEY" not in environment
 

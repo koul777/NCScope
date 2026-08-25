@@ -18,7 +18,7 @@
 
 <p align="center"><a href="https://ncscope.vercel.app"><strong>NCScope 실행하기</strong></a></p>
 
-# NCScope v1.4.9
+# NCScope v1.4.10
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 
@@ -262,8 +262,8 @@ python scripts/audit_stored_jd_ksa_contract.py `
   --expected-benchmark-sha256 13aca798e616260fa5d2842e9199e0f9d0f571ec52265baaae64c3f1dfdbe03e `
   --expected-catalog-sha256 8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357 `
   --expected-code-set-sha256 652f6d546007d185a9a90da8a0f1124a6d580281a31d22cf8de7e93c61626dfd `
-  --expected-client-sha256 ca7a250ae5f8cf48d76bffd919744f4d15c9fe2fe09cf8bf772aa49c5e6a3e59 `
-  --expected-audit-script-sha256 797d95f4c5492bdbf8b0f545a5ddefb72671d82eec05588956c4f8ad19c0f2a0 `
+  --expected-client-sha256 5ab4bc0f7abee0d7dd16775025992608b4b7ad3b4c741a8d0e9874fb500ac64a `
+  --expected-audit-script-sha256 0a238db81da976872435523be477c5b8e8b7ecb68dd2b4f14a490f2dcdef0e0a `
   --require-input-digests
 
 # 배포 active catalog 13,282개 능력단위 전체를 같은 계약으로 확인
@@ -272,8 +272,8 @@ python scripts/audit_stored_jd_ksa_contract.py `
   --expected-unit-codes 13282 `
   --expected-catalog-sha256 8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357 `
   --expected-code-set-sha256 cc09e69442e780b319fb772a7459fd49066f1f57790bf9140e8243e29d066a01 `
-  --expected-client-sha256 ca7a250ae5f8cf48d76bffd919744f4d15c9fe2fe09cf8bf772aa49c5e6a3e59 `
-  --expected-audit-script-sha256 797d95f4c5492bdbf8b0f545a5ddefb72671d82eec05588956c4f8ad19c0f2a0 `
+  --expected-client-sha256 5ab4bc0f7abee0d7dd16775025992608b4b7ad3b4c741a8d0e9874fb500ac64a `
+  --expected-audit-script-sha256 0a238db81da976872435523be477c5b8e8b7ecb68dd2b4f14a490f2dcdef0e0a `
   --require-input-digests `
   --max-factors-per-unit 3
 ```
@@ -281,15 +281,16 @@ python scripts/audit_stored_jd_ksa_contract.py `
 최신 저장 코퍼스가 선택한 고유 probe 코드 554개를 대상으로 각 코드당 최대 12개
 요인을 조회한 KSA 계약 감사에서는 554/554개 모두 지식·기술·태도 3종을 갖췄고,
 반환된 6,640/6,640건에 수행준거와 configured NCS MCP client contract marker가
-있었습니다. 이 554개에는 문서에서 능력단위를 직접 추출하지 못한 경우 벤치마크가
+있었고, 요청 능력단위 코드와 MCP 응답 코드도 6,640/6,640건 일치했습니다. 이 554개에는 문서에서 능력단위를 직접 추출하지 못한 경우 벤치마크가
 가용성 확인용으로 고른 코드도 포함되며, 그중 14개는 그런 probe에서만 나타납니다.
 따라서 이는 "실제 추출된 554개 코드" 정확도나 upstream 공식 DB의 독립 provenance
 인증이 아닙니다. 입력 CSV·206행·코드 집합·active catalog·MCP client 해시를 함께
 고정한 configured `ncs_unit_detail` 응답 계약입니다.
 
 별도의 active catalog 전체 감사에서는 13,282/13,282개 능력단위 모두 지식·기술·태도
-3종을 반환했고, 1종당 1개씩 선택한 39,846/39,846행 모두 수행준거와 configured client
-contract marker를 가졌습니다. 이 결과도 catalog·13,282개 코드 집합·client·감사 스크립트
+3종을 반환했고, 1종당 1개씩 선택한 39,846/39,846행 모두 수행준거, 정확한 요청-응답
+능력단위 코드 결합, configured client contract marker를 가졌습니다. 이 결과도
+catalog·13,282개 코드 집합·client·감사 스크립트
 해시에 결박되지만, 현재 MCP 계약이 upstream DB 식별자나 버전을 노출하지 않으므로 해당
 DB 자체의 독립 provenance 인증으로 해석하지 않습니다.
 

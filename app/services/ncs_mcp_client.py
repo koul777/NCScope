@@ -31,7 +31,10 @@ from app.services.request_budget import (
 
 MCP_PROTOCOL_VERSION = "2025-03-26"
 _TOOLS_TTL = 300.0
+_STATUS_TTL = 10.0
 _tools_cache: tuple[float, str, set[str]] | None = None
+_status_cache: tuple[float, str, dict[str, Any]] | None = None
+_status_cache_lock = threading.Lock()
 _last_error: str | None = None
 
 
@@ -209,7 +212,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                         "params": {
                             "protocolVersion": MCP_PROTOCOL_VERSION,
                             "capabilities": {},
-                            "clientInfo": {"name": "ncscope", "version": "1.4.9"},
+                            "clientInfo": {"name": "ncscope", "version": "1.4.10"},
                         },
                     },
                     timeout=request_timeout,
@@ -813,21 +816,23 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
 
     # Call the versioned generation tool directly. Full discovery remains a
     # readiness concern and must not add a cold-path round trip here.
-    output: list[dict[str, Any]] = []
+    limit = max(1, int(max_units or 80))
+    groups: list[list[dict[str, Any]]] = []
     seen: set[str] = set()
     for detail in _split_detail_terms(detail_names):
         name = str(detail or "").strip()
         if not name:
             continue
+        group: list[dict[str, Any]] = []
         for query_name in _detail_query_names(name):
             result = _call_tool(
                 "ncs_search",
-                {"query": query_name, "scope": "unit", "limit": _detail_search_query_limit(max_units)},
+                {"query": query_name, "scope": "unit", "limit": _detail_search_query_limit(limit)},
             )
             rows = result.get("results") or result.get("units") or []
             if isinstance(rows, dict):
                 rows = rows.get("items") or []
-            matched_before = len(output)
+            matched_before = len(group)
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -848,7 +853,7 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 ).casefold().strip() != unicodedata.normalize(
                     "NFKC", name
                 ).casefold().strip()
-                output.append(
+                group.append(
                     {
                         "ncsClCd": code,
                         "compeUnitName": str(row.get("text") or row.get("unit_name") or "").strip(),
@@ -865,10 +870,24 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                         "matchScore": 1.0,
                     }
                 )
-                if len(output) >= max_units:
-                    return output
-            if len(output) > matched_before and _norm(query_name) == _norm(name):
+            if len(group) > matched_before and _norm(query_name) == _norm(name):
                 break
+        groups.append(group)
+
+    # Preserve at least one exact unit from each confirmed detail before a
+    # large first classification can consume the global response limit.
+    output: list[dict[str, Any]] = []
+    offsets = [0 for _group in groups]
+    while len(output) < limit and any(
+        offset < len(group) for offset, group in zip(offsets, groups)
+    ):
+        for index, group in enumerate(groups):
+            if len(output) >= limit:
+                break
+            if offsets[index] >= len(group):
+                continue
+            output.append(group[offsets[index]])
+            offsets[index] += 1
     return output
 
 
@@ -1056,12 +1075,33 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
 
     def fetch_unit(unit: dict[str, Any]) -> list[dict[str, Any]]:
         code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
-        result = _call_tool(
-            "ncs_unit_detail",
-            {"unit_code": code, "include": ["elements", "criteria", "ksa"], "text_version": "raw"},
-        )
+        result: dict[str, Any] | None = None
+        for attempt in range(2):
+            try:
+                result = _call_tool(
+                    "ncs_unit_detail",
+                    {
+                        "unit_code": code,
+                        "include": ["elements", "criteria", "ksa"],
+                        "text_version": "raw",
+                    },
+                )
+                break
+            except NcsMcpError:
+                if attempt == 1:
+                    raise
+        if result is None:  # pragma: no cover - defensive; both attempts either return or raise.
+            raise NcsMcpError("NCS MCP unit detail request returned no result")
         detail = _detail_payload(result)
         detail_unit = detail.get("unit") if isinstance(detail.get("unit"), dict) else {}
+        response_code = str(
+            detail_unit.get("unit_code")
+            or detail_unit.get("ncsClCd")
+            or detail_unit.get("id")
+            or ""
+        ).strip()
+        if response_code != code:
+            raise NcsMcpError("NCS MCP unit detail identity mismatch")
         classification = (
             detail_unit.get("classification")
             if isinstance(detail_unit.get("classification"), dict)
@@ -1075,6 +1115,9 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
             rows.append(
                 {
                     "ncsClCd": code,
+                    "requestedUnitCode": code,
+                    "responseUnitCode": response_code,
+                    "unitIdentityVerified": True,
                     "compeUnitName": unit.get("compeUnitName") or detail_unit.get("unit_name", ""),
                     "ncsSubdCdnm": unit.get("ncsSubdCdnm") or classification.get("sub", ""),
                     "elementId": row.get("_ncscope_element_id"),
@@ -1087,6 +1130,10 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
                     "source": "ncs-mcp",
                     "ksaStatus": "official",
                     "isOfficialKsa": True,
+                    "provenanceScope": (
+                        "configured-ncs-mcp-client-contract-not-independent-"
+                        "upstream-database-attestation"
+                    ),
                 }
             )
         return rows
@@ -1098,20 +1145,24 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
     except (TypeError, ValueError):
         configured_concurrency = 1
     concurrency = max(1, min(8, configured_concurrency, len(selected_units) or 1))
-    if concurrency == 1:
-        per_unit_rows = [fetch_unit(unit) for unit in selected_units]
-    else:
-        with ThreadPoolExecutor(
-            max_workers=concurrency,
-            thread_name_prefix="ncs-mcp-ksa",
-        ) as executor:
-            # ``map`` retains the confirmed NCS-unit order while overlapping
-            # independent network calls. This keeps evidence assignment stable.
-            futures = [
-                executor.submit(copy_context().run, fetch_unit, unit)
-                for unit in selected_units
-            ]
-            per_unit_rows = [future.result() for future in futures]
+    with use_ncs_mcp_request_session():
+        if concurrency == 1:
+            per_unit_rows = [fetch_unit(unit) for unit in selected_units]
+        else:
+            per_unit_rows = []
+            batch_size = concurrency * 4
+            with ThreadPoolExecutor(
+                max_workers=concurrency,
+                thread_name_prefix="ncs-mcp-ksa",
+            ) as executor:
+                # Bound the submitted backlog while retaining the confirmed
+                # NCS-unit order and sharing one initialized MCP transport.
+                for offset in range(0, len(selected_units), batch_size):
+                    futures = [
+                        executor.submit(copy_context().run, fetch_unit, unit)
+                        for unit in selected_units[offset : offset + batch_size]
+                    ]
+                    per_unit_rows.extend(future.result() for future in futures)
 
     output: list[dict[str, Any]] = []
     for rows in per_unit_rows:
@@ -1119,23 +1170,42 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
     return output
 
 
-def ncs_mcp_status() -> dict[str, Any]:
-    try:
-        # A readiness endpoint must probe the configured service. Reusing the
-        # five-minute discovery cache can report a stopped MCP as reachable.
-        names = sorted(_tool_names(force_refresh=True))
-        return {
-            "configured": bool(_endpoint()),
-            "reachable": True,
-            "tools": names,
-            "ksaAvailable": "ncs_unit_detail" in names,
-            "lastError": None,
-        }
-    except NcsMcpError:
-        return {
-            "configured": bool(_endpoint()),
-            "reachable": False,
-            "tools": [],
-            "ksaAvailable": False,
-            "lastError": "ncs_mcp_unreachable",
-        }
+def ncs_mcp_status(*, force_refresh: bool = False) -> dict[str, Any]:
+    """Return a short-lived readiness probe without amplifying health traffic."""
+
+    global _status_cache
+    endpoint = _endpoint()
+    now = time.monotonic()
+    with _status_cache_lock:
+        if (
+            not force_refresh
+            and _status_cache
+            and _status_cache[1] == endpoint
+            and now - _status_cache[0] < _STATUS_TTL
+        ):
+            cached = dict(_status_cache[2])
+            cached["tools"] = list(cached.get("tools") or [])
+            return cached
+
+        try:
+            # The status cache is deliberately much shorter than discovery's
+            # five-minute cache, so readiness detects outages promptly while
+            # repeated platform probes share one downstream request.
+            names = sorted(_tool_names(force_refresh=True))
+            status = {
+                "configured": bool(endpoint),
+                "reachable": True,
+                "tools": names,
+                "ksaAvailable": "ncs_unit_detail" in names,
+                "lastError": None,
+            }
+        except NcsMcpError:
+            status = {
+                "configured": bool(endpoint),
+                "reachable": False,
+                "tools": [],
+                "ksaAvailable": False,
+                "lastError": "ncs_mcp_unreachable",
+            }
+        _status_cache = (time.monotonic(), endpoint, status)
+        return {**status, "tools": list(status["tools"])}

@@ -66,11 +66,20 @@ def _catalog_units(catalog_path: Path) -> dict[str, dict[str, Any]]:
     rows = payload.get("units") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise ValueError("unit catalog must contain a units list")
-    return {
-        str(row.get("code") or "").strip(): row
+    if not all(
+        isinstance(row, dict) and str(row.get("code") or "").strip()
         for row in rows
-        if isinstance(row, dict) and str(row.get("code") or "").strip()
-    }
+    ):
+        raise ValueError("unit catalog contains a row without a code")
+    codes = [str(row.get("code") or "").strip() for row in rows]
+    if len(codes) != len(set(codes)):
+        raise ValueError("unit catalog contains duplicate codes")
+    declared_count = payload.get("unit_count")
+    if declared_count is not None and (
+        not isinstance(declared_count, int) or declared_count != len(rows)
+    ):
+        raise ValueError("unit catalog declared unit_count does not match rows")
+    return {code: row for code, row in zip(codes, rows)}
 
 
 FetchKsaFn = Callable[[list[dict[str, Any]], int], list[dict[str, Any]]]
@@ -92,6 +101,11 @@ def audit_ksa_contract(
     max_factors_per_unit: int = 12,
     fetch_ksa: FetchKsaFn = get_ksa_by_units,
 ) -> dict[str, Any]:
+    expected_benchmark_sha256 = expected_benchmark_sha256.strip().casefold()
+    expected_catalog_sha256 = expected_catalog_sha256.strip().casefold()
+    expected_code_set_sha256 = expected_code_set_sha256.strip().casefold()
+    expected_client_sha256 = expected_client_sha256.strip().casefold()
+    expected_audit_script_sha256 = expected_audit_script_sha256.strip().casefold()
     catalog = _catalog_units(catalog_path)
     if all_active_catalog_units:
         if benchmark_csv is not None:
@@ -157,20 +171,28 @@ def audit_ksa_contract(
         failures.append("unexpected_benchmark_row_count")
     if missing_catalog_codes:
         failures.append("probe_codes_missing_from_active_catalog")
-    rows = (
-        fetch_ksa(units, max(3, int(max_factors_per_unit or 12)))
-        if units and not failures
-        else []
-    )
+    rows: list[dict[str, Any]] = []
+    fetch_error_type = ""
+    if units and not failures:
+        try:
+            rows = fetch_ksa(units, max(3, int(max_factors_per_unit or 12)))
+        except Exception as exc:  # Produce a fail-closed report without remote details.
+            fetch_error_type = type(exc).__name__
+            failures.append("ncs_mcp_fetch_failed")
 
     expected_codes = set(codes)
     types_by_code: dict[str, set[str]] = defaultdict(set)
     type_row_counts: Counter[str] = Counter()
     unexpected_codes: set[str] = set()
     invalid_mcp_contract_marker_rows = 0
+    invalid_unit_identity_rows = 0
     invalid_ksa_type_rows = 0
     missing_factor_rows = 0
     missing_criteria_rows = 0
+    inspected_response_rows = 0
+    rows_with_performance_criteria = 0
+    rows_with_configured_mcp_contract_markers = 0
+    rows_with_verified_unit_identity = 0
     for row in rows:
         if not isinstance(row, dict):
             invalid_mcp_contract_marker_rows += 1
@@ -181,6 +203,15 @@ def audit_ksa_contract(
                 unexpected_codes.add(code)
             invalid_mcp_contract_marker_rows += 1
             continue
+        inspected_response_rows += 1
+        if (
+            row.get("unitIdentityVerified") is True
+            and str(row.get("requestedUnitCode") or "").strip() == code
+            and str(row.get("responseUnitCode") or "").strip() == code
+        ):
+            rows_with_verified_unit_identity += 1
+        else:
+            invalid_unit_identity_rows += 1
         ksa_type = _ksa_type_key(row.get("ksaTypeName"))
         if ksa_type in EXPECTED_KSA_TYPES:
             types_by_code[code].add(ksa_type)
@@ -194,6 +225,8 @@ def audit_ksa_contract(
             str(value or "").strip() for value in criteria
         ):
             missing_criteria_rows += 1
+        else:
+            rows_with_performance_criteria += 1
         if not (
             row.get("isOfficialKsa") is True
             and str(row.get("ksaStatus") or "") == "official"
@@ -201,6 +234,8 @@ def audit_ksa_contract(
             and str(row.get("factorSource") or "") == "ncs-mcp"
         ):
             invalid_mcp_contract_marker_rows += 1
+        else:
+            rows_with_configured_mcp_contract_markers += 1
 
     missing_row_codes = sorted(expected_codes - set(types_by_code))
     complete_codes = sorted(
@@ -224,6 +259,8 @@ def audit_ksa_contract(
         failures.append("ksa_rows_without_performance_criteria")
     if invalid_mcp_contract_marker_rows:
         failures.append("ksa_rows_without_configured_mcp_contract_markers")
+    if invalid_unit_identity_rows:
+        failures.append("ksa_rows_without_verified_unit_identity")
     if invalid_ksa_type_rows:
         failures.append("ksa_rows_with_unknown_or_missing_type")
 
@@ -253,15 +290,22 @@ def audit_ksa_contract(
             "ncs_mcp_client_sha256": expected_client_sha256,
             "audit_script_sha256": expected_audit_script_sha256,
         },
-        "input_digests_match": not any(
-            failure == "missing_required_input_digests"
-            or failure.endswith("_sha256_mismatch")
-            for failure in failures
+        "input_digests_checked": bool(any(supplied_digests)),
+        "input_digests_match": (
+            not any(
+                failure == "missing_required_input_digests"
+                or failure.endswith("_sha256_mismatch")
+                for failure in failures
+            )
+            if any(supplied_digests)
+            else None
         ),
         "ncs_mcp_tool": "ncs_unit_detail",
         "ncs_mcp_include": ["elements", "criteria", "ksa"],
         "ncs_mcp_text_version": "raw",
-        "upstream_database_identity": "not_exposed_by_current_client_contract",
+        "upstream_database_identity": "response_unit_code_bound_to_request_only",
+        "independent_upstream_provenance_attested": False,
+        "official_marker_semantics": "assigned_by_configured_ncs_mcp_client",
         "max_factors_per_unit": max(3, int(max_factors_per_unit or 12)),
         "probe_unit_codes": len(codes),
         "expected_unit_codes": expected_unit_codes,
@@ -273,14 +317,14 @@ def audit_ksa_contract(
             round(100.0 * len(complete_codes) / len(codes), 2) if codes else 0.0
         ),
         "ksa_row_count": len(rows),
+        "inspected_response_row_count": inspected_response_rows,
         "ksa_type_row_counts": dict(sorted(type_row_counts.items())),
         "ksa_type_count_distribution": {
             str(key): value for key, value in sorted(type_set_distribution.items())
         },
-        "rows_with_performance_criteria": len(rows) - missing_criteria_rows,
-        "rows_with_configured_mcp_contract_markers": (
-            len(rows) - invalid_mcp_contract_marker_rows
-        ),
+        "rows_with_performance_criteria": rows_with_performance_criteria,
+        "rows_with_configured_mcp_contract_markers": rows_with_configured_mcp_contract_markers,
+        "rows_with_verified_unit_identity": rows_with_verified_unit_identity,
         "missing_catalog_code_count": len(missing_catalog_codes),
         "missing_row_code_count": len(missing_row_codes),
         "incomplete_type_code_count": len(incomplete_type_codes),
@@ -288,7 +332,9 @@ def audit_ksa_contract(
         "missing_factor_row_count": missing_factor_rows,
         "missing_criteria_row_count": missing_criteria_rows,
         "invalid_mcp_contract_marker_row_count": invalid_mcp_contract_marker_rows,
+        "invalid_unit_identity_row_count": invalid_unit_identity_rows,
         "invalid_ksa_type_row_count": invalid_ksa_type_rows,
+        "fetch_error_type": fetch_error_type,
         "failures": failures,
     }
 
@@ -335,12 +381,10 @@ def main() -> int:
     )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     output = output_dir / f"stored_jd_ksa_contract_{stamp}.json"
-    output.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    with output.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     print(f"report={output}")
     return 0 if result["passed"] else 1

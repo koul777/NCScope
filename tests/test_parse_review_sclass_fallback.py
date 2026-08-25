@@ -90,6 +90,48 @@ def test_parse_review_recovers_pdf_sclass_candidates_when_kordoc_is_empty(mocker
     structural.assert_called_once()
 
 
+def test_parse_review_reuses_structural_pdf_result_after_kordoc_failure(mocker):
+    mocker.patch(
+        "app.main.parse_with_kordoc",
+        side_effect=main.KordocParseError("bridge unavailable"),
+    )
+    mocker.patch("app.main.extract_pdf_text", return_value="NCS classification")
+    structural = mocker.patch(
+        "app.main.extract_sclass_from_pdf_bytes",
+        return_value={
+            "matched": [],
+            "detail_candidates": ["인사"],
+            "detail_table_found": True,
+            "detail_candidate_evidence": [
+                {
+                    "label": "인사",
+                    "page": 1,
+                    "source": "pdf_table_detail",
+                    "raw": "인사",
+                }
+            ],
+        },
+    )
+    mocker.patch(
+        "app.main.structure_job_description",
+        return_value={
+            "document": {"markdown": "NCS classification"},
+            "fields": {"ncs_detail_candidates": []},
+        },
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("fallback.pdf", b"%PDF-test", "application/pdf")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["fields"]["ncs_detail_candidates"] == ["인사"]
+    assert main._PARSED_STRUCTURAL_SCLASS_CACHE_KEY not in response.text
+    structural.assert_called_once()
+
+
 def test_parse_review_keeps_kordoc_candidates_as_primary_source(mocker):
     mocker.patch(
         "app.main._parse_upload_document",

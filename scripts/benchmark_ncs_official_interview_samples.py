@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import os
 import re
 import subprocess
@@ -402,7 +401,6 @@ def _artifact_type(filename: str, text: str = "") -> str:
 
 def _artifact_types(filename: str, text: str = "") -> list[str]:
     found: list[str] = []
-    name = str(filename or "")
     if "평가" in filename:
         found.append("evaluation_form")
     if "과제" in filename or "문항" in filename:

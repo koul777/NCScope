@@ -82,7 +82,8 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["OPENAI_NET_CHECK_ENABLED"] == "false"
     assert environment["DATABASE_URL"] == "sqlite:////tmp/ncscope.db"
     assert environment["MAX_UPLOAD_MB"] == "4"
-    assert environment["MAX_REQUEST_BODY_MB"] == "4"
+    assert environment["MAX_REQUEST_BODY_MB"] == "4.25"
+    assert float(environment["MAX_REQUEST_BODY_MB"]) > float(environment["MAX_UPLOAD_MB"])
     assert environment["KORDOC_OFFLINE"] == "1"
     assert environment["KORDOC_BRIDGE_URL"] == "https://ncscope.vercel.app/api/kordoc-parse"
     assert environment["OPENAI_STRATEGY_CANDIDATE_MULTIPLIER"] == "1"
@@ -93,6 +94,7 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["INSTITUTION_GENERATION_BATCH_SIZE"] == "5"
     assert environment["INSTITUTION_GENERATION_BATCH_CONCURRENCY"] == "1"
     assert environment["GENERATION_REQUEST_BUDGET_SEC"] == "285"
+    assert environment["DOCUMENT_PARSE_REQUEST_BUDGET_SEC"] == "285"
     assert environment["GENERATION_MAX_MAIN_QUESTIONS"] == "5"
     assert environment["OPENAI_RERANK_MODEL"] == "gpt-5.6-luna"
     assert environment["OPENAI_STRATEGY_MODEL"] == "gpt-5.6-terra"

@@ -21,8 +21,8 @@ if str(ROOT) in sys.path:
     sys.path.remove(str(ROOT))
 sys.path.insert(0, str(ROOT))
 
-import app.repository as repository
-from app.db import Base
+import app.repository as repository  # noqa: E402
+from app.db import Base  # noqa: E402
 
 
 DEFAULT_REPORT_DIR = ROOT / "reports" / "question_quality_simulation"

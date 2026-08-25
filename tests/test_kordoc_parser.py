@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.services import kordoc_parser
 from app.services.kordoc_parser import (
     _looks_like_detail_candidate,
     _loads_kordoc_json,
@@ -2145,3 +2146,29 @@ def test_flattened_parenthesized_detail_stops_before_ability_unit_tail() -> None
     result = structure_job_description({"markdown": markdown}, filename="flat-tail.hwp")
 
     assert result["fields"]["ncs_detail_candidates"] == ["환경미화"]
+
+
+def test_large_ability_table_normalization_work_stays_near_linear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_norm = kordoc_parser._norm
+    calls = 0
+
+    def counted_norm(value):
+        nonlocal calls
+        calls += 1
+        return original_norm(value)
+
+    monkeypatch.setattr(kordoc_parser, "_norm", counted_norm)
+    row_count = 500
+    markdown = "# 능력단위\n" + "\n".join(
+        f"- {index}. 합성 능력단위 {index}" for index in range(row_count)
+    )
+
+    result = structure_job_description(
+        {"markdown": markdown, "blocks": []},
+        filename="large-table.txt",
+    )
+
+    assert len(result["fields"]["ability_units"]) == row_count
+    assert calls < 100_000

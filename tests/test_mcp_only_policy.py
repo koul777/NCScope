@@ -2008,6 +2008,38 @@ def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
     assert [row["matchedDetailName"] for row in rows] == ["인사", "프로젝트관리"]
 
 
+def test_mcp_search_global_limit_preserves_each_confirmed_detail(mocker):
+    calls: list[str] = []
+
+    def fake_call_tool(_name, arguments):
+        query = arguments["query"]
+        calls.append(query)
+        if query == "인사":
+            codes = ["0202020101_23v3", "0202020102_23v3", "0202020103_23v3"]
+        else:
+            codes = ["0101010201_17v2", "0101010202_17v2"]
+        return {
+            "results": [
+                {
+                    "id": code,
+                    "text": f"{query} {index}",
+                    "path": {"small": query, "sub": query},
+                }
+                for index, code in enumerate(codes, start=1)
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail(
+        ["인사", "프로젝트관리"],
+        max_units=2,
+    )
+
+    assert calls == ["인사", "프로젝트관리"]
+    assert [row["matchedDetailName"] for row in rows] == ["인사", "프로젝트관리"]
+
+
 def test_mcp_search_preserves_official_acronym_slash_detail(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     calls: list[str] = []
@@ -2040,7 +2072,11 @@ def test_mcp_ksa_alias_fields_preserve_and_balance_knowledge_skill_attitude(mock
         "app.services.ncs_mcp_client._call_tool",
         return_value={
             "data": {
-                "unit": {"unit_name": "문서관리", "classification": {"sub": "사무행정"}},
+                "unit": {
+                    "unit_code": "U1",
+                    "unit_name": "문서관리",
+                    "classification": {"sub": "사무행정"},
+                },
                 "elements": [
                     {
                         "element_id": "E1",
@@ -2080,7 +2116,11 @@ def test_mcp_ksa_limit_balances_types_without_hiding_later_elements(mocker):
         "app.services.ncs_mcp_client._call_tool",
         return_value={
             "data": {
-                "unit": {"unit_name": "문서관리", "classification": {"sub": "사무행정"}},
+                "unit": {
+                    "unit_code": "U1",
+                    "unit_name": "문서관리",
+                    "classification": {"sub": "사무행정"},
+                },
                 "elements": [
                     {"element_id": "E1", "element_name": "작성", "ksa": first_element_rows},
                     {
@@ -2132,6 +2172,7 @@ def test_mcp_ksa_concurrency_preserves_confirmed_unit_order(monkeypatch, mocker)
         return {
             "data": {
                 "unit": {
+                    "unit_code": code,
                     "unit_name": f"Unit {code}",
                     "classification": {"sub": "Facilities"},
                 },
@@ -2163,6 +2204,52 @@ def test_mcp_ksa_concurrency_preserves_confirmed_unit_order(monkeypatch, mocker)
 
     assert max_active >= 2
     assert [row["ncsClCd"] for row in rows] == ["U1", "U2", "U3"]
+    assert all(row["unitIdentityVerified"] is True for row in rows)
+
+
+def test_mcp_ksa_rejects_missing_or_mismatched_response_unit_identity(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_unit_detail"})
+    call = mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "data": {
+                "unit": {"unit_code": "WRONG", "unit_name": "Wrong"},
+                "elements": [],
+            }
+        },
+    )
+
+    with pytest.raises(ncs_mcp_client.NcsMcpError, match="identity mismatch"):
+        ncs_mcp_client.get_ksa_by_units([{"ncsClCd": "U1"}])
+
+    assert call.call_count == 1
+
+
+def test_mcp_ksa_retries_one_transient_unit_failure(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_unit_detail"})
+    call = mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        side_effect=[
+            ncs_mcp_client.NcsMcpError("temporary"),
+            {
+                "data": {
+                    "unit": {"unit_code": "U1", "unit_name": "Unit 1"},
+                    "elements": [
+                        {
+                            "element_id": "E1",
+                            "element_name": "Element",
+                            "ksa": [{"text": "Knowledge", "ksa_type": "knowledge"}],
+                        }
+                    ],
+                }
+            },
+        ],
+    )
+
+    rows = ncs_mcp_client.get_ksa_by_units([{"ncsClCd": "U1"}], max_factors_per_unit=1)
+
+    assert call.call_count == 2
+    assert rows[0]["responseUnitCode"] == "U1"
 
 
 def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
@@ -2604,7 +2691,7 @@ def test_mcp_status_does_not_expose_endpoint_or_exception_details(monkeypatch):
         lambda **_kwargs: (_ for _ in ()).throw(ncs_mcp_client.NcsMcpError(sentinel)),
     )
 
-    status = ncs_mcp_client.ncs_mcp_status()
+    status = ncs_mcp_client.ncs_mcp_status(force_refresh=True)
 
     assert status["lastError"] == "ncs_mcp_unreachable"
     assert "mcp-secret-sentinel" not in json.dumps(status)
@@ -2769,7 +2856,11 @@ def test_parallel_ksa_calls_share_one_initialized_mcp_transport(monkeypatch):
             unit_code = json["params"]["arguments"]["unit_code"]
             return FakeResponse(
                 {
-                    "unit": {"unit_name": unit_code, "classification": {}},
+                    "unit": {
+                        "unit_code": unit_code,
+                        "unit_name": unit_code,
+                        "classification": {},
+                    },
                     "elements": [
                         {
                             "element_id": f"element-{unit_code}",
@@ -2828,11 +2919,35 @@ def test_mcp_status_bypasses_discovery_cache_to_detect_outage(monkeypatch):
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ncs_mcp_client.NcsMcpError("offline")),
     )
 
-    status = ncs_mcp_client.ncs_mcp_status()
+    status = ncs_mcp_client.ncs_mcp_status(force_refresh=True)
 
     assert status["configured"] is True
     assert status["reachable"] is False
     assert status["ksaAvailable"] is False
+
+
+def test_mcp_status_reuses_short_probe_cache_and_scopes_it_to_endpoint(monkeypatch):
+    current = {"endpoint": "http://mcp-a.example/mcp"}
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(ncs_mcp_client, "_status_cache", None)
+    monkeypatch.setattr(ncs_mcp_client, "_endpoint", lambda: current["endpoint"])
+
+    def fake_tool_names(*, force_refresh=False):
+        calls.append((current["endpoint"], force_refresh))
+        return {"ncs_search", "ncs_unit_detail"}
+
+    monkeypatch.setattr(ncs_mcp_client, "_tool_names", fake_tool_names)
+
+    first = ncs_mcp_client.ncs_mcp_status()
+    second = ncs_mcp_client.ncs_mcp_status()
+    current["endpoint"] = "http://mcp-b.example/mcp"
+    third = ncs_mcp_client.ncs_mcp_status()
+
+    assert first == second == third
+    assert calls == [
+        ("http://mcp-a.example/mcp", True),
+        ("http://mcp-b.example/mcp", True),
+    ]
 
 
 def test_openai_http_error_does_not_expose_remote_body(monkeypatch):

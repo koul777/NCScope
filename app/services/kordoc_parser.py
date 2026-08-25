@@ -26,6 +26,8 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from app.services.request_budget import clamp_timeout_to_request_budget
+
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +181,13 @@ def _norm(value: Any) -> str:
     return re.sub(r"[\s:：·•\-_/\\()\[\]{}]+", "", text).lower()
 
 
+_SECTION_ALIAS_KEYS = {
+    section: frozenset(_norm(alias) for alias in aliases)
+    for section, aliases in _SECTION_ALIASES.items()
+}
+_ABBREVIATED_DETAIL_LABEL_KEYS = frozenset({_norm("세"), _norm("세분")})
+
+
 def _scope_label_key(value: Any) -> str:
     """Normalize a displayed detail label for exact scope association."""
 
@@ -264,9 +273,11 @@ def _split_items(text: str, *, normalize_nfkc: bool = True) -> list[str]:
     value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
     parts = re.split(r"\n+|(?<=;)\s*|(?<=；)\s*|(?<=•)\s*", value)
     output: list[str] = []
+    seen: set[str] = set()
     for part in parts:
         item = re.sub(r"^(?:[-*•○●□■\xa1]|\d+[.)]|[가-힣][.)])\s*", "", part.strip())
-        if item and item not in output:
+        if item and item not in seen:
+            seen.add(item)
             output.append(item)
     return output
 
@@ -275,8 +286,8 @@ def _section_for_label(label: str) -> str | None:
     key = _norm(label)
     if not key:
         return None
-    for section, aliases in _SECTION_ALIASES.items():
-        if key in {_norm(alias) for alias in aliases}:
+    for section, alias_keys in _SECTION_ALIAS_KEYS.items():
+        if key in alias_keys:
             return section
     if "세분류" in key and any(marker in key for marker in ("ncs", "특화분류", "소분류")):
         return "ncs_detail"
@@ -292,7 +303,7 @@ def _is_abbreviated_detail_label(value: Any) -> bool:
     surrounding ``분류체계`` context.
     """
 
-    return _norm(value) in {_norm("세"), _norm("세분")}
+    return _norm(value) in _ABBREVIATED_DETAIL_LABEL_KEYS
 
 
 def _section_prefix_for_text(value: str) -> tuple[str, str] | None:
@@ -3524,7 +3535,11 @@ def parse_with_kordoc(data: bytes, filename: str = "", ocr: bool = False) -> dic
 
     if not data:
         raise KordocParseError("uploaded document is empty")
-    timeout = _kordoc_timeout_seconds()
+    timeout = clamp_timeout_to_request_budget(
+        _kordoc_timeout_seconds(),
+        reserve_sec=5.0,
+        minimum_sec=1.0,
+    )
     try:
         return _parse_with_local_kordoc(
             data,
@@ -3568,6 +3583,10 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     markdown = str(parsed.get("markdown") or "")
     provenance = _parser_provenance(parsed)
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in _SECTION_ALIASES}
+    section_text_keys: dict[str, set[str]] = {key: set() for key in _SECTION_ALIASES}
+    section_items_by_key: dict[str, dict[str, dict[str, Any]]] = {
+        key: {} for key in _SECTION_ALIASES
+    }
     current: str | None = None
     active_ability_detail = ""
     # The filename is useful evidence when a sparse/partially parsed document
@@ -3604,7 +3623,8 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         for item, detail_hint, ordinal in items:
             if not item:
                 continue
-            if any(_norm(existing.get("text")) == _norm(item) for existing in sections[section]):
+            item_key = _norm(item) or item
+            if item_key in section_text_keys[section]:
                 continue
             evidence = _evidence(item, block=block, line=line)
             if detail_hint:
@@ -3612,6 +3632,8 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             if ordinal:
                 evidence["ability_unit_ordinal"] = ordinal
             sections[section].append(evidence)
+            section_text_keys[section].add(item_key)
+            section_items_by_key[section][item_key] = evidence
 
     lines = markdown.splitlines()
     for line_no, raw_line in enumerate(lines, start=1):
@@ -3768,19 +3790,26 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         markdown,
         valid_detail_candidates=explicit_detail_candidates,
     )
+    positioned_ability_keys = {
+        (
+            _norm(item.get("text")),
+            _scope_label_key(item.get("embedded_ncs_detail")),
+        )
+        for item in positioned_items
+        if item.get("section") == "ability_units"
+    }
     for recovered in _flattened_numbered_ability_records(
         markdown,
         explicit_detail_candidates,
     ):
-        if any(
-            item.get("section") == "ability_units"
-            and _norm(item.get("text")) == _norm(recovered.get("text"))
-            and _scope_label_key(item.get("embedded_ncs_detail"))
-            == _scope_label_key(recovered.get("embedded_ncs_detail"))
-            for item in positioned_items
-        ):
+        recovered_key = (
+            _norm(recovered.get("text")),
+            _scope_label_key(recovered.get("embedded_ncs_detail")),
+        )
+        if recovered_key in positioned_ability_keys:
             continue
         positioned_items.append(recovered)
+        positioned_ability_keys.add(recovered_key)
     for positioned in positioned_items:
         section = str(positioned.get("section") or "")
         if section not in sections:
@@ -3788,10 +3817,8 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         text = str(positioned.get("text") or "").strip()
         if not text:
             continue
-        existing = next(
-            (item for item in sections[section] if _norm(item.get("text")) == _norm(text)),
-            None,
-        )
+        text_key = _norm(text) or text
+        existing = section_items_by_key[section].get(text_key)
         positional_evidence = {
             key: positioned[key]
             for key in (
@@ -3824,7 +3851,10 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             if not existing.get("page") and positional_evidence.get("page"):
                 existing["page"] = positional_evidence["page"]
         else:
-            sections[section].append({"text": text, **positional_evidence})
+            evidence = {"text": text, **positional_evidence}
+            sections[section].append(evidence)
+            section_text_keys[section].add(text_key)
+            section_items_by_key[section][text_key] = evidence
 
     detail_candidates = list(explicit_detail_candidates)
     detail_source = "explicit" if detail_candidates else ""
