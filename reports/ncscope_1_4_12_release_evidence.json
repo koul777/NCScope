@@ -1,7 +1,7 @@
 {
   "schema_version": "ncscope_release_evidence_v2",
   "release_version": "1.4.12",
-  "generated_at": "2026-08-25T19:27:54+09:00",
+  "generated_at": "2026-08-26T03:11:49+09:00",
   "evidence_scope": "sanitized aggregate release evidence; private source documents and MCP response bodies are excluded",
   "human_gold_accuracy_available": false,
   "stored_jd_parser": {
@@ -170,9 +170,10 @@
       "status": "passed",
       "passed": 5167,
       "skipped": 72,
-      "duration_seconds": 85.88,
+      "duration_seconds": 70.98,
       "pytest_version": "9.0.3",
-      "pytest_asyncio_version": "1.4.0"
+      "pytest_asyncio_version": "1.4.0",
+      "cryptography_version": "50.0.0"
     },
     "python_dependency_audit": {
       "status": "passed",

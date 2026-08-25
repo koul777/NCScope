@@ -188,6 +188,7 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
     assert verification["pytest"]["duration_seconds"] > 0
     assert verification["pytest"]["pytest_version"] == "9.0.3"
     assert verification["pytest"]["pytest_asyncio_version"] == "1.4.0"
+    assert verification["pytest"]["cryptography_version"] == "50.0.0"
     assert verification["python_dependency_audit"] == {
         "status": "passed",
         "known_vulnerabilities": 0,
