@@ -193,6 +193,7 @@ def test_signed_review_session_rejects_unsafe_filename_even_with_valid_signature
         "/api/ncs/units/options",
         "/api/alio/attachments",
         "/api/alio/attachment",
+        "/api/notice/parse-review",
     ],
 )
 def test_expensive_request_limit_returns_429_only_after_configured_limit(
@@ -241,7 +242,46 @@ def test_expensive_request_limit_returns_429_only_after_configured_limit(
     [
         "/api/alio/attachments",
         "/api/alio/attachment",
+        "/api/notice/parse-review",
     ],
 )
 def test_expensive_request_limit_covers_alio_download_paths(path: str) -> None:
     assert main.ExpensiveRequestLimitMiddleware._is_expensive(path)
+
+
+def test_rate_limit_client_state_has_a_hard_lru_bound(monkeypatch) -> None:
+    monkeypatch.setenv("RATE_LIMIT_WINDOW_SEC", "3600")
+    monkeypatch.setenv("RATE_LIMIT_REQUESTS_PER_WINDOW", "100")
+    middleware = main.ExpensiveRequestLimitMiddleware(lambda *_args: None)
+    middleware._MAX_TRACKED_RATE_LIMIT_KEYS = 128
+
+    for index in range(1_000):
+        allowed, _retry_after = middleware._consume_rate_limit(
+            (f"198.51.100.{index}", "expensive")
+        )
+        assert allowed is True
+
+    assert len(middleware._events) == 128
+    assert ("198.51.100.999", "expensive") in middleware._events
+    assert ("198.51.100.0", "expensive") not in middleware._events
+
+
+def test_alio_request_cache_has_lru_bound_and_ttl(monkeypatch) -> None:
+    monkeypatch.setattr(main, "_ALIO_CACHE_MAX_ENTRIES", 3)
+    monkeypatch.setattr(main, "_ALIO_CACHE_TTL_SEC", 10.0)
+    monkeypatch.setattr(main.time, "monotonic", lambda: 100.0)
+    main._ALIO_CACHE.clear()
+    main._ALIO_CACHE_TIMES.clear()
+
+    for index in range(4):
+        main._store_alio_cache(str(index), {"posting_id": str(index)})
+
+    assert list(main._ALIO_CACHE) == ["1", "2", "3"]
+    assert main._get_alio_cache("1") == {"posting_id": "1"}
+    assert list(main._ALIO_CACHE) == ["2", "3", "1"]
+
+    monkeypatch.setattr(main.time, "monotonic", lambda: 111.0)
+    assert main._get_alio_cache("1") is None
+    assert "1" not in main._ALIO_CACHE_TIMES
+    main._ALIO_CACHE.clear()
+    main._ALIO_CACHE_TIMES.clear()

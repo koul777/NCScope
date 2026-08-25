@@ -10,7 +10,7 @@ const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const KORDOC_VERSION = "4.9.1";
 const SIGNATURE_TTL_SECONDS = 120;
-const ED25519_PUBLIC_KEY_RAW = "tbBF-dGBMdncj9AkHph9pD4pUaeFevCUOGjyNDCgWIc";
+const ED25519_PUBLIC_KEY_RAW = "VBlGEy_kzpdThiEEmtrGj7hU6bfUkNtw0SjIrXwK8vA";
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const ED25519_PUBLIC_KEY = crypto.createPublicKey({
   key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(ED25519_PUBLIC_KEY_RAW, "base64url")]),
@@ -42,12 +42,12 @@ const headerText = (req, name) => {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
 };
 
-const validateSignature = (req, bytes) => {
+const validateSignatureHeaders = (req) => {
   try {
     const timestampText = headerText(req, "x-ncscope-kordoc-timestamp");
     const signatureText = headerText(req, "x-ncscope-kordoc-signature");
+    const bodySha256 = headerText(req, "x-ncscope-kordoc-body-sha256");
     const encodedFilename = headerText(req, "x-ncscope-filename-b64");
-    const ocrFlag = headerText(req, "x-ncscope-ocr") === "1" ? "1" : "0";
     if (!/^\d{10}$/.test(timestampText)) return { valid: false, reason: "timestamp_format" };
     if (!/^[A-Za-z0-9_-]{86}$/.test(signatureText)) {
       return { valid: false, reason: "signature_format" };
@@ -55,12 +55,15 @@ const validateSignature = (req, bytes) => {
     if (!/^[A-Za-z0-9_-]{0,1024}$/.test(encodedFilename)) {
       return { valid: false, reason: "filename_format" };
     }
+    if (!/^[a-f0-9]{64}$/.test(bodySha256)) {
+      return { valid: false, reason: "body_hash_format" };
+    }
     const timestamp = Number(timestampText);
     const now = Math.floor(Date.now() / 1000);
     if (!Number.isSafeInteger(timestamp) || Math.abs(now - timestamp) > SIGNATURE_TTL_SECONDS) {
       return { valid: false, reason: "timestamp_expired" };
     }
-    const bodySha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+    const ocrFlag = headerText(req, "x-ncscope-ocr") === "1" ? "1" : "0";
     const message = [timestampText, bodySha256, encodedFilename, ocrFlag].join("\n");
     const signature = Buffer.from(signatureText, "base64url");
     const valid = signature.length === 64 && crypto.verify(
@@ -69,7 +72,24 @@ const validateSignature = (req, bytes) => {
       ED25519_PUBLIC_KEY,
       signature,
     );
-    return { valid, reason: valid ? "passed" : "signature_mismatch" };
+    return { valid, reason: valid ? "header_signature_passed" : "signature_mismatch" };
+  } catch {
+    return { valid: false, reason: "verification_error" };
+  }
+};
+
+const validateSignature = (req, bytes) => {
+  try {
+    const headerReview = validateSignatureHeaders(req);
+    if (!headerReview.valid) return headerReview;
+    const declaredHash = Buffer.from(
+      headerText(req, "x-ncscope-kordoc-body-sha256"),
+      "hex",
+    );
+    const actualHash = crypto.createHash("sha256").update(bytes).digest();
+    const valid = declaredHash.length === actualHash.length
+      && crypto.timingSafeEqual(declaredHash, actualHash);
+    return { valid, reason: valid ? "passed" : "body_hash_mismatch" };
   } catch {
     return { valid: false, reason: "verification_error" };
   }
@@ -138,7 +158,8 @@ export default async function handler(req, res) {
   }
 
   const expectedSecret = normalizeSecret(process.env.KORDOC_BRIDGE_SECRET);
-  const hasValidSharedSecret = Boolean(expectedSecret) && sameSecret(
+  const hasStrongSharedSecret = /^[\x20-\x7E]{32,}$/.test(expectedSecret);
+  const hasValidSharedSecret = hasStrongSharedSecret && sameSecret(
     req.headers["x-ncscope-kordoc-secret"],
     expectedSecret,
   );
@@ -146,6 +167,18 @@ export default async function handler(req, res) {
   const contentType = String(req.headers["content-type"] || "").toLowerCase();
   if (!contentType.startsWith("application/octet-stream")) {
     return sendJson(res, 415, { success: false, code: "unsupported_media_type" });
+  }
+
+  if (!hasValidSharedSecret) {
+    const signatureHeaderReview = validateSignatureHeaders(req);
+    if (!signatureHeaderReview.valid) {
+      res.setHeader("x-ncscope-bridge-rejection", signatureHeaderReview.reason);
+      return sendJson(res, 401, {
+        success: false,
+        code: "unauthorized",
+        reason_code: signatureHeaderReview.reason,
+      });
+    }
   }
 
   try {

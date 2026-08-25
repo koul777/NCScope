@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import re
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +19,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services.ncs_mcp_client import get_ksa_by_units  # noqa: E402
+from app.services.request_budget import (  # noqa: E402
+    RequestBudgetExceeded,
+    use_request_budget,
+)
 
 
 DEFAULT_CATALOG = "app/data/ncs_unit_catalog.json"
@@ -35,10 +41,10 @@ def _ksa_type_key(value: Any) -> str:
     return compact
 
 
-def _probe_codes(benchmark_csv: Path) -> list[str]:
-    with benchmark_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+def _benchmark_snapshot(data: bytes) -> tuple[list[str], int]:
+    with io.StringIO(data.decode("utf-8-sig"), newline="") as handle:
         rows = list(csv.DictReader(handle))
-    return sorted(
+    codes = sorted(
         {
             code.strip()
             for row in rows
@@ -46,11 +52,15 @@ def _probe_codes(benchmark_csv: Path) -> list[str]:
             if code.strip()
         }
     )
+    return codes, len(rows)
+
+
+def _probe_codes(benchmark_csv: Path) -> list[str]:
+    return _benchmark_snapshot(benchmark_csv.read_bytes())[0]
 
 
 def _csv_row_count(benchmark_csv: Path) -> int:
-    with benchmark_csv.open("r", encoding="utf-8-sig", newline="") as handle:
-        return sum(1 for _row in csv.DictReader(handle))
+    return _benchmark_snapshot(benchmark_csv.read_bytes())[1]
 
 
 def _sha256(path: Path) -> str:
@@ -61,8 +71,8 @@ def _code_set_sha256(codes: list[str]) -> str:
     return hashlib.sha256("\n".join(sorted(codes)).encode("utf-8")).hexdigest()
 
 
-def _catalog_units(catalog_path: Path) -> dict[str, dict[str, Any]]:
-    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+def _catalog_units_from_bytes(data: bytes) -> dict[str, dict[str, Any]]:
+    payload = json.loads(data.decode("utf-8"))
     rows = payload.get("units") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise ValueError("unit catalog must contain a units list")
@@ -82,6 +92,10 @@ def _catalog_units(catalog_path: Path) -> dict[str, dict[str, Any]]:
     return {code: row for code, row in zip(codes, rows)}
 
 
+def _catalog_units(catalog_path: Path) -> dict[str, dict[str, Any]]:
+    return _catalog_units_from_bytes(catalog_path.read_bytes())
+
+
 FetchKsaFn = Callable[[list[dict[str, Any]], int], list[dict[str, Any]]]
 
 
@@ -99,14 +113,18 @@ def audit_ksa_contract(
     expected_audit_script_sha256: str = "",
     require_input_digests: bool = False,
     max_factors_per_unit: int = 12,
+    max_runtime_seconds: float = 600.0,
     fetch_ksa: FetchKsaFn = get_ksa_by_units,
 ) -> dict[str, Any]:
+    started_at_monotonic = time.monotonic()
+    runtime_limit_seconds = max(1.0, float(max_runtime_seconds or 600.0))
     expected_benchmark_sha256 = expected_benchmark_sha256.strip().casefold()
     expected_catalog_sha256 = expected_catalog_sha256.strip().casefold()
     expected_code_set_sha256 = expected_code_set_sha256.strip().casefold()
     expected_client_sha256 = expected_client_sha256.strip().casefold()
     expected_audit_script_sha256 = expected_audit_script_sha256.strip().casefold()
-    catalog = _catalog_units(catalog_path)
+    catalog_bytes = catalog_path.read_bytes()
+    catalog = _catalog_units_from_bytes(catalog_bytes)
     if all_active_catalog_units:
         if benchmark_csv is not None:
             raise ValueError(
@@ -119,15 +137,17 @@ def audit_ksa_contract(
     else:
         if benchmark_csv is None:
             raise ValueError("benchmark_csv is required unless all catalog units are used")
-        codes = _probe_codes(benchmark_csv)
-        benchmark_rows = _csv_row_count(benchmark_csv)
-        benchmark_sha256 = _sha256(benchmark_csv)
+        benchmark_bytes = benchmark_csv.read_bytes()
+        codes, benchmark_rows = _benchmark_snapshot(benchmark_bytes)
+        benchmark_sha256 = hashlib.sha256(benchmark_bytes).hexdigest()
         input_scope = "benchmark_selected_probe_code_set"
-    catalog_sha256 = _sha256(catalog_path)
+    catalog_sha256 = hashlib.sha256(catalog_bytes).hexdigest()
     code_set_sha256 = _code_set_sha256(codes)
     client_path = ROOT / "app" / "services" / "ncs_mcp_client.py"
-    client_sha256 = _sha256(client_path)
-    audit_script_sha256 = _sha256(Path(__file__).resolve())
+    client_bytes = client_path.read_bytes()
+    audit_script_bytes = Path(__file__).resolve().read_bytes()
+    client_sha256 = hashlib.sha256(client_bytes).hexdigest()
+    audit_script_sha256 = hashlib.sha256(audit_script_bytes).hexdigest()
     missing_catalog_codes = [code for code in codes if code not in catalog]
     units = [
         {
@@ -175,10 +195,25 @@ def audit_ksa_contract(
     fetch_error_type = ""
     if units and not failures:
         try:
-            rows = fetch_ksa(units, max(3, int(max_factors_per_unit or 12)))
+            # The command's maximum runtime covers snapshot loading and
+            # validation as well as the remote contract fetch.
+            remaining_runtime_seconds = runtime_limit_seconds - (
+                time.monotonic() - started_at_monotonic
+            )
+            if remaining_runtime_seconds <= 0:
+                raise RequestBudgetExceeded("KSA contract audit deadline exceeded")
+            with use_request_budget(remaining_runtime_seconds):
+                rows = fetch_ksa(units, max(3, int(max_factors_per_unit or 12)))
+        except RequestBudgetExceeded:
+            fetch_error_type = "RequestBudgetExceeded"
+            failures.append("ncs_mcp_fetch_deadline_exceeded")
         except Exception as exc:  # Produce a fail-closed report without remote details.
             fetch_error_type = type(exc).__name__
-            failures.append("ncs_mcp_fetch_failed")
+            elapsed = time.monotonic() - started_at_monotonic
+            if elapsed >= max(0.0, runtime_limit_seconds - 3.0):
+                failures.append("ncs_mcp_fetch_deadline_exceeded")
+            else:
+                failures.append("ncs_mcp_fetch_failed")
 
     expected_codes = set(codes)
     types_by_code: dict[str, set[str]] = defaultdict(set)
@@ -307,6 +342,8 @@ def audit_ksa_contract(
         "independent_upstream_provenance_attested": False,
         "official_marker_semantics": "assigned_by_configured_ncs_mcp_client",
         "max_factors_per_unit": max(3, int(max_factors_per_unit or 12)),
+        "max_runtime_seconds": runtime_limit_seconds,
+        "runtime_seconds": round(time.monotonic() - started_at_monotonic, 3),
         "probe_unit_codes": len(codes),
         "expected_unit_codes": expected_unit_codes,
         "expected_benchmark_rows": expected_benchmark_rows,
@@ -359,6 +396,7 @@ def main() -> int:
     parser.add_argument("--expected-audit-script-sha256", default="")
     parser.add_argument("--require-input-digests", action="store_true")
     parser.add_argument("--max-factors-per-unit", type=int, default=12)
+    parser.add_argument("--max-runtime-seconds", type=float, default=600.0)
     args = parser.parse_args()
     if bool(args.benchmark_csv) == bool(args.all_active_catalog_units):
         parser.error(
@@ -378,6 +416,7 @@ def main() -> int:
         expected_audit_script_sha256=args.expected_audit_script_sha256,
         require_input_digests=bool(args.require_input_digests),
         max_factors_per_unit=max(3, args.max_factors_per_unit),
+        max_runtime_seconds=max(1.0, args.max_runtime_seconds),
     )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi import HTTPException
@@ -62,6 +65,50 @@ def test_document_parse_budget_applies_when_rate_limit_is_disabled(
     assert 0 < float(observed[0]) <= 285
 
 
+def test_generation_budget_is_a_hard_wall_clock_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = asyncio.Event()
+
+    async def downstream(_scope, _receive, _send) -> None:
+        try:
+            await asyncio.sleep(1.3)
+        finally:
+            cancelled.set()
+
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
+    monkeypatch.setattr(main, "_generation_request_budget_sec", lambda: 1.0)
+    middleware = main.ExpensiveRequestLimitMiddleware(downstream)
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    async def run() -> float:
+        started = time.monotonic()
+        await middleware(
+            {"type": "http", "method": "POST", "path": "/api/questions/generate"},
+            receive,
+            send,
+        )
+        return time.monotonic() - started
+
+    elapsed = asyncio.run(run())
+    response_start = next(message for message in sent if message["type"] == "http.response.start")
+    response_body = next(message for message in sent if message["type"] == "http.response.body")
+
+    assert elapsed < 1.2
+    assert cancelled.is_set()
+    assert response_start["status"] == 504
+    assert json.loads(response_body["body"])["detail"] == {
+        "code": "generation_request_deadline_exhausted",
+        "retryable": True,
+    }
+
+
 def test_kordoc_timeout_is_clamped_to_shared_document_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -106,3 +153,154 @@ def test_document_parse_deadline_maps_to_controlled_504(
         "code": "document_parse_deadline_exhausted",
         "retryable": True,
     }
+
+
+def test_document_parse_wall_clock_deadline_maps_to_controlled_504(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def slow_parse(*_args, **_kwargs):
+        time.sleep(0.4)
+        return {"markdown": "too late"}
+
+    monkeypatch.setattr(main, "_parse_upload_document", slow_parse)
+    async def run() -> tuple[float, HTTPException]:
+        started = time.monotonic()
+        with use_request_budget(1.2):
+            with pytest.raises(HTTPException) as exc_info:
+                await main._parse_upload_document_off_loop(
+                    b"document",
+                    "job.pdf",
+                    "jd_file",
+                )
+        return time.monotonic() - started, exc_info.value
+
+    elapsed, error = asyncio.run(run())
+
+    assert elapsed < 0.35
+    assert error.status_code == 504
+
+
+def test_timed_out_document_worker_keeps_capacity_slot_until_thread_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+    started = threading.Event()
+    monkeypatch.setattr(main, "_DOCUMENT_WORK_SLOTS", threading.BoundedSemaphore(1))
+
+    def blocked_parse(*_args, **_kwargs):
+        started.set()
+        release.wait(timeout=2)
+        return {"markdown": "done"}
+
+    monkeypatch.setattr(main, "_parse_upload_document", blocked_parse)
+
+    async def run() -> None:
+        with use_request_budget(1.2):
+            with pytest.raises(HTTPException) as first_error:
+                await main._parse_upload_document_off_loop(
+                    b"document",
+                    "first.pdf",
+                    "jd_file",
+                )
+        assert first_error.value.status_code == 504
+        assert started.is_set()
+
+        with pytest.raises(HTTPException) as capacity_error:
+            await main._parse_upload_document_off_loop(
+                b"document",
+                "second.pdf",
+                "jd_file",
+            )
+        assert capacity_error.value.status_code == 429
+        release.set()
+        await asyncio.sleep(0.05)
+
+        result = await main._parse_upload_document_off_loop(
+            b"document",
+            "third.pdf",
+            "jd_file",
+        )
+        assert result == {"markdown": "done"}
+
+    try:
+        asyncio.run(run())
+    finally:
+        release.set()
+
+
+def test_cancelled_queued_document_worker_releases_reserved_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_executor = threading.Event()
+    executor_started = threading.Event()
+    document_function_called = threading.Event()
+    semaphore = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(main, "_DOCUMENT_WORK_SLOTS", semaphore)
+
+    def occupy_executor() -> None:
+        executor_started.set()
+        release_executor.wait(timeout=3)
+
+    def queued_document_function() -> dict[str, str]:
+        document_function_called.set()
+        return {"markdown": "must not run after cancellation"}
+
+    async def run() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        blocker = asyncio.create_task(asyncio.to_thread(occupy_executor))
+        while not executor_started.is_set():
+            await asyncio.sleep(0.005)
+        try:
+            with use_request_budget(1.2):
+                with pytest.raises(HTTPException) as exc_info:
+                    await main._run_document_work_off_loop(
+                        queued_document_function
+                    )
+            assert exc_info.value.status_code == 504
+            assert semaphore.acquire(blocking=False) is True
+            semaphore.release()
+        finally:
+            release_executor.set()
+            await blocker
+            await asyncio.sleep(0.05)
+
+    asyncio.run(run())
+    assert document_function_called.is_set() is False
+
+
+def test_ksa_fetch_helper_does_not_block_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def slow_fetch(**_kwargs):
+        time.sleep(0.2)
+        return [{"ncsClCd": "0101010101_20v1", "factorName": "factor"}]
+
+    monkeypatch.setattr(main, "_fetch_ncs_ksa_or_502", slow_fetch)
+
+    async def run() -> tuple[float, list[dict]]:
+        started = time.monotonic()
+        fetch_task = asyncio.create_task(
+            main._fetch_ncs_ksa_or_502_off_loop([], 1, 1)
+        )
+        await asyncio.sleep(0.02)
+        heartbeat_elapsed = time.monotonic() - started
+        return heartbeat_elapsed, await fetch_task
+
+    heartbeat_elapsed, rows = asyncio.run(run())
+
+    assert heartbeat_elapsed < 0.1
+    assert rows[0]["factorName"] == "factor"
+
+
+def test_parse_review_rejects_response_above_serverless_safe_limit() -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("large.txt", b"\x00" * (800 * 1024), "text/plain")},
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "parsed_document_response_too_large"

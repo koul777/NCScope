@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,53 @@ def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() ->
         assert re.fullmatch(r"[0-9a-f]{64}", addendum[field])
     result = "tests/fixtures/stored_jd_final_blind_result.json"
     assert _git_text_sha256(ROOT / result) == git_text_hashes[result]
+    assert set(addendum["final_raw_sha256"]) == set(git_text_hashes)
+    for relative, expected in addendum["final_raw_sha256"].items():
+        assert re.fullmatch(r"[0-9a-f]{64}", expected)
+        assert (ROOT / relative).is_file()
+    assert addendum["final_raw_sha256_scope"].startswith(
+        "Windows audit-run worktree bytes"
+    )
+    assert addendum["final_audit_script_sha256"] == addendum["final_raw_sha256"][
+        "scripts/audit_stored_jd_ksa_contract.py"
+    ]
+
+
+def test_final_blind_evidence_timestamps_and_operational_drift_are_ordered() -> None:
+    freeze = json.loads(
+        (FIXTURES / "stored_jd_final_blind_freeze.json").read_text(encoding="utf-8")
+    )
+    addendum = json.loads(
+        (FIXTURES / "stored_jd_final_blind_freeze_addendum.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    result = json.loads(
+        (FIXTURES / "stored_jd_final_blind_result.json").read_text(encoding="utf-8")
+    )
+    reference = json.loads(
+        (FIXTURES / "stored_jd_final_blind_reference.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    frozen_at = datetime.fromisoformat(freeze["frozen_at"])
+    addendum_created = datetime.fromisoformat(addendum["created_at"])
+    compared_at = datetime.fromisoformat(result["evaluated_at"])
+    rechecked_at = datetime.fromisoformat(
+        addendum["current_non_independent_recheck_at"]
+    )
+    updated_at = datetime.fromisoformat(addendum["updated_at"])
+
+    assert frozen_at <= addendum_created <= compared_at <= rechecked_at <= updated_at
+    assert addendum["current_benchmark_non_timing_change_from_previous_count"] == 1
+    changed = addendum["current_benchmark_non_timing_changed_sha256"]
+    assert len(changed) == 1
+    assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in changed)
+    assert addendum["current_benchmark_non_timing_change_overlaps_frozen_set"] is False
+    frozen_document_hashes = {
+        record["sha256"] for record in reference["records"]
+    }
+    assert set(changed).isdisjoint(frozen_document_hashes)
 
 
 def test_final_blind_result_is_valid_non_gold_and_meets_every_release_target() -> None:

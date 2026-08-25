@@ -236,6 +236,74 @@ def test_benchmark_zip_txt_member_is_parsed_without_kordoc() -> None:
     assert parsed["metadata"]["members"] == [{"filename": "직무기술서.txt", "suffix": ".txt"}]
 
 
+def test_benchmark_zip_processes_every_supported_member_up_to_limit() -> None:
+    data = _zip_bytes(
+        {
+            f"직무기술서_{index:02}.txt": f"세분류: 경영기획\n담당업무: {index}"
+            for index in range(benchmark_alio_jd.ARCHIVE_MEMBER_LIMIT)
+        }
+    )
+
+    parsed = parse_benchmark_document(
+        data,
+        filename="alio.zip",
+        max_bytes=1024 * 1024,
+    )
+
+    assert len(parsed["metadata"]["members"]) == benchmark_alio_jd.ARCHIVE_MEMBER_LIMIT
+    assert not any("member limit" in warning for warning in parsed["warnings"])
+
+
+def test_benchmark_zip_rejects_excessive_entry_or_supported_member_counts() -> None:
+    too_many_members = _zip_bytes(
+        {
+            f"직무기술서_{index:02}.txt": "세분류: 경영기획"
+            for index in range(benchmark_alio_jd.ARCHIVE_MEMBER_LIMIT + 1)
+        }
+    )
+    too_many_entries = _zip_bytes(
+        {
+            f"unsupported_{index:03}.bin": "x"
+            for index in range(benchmark_alio_jd.ARCHIVE_ENTRY_LIMIT + 1)
+        }
+    )
+
+    with pytest.raises(KordocParseError, match="too many supported documents"):
+        parse_benchmark_document(
+            too_many_members,
+            filename="members.zip",
+            max_bytes=1024 * 1024,
+        )
+    with pytest.raises(KordocParseError, match="too many entries"):
+        parse_benchmark_document(
+            too_many_entries,
+            filename="entries.zip",
+            max_bytes=1024 * 1024,
+        )
+
+
+def test_benchmark_zip_rejects_large_directory_with_forged_count() -> None:
+    data = bytearray(
+        _zip_bytes(
+            {
+                f"unsupported_{index:03}_{'x' * 1100}.bin": "x"
+                for index in range(benchmark_alio_jd.ARCHIVE_ENTRY_LIMIT)
+            }
+        )
+    )
+    eocd = data.rfind(b"PK\x05\x06")
+    assert eocd >= 0
+    data[eocd + 8 : eocd + 10] = (1).to_bytes(2, "little")
+    data[eocd + 10 : eocd + 12] = (1).to_bytes(2, "little")
+
+    with pytest.raises(KordocParseError, match="directory is too large"):
+        parse_benchmark_document(
+            bytes(data),
+            filename="forged-count.zip",
+            max_bytes=1024 * 1024,
+        )
+
+
 def test_benchmark_zip_image_member_uses_kordoc_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, bool]] = []
 

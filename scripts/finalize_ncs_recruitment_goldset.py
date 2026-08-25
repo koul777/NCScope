@@ -21,6 +21,7 @@ USAGE_POLICY = "evaluation_only_no_training_or_rule_tuning"
 AI_EVALUATION_BASIS = "independent_ai_agent_adjudicated_reference_not_human_gold"
 HUMAN_EVALUATION_BASIS = "independent_human_double_review_adjudicated_gold"
 HUMAN_ATTESTATION = "confirmed_independent_human_review"
+HUMAN_ATTESTATION_VERSION = "independent-human-review-v1"
 ADJUDICATION_WORKLIST_VERSION = "ncs_recruitment_adjudication_worklist_v2"
 ADJUDICATION_APPLIED_VERSION = "ncs_recruitment_adjudication_decisions_v2"
 OFFICIAL_DETAIL_CATALOG = ROOT / "app" / "data" / "ncs_detail_catalog.json"
@@ -758,6 +759,12 @@ def finalize_reference(
         is_human_gold = False
         evaluation_basis = AI_EVALUATION_BASIS
 
+    attestation = {
+        "version": HUMAN_ATTESTATION_VERSION,
+        "attested": is_human_gold,
+        "statement": HUMAN_ATTESTATION if is_human_gold else "",
+    }
+
     split_counts = Counter(str(record["split"]) for record in final_records)
     resolution_counts = Counter(
         str(record["resolution_type"]) for record in final_records
@@ -769,6 +776,7 @@ def finalize_reference(
         "is_human_gold": is_human_gold,
         "is_gold_accuracy": is_human_gold,
         "is_gold": is_human_gold,
+        "human_gold_attestation": attestation,
         "automatic_predictions_are_gold": False,
         "usage_policy": USAGE_POLICY,
         "review_provenance": {
@@ -868,6 +876,10 @@ def write_final_reference(
         "evaluation_basis": reference["evaluation_basis"],
         "is_human_gold": reference["is_human_gold"],
         "is_gold_accuracy": reference["is_gold_accuracy"],
+        "human_gold_attestation": reference["human_gold_attestation"],
+        "human_gold_attestation_sha256": sha256_bytes(
+            canonical_json_bytes(reference["human_gold_attestation"])
+        ),
         "automatic_predictions_are_gold": False,
         "usage_policy": USAGE_POLICY,
         "local_only": True,

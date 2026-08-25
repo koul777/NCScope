@@ -27,11 +27,14 @@ from app.settings import settings
 from app.services.request_budget import (
     RequestBudgetExceeded,
     clamp_timeout_to_request_budget,
+    remaining_request_budget_sec,
+    use_request_budget,
 )
 
 MCP_PROTOCOL_VERSION = "2025-03-26"
 _TOOLS_TTL = 300.0
 _STATUS_TTL = 10.0
+_STATUS_PROBE_BUDGET_SEC = 8.0
 _tools_cache: tuple[float, str, set[str]] | None = None
 _status_cache: tuple[float, str, dict[str, Any]] | None = None
 _status_cache_lock = threading.Lock()
@@ -212,7 +215,7 @@ def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
                         "params": {
                             "protocolVersion": MCP_PROTOCOL_VERSION,
                             "capabilities": {},
-                            "clientInfo": {"name": "ncscope", "version": "1.4.10"},
+                            "clientInfo": {"name": "ncscope", "version": "1.4.11"},
                         },
                     },
                     timeout=request_timeout,
@@ -808,7 +811,10 @@ def _detail_query_names(name: str) -> list[str]:
 
 
 def _detail_search_query_limit(max_units: int) -> int:
-    return min(200, max(100, int(max_units or 0) * 5))
+    # The MCP ranker can place the first exact-detail row well below the
+    # caller's final output cap.  Keep discovery deep and bound the retained
+    # rows separately so a small UI limit does not turn into a false miss.
+    return 200
 
 
 def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list[dict[str, Any]]:
@@ -817,13 +823,18 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
     # Call the versioned generation tool directly. Full discovery remains a
     # readiness concern and must not add a cold-path round trip here.
     limit = max(1, int(max_units or 80))
+    details = _split_detail_terms(detail_names)
+    if len(details) > 64:
+        raise NcsMcpError("NCS detail term limit exceeded")
     groups: list[list[dict[str, Any]]] = []
+    retained_count = 0
     seen: set[str] = set()
-    for detail in _split_detail_terms(detail_names):
+    for detail in details:
         name = str(detail or "").strip()
         if not name:
             continue
         group: list[dict[str, Any]] = []
+        groups.append(group)
         for query_name in _detail_query_names(name):
             result = _call_tool(
                 "ncs_search",
@@ -870,9 +881,17 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                         "matchScore": 1.0,
                     }
                 )
+                retained_count += 1
+                if retained_count > limit:
+                    # Keep total retained rows bounded while continuously
+                    # rebalancing toward round-robin fairness. Sparse groups
+                    # donate unused capacity to dense groups instead of
+                    # losing otherwise valid results to a fixed pre-quota.
+                    longest_group = max(groups, key=len)
+                    longest_group.pop()
+                    retained_count -= 1
             if len(group) > matched_before and _norm(query_name) == _norm(name):
                 break
-        groups.append(group)
 
     # Preserve at least one exact unit from each confirmed detail before a
     # large first classification can consume the global response limit.
@@ -1191,7 +1210,11 @@ def ncs_mcp_status(*, force_refresh: bool = False) -> dict[str, Any]:
             # The status cache is deliberately much shorter than discovery's
             # five-minute cache, so readiness detects outages promptly while
             # repeated platform probes share one downstream request.
-            names = sorted(_tool_names(force_refresh=True))
+            if remaining_request_budget_sec() is None:
+                with use_request_budget(_STATUS_PROBE_BUDGET_SEC):
+                    names = sorted(_tool_names(force_refresh=True))
+            else:
+                names = sorted(_tool_names(force_refresh=True))
             status = {
                 "configured": bool(endpoint),
                 "reachable": True,

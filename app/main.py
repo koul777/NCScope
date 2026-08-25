@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from docx import Document
 from docx.shared import Pt
@@ -51,6 +51,7 @@ from app.services.kordoc_parser import (
     KordocParseError,
     _is_full_ncs_code,
     _strip_full_ncs_code_prefix,
+    kordoc_bridge_configuration_status,
     parse_with_kordoc,
     structure_job_description,
     structure_job_notice,
@@ -160,7 +161,11 @@ from app.services.ai_question_quality_review import (
     review_interview_questions_with_ai,
 )
 from app.services.external_ai_privacy import sanitize_external_ai_source_text
-from app.services.request_budget import RequestBudgetExceeded, use_request_budget
+from app.services.request_budget import (
+    RequestBudgetExceeded,
+    remaining_request_budget_sec,
+    use_request_budget,
+)
 from app.services.auto_runner import start_auto_runner
 from app.services.ax_readiness import assess_ax_readiness
 from app.services.alio_ingestion import (
@@ -291,6 +296,11 @@ def _document_parse_request_budget_sec() -> float:
     return max(30.0, min(285.0, configured))
 
 
+_DOCUMENT_WORK_SLOTS = threading.BoundedSemaphore(
+    settings.generation_max_concurrency()
+)
+
+
 class ExpensiveRequestLimitMiddleware:
     """Apply lightweight local backpressure to document/question APIs.
 
@@ -299,8 +309,14 @@ class ExpensiveRequestLimitMiddleware:
     same limits at the reverse proxy or shared rate-limit service.
     """
 
-    _EXPENSIVE_PREFIXES = ("/api/jd/", "/api/questions/", "/api/alio/")
+    _EXPENSIVE_PREFIXES = (
+        "/api/jd/",
+        "/api/notice/",
+        "/api/questions/",
+        "/api/alio/",
+    )
     _EXPENSIVE_PATHS = frozenset({"/api/ncs/units/options"})
+    _MAX_TRACKED_RATE_LIMIT_KEYS = 10_000
 
     def __init__(self, app):
         self.app = app
@@ -328,21 +344,22 @@ class ExpensiveRequestLimitMiddleware:
             else settings.rate_limit_requests_per_window()
         )
         with self._lock:
-            events = self._events.setdefault(key, deque())
+            # Pop/reinsert makes the insertion-ordered dict a compact LRU.
+            # A flood of active unique client keys must never turn cleanup
+            # into an O(N) scan on every request or grow memory without bound.
+            events = self._events.pop(key, deque())
             while events and now - events[0] >= window:
                 events.popleft()
             if len(events) >= limit:
+                self._events[key] = events
+                while len(self._events) > self._MAX_TRACKED_RATE_LIMIT_KEYS:
+                    self._events.pop(next(iter(self._events)))
                 retry_after = max(1, int(window - (now - events[0])))
                 return False, retry_after
             events.append(now)
-            if len(self._events) > 10_000:
-                stale_keys = [
-                    event_key
-                    for event_key, values in self._events.items()
-                    if not values or now - values[-1] >= window
-                ]
-                for event_key in stale_keys[:2_000]:
-                    self._events.pop(event_key, None)
+            self._events[key] = events
+            while len(self._events) > self._MAX_TRACKED_RATE_LIMIT_KEYS:
+                self._events.pop(next(iter(self._events)))
             return True, 0
 
     async def __call__(self, scope, receive, send):
@@ -359,18 +376,49 @@ class ExpensiveRequestLimitMiddleware:
         budgeted_document_parse = method == "POST" and path in {
             "/api/jd/parse-review",
             "/api/notice/parse-review",
-            "/api/jd/sclass",
+            "/api/jd/extract-sclass",
         }
 
         async def call_app_with_budget() -> None:
+            budget_seconds: float | None = None
+            deadline_code = ""
             if budgeted_generation:
-                with use_request_budget(_generation_request_budget_sec()):
-                    await self.app(scope, receive, send)
+                budget_seconds = _generation_request_budget_sec()
+                deadline_code = "generation_request_deadline_exhausted"
             elif budgeted_document_parse:
-                with use_request_budget(_document_parse_request_budget_sec()):
-                    await self.app(scope, receive, send)
-            else:
+                budget_seconds = _document_parse_request_budget_sec()
+                deadline_code = "document_parse_deadline_exhausted"
+            if budget_seconds is None:
                 await self.app(scope, receive, send)
+                return
+
+            response_started = False
+
+            async def budgeted_send(message) -> None:
+                nonlocal response_started
+                if message.get("type") == "http.response.start":
+                    response_started = True
+                await send(message)
+
+            try:
+                with use_request_budget(budget_seconds):
+                    await asyncio.wait_for(
+                        self.app(scope, receive, budgeted_send),
+                        timeout=budget_seconds,
+                    )
+            except TimeoutError:
+                if response_started:
+                    raise
+                response = JSONResponse(
+                    status_code=504,
+                    content={
+                        "detail": {
+                            "code": deadline_code,
+                            "retryable": True,
+                        }
+                    },
+                )
+                await response(scope, receive, send)
 
         if not settings.rate_limit_enabled() or not self._is_expensive(path):
             await call_app_with_budget()
@@ -379,6 +427,7 @@ class ExpensiveRequestLimitMiddleware:
         is_generation = scope.get("method") == "POST" and (
             path.startswith("/api/jd/") or path.startswith("/api/questions/")
         )
+        uses_concurrency_slot = is_generation or budgeted_document_parse
         bucket = "generation" if is_generation else "expensive"
         allowed, retry_after = self._consume_rate_limit((self._client_key(scope), bucket))
         if not allowed:
@@ -391,12 +440,12 @@ class ExpensiveRequestLimitMiddleware:
             return
 
         slot_acquired = False
-        if is_generation:
+        if uses_concurrency_slot:
             slot_acquired = self._generation_slots.acquire(blocking=False)
             if not slot_acquired:
                 response = JSONResponse(
                     status_code=429,
-                    content={"detail": "generation concurrency limit reached"},
+                    content={"detail": "request concurrency limit reached"},
                     headers={"Retry-After": "1"},
                 )
                 await response(scope, receive, send)
@@ -415,7 +464,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-APP_VERSION = "1.4.10"
+APP_VERSION = "1.4.11"
 app = FastAPI(title="NCScope", version=APP_VERSION, lifespan=_lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(JsonCharsetMiddleware)
@@ -477,6 +526,50 @@ async def add_no_cache_headers(request, call_next):
 BASE_DIR = Path(__file__).resolve().parent
 UI_INDEX = BASE_DIR / "static" / "index.html"
 _ALIO_CACHE: dict[str, dict] = {}
+_ALIO_CACHE_TIMES: dict[str, float] = {}
+_ALIO_CACHE_LOCK = threading.RLock()
+_ALIO_CACHE_MAX_ENTRIES = 256
+_ALIO_CACHE_TTL_SEC = 30 * 60.0
+
+
+def _store_alio_cache(posting_id: str, posting: dict) -> None:
+    now = time.monotonic()
+    with _ALIO_CACHE_LOCK:
+        stale = [
+            key
+            for key, stored_at in _ALIO_CACHE_TIMES.items()
+            if now - stored_at >= _ALIO_CACHE_TTL_SEC
+        ]
+        for key in stale:
+            _ALIO_CACHE.pop(key, None)
+            _ALIO_CACHE_TIMES.pop(key, None)
+        _ALIO_CACHE.pop(posting_id, None)
+        _ALIO_CACHE_TIMES.pop(posting_id, None)
+        _ALIO_CACHE[posting_id] = posting
+        _ALIO_CACHE_TIMES[posting_id] = now
+        while len(_ALIO_CACHE) > _ALIO_CACHE_MAX_ENTRIES:
+            oldest = next(iter(_ALIO_CACHE))
+            _ALIO_CACHE.pop(oldest, None)
+            _ALIO_CACHE_TIMES.pop(oldest, None)
+
+
+def _get_alio_cache(posting_id: str) -> dict | None:
+    now = time.monotonic()
+    with _ALIO_CACHE_LOCK:
+        posting = _ALIO_CACHE.get(posting_id)
+        if posting is None:
+            _ALIO_CACHE_TIMES.pop(posting_id, None)
+            return None
+        stored_at = _ALIO_CACHE_TIMES.get(posting_id)
+        if stored_at is not None and now - stored_at >= _ALIO_CACHE_TTL_SEC:
+            _ALIO_CACHE.pop(posting_id, None)
+            _ALIO_CACHE_TIMES.pop(posting_id, None)
+            return None
+        # Direct test/legacy inserts without a timestamp are adopted here.
+        _ALIO_CACHE.pop(posting_id, None)
+        _ALIO_CACHE[posting_id] = posting
+        _ALIO_CACHE_TIMES[posting_id] = now
+        return posting
 NCS_SCLASS_CSV = BASE_DIR.parent / "ncs_sclass_codes_with_code_no.csv"
 _SCLASS_OPTIONS_CACHE: list[dict] | None = None
 _NON_DETAIL_HIERARCHY_NAMES_CACHE: tuple[str, ...] | None = None
@@ -1276,6 +1369,10 @@ def _recover_hangul_fallback_detail_candidates(
     )
     if not possible_terms:
         return
+    # Keep mixed archives inside the same bounded MCP search contract as the
+    # public endpoint.  Terms beyond this limit remain unpromoted rather than
+    # turning one upload into an unbounded remote fan-out.
+    possible_terms = possible_terms[:40]
     try:
         # The client stops once the global unit cap is reached. A broad ZIP
         # can contain many valid 세분류 labels, and popular early labels (총무,
@@ -6166,6 +6263,19 @@ def _fetch_ncs_ksa_or_502(
         ) from exc
 
 
+async def _fetch_ncs_ksa_or_502_off_loop(
+    ncs_matches: list[dict[str, Any]],
+    max_units: int,
+    max_factors_per_unit: int,
+) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(
+        _fetch_ncs_ksa_or_502,
+        ncs_matches=ncs_matches,
+        max_units=max_units,
+        max_factors_per_unit=max_factors_per_unit,
+    )
+
+
 def _dedupe_units_by_code(units: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -6246,6 +6356,21 @@ def _supplement_ksa_for_question_plan(
         max_factors_per_unit=max_factors_per_unit,
     )
     return _merge_ksa_rows(ncs_ksa, fetched)
+
+
+async def _supplement_ksa_for_question_plan_off_loop(
+    question_plan: dict[str, Any],
+    ncs_matches: list[dict[str, Any]] | None,
+    ncs_ksa: list[dict[str, Any]] | None,
+    max_factors_per_unit: int,
+) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(
+        _supplement_ksa_for_question_plan,
+        question_plan=question_plan,
+        ncs_matches=ncs_matches,
+        ncs_ksa=ncs_ksa,
+        max_factors_per_unit=max_factors_per_unit,
+    )
 
 
 def _require_ncs_mcp_url() -> str:
@@ -6421,7 +6546,9 @@ async def _read_upload_limited(upload: UploadFile, label: str) -> bytes:
     return data
 
 
-_ARCHIVE_MEMBER_LIMIT = 12
+_ARCHIVE_MEMBER_LIMIT = 24
+_ARCHIVE_ENTRY_LIMIT = 256
+_ARCHIVE_CENTRAL_DIRECTORY_LIMIT = 256 * 1024
 _SUPPORTED_ARCHIVE_DOC_SUFFIXES = {
     ".pdf",
     ".hwp",
@@ -6444,6 +6571,15 @@ _REVIEW_SESSION_TOKEN_RE = re.compile(r"^v1\.[A-Za-z0-9_-]{43}$")
 _REVIEW_SESSION_LOCK = threading.Lock()
 _REVIEW_SESSION_BY_ID: dict[str, dict[str, Any]] = {}
 _PARSED_STRUCTURAL_SCLASS_CACHE_KEY = "_ncscope_structural_sclass_result"
+_PARSE_REVIEW_RESPONSE_MAX_BYTES = 4_000_000
+_REVIEW_SESSION_SIGNING_KEY_MIN_BYTES = 32
+_REVIEW_SESSION_SIGNING_KEY_PLACEHOLDERS = frozenset(
+    {
+        "SET_RANDOM_REVIEW_SESSION_SIGNING_KEY",
+        "CHANGE_ME",
+        "CHANGEME",
+    }
+)
 
 
 def _suffix_of(name: str) -> str:
@@ -6457,6 +6593,44 @@ def _safe_member_label(name: str) -> str:
         suffix = Path(value).suffix[:16]
         value = f"{value[: max(1, 160 - len(suffix))]}{suffix}"
     return value or "archive_member"
+
+
+def _zip_declared_metadata(data: bytes) -> tuple[int, int, bool] | None:
+    """Read and validate classic ZIP EOCD metadata before central-dir allocation."""
+
+    tail = data[-(22 + 65_535) :]
+    offset = tail.rfind(b"PK\x05\x06")
+    if offset < 0 or offset + 22 > len(tail):
+        return None
+    absolute_offset = len(data) - len(tail) + offset
+    comment_size = int.from_bytes(tail[offset + 20 : offset + 22], "little")
+    count = int.from_bytes(tail[offset + 10 : offset + 12], "little")
+    central_size = int.from_bytes(tail[offset + 12 : offset + 16], "little")
+    central_offset = int.from_bytes(tail[offset + 16 : offset + 20], "little")
+    disk_number = int.from_bytes(tail[offset + 4 : offset + 6], "little")
+    central_disk = int.from_bytes(tail[offset + 6 : offset + 8], "little")
+    entries_on_disk = int.from_bytes(tail[offset + 8 : offset + 10], "little")
+    # ZIP64 uses a sentinel and can encode an effectively unbounded entry
+    # count. Multi-document uploads do not need ZIP64, so reject it early.
+    zip64 = count == 0xFFFF or central_size == 0xFFFFFFFF or central_offset == 0xFFFFFFFF
+    layout_valid = (
+        not zip64
+        and disk_number == 0
+        and central_disk == 0
+        and entries_on_disk == count
+        and absolute_offset + 22 + comment_size == len(data)
+        and central_offset + central_size == absolute_offset
+    )
+    return (
+        _ARCHIVE_ENTRY_LIMIT + 1 if zip64 else count,
+        _ARCHIVE_CENTRAL_DIRECTORY_LIMIT + 1 if zip64 else central_size,
+        layout_valid,
+    )
+
+
+def _zip_declared_entry_count(data: bytes) -> int | None:
+    metadata = _zip_declared_metadata(data)
+    return metadata[0] if metadata is not None else None
 
 
 def _reject_hwp_upload(label: str, filename: str | None = None) -> None:
@@ -6602,6 +6776,25 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
     if _suffix_of(name) != ".zip":
         return _parse_single_document_upload(data, name, label)
 
+    declared_metadata = _zip_declared_metadata(data)
+    if declared_metadata is not None:
+        declared_entries, central_size, layout_valid = declared_metadata
+        if not layout_valid:
+            raise HTTPException(status_code=422, detail=f"{label} ZIP directory is invalid")
+        if declared_entries > _ARCHIVE_ENTRY_LIMIT:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{label} ZIP contains too many entries "
+                    f"({declared_entries}; limit {_ARCHIVE_ENTRY_LIMIT})"
+                ),
+            )
+        if central_size > _ARCHIVE_CENTRAL_DIRECTORY_LIMIT:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label} ZIP directory is too large",
+            )
+
     max_bytes = settings.max_upload_bytes()
     members: list[dict[str, Any]] = []
     chunks: list[str] = []
@@ -6609,22 +6802,45 @@ def _parse_upload_document(data: bytes, filename: str, label: str) -> dict[str, 
     total_uncompressed = 0
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            for info in archive.infolist():
+            archive_infos = archive.infolist()
+            if len(archive_infos) > _ARCHIVE_ENTRY_LIMIT:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{label} ZIP contains too many entries "
+                        f"({len(archive_infos)}; limit {_ARCHIVE_ENTRY_LIMIT})"
+                    ),
+                )
+            supported_infos: list[zipfile.ZipInfo] = []
+            for info in archive_infos:
                 if info.is_dir():
                     continue
                 member_name = info.filename
                 suffix = _suffix_of(member_name)
                 if suffix not in _SUPPORTED_ARCHIVE_DOC_SUFFIXES:
                     continue
+                supported_infos.append(info)
                 total_uncompressed += int(info.file_size or 0)
                 if total_uncompressed > max_bytes:
                     raise HTTPException(
                         status_code=413,
                         detail=f"{label} archive contents exceed MAX_UPLOAD_MB ({max_bytes // (1024 * 1024)} MB)",
                     )
-                if len(members) >= _ARCHIVE_MEMBER_LIMIT:
-                    warnings.append(f"archive member limit reached: {_ARCHIVE_MEMBER_LIMIT}")
-                    break
+                if len(supported_infos) > _ARCHIVE_MEMBER_LIMIT:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"{label} ZIP contains too many supported documents "
+                            f"({len(supported_infos)}; limit {_ARCHIVE_MEMBER_LIMIT}); "
+                            "split the archive and upload it in smaller batches"
+                        ),
+                    )
+            for info in supported_infos:
+                remaining_budget = remaining_request_budget_sec()
+                if remaining_budget is not None and remaining_budget <= 1.0:
+                    raise RequestBudgetExceeded("document parse deadline exhausted")
+                member_name = info.filename
+                suffix = _suffix_of(member_name)
                 member_label = _safe_member_label(member_name)
                 if info.flag_bits & 0x1:
                     warnings.append(f"{member_label}: encrypted ZIP member is not supported")
@@ -7027,10 +7243,73 @@ def _prune_review_sessions(now: float | None = None, *, persist: bool = False) -
 
 
 def _review_session_signing_key() -> bytes:
-    raw = os.getenv("REVIEW_SESSION_SIGNING_KEY", "")
-    if not raw or not raw.strip():
+    raw = os.getenv("REVIEW_SESSION_SIGNING_KEY", "").strip()
+    if not raw or raw.upper() in _REVIEW_SESSION_SIGNING_KEY_PLACEHOLDERS:
         return b""
-    return raw.encode("utf-8")
+    encoded = raw.encode("utf-8")
+    return encoded if len(encoded) >= _REVIEW_SESSION_SIGNING_KEY_MIN_BYTES else b""
+
+
+def _is_serverless_environment() -> bool:
+    return bool(os.getenv("VERCEL", "").strip() or os.getenv("VERCEL_URL", "").strip())
+
+
+def _document_parsing_configuration() -> dict[str, Any]:
+    serverless = _is_serverless_environment()
+    if not serverless:
+        return {
+            "mode": "local_runtime",
+            "ready": True,
+            "bridge_configured": None,
+            "bridge_auth_configured": None,
+            "stateless_review_configured": None,
+            "request_budget_sec": int(_document_parse_request_budget_sec()),
+        }
+    bridge = kordoc_bridge_configuration_status()
+    stateless_review_configured = bool(_review_session_signing_key())
+    ready = bool(
+        bridge.get("bridge_configured")
+        and bridge.get("bridge_auth_configured")
+        and stateless_review_configured
+    )
+    return {
+        "mode": "serverless_bridge",
+        "ready": ready,
+        "bridge_configured": bool(bridge.get("bridge_configured")),
+        "bridge_auth_configured": bool(bridge.get("bridge_auth_configured")),
+        "stateless_review_configured": stateless_review_configured,
+        "request_budget_sec": int(_document_parse_request_budget_sec()),
+    }
+
+
+def _require_serverless_document_contract() -> None:
+    configuration = _document_parsing_configuration()
+    if _is_serverless_environment() and not configuration["ready"]:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "document_parsing_not_configured",
+                "retryable": False,
+            },
+        )
+
+
+def _ensure_parse_review_response_size(structured: dict[str, Any]) -> None:
+    encoded_size = len(
+        json.dumps(
+            structured,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    if encoded_size > _PARSE_REVIEW_RESPONSE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "parsed_document_response_too_large",
+                "retryable": False,
+            },
+        )
 
 
 def _review_session_timestamp(value: Any, field: str) -> float:
@@ -7156,14 +7435,77 @@ async def _parse_upload_document_off_loop(
     filename: str,
     label: str,
 ) -> dict[str, Any]:
-    try:
-        return await asyncio.to_thread(
-            _parse_upload_document,
-            data,
-            filename,
-            label,
+    _require_serverless_document_contract()
+    return await _run_document_work_off_loop(
+        _parse_upload_document,
+        data,
+        filename,
+        label,
+    )
+
+
+async def _run_document_work_off_loop(
+    function: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    slot_acquired = _DOCUMENT_WORK_SLOTS.acquire(blocking=False)
+    if not slot_acquired:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "document_parse_concurrency_limit_reached",
+                "retryable": True,
+            },
+            headers={"Retry-After": "1"},
         )
-    except RequestBudgetExceeded as exc:
+
+    lease_lock = threading.Lock()
+    work_started = False
+    slot_released = False
+
+    def release_slot_once() -> None:
+        nonlocal slot_released
+        should_release = False
+        with lease_lock:
+            if not slot_released:
+                slot_released = True
+                should_release = True
+        if should_release:
+            _DOCUMENT_WORK_SLOTS.release()
+
+    def cancel_before_worker_start() -> None:
+        nonlocal slot_released
+        should_release = False
+        with lease_lock:
+            if not work_started and not slot_released:
+                slot_released = True
+                should_release = True
+        if should_release:
+            _DOCUMENT_WORK_SLOTS.release()
+
+    def run_with_slot() -> Any:
+        nonlocal work_started
+        with lease_lock:
+            if slot_released:
+                return None
+            work_started = True
+        try:
+            return function(*args, **kwargs)
+        finally:
+            release_slot_once()
+
+    worker_task: asyncio.Task[Any] | None = None
+    try:
+        remaining = remaining_request_budget_sec()
+        if remaining is not None and remaining - 1.0 <= 0.1:
+            cancel_before_worker_start()
+            raise RequestBudgetExceeded("document parse deadline exhausted")
+        worker_task = asyncio.create_task(asyncio.to_thread(run_with_slot))
+        if remaining is None:
+            return await worker_task
+        return await asyncio.wait_for(worker_task, timeout=remaining - 1.0)
+    except (RequestBudgetExceeded, TimeoutError) as exc:
         raise HTTPException(
             status_code=504,
             detail={
@@ -7171,6 +7513,10 @@ async def _parse_upload_document_off_loop(
                 "retryable": True,
             },
         ) from exc
+    finally:
+        if worker_task is not None and not worker_task.done():
+            worker_task.cancel()
+        cancel_before_worker_start()
 
 
 def _public_review_session(session: dict[str, Any]) -> dict[str, Any]:
@@ -7189,6 +7535,14 @@ def _public_review_session(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def _create_review_session(upload_bytes: bytes, structured: dict[str, Any], filename: str) -> dict[str, Any]:
+    if _is_serverless_environment() and not _review_session_signing_key():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "review_session_signing_not_configured",
+                "retryable": False,
+            },
+        )
     document = structured.get("document") if isinstance(structured.get("document"), dict) else {}
     markdown = str(document.get("markdown") or "")
     session = {
@@ -7239,6 +7593,14 @@ def _validate_review_session(
         )
     now = time.time()
     signing_key = _review_session_signing_key()
+    if _is_serverless_environment() and not signing_key:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "review_session_signing_not_configured",
+                "retryable": False,
+            },
+        )
     signed_session: dict[str, Any] = {}
     if signing_key:
         signed_session = _verified_signed_review_session(
@@ -12922,30 +13284,16 @@ def generation_provider_status(
 
 
 @app.get("/health")
-def health(request: Request) -> dict:
+def health(request: Request, response: Response) -> dict:
     del request
     mcp = ncs_mcp_status()
     mcp_ready = bool(mcp.get("configured") and mcp.get("reachable") and mcp.get("ksaAvailable"))
-    serverless = bool(os.getenv("VERCEL", "").strip() or os.getenv("VERCEL_URL", "").strip())
-    bridge_configured = bool(
-        os.getenv("KORDOC_BRIDGE_URL", "").strip()
-        or os.getenv("VERCEL_URL", "").strip()
-    )
-    bridge_auth_configured = bool(
-        os.getenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", "").strip()
-        or os.getenv("KORDOC_BRIDGE_SECRET", "").strip()
-    )
-    stateless_review_configured = bool(
-        os.getenv("REVIEW_SESSION_SIGNING_KEY", "").strip()
-    )
-    document_parsing_ready = not serverless or (
-        bridge_configured
-        and bridge_auth_configured
-        and stateless_review_configured
-    )
+    document_parsing = _document_parsing_configuration()
+    ready = bool(mcp_ready and document_parsing["ready"])
+    response.status_code = 200 if ready else 503
     return {
         "version": app.version,
-        "status": "ok" if mcp_ready and document_parsing_ready else "degraded",
+        "status": "ok" if ready else "degraded",
         "keys": {
             "public_inst": bool(settings.public_inst_key()),
             "ncs": bool(settings.ncs_key()),
@@ -12957,16 +13305,7 @@ def health(request: Request) -> dict:
         "question_generation": _generation_provider_descriptor(),
         "ncs_source": "remote-mcp",
         "ncs_mcp": mcp,
-        "document_parsing": {
-            "mode": "serverless_bridge" if serverless else "local_runtime",
-            "ready": document_parsing_ready,
-            "bridge_configured": bridge_configured if serverless else None,
-            "bridge_auth_configured": bridge_auth_configured if serverless else None,
-            "stateless_review_configured": (
-                stateless_review_configured if serverless else None
-            ),
-            "request_budget_sec": int(_document_parse_request_budget_sec()),
-        },
+        "document_parsing": document_parsing,
     }
 
 
@@ -13107,7 +13446,11 @@ def _find_sclass_code_tuple(sclass_name: str) -> dict[str, str] | None:
 
 @app.get("/api/ncs/units/options")
 def ncs_unit_options(
-    q: str = Query(default="", description="NCS detail classification search text"),
+    q: str = Query(
+        default="",
+        max_length=2000,
+        description="NCS detail classification search text",
+    ),
     limit: int = Query(default=300, ge=1, le=1000),
 ) -> dict:
     _require_ncs_mcp_url()
@@ -13115,6 +13458,8 @@ def ncs_unit_options(
     if not term:
         return {"count": 0, "items": [], "source": "ncs-mcp", "message": "Enter a confirmed NCS detail classification."}
     terms = _canonicalize_detail_lookup_terms(_parse_sclass_terms(term))
+    if len(terms) > 40:
+        raise HTTPException(status_code=422, detail="at most 40 NCS detail terms are allowed")
     try:
         items = search_units_by_detail(terms, max_units=limit)
         source = "ncs-mcp"
@@ -13620,7 +13965,7 @@ def alio_recommend(
         pid = str(item.get("posting_id"))
         src = next((c for c in candidates if str(c.get("posting_id")) == pid), None)
         if src:
-            _ALIO_CACHE[pid] = src
+            _store_alio_cache(pid, src)
         result_items.append(item)
     return {"count": len(result_items), "items": result_items}
 
@@ -13754,7 +14099,7 @@ def alio_strategy(payload: dict) -> dict:
     if not (desired_job and strengths and posting_id):
         raise HTTPException(status_code=400, detail="desired_job, strengths, posting_id are required")
 
-    posting = _ALIO_CACHE.get(posting_id)
+    posting = _get_alio_cache(posting_id)
     if not posting:
         # Try local posting id fallback
         try:
@@ -13808,7 +14153,7 @@ async def extract_sclass_endpoint(jd_file: UploadFile = File(...)) -> dict:
 
     if name.endswith(".pdf"):
         try:
-            return await asyncio.to_thread(
+            return await _run_document_work_off_loop(
                 extract_sclass_from_pdf_bytes,
                 data,
                 filename=(jd_file.filename or ""),
@@ -13838,7 +14183,7 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
         _PARSED_STRUCTURAL_SCLASS_CACHE_KEY,
         None,
     )
-    structured = await asyncio.to_thread(
+    structured = await _run_document_work_off_loop(
         structure_job_description,
         parsed,
         filename=jd_file.filename or "",
@@ -13846,7 +14191,11 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
     structured_fields = structured.get("fields") if isinstance(structured.get("fields"), dict) else None
     if structured_fields is not None:
         _sanitize_parse_review_ability_artifacts(structured)
-        _recover_hangul_fallback_detail_candidates(parsed, structured_fields)
+        await _run_document_work_off_loop(
+            _recover_hangul_fallback_detail_candidates,
+            parsed,
+            structured_fields,
+        )
         # Kordoc can return an entire numbered table row as one candidate.
         # Normalize it before the browser renders the review dropdown and
         # before the signed review session is created.
@@ -13882,7 +14231,7 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
             try:
                 structural_result = cached_structural_result
                 if not isinstance(structural_result, dict):
-                    structural_result = await asyncio.to_thread(
+                    structural_result = await _run_document_work_off_loop(
                         extract_sclass_from_pdf_bytes,
                         data,
                         filename=jd_file.filename or "",
@@ -13966,6 +14315,8 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                     structured_fields["ncs_detail_absence_saw_detail_header"] = True
                     structured_fields["ncs_detail_absence_blank_or_dash_detail_cell"] = False
                     structured_fields["ncs_detail_absence_declared_no_mapping"] = False
+            except HTTPException:
+                raise
             except Exception as exc:
                 # Structural recovery is an availability enhancement.  A
                 # Kordoc response (including an empty review state) must still
@@ -14070,6 +14421,7 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
                 source_ability_scopes
             )
         )
+    _ensure_parse_review_response_size(structured)
     review_session = _create_review_session(data, structured, jd_file.filename or "")
     _record_audit_event(
         request,
@@ -14094,7 +14446,12 @@ async def parse_notice_review_endpoint(
         raise HTTPException(status_code=400, detail="notice_file is empty")
     filename = notice_file.filename or ""
     parsed = await _parse_upload_document_off_loop(data, filename, "notice_file")
-    structured = await asyncio.to_thread(structure_job_notice, parsed, filename=filename)
+    structured = await _run_document_work_off_loop(
+        structure_job_notice,
+        parsed,
+        filename=filename,
+    )
+    _ensure_parse_review_response_size(structured)
     review_session = _create_review_session(data, structured, filename)
     _record_audit_event(
         request,
@@ -14533,6 +14890,14 @@ async def jd_strategy_upload(
     # Preferred path: use authoritative NCS-MCP only when review-confirmed detail labels
     # are available. If this path is not usable, continue with public/API fallback.
     mcp_lookup_terms = _canonicalize_detail_lookup_terms(reviewed_detail_terms)
+    if len(mcp_lookup_terms) > 40:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "ncs_detail_term_limit_exceeded",
+                "max_items": 40,
+            },
+        )
     if mcp_only:
         detail_search_unit_limit = max(20, run_top_k * 12)
         if reviewed_ability_units:
@@ -14541,7 +14906,8 @@ async def jd_strategy_upload(
                 max(80, len(reviewed_ability_units) * 4, detail_search_unit_limit),
             )
         try:
-            ncs_items = search_units_by_detail(
+            ncs_items = await asyncio.to_thread(
+                search_units_by_detail,
                 mcp_lookup_terms,
                 max_units=detail_search_unit_limit,
             )
@@ -14574,7 +14940,8 @@ async def jd_strategy_upload(
             if not ncs_items or unmatched_lookup_terms:
                 suggestion_terms = unmatched_lookup_terms or mcp_lookup_terms
                 try:
-                    suggestions = suggest_units_by_text(
+                    suggestions = await asyncio.to_thread(
+                        suggest_units_by_text,
                         suggestion_terms,
                         max_units=12,
                     )
@@ -14627,10 +14994,20 @@ async def jd_strategy_upload(
                 if missing_ability_units:
                     recovery_candidates: list[dict[str, Any]] = []
                     try:
-                        for missing_name in missing_ability_units:
-                            recovery_candidates.extend(
-                                suggest_units_by_text([missing_name], max_units=20)
-                            )
+                        def fetch_recovery_candidates() -> list[dict[str, Any]]:
+                            recovered: list[dict[str, Any]] = []
+                            # Bound the remote recovery fan-out. Any remaining
+                            # names stay unmatched and preserve the fail-closed
+                            # 422 response below.
+                            for missing_name in missing_ability_units[:40]:
+                                recovered.extend(
+                                    suggest_units_by_text([missing_name], max_units=20)
+                                )
+                            return recovered
+
+                        recovery_candidates = await asyncio.to_thread(
+                            fetch_recovery_candidates
+                        )
                     except NcsMcpError:
                         recovery_candidates = []
                     recovered_units, missing_ability_units = (
@@ -14895,7 +15272,7 @@ async def jd_strategy_upload(
                 max_units=max(1, run_top_k),
             )
 
-        ncs_ksa_candidates = _fetch_ncs_ksa_or_502(
+        ncs_ksa_candidates = await _fetch_ncs_ksa_or_502_off_loop(
             ncs_matches=ksa_units,
             max_units=len(ksa_units),
             max_factors_per_unit=ksa_candidate_per_unit,
@@ -14921,12 +15298,12 @@ async def jd_strategy_upload(
             ngram_max=4,
         )
         if not ncs_ksa:
-            ncs_ksa = _fetch_ncs_ksa_or_502(
+            ncs_ksa = await _fetch_ncs_ksa_or_502_off_loop(
                 ncs_matches=ncs_matches[:run_top_k],
                 max_units=min(run_ksa_units, len(ncs_matches)),
                 max_factors_per_unit=run_ksa_factors,
             )
-        ncs_ksa = _supplement_ksa_for_question_plan(
+        ncs_ksa = await _supplement_ksa_for_question_plan_off_loop(
             question_plan=question_plan,
             ncs_matches=ncs_matches,
             ncs_ksa=ncs_ksa,
@@ -15309,7 +15686,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         secondary_units=None,
         max_units=min(ksa_rank_units, len(ncs_matches)),
     )
-    ncs_ksa_candidates = _fetch_ncs_ksa_or_502(
+    ncs_ksa_candidates = await _fetch_ncs_ksa_or_502_off_loop(
         ncs_matches=ksa_units,
         max_units=len(ksa_units),
         max_factors_per_unit=ksa_candidate_per_unit,
@@ -15332,12 +15709,12 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         ngram_max=4,
     )
     if not ncs_ksa:
-        ncs_ksa = _fetch_ncs_ksa_or_502(
+        ncs_ksa = await _fetch_ncs_ksa_or_502_off_loop(
             ncs_matches=ncs_matches[:run_top_k],
             max_units=min(run_ksa_units, len(ncs_matches)),
             max_factors_per_unit=run_ksa_factors,
         )
-    ncs_ksa = _supplement_ksa_for_question_plan(
+    ncs_ksa = await _supplement_ksa_for_question_plan_off_loop(
         question_plan=question_plan,
         ncs_matches=ncs_matches,
         ncs_ksa=ncs_ksa,

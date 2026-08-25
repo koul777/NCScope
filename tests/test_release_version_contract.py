@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi import Response
+
 from app.main import app, health
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "1.4.10"
-DISPLAY_VERSION = "v1.4.10"
+RELEASE_VERSION = "1.4.11"
+DISPLAY_VERSION = "v1.4.11"
 
 
 def test_local_release_artifacts_stay_gitignored() -> None:
@@ -36,7 +38,7 @@ def test_release_version_is_consistent_across_product_surfaces(monkeypatch) -> N
         "app.main.ncs_mcp_status",
         lambda: {"configured": True, "reachable": True, "ksaAvailable": True},
     )
-    assert health(None)["version"] == RELEASE_VERSION
+    assert health(None, Response())["version"] == RELEASE_VERSION
     assert package["version"] == RELEASE_VERSION
     assert package_lock["version"] == RELEASE_VERSION
     assert package_lock["packages"][""]["version"] == RELEASE_VERSION

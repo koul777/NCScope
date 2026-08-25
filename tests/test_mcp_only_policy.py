@@ -179,7 +179,7 @@ def test_json_responses_declare_utf8_for_windows_clients() -> None:
     with TestClient(main.app) as client:
         response = client.get("/health")
 
-    assert response.status_code == 200
+    assert response.status_code in {200, 503}
     assert response.headers["content-type"].lower() == "application/json; charset=utf-8"
 
 
@@ -521,6 +521,72 @@ def test_parse_review_accepts_zip_with_supported_jd_text():
     assert resp.status_code == 200
     assert body["fields"]["ncs_detail_candidates"] == ["\uacbd\uc601\uae30\ud68d"]
     assert "ZIP member: job_description.txt" in body["document"]["markdown"]
+
+
+def test_zip_parser_accepts_all_documents_up_to_bounded_member_limit() -> None:
+    data = _zip_bytes(
+        {
+            f"job_description_{index:02}.txt": f"세분류: 경영기획\n담당업무: {index}"
+            for index in range(main._ARCHIVE_MEMBER_LIMIT)
+        }
+    )
+
+    parsed = main._parse_upload_document(data, "jobs.zip", "jd_file")
+
+    assert len(parsed["metadata"]["members"]) == main._ARCHIVE_MEMBER_LIMIT
+    assert not any("member limit" in warning for warning in parsed["warnings"])
+
+
+def test_zip_parser_rejects_partial_processing_above_member_limit() -> None:
+    data = _zip_bytes(
+        {
+            f"job_description_{index:02}.txt": "세분류: 경영기획"
+            for index in range(main._ARCHIVE_MEMBER_LIMIT + 1)
+        }
+    )
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._parse_upload_document(data, "jobs.zip", "jd_file")
+
+    assert exc_info.value.status_code == 422
+    assert "split the archive" in str(exc_info.value.detail)
+
+
+def test_zip_parser_rejects_excessive_central_directory_before_opening() -> None:
+    data = _zip_bytes(
+        {
+            f"unsupported_{index:03}.bin": "x"
+            for index in range(main._ARCHIVE_ENTRY_LIMIT + 1)
+        }
+    )
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._parse_upload_document(data, "many-entries.zip", "jd_file")
+
+    assert exc_info.value.status_code == 422
+    assert "too many entries" in str(exc_info.value.detail)
+
+
+def test_zip_parser_rejects_large_directory_when_eocd_count_is_forged() -> None:
+    data = bytearray(
+        _zip_bytes(
+            {
+                f"unsupported_{index:03}_{'x' * 1100}.bin": "x"
+                for index in range(main._ARCHIVE_ENTRY_LIMIT)
+            }
+        )
+    )
+    eocd = data.rfind(b"PK\x05\x06")
+    assert eocd >= 0
+    data[eocd + 8 : eocd + 10] = (1).to_bytes(2, "little")
+    data[eocd + 10 : eocd + 12] = (1).to_bytes(2, "little")
+    assert main._zip_declared_entry_count(bytes(data)) == 1
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._parse_upload_document(bytes(data), "forged-count.zip", "jd_file")
+
+    assert exc_info.value.status_code == 422
+    assert "directory is too large" in str(exc_info.value.detail)
 
 
 def test_parse_review_accepts_zip_with_hwp_member(mocker):
@@ -1873,6 +1939,11 @@ def test_generate_from_text_never_falls_back_to_server_openai_key(monkeypatch, m
 
 def test_generation_status_declares_request_scoped_key_contract(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", SERVER_OPENAI_KEY)
+    monkeypatch.setattr(
+        main,
+        "ncs_mcp_status",
+        lambda: {"configured": True, "reachable": True, "ksaAvailable": True},
+    )
 
     with TestClient(main.app) as client:
         status_resp = client.get("/api/generation-provider/status")
@@ -2038,6 +2109,60 @@ def test_mcp_search_global_limit_preserves_each_confirmed_detail(mocker):
 
     assert calls == ["인사", "프로젝트관리"]
     assert [row["matchedDetailName"] for row in rows] == ["인사", "프로젝트관리"]
+
+
+def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
+    query = "\uacbd\uc601\uae30\ud68d"
+    broad_rows = [
+        {
+            "id": f"010000{index:04d}_26v1",
+            "text": f"\uad11\ubc94\uc704 \ud6c4\ubcf4 {index}",
+            "path": {"small": "\uae30\ud68d\uc0ac\ubb34", "sub": "\uacbd\uc601\ubd84\uc11d"},
+        }
+        for index in range(149)
+    ]
+    exact_row = {
+        "id": "0201010101_22v3",
+        "text": "\uacbd\uc601\uae30\ud68d \uc218\ub9bd",
+        "path": {"small": "\uae30\ud68d\uc0ac\ubb34", "sub": query},
+    }
+
+    def fake_call_tool(_name, arguments):
+        assert arguments["limit"] == 200
+        return {"results": [*broad_rows, exact_row]}
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail([query], max_units=8)
+
+    assert [row["ncsClCd"] for row in rows] == [exact_row["id"]]
+
+
+def test_mcp_search_reallocates_unused_sparse_group_capacity(mocker):
+    sparse = "\uc778\uc0ac"
+    dense = "\ud504\ub85c\uc81d\ud2b8\uad00\ub9ac"
+
+    def fake_call_tool(_name, arguments):
+        query = arguments["query"]
+        count = 1 if query == sparse else 10
+        return {
+            "results": [
+                {
+                    "id": f"{'01010102' if query == dense else '02020201'}{index:02d}_26v1",
+                    "text": f"{query} {index}",
+                    "path": {"small": query, "sub": query},
+                }
+                for index in range(1, count + 1)
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail([sparse, dense], max_units=10)
+
+    assert len(rows) == 10
+    assert [row["matchedDetailName"] for row in rows].count(sparse) == 1
+    assert [row["matchedDetailName"] for row in rows].count(dense) == 9
 
 
 def test_mcp_search_preserves_official_acronym_slash_detail(mocker):
@@ -2948,6 +3073,29 @@ def test_mcp_status_reuses_short_probe_cache_and_scopes_it_to_endpoint(monkeypat
         ("http://mcp-a.example/mcp", True),
         ("http://mcp-b.example/mcp", True),
     ]
+
+
+def test_mcp_status_applies_a_bounded_cold_probe_budget(monkeypatch):
+    monkeypatch.setattr(ncs_mcp_client, "_status_cache", None)
+    monkeypatch.setattr(
+        ncs_mcp_client, "_endpoint", lambda: "http://mcp.example/mcp"
+    )
+    seen_remaining: list[float | None] = []
+
+    def fake_tool_names(*, force_refresh=False):
+        assert force_refresh is True
+        seen_remaining.append(ncs_mcp_client.remaining_request_budget_sec())
+        return {"ncs_search", "ncs_unit_detail"}
+
+    monkeypatch.setattr(ncs_mcp_client, "_tool_names", fake_tool_names)
+
+    status = ncs_mcp_client.ncs_mcp_status(force_refresh=True)
+
+    assert status["ksaAvailable"] is True
+    assert len(seen_remaining) == 1
+    assert seen_remaining[0] is not None
+    assert 0 < seen_remaining[0] <= ncs_mcp_client._STATUS_PROBE_BUDGET_SEC
+    assert ncs_mcp_client.remaining_request_budget_sec() is None
 
 
 def test_openai_http_error_does_not_expose_remote_body(monkeypatch):

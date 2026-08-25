@@ -121,6 +121,11 @@ def _write_bundle(tmp_path: Path, mod):
         "is_human_gold": False,
         "is_gold_accuracy": False,
         "is_gold": False,
+        "human_gold_attestation": {
+            "version": mod.HUMAN_ATTESTATION_VERSION,
+            "attested": False,
+            "statement": "",
+        },
         "automatic_predictions_are_gold": False,
         "usage_policy": mod.USAGE_POLICY,
         "review_provenance": {
@@ -190,6 +195,10 @@ def _write_bundle(tmp_path: Path, mod):
         "evaluation_basis": reference["evaluation_basis"],
         "is_human_gold": False,
         "is_gold_accuracy": False,
+        "human_gold_attestation": reference["human_gold_attestation"],
+        "human_gold_attestation_sha256": mod.sha256_bytes(
+            mod.canonical_json_bytes(reference["human_gold_attestation"])
+        ),
         "automatic_predictions_are_gold": False,
         "usage_policy": mod.USAGE_POLICY,
         "local_only": True,
@@ -449,6 +458,25 @@ def test_json_csv_integrity_provenance_and_split_contracts_fail_closed(
     reference["review_provenance"]["reviewer_b"]["reviewer_id"] = "agent-a"
     _reseal_reference(mod, seeded, reference)
     with pytest.raises(mod.GoldsetScoringError, match="independent identities"):
+        mod.validate_reference_bundle(
+            seeded["reference_json"], seeded["reference_csv"], seeded["integrity"]
+        )
+
+
+def test_human_gold_reference_requires_persisted_attestation(tmp_path: Path) -> None:
+    mod = load_module(f"score_goldset_attestation_{tmp_path.name}")
+    seeded = _write_bundle(tmp_path, mod)
+    reference = deepcopy(seeded["reference"])
+    reference["review_provenance"]["reviewer_a"]["reviewer_kind"] = "human"
+    reference["review_provenance"]["reviewer_b"]["reviewer_kind"] = "human"
+    reference["evaluation_basis"] = mod.HUMAN_EVALUATION_BASIS
+    reference["is_human_gold"] = True
+    reference["is_gold_accuracy"] = True
+    reference["is_gold"] = True
+    reference.pop("human_gold_attestation")
+    _reseal_reference(mod, seeded, reference)
+
+    with pytest.raises(mod.GoldsetScoringError, match="attestation"):
         mod.validate_reference_bundle(
             seeded["reference_json"], seeded["reference_csv"], seeded["integrity"]
         )

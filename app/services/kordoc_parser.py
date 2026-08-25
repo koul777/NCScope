@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import hmac
 import html
 import json
 import logging
@@ -19,11 +20,13 @@ import shutil
 import subprocess
 import time
 import unicodedata
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.services.request_budget import clamp_timeout_to_request_budget
@@ -43,6 +46,9 @@ class _LocalKordocUnavailable(KordocParseError):
 _KORDOC_PARSER_VERSION = "4.9.1"
 _KORDOC_BRIDGE_MAX_BYTES = 4 * 1024 * 1024
 _KORDOC_BRIDGE_PATH = "/api/kordoc-parse"
+_KORDOC_BRIDGE_ED25519_PUBLIC_KEY_RAW = (
+    "VBlGEy_kzpdThiEEmtrGj7hU6bfUkNtw0SjIrXwK8vA"
+)
 _SAFE_PARSER_NAMES = {
     "kordoc",
     "plain_text",
@@ -375,6 +381,78 @@ def _split_inline_section_transitions(value: str) -> tuple[str, list[tuple[str, 
     return prefix, segments
 
 
+_DETAIL_NON_VALUE_LABELS = (
+    "대분류",
+    "중분류",
+    "소분류",
+    "세분류",
+    "분류체계",
+    "ncs분류체계",
+    "직무정의",
+    "직무 설명",
+    "핵심책무",
+    "주요사업",
+    "기관주요사업",
+    "기관주요업무",
+    "공단 소개",
+    "공단 주요 사업",
+    "공단주요사업",
+    "능력단위",
+    "능력단위명",
+    "능력단위명칭",
+    "능력단위코드",
+    "요구 능력 단위",
+    "직무수행내용",
+    "필요지식",
+    "필요기술",
+    "필요능력",
+    "필요 역량",
+    "직무수행태도",
+    "관련자격",
+    "요건",
+    "교육요건",
+    "NCS기반 채용전형 절차",
+    "서류접수 → 면접시험",
+    "공고문 참조",
+    "제한없음",
+    "의사소통능력",
+    "수리능력",
+    "문제해결능력",
+    "자기개발능력",
+    "자원관리능력",
+    "대인관계능력",
+    "정보능력",
+    "기술능력",
+    "조직이해능력",
+    "직업윤리",
+    "디지털능력",
+    "자기관리능력",
+    "해당사항 없음",
+    "해당 없음",
+    "없음",
+    "미정",
+)
+_BASIC_COMPETENCY_LABELS = (
+    "의사소통능력",
+    "수리능력",
+    "문제해결능력",
+    "자기개발능력",
+    "자원관리능력",
+    "대인관계능력",
+    "정보능력",
+    "기술능력",
+    "조직이해능력",
+    "직업윤리",
+    "디지털능력",
+    "자기관리능력",
+)
+
+
+@lru_cache(maxsize=16)
+def _normalized_literal_keys(labels: tuple[str, ...]) -> frozenset[str]:
+    return frozenset(_norm(label) for label in labels)
+
+
 def _looks_like_detail_candidate(value: str) -> bool:
     text = _clean_text(value)
     if not text:
@@ -393,58 +471,7 @@ def _looks_like_detail_candidate(value: str) -> bool:
     # a source-stated NCS detail.
     if re.fullmatch(r"ncs(?:분류)?(?:코드|code)(?:8자리)?", key):
         return False
-    non_values = {
-        "대분류",
-        "중분류",
-        "소분류",
-        "세분류",
-        "분류체계",
-        "ncs분류체계",
-        "직무정의",
-        "직무 설명",
-        "핵심책무",
-        "주요사업",
-        "기관주요사업",
-        "기관주요업무",
-        "공단 소개",
-        "공단 주요 사업",
-        "공단주요사업",
-        "능력단위",
-        "능력단위명",
-        "능력단위명칭",
-        "능력단위코드",
-        "요구 능력 단위",
-        "직무수행내용",
-        "필요지식",
-        "필요기술",
-        "필요능력",
-        "필요 역량",
-        "직무수행태도",
-        "관련자격",
-        "요건",
-        "교육요건",
-        "NCS기반 채용전형 절차",
-        "서류접수 → 면접시험",
-        "공고문 참조",
-        "제한없음",
-        "의사소통능력",
-        "수리능력",
-        "문제해결능력",
-        "자기개발능력",
-        "자원관리능력",
-        "대인관계능력",
-        "정보능력",
-        "기술능력",
-        "조직이해능력",
-        "직업윤리",
-        "디지털능력",
-        "자기관리능력",
-        "해당사항 없음",
-        "해당 없음",
-        "없음",
-        "미정",
-    }
-    if not key or key in {_norm(x) for x in non_values}:
+    if not key or key in _normalized_literal_keys(_DETAIL_NON_VALUE_LABELS):
         return False
     noise_fragments = {
         "개발전",
@@ -462,21 +489,10 @@ def _looks_like_detail_candidate(value: str) -> bool:
         return False
     if re.search(r"(?:https?://|www\.)", text, flags=re.IGNORECASE):
         return False
-    basic_competency_keys = (
-        "의사소통능력",
-        "수리능력",
-        "문제해결능력",
-        "자기개발능력",
-        "자원관리능력",
-        "대인관계능력",
-        "정보능력",
-        "기술능력",
-        "조직이해능력",
-        "직업윤리",
-        "디지털능력",
-        "자기관리능력",
-    )
-    if sum(_norm(label) in key for label in basic_competency_keys) >= 2:
+    if sum(
+        label_key in key
+        for label_key in _normalized_literal_keys(_BASIC_COMPETENCY_LABELS)
+    ) >= 2:
         return False
     if "미개발" in key:
         return False
@@ -3359,10 +3375,10 @@ def _safe_bridge_url() -> str:
 
 
 def _normalized_bridge_secret() -> str:
-    """Return an ASCII-only shared secret safe for an HTTP header."""
+    """Return a strong ASCII-only shared secret safe for an HTTP header."""
 
     value = os.getenv("KORDOC_BRIDGE_SECRET", "").strip().lstrip("\ufeff").strip()
-    return value if value.isascii() else ""
+    return value if re.fullmatch(r"[\x20-\x7e]{32,}", value) else ""
 
 
 def _bridge_signature_headers(
@@ -3384,6 +3400,19 @@ def _bridge_signature_headers(
         if len(private_key_bytes) != 32:
             raise ValueError("invalid Ed25519 private key length")
         private_key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
+        expected_public_key = base64.urlsafe_b64decode(
+            _KORDOC_BRIDGE_ED25519_PUBLIC_KEY_RAW
+            + "=" * (-len(_KORDOC_BRIDGE_ED25519_PUBLIC_KEY_RAW) % 4)
+        )
+        derived_public_key = private_key.public_key().public_bytes(
+            Encoding.Raw,
+            PublicFormat.Raw,
+        )
+        if len(expected_public_key) != 32 or not hmac.compare_digest(
+            derived_public_key,
+            expected_public_key,
+        ):
+            raise ValueError("Ed25519 private key does not match bridge public key")
     except (TypeError, ValueError) as exc:
         raise KordocParseError("Kordoc runtime is unavailable") from exc
 
@@ -3394,7 +3423,41 @@ def _bridge_signature_headers(
     signature = base64.urlsafe_b64encode(private_key.sign(message)).decode("ascii").rstrip("=")
     return {
         "x-ncscope-kordoc-timestamp": timestamp,
+        "x-ncscope-kordoc-body-sha256": body_sha256,
         "x-ncscope-kordoc-signature": signature,
+    }
+
+
+def kordoc_bridge_configuration_status() -> dict[str, bool]:
+    """Validate serverless bridge URL/auth without exposing secret material."""
+
+    bridge_configured = bool(_safe_bridge_url())
+    encoded_private_key = (
+        os.getenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", "")
+        .strip()
+        .lstrip("\ufeff")
+        .strip()
+    )
+    bridge_auth_configured = False
+    if encoded_private_key:
+        try:
+            # Reuse the request signer so readiness and the real bridge call
+            # enforce exactly the same Ed25519 decoding/key-length contract.
+            bridge_auth_configured = bool(
+                _bridge_signature_headers(
+                    b"",
+                    encoded_filename="",
+                    ocr=False,
+                )
+            )
+        except KordocParseError:
+            bridge_auth_configured = False
+    else:
+        bridge_secret = _normalized_bridge_secret()
+        bridge_auth_configured = bool(bridge_secret)
+    return {
+        "bridge_configured": bridge_configured,
+        "bridge_auth_configured": bridge_auth_configured,
     }
 
 
@@ -3895,14 +3958,17 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     # flattened section reader may also retain their joined surface as one
     # extra value, which is not safe for an exact NCS unit lookup.
     positioned_ability_units: list[str] = []
+    positioned_ability_unit_keys: set[str] = set()
     ability_units_by_detail: dict[str, list[str]] = {}
+    ability_unit_keys_by_detail: dict[str, set[str]] = {}
     for item in positioned_items:
         if item.get("section") != "ability_units":
             continue
         value = str(item.get("text") or "").strip()
         value_key = _norm(value)
-        if value and value_key and value_key not in {_norm(existing) for existing in positioned_ability_units}:
+        if value and value_key and value_key not in positioned_ability_unit_keys:
             positioned_ability_units.append(value)
+            positioned_ability_unit_keys.add(value_key)
         scope = item.get("scope") if isinstance(item.get("scope"), dict) else {}
         scoped_details = [
             str(detail or "").strip()
@@ -3967,9 +4033,12 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                 }
         if len(scoped_details) != 1:
             continue
-        bucket = ability_units_by_detail.setdefault(scoped_details[0], [])
-        if value and value_key not in {_norm(existing) for existing in bucket}:
+        detail_key = scoped_details[0]
+        bucket = ability_units_by_detail.setdefault(detail_key, [])
+        bucket_keys = ability_unit_keys_by_detail.setdefault(detail_key, set())
+        if value and value_key not in bucket_keys:
             bucket.append(value)
+            bucket_keys.add(value_key)
     ability_unit_names: list[str] = []
     ability_name_keys: set[str] = set()
     for value in [
@@ -3991,9 +4060,12 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         )
         if len(embedded_matches) != 1:
             continue
-        bucket = ability_units_by_detail.setdefault(embedded_matches[0], [])
-        if value and value_key not in {_norm(existing) for existing in bucket}:
+        detail_key = embedded_matches[0]
+        bucket = ability_units_by_detail.setdefault(detail_key, [])
+        bucket_keys = ability_unit_keys_by_detail.setdefault(detail_key, set())
+        if value and value_key not in bucket_keys:
             bucket.append(value)
+            bucket_keys.add(value_key)
     return {
         "filename": filename,
         **provenance,

@@ -40,7 +40,9 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
 )
-ARCHIVE_MEMBER_LIMIT = 12
+ARCHIVE_MEMBER_LIMIT = 24
+ARCHIVE_ENTRY_LIMIT = 256
+ARCHIVE_CENTRAL_DIRECTORY_LIMIT = 256 * 1024
 SUPPORTED_ARCHIVE_DOC_SUFFIXES = {".pdf", ".hwp", ".hwpx", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -222,6 +224,40 @@ def _safe_member_label(name: str) -> str:
     return value[:160] or "archive_member"
 
 
+def _zip_declared_metadata(data: bytes) -> tuple[int, int, bool] | None:
+    tail = data[-(22 + 65_535) :]
+    offset = tail.rfind(b"PK\x05\x06")
+    if offset < 0 or offset + 22 > len(tail):
+        return None
+    absolute_offset = len(data) - len(tail) + offset
+    comment_size = int.from_bytes(tail[offset + 20 : offset + 22], "little")
+    count = int.from_bytes(tail[offset + 10 : offset + 12], "little")
+    central_size = int.from_bytes(tail[offset + 12 : offset + 16], "little")
+    central_offset = int.from_bytes(tail[offset + 16 : offset + 20], "little")
+    disk_number = int.from_bytes(tail[offset + 4 : offset + 6], "little")
+    central_disk = int.from_bytes(tail[offset + 6 : offset + 8], "little")
+    entries_on_disk = int.from_bytes(tail[offset + 8 : offset + 10], "little")
+    zip64 = count == 0xFFFF or central_size == 0xFFFFFFFF or central_offset == 0xFFFFFFFF
+    layout_valid = (
+        not zip64
+        and disk_number == 0
+        and central_disk == 0
+        and entries_on_disk == count
+        and absolute_offset + 22 + comment_size == len(data)
+        and central_offset + central_size == absolute_offset
+    )
+    return (
+        ARCHIVE_ENTRY_LIMIT + 1 if zip64 else count,
+        ARCHIVE_CENTRAL_DIRECTORY_LIMIT + 1 if zip64 else central_size,
+        layout_valid,
+    )
+
+
+def _zip_declared_entry_count(data: bytes) -> int | None:
+    metadata = _zip_declared_metadata(data)
+    return metadata[0] if metadata is not None else None
+
+
 def parse_benchmark_document(
     data: bytes,
     filename: str,
@@ -235,24 +271,47 @@ def parse_benchmark_document(
     if suffix != ".zip":
         return parse_with_kordoc(data, filename=filename, ocr=ocr)
 
+    declared_metadata = _zip_declared_metadata(data)
+    if declared_metadata is not None:
+        declared_entries, central_size, layout_valid = declared_metadata
+        if not layout_valid:
+            raise KordocParseError("ZIP central directory metadata is invalid")
+        if declared_entries > ARCHIVE_ENTRY_LIMIT:
+            raise KordocParseError(
+                f"ZIP contains too many entries: {declared_entries} > {ARCHIVE_ENTRY_LIMIT}"
+            )
+        if central_size > ARCHIVE_CENTRAL_DIRECTORY_LIMIT:
+            raise KordocParseError("ZIP central directory is too large")
+
     chunks: list[str] = []
     members: list[dict[str, str]] = []
     warnings: list[str] = []
     total_uncompressed = 0
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            for info in archive.infolist():
+            archive_infos = archive.infolist()
+            if len(archive_infos) > ARCHIVE_ENTRY_LIMIT:
+                raise KordocParseError(
+                    f"ZIP contains too many entries: {len(archive_infos)} > {ARCHIVE_ENTRY_LIMIT}"
+                )
+            supported_infos: list[zipfile.ZipInfo] = []
+            for info in archive_infos:
                 if info.is_dir():
                     continue
                 member_suffix = _suffix_of(info.filename)
                 if member_suffix not in SUPPORTED_ARCHIVE_DOC_SUFFIXES:
                     continue
+                supported_infos.append(info)
                 total_uncompressed += int(info.file_size or 0)
                 if total_uncompressed > max_bytes:
                     raise KordocParseError(f"archive contents exceed limit: {total_uncompressed} > {max_bytes}")
-                if len(members) >= ARCHIVE_MEMBER_LIMIT:
-                    warnings.append(f"archive member limit reached: {ARCHIVE_MEMBER_LIMIT}")
-                    break
+                if len(supported_infos) > ARCHIVE_MEMBER_LIMIT:
+                    raise KordocParseError(
+                        "ZIP contains too many supported documents: "
+                        f"{len(supported_infos)} > {ARCHIVE_MEMBER_LIMIT}; split the archive"
+                    )
+            for info in supported_infos:
+                member_suffix = _suffix_of(info.filename)
                 member_label = _safe_member_label(info.filename)
                 if info.flag_bits & 0x1:
                     warnings.append(f"{member_label}: encrypted ZIP member is not supported")

@@ -2172,3 +2172,41 @@ def test_large_ability_table_normalization_work_stays_near_linear(
 
     assert len(result["fields"]["ability_units"]) == row_count
     assert calls < 100_000
+
+
+def test_large_coordinate_ability_table_normalization_stays_near_linear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_norm = kordoc_parser._norm
+    calls = 0
+
+    def counted_norm(value):
+        nonlocal calls
+        calls += 1
+        return original_norm(value)
+
+    monkeypatch.setattr(kordoc_parser, "_norm", counted_norm)
+    row_count = 500
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [{"text": "NCS 세분류명"}, {"text": "요구능력단위"}],
+                    *[
+                        [
+                            {"text": "사무행정"},
+                            {"text": f"합성 능력단위 {index}"},
+                        ]
+                        for index in range(row_count)
+                    ],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="large-coordinate-table.hwp")
+
+    assert len(result["fields"]["ability_units"]) == row_count
+    assert calls < 50_000

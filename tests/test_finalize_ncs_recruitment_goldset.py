@@ -433,6 +433,11 @@ def test_human_gold_requires_explicit_human_kinds_and_attestation(
     assert result["evaluation_basis"] == (
         "independent_human_double_review_adjudicated_gold"
     )
+    assert result["human_gold_attestation"] == {
+        "version": mod.HUMAN_ATTESTATION_VERSION,
+        "attested": True,
+        "statement": mod.HUMAN_ATTESTATION,
+    }
 
 
 def test_disagreement_requires_distinct_completed_third_party_decision(
@@ -707,6 +712,14 @@ def test_write_reference_is_local_only_and_hashes_every_input_output(
     final_integrity = json.loads(output_paths["integrity"].read_text(encoding="utf-8"))
     assert final_integrity["local_only"] is True
     assert final_integrity["is_human_gold"] is False
+    assert final_integrity["human_gold_attestation"] == {
+        "version": mod.HUMAN_ATTESTATION_VERSION,
+        "attested": False,
+        "statement": "",
+    }
+    assert final_integrity["human_gold_attestation_sha256"] == mod.sha256_bytes(
+        mod.canonical_json_bytes(final_integrity["human_gold_attestation"])
+    )
     assert set(final_integrity["source_artifact_sha256"]) == set(source_paths)
     assert set(final_integrity["output_artifact_sha256"]) == {
         "reference_json",

@@ -3,7 +3,10 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import time
 from pathlib import Path
+
+from app.services.request_budget import clamp_timeout_to_request_budget
 
 
 SCRIPT_PATH = (
@@ -305,3 +308,59 @@ def test_audit_rejects_duplicate_or_miscounted_catalog_rows(tmp_path: Path) -> N
         assert "duplicate codes" in str(exc)
     else:
         raise AssertionError("duplicate catalog codes must fail closed")
+
+
+def test_audit_reads_each_data_input_once_for_parse_count_and_digest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    benchmark, catalog = _inputs(tmp_path)
+    original_read_bytes = Path.read_bytes
+    counts = {benchmark.resolve(): 0, catalog.resolve(): 0}
+
+    def counted_read_bytes(path: Path) -> bytes:
+        resolved = path.resolve()
+        if resolved in counts:
+            counts[resolved] += 1
+            if counts[resolved] > 1:
+                raise AssertionError("audit input was read more than once")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read_bytes)
+
+    result = audit.audit_ksa_contract(
+        benchmark,
+        catalog,
+        fetch_ksa=lambda units, _limit: [
+            _row(str(unit["ncsClCd"]), kind)
+            for unit in units
+            for kind in ("knowledge", "skill", "attitude")
+        ],
+    )
+
+    assert result["passed"] is True
+    assert counts == {benchmark.resolve(): 1, catalog.resolve(): 1}
+
+
+def test_audit_global_runtime_budget_fails_closed(tmp_path: Path) -> None:
+    def deadline_aware_fetch(_units: list[dict], _limit: int) -> list[dict]:
+        while True:
+            clamp_timeout_to_request_budget(
+                0.05,
+                reserve_sec=0.01,
+                minimum_sec=0.01,
+            )
+            time.sleep(0.02)
+
+    benchmark_path, catalog_path = _inputs(tmp_path)
+    result = audit.audit_ksa_contract(
+        benchmark_path,
+        catalog_path,
+        max_runtime_seconds=1.05,
+        fetch_ksa=deadline_aware_fetch,
+    )
+
+    assert result["passed"] is False
+    assert result["fetch_error_type"] == "RequestBudgetExceeded"
+    assert "ncs_mcp_fetch_deadline_exceeded" in result["failures"]
+    assert result["runtime_seconds"] < 1.2

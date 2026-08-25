@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,10 +31,16 @@ def test_vercel_fastapi_entrypoint_and_duration_are_production_safe() -> None:
     assert 'process.env.KORDOC_OFFLINE = "1"' in bridge_source
     assert "application/octet-stream" in bridge_source
     assert "KORDOC_BRIDGE_SECRET" in bridge_source
+    assert 'hasStrongSharedSecret = /^[\\x20-\\x7E]{32,}$/' in bridge_source
     assert "normalizeSecret" in bridge_source
     assert "\\uFEFF" in bridge_source
     assert "ED25519_PUBLIC_KEY_RAW" in bridge_source
     assert "validateSignature" in bridge_source
+    assert "validateSignatureHeaders" in bridge_source
+    assert "x-ncscope-kordoc-body-sha256" in bridge_source
+    assert bridge_source.index("const signatureHeaderReview") < bridge_source.index(
+        "const bytes = await readBody(req)"
+    )
     assert "kordoc_bridge_signed_request_rejected" in bridge_source
     assert "x-ncscope-bridge-rejection" in bridge_source
     assert "SIGNATURE_TTL_SECONDS = 120" in bridge_source
@@ -38,6 +49,48 @@ def test_vercel_fastapi_entrypoint_and_duration_are_production_safe() -> None:
     assert (ROOT / "api" / "index.py").read_text(encoding="utf-8").strip().endswith(
         '__all__ = ["app"]'
     )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_kordoc_bridge_rejects_forged_signature_before_reading_body() -> None:
+    bridge_uri = (ROOT / "api" / "kordoc-parse.js").resolve().as_uri()
+    script = textwrap.dedent(
+        f"""
+        import {{ Readable }} from "node:stream";
+        const {{ default: handler }} = await import({json.dumps(bridge_uri)});
+        let bodyRead = false;
+        const req = new Readable({{
+          read() {{ bodyRead = true; this.push(Buffer.alloc(4 * 1024 * 1024)); this.push(null); }}
+        }});
+        req.method = "POST";
+        req.headers = {{
+          "content-type": "application/octet-stream",
+          "x-ncscope-kordoc-timestamp": String(Math.floor(Date.now() / 1000)),
+          "x-ncscope-kordoc-signature": "A".repeat(86),
+          "x-ncscope-kordoc-body-sha256": "0".repeat(64),
+          "x-ncscope-filename-b64": "",
+          "x-ncscope-ocr": "0",
+        }};
+        const res = {{
+          statusCode: 0,
+          headers: {{}},
+          setHeader(name, value) {{ this.headers[name] = value; }},
+          end(body) {{ this.body = body; }},
+        }};
+        await handler(req, res);
+        process.stdout.write(JSON.stringify({{ statusCode: res.statusCode, bodyRead }}));
+        """
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert json.loads(result.stdout) == {"statusCode": 401, "bodyRead": False}
 
 
 def test_kordoc_onnx_runtime_is_deduplicated_for_function_size() -> None:

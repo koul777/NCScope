@@ -26,6 +26,8 @@ SCORE_SCHEMA_VERSION = "ncs_recruitment_reference_score_v1"
 USAGE_POLICY = "evaluation_only_no_training_or_rule_tuning"
 AI_EVALUATION_BASIS = "independent_ai_agent_adjudicated_reference_not_human_gold"
 HUMAN_EVALUATION_BASIS = "independent_human_double_review_adjudicated_gold"
+HUMAN_ATTESTATION = "confirmed_independent_human_review"
+HUMAN_ATTESTATION_VERSION = "independent-human-review-v1"
 MAPPING_STATES = {
     "official_current",
     "legacy_or_nonstandard",
@@ -360,6 +362,20 @@ def _validate_provenance(reference: Mapping[str, Any]) -> None:
         raise GoldsetScoringError(
             "reference evaluation basis and human-gold flags are inconsistent"
         )
+    expected_attestation = {
+        "version": HUMAN_ATTESTATION_VERSION,
+        "attested": all_human,
+        "statement": HUMAN_ATTESTATION if all_human else "",
+    }
+    attestation = reference.get("human_gold_attestation")
+    if all_human and attestation != expected_attestation:
+        raise GoldsetScoringError(
+            "human-gold reference attestation is missing or invalid"
+        )
+    if not all_human and attestation not in (None, expected_attestation):
+        raise GoldsetScoringError(
+            "AI or mixed reference carries an invalid human-gold attestation"
+        )
 
 
 def _validate_record_provenance(
@@ -504,6 +520,17 @@ def validate_reference_bundle(
     for field in ("is_human_gold", "is_gold_accuracy"):
         if integrity.get(field) is not reference.get(field):
             raise GoldsetScoringError(f"final integrity {field} mismatch")
+    attestation = reference.get("human_gold_attestation")
+    if attestation is not None:
+        if integrity.get("human_gold_attestation") != attestation:
+            raise GoldsetScoringError(
+                "final integrity human-gold attestation mismatch"
+            )
+        attestation_sha256 = sha256_bytes(canonical_json_bytes(attestation))
+        if integrity.get("human_gold_attestation_sha256") != attestation_sha256:
+            raise GoldsetScoringError(
+                "final integrity human-gold attestation SHA-256 mismatch"
+            )
 
     csv_by_id: dict[str, dict[str, str]] = {}
     for row in csv_rows:

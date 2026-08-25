@@ -8,6 +8,7 @@ import zipfile
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from app.services import kordoc_parser
 
@@ -54,7 +55,8 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
     # PowerShell can prepend a UTF-8 BOM when a value is piped to the Vercel CLI.
     # It must never leak into the HTTP header value.
-    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "\ufefftest-shared-secret")
+    shared_secret = "test-shared-secret-32-bytes-minimum"
+    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", f"\ufeff{shared_secret}")
     monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
 
@@ -64,7 +66,7 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     assert request["url"] == "https://ncscope-preview.vercel.app/api/kordoc-parse"
     assert request["content"] == b"%PDF-sanitized"
     assert request["headers"]["content-type"] == "application/octet-stream"
-    assert request["headers"]["x-ncscope-kordoc-secret"] == "test-shared-secret"
+    assert request["headers"]["x-ncscope-kordoc-secret"] == shared_secret
     assert result["parser"] == "kordoc"
     assert result["parser_version"] == "4.9.1"
 
@@ -101,6 +103,14 @@ def test_vercel_bridge_signs_each_request_with_ed25519(
     monkeypatch.setattr(kordoc_parser.httpx, "Client", FakeClient)
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
     private_key_bytes = bytes(range(32))
+    public_key_bytes = Ed25519PrivateKey.from_private_bytes(
+        private_key_bytes
+    ).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    monkeypatch.setattr(
+        kordoc_parser,
+        "_KORDOC_BRIDGE_ED25519_PUBLIC_KEY_RAW",
+        base64.urlsafe_b64encode(public_key_bytes).decode("ascii").rstrip("="),
+    )
     encoded_private_key = base64.urlsafe_b64encode(private_key_bytes).decode("ascii").rstrip("=")
     monkeypatch.setenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", encoded_private_key)
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "different-dedicated-key")
@@ -109,6 +119,9 @@ def test_vercel_bridge_signs_each_request_with_ed25519(
 
     headers = calls[-1]["headers"]
     assert "x-ncscope-kordoc-secret" not in headers
+    assert headers["x-ncscope-kordoc-body-sha256"] == hashlib.sha256(
+        b"document"
+    ).hexdigest()
     message = "\n".join(
         (
             headers["x-ncscope-kordoc-timestamp"],
@@ -140,6 +153,30 @@ def test_vercel_bridge_refuses_non_ascii_header_secret(monkeypatch: pytest.Monke
     monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
     monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "not-ascii-비밀")
+    monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
+
+    with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):
+        kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
+
+
+def test_vercel_bridge_refuses_weak_shared_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
+    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "too-short")
+    monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
+
+    with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):
+        kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
+
+
+def test_vercel_bridge_refuses_control_character_shared_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("VERCEL_URL", "ncscope-preview.vercel.app")
+    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "A" * 16 + "\x7f" + "B" * 16)
     monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
 
