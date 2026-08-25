@@ -33,10 +33,10 @@ def _review(state: str, names: list[str], codes: list[str], marker: str):
     }
 
 
-def _template(item_id: str, digest: str) -> dict[str, str]:
+def _template(mod, item_id: str, digest: str) -> dict[str, str]:
     return {
         field: ""
-        for field in load_module("adjudication_fields").finalizer.ADJUDICATION_FIELDS
+        for field in mod.finalizer.ADJUDICATION_FIELDS
     } | {
         "item_id": item_id,
         "split": "gold_validation",
@@ -58,8 +58,8 @@ def test_builds_consensus_and_disagreement_without_predictions() -> None:
     reviews_a = {"one": official, "two": absent}
     reviews_b = {"one": official, "two": official}
     templates = {
-        "one": _template("one", digest_a),
-        "two": _template("two", digest_b),
+        "one": _template(mod, "one", digest_a),
+        "two": _template(mod, "two", digest_b),
     }
     packets = {
         "one": {"packet_path": "one.md", "packet_sha256": "1" * 64},

@@ -281,16 +281,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    result = prepare_adjudication(
-        manifest_path=Path(args.manifest).resolve(),
-        seed_integrity_path=Path(args.seed_integrity).resolve(),
-        do_not_tune_path=Path(args.do_not_tune).resolve(),
-        reviewer_a_path=Path(args.reviewer_a).resolve(),
-        reviewer_b_path=Path(args.reviewer_b).resolve(),
-        adjudication_template_path=Path(args.adjudication_template).resolve(),
-        packet_index_path=Path(args.packet_index).resolve(),
-        output_dir=Path(args.output_dir),
-    )
+    try:
+        result = prepare_adjudication(
+            manifest_path=Path(args.manifest).resolve(),
+            seed_integrity_path=Path(args.seed_integrity).resolve(),
+            do_not_tune_path=Path(args.do_not_tune).resolve(),
+            reviewer_a_path=Path(args.reviewer_a).resolve(),
+            reviewer_b_path=Path(args.reviewer_b).resolve(),
+            adjudication_template_path=Path(args.adjudication_template).resolve(),
+            packet_index_path=Path(args.packet_index).resolve(),
+            output_dir=Path(args.output_dir),
+        )
+    except (
+        AdjudicationPreparationError,
+        finalizer.GoldsetFinalizationError,
+        OSError,
+    ) as exc:
+        print(json.dumps({"passed": False, "error": str(exc)}, ensure_ascii=False))
+        return 2
     print(json.dumps({key: str(value) for key, value in result.items()}, indent=2))
     return 0
 
