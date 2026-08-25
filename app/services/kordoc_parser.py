@@ -3629,10 +3629,31 @@ def _safe_bridge_url() -> str:
 
     vercel_host = os.getenv("VERCEL_URL", "").strip()
     explicit = os.getenv("KORDOC_BRIDGE_URL", "").strip()
-    candidate = (
+    try:
+        config_attestation = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "data"
+                / "vercel_config_attestation.json"
+            ).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(config_attestation, dict):
+        return ""
+    attested_bridge_url = str(
+        config_attestation.get("kordoc_bridge_url") or ""
+    ).strip()
+    if explicit and explicit != attested_bridge_url:
+        return ""
+    # Production deployment URLs can be protected by Vercel before the Node
+    # function sees our application signature. Use the attested production
+    # alias as transport when configured, then independently require the Node
+    # result to identify the current VERCEL_URL deployment.
+    candidate = (attested_bridge_url if explicit else "") or (
         f"https://{vercel_host.rstrip('/')}{_KORDOC_BRIDGE_PATH}"
         if vercel_host
-        else explicit
+        else ""
     )
     if not candidate:
         return ""
@@ -3819,7 +3840,10 @@ def _parse_with_remote_kordoc(
     return _stamp_kordoc_result(
         result,
         expected_mode="authenticated_serverless_bridge",
-        expected_deployment_url=str(urlsplit(bridge_url).hostname or ""),
+        expected_deployment_url=(
+            os.getenv("VERCEL_URL", "").strip()
+            or str(urlsplit(bridge_url).hostname or "")
+        ),
     )
 
 

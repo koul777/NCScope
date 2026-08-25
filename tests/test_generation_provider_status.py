@@ -123,7 +123,7 @@ def test_health_is_degraded_only_when_mcp_is_not_ready(monkeypatch) -> None:
 
 def test_health_requires_stateless_document_contract_on_vercel(monkeypatch) -> None:
     monkeypatch.setenv("VERCEL", "1")
-    monkeypatch.setenv("KORDOC_BRIDGE_URL", "https://example.vercel.app/api/kordoc-parse")
+    monkeypatch.setenv("KORDOC_BRIDGE_URL", "https://ncscope.vercel.app/api/kordoc-parse")
     monkeypatch.setenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", "configured")
     monkeypatch.delenv("REVIEW_SESSION_SIGNING_KEY", raising=False)
     monkeypatch.setattr(
@@ -150,7 +150,7 @@ def test_health_requires_stateless_document_contract_on_vercel(monkeypatch) -> N
 
 def test_health_accepts_only_valid_serverless_document_secrets(monkeypatch) -> None:
     monkeypatch.setenv("VERCEL", "1")
-    monkeypatch.setenv("KORDOC_BRIDGE_URL", "https://example.vercel.app/api/kordoc-parse")
+    monkeypatch.setenv("KORDOC_BRIDGE_URL", "https://ncscope.vercel.app/api/kordoc-parse")
     _configure_matching_bridge_key(monkeypatch)
     monkeypatch.setenv("REVIEW_SESSION_SIGNING_KEY", "r" * 32)
     monkeypatch.setattr(

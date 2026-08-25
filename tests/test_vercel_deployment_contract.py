@@ -134,6 +134,7 @@ def test_node_lock_runtime_attestation_matches_full_package_lock() -> None:
 
 def test_vercel_config_runtime_attestation_matches_source_config() -> None:
     config_path = ROOT / "vercel.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     attestation = json.loads(
         (
             ROOT / "app" / "data" / "vercel_config_attestation.json"
@@ -145,6 +146,7 @@ def test_vercel_config_runtime_attestation_matches_source_config() -> None:
         "vercel_config_git_text_sha256": hashlib.sha256(
             config_path.read_text(encoding="utf-8").encode("utf-8")
         ).hexdigest(),
+        "kordoc_bridge_url": config["env"]["KORDOC_BRIDGE_URL"],
     }
 
 

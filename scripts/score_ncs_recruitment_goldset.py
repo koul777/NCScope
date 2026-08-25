@@ -172,10 +172,15 @@ def local_runtime_attestation() -> dict[str, Any]:
     vercel_config_git_text_sha256 = str(
         vercel_config_attestation.get("vercel_config_git_text_sha256") or ""
     ).strip()
+    attested_kordoc_bridge_url = str(
+        vercel_config_attestation.get("kordoc_bridge_url") or ""
+    ).strip()
     if (
         vercel_config_attestation.get("schema_version")
         != "ncscope_vercel_config_attestation_v1"
         or not re.fullmatch(r"[0-9a-f]{64}", vercel_config_git_text_sha256)
+        or attested_kordoc_bridge_url
+        != "https://ncscope.vercel.app/api/kordoc-parse"
     ):
         raise GoldsetScoringError("Vercel config attestation is invalid")
     package_lock_text = (ROOT / "package-lock.json").read_text(encoding="utf-8")
@@ -194,6 +199,12 @@ def local_runtime_attestation() -> dict[str, Any]:
         sha256_bytes(vercel_config_text.encode("utf-8"))
         != vercel_config_git_text_sha256
     ):
+        raise GoldsetScoringError("Vercel config attestation is stale")
+    vercel_config = json.loads(vercel_config_text)
+    configured_bridge_url = str(
+        (vercel_config.get("env") or {}).get("KORDOC_BRIDGE_URL") or ""
+    ).strip()
+    if configured_bridge_url != attested_kordoc_bridge_url:
         raise GoldsetScoringError("Vercel config attestation is stale")
     attestation = {
         "schema_version": "ncscope_evaluation_runtime_attestation_v2",

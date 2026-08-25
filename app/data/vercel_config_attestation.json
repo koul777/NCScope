@@ -1,4 +1,5 @@
 {
   "schema_version": "ncscope_vercel_config_attestation_v1",
-  "vercel_config_git_text_sha256": "407ab28fc89aaabb6c52a8a96cca672696e4fcff764010d6de8b08ebfd64a3ad"
+  "vercel_config_git_text_sha256": "407ab28fc89aaabb6c52a8a96cca672696e4fcff764010d6de8b08ebfd64a3ad",
+  "kordoc_bridge_url": "https://ncscope.vercel.app/api/kordoc-parse"
 }

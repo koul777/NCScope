@@ -163,9 +163,11 @@ Node 함수에서 Kordoc 4.9.1을 자체 실행합니다. 문서를 외부 변�
 `KORDOC_OFFLINE=1`로 외부 OCR·모델 다운로드를 막습니다. 운영 환경에는 저장소에
 기록하지 않은 `KORDOC_BRIDGE_ED25519_PRIVATE_KEY`를 설정하며, Node 함수는 저장소에
 고정한 공개키로 120초 유효 요청 서명을 검증합니다. 공유 비밀은 로컬·전환용
-fallback으로만 지원합니다. Python 함수는 고정 production alias보다 현재 요청의
-`VERCEL_URL`을 우선해 Node 함수를 호출하고, 응답의 deployment URL·선택적 deployment
-ID·Git SHA가 현재 실행 환경과 일치해야만 runtime attestation을 결속합니다. Kordoc 실행이 불가능해
+fallback으로만 지원합니다. Python 함수는 현재 요청의 고유 `VERCEL_URL`이 Vercel
+Deployment Protection에 막힐 수 있어 봉인된 production alias를 전송 경로로 사용합니다.
+다만 응답의 deployment URL·선택적 deployment ID·Git SHA가
+현재 Python 함수의 `VERCEL_URL` 실행 환경과 일치해야만 runtime attestation을 결속합니다.
+Kordoc 실행이 불가능해
 대체 파서를 사용한 경우 응답과 화면에 실제 파서명을 표시하며, 표 좌표가 사라진
 분류표는 대분류·중분류를 제거한 뒤 공식 NCS MCP exact 결과만 세분류 후보로 확정합니다.
 

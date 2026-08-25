@@ -74,12 +74,15 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     shared_secret = "test-shared-secret-32-bytes-minimum"
     monkeypatch.setenv("KORDOC_BRIDGE_SECRET", f"\ufeff{shared_secret}")
     monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
-    monkeypatch.delenv("KORDOC_BRIDGE_URL", raising=False)
+    monkeypatch.setenv(
+        "KORDOC_BRIDGE_URL",
+        "https://ncscope.vercel.app/api/kordoc-parse",
+    )
 
     result = kordoc_parser.parse_with_kordoc(b"%PDF-sanitized", filename="직무기술서.pdf")
 
     request = calls[-1]
-    assert request["url"] == "https://ncscope-preview.vercel.app/api/kordoc-parse"
+    assert request["url"] == "https://ncscope.vercel.app/api/kordoc-parse"
     assert request["content"] == b"%PDF-sanitized"
     assert request["headers"]["content-type"] == "application/octet-stream"
     assert request["headers"]["x-ncscope-kordoc-secret"] == shared_secret
@@ -254,6 +257,44 @@ def test_external_non_vercel_bridge_host_is_not_accepted(
 
     with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):
         kordoc_parser.parse_with_kordoc(b"document", filename="jd.pdf")
+
+
+def test_unattested_vercel_bridge_never_receives_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post_calls: list[bytes] = []
+
+    class FakeClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def post(self, _url: str, *, content: bytes, headers: dict[str, str]):
+            post_calls.append(content)
+            raise AssertionError("unattested bridge must not receive document bytes")
+
+    monkeypatch.setattr(kordoc_parser.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(kordoc_parser.httpx, "Client", FakeClient)
+    monkeypatch.setenv("VERCEL_URL", "ncscope-current.vercel.app")
+    monkeypatch.setenv(
+        "KORDOC_BRIDGE_URL",
+        "https://unrelated-project.vercel.app/api/kordoc-parse",
+    )
+    monkeypatch.setenv("KORDOC_BRIDGE_SECRET", "A" * 32)
+    monkeypatch.delenv("KORDOC_BRIDGE_ED25519_PRIVATE_KEY", raising=False)
+
+    with pytest.raises(kordoc_parser.KordocParseError, match="runtime is unavailable"):
+        kordoc_parser.parse_with_kordoc(
+            b"PRIVATE-DOCUMENT",
+            filename="private.pdf",
+        )
+
+    assert post_calls == []
 
 
 @pytest.mark.parametrize(
