@@ -63,6 +63,7 @@ def test_build_source_packets_uses_allowlisted_source_text_only(
     assert "00000000" not in packet
     assert index["automatic_prediction_fields_included"] is False
     assert index["packets"][0]["packet_sha256"]
+    assert "split" not in index["packets"][0]
 
 
 def test_build_source_packets_rejects_document_tampering(tmp_path: Path) -> None:

@@ -121,7 +121,6 @@ def build_source_packets(
         packet_rows.append(
             {
                 "item_id": item_id,
-                "split": str(record.get("split") or ""),
                 "document_sha256": expected_digest,
                 "packet_path": str(packet_path.resolve()),
                 "packet_sha256": sha256_file(packet_path),
