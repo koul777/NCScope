@@ -36,14 +36,16 @@
 | 의존성 보안 감사 | 운영·개발 Python requirements 및 npm 알려진 취약점 0건 |
 | 현행 공식 세분류 57문서 | 명칭 F1 99.69%, 코드·`(명칭, 코드)` 쌍 F1 100%, 문서 exact 98.25% |
 | GitHub Actions | [릴리스 검증 성공](https://github.com/koul777/NCScope/actions/runs/32882542451) |
+| GitHub Release | [`v1.4.12`](https://github.com/koul777/NCScope/releases/tag/v1.4.12) |
 | Vercel | Production `dpl_pgLgEQUZPx219AWCScsj6xK157YJ`, runtime bundle `888689cca5ffd29a05da39c7d6f4f86af6e609584ff675fcbb5db6ed26259efa` |
 
 정확도 수치는 서로 답을 보지 않은 두 AI 검토와 별도 AI 중재로 만든
 `independent_ai_agent_adjudicated_reference_not_human_gold` 기준입니다. 사람 골드셋
-정확도로 해석하지 않습니다. 운영 헬스·runtime policy와 PDF 텍스트 폴백 smoke는
-통과했습니다. 다만 로컬 Kordoc에서 처리되던 특정 복잡 PDF 한 건이 운영에서 `422`를
-반환한 사례가 있어 문서별 Kordoc 호환성은 후속 추적 대상입니다. 이 경우 오류를 숨겨
-추정 결과를 만들지 않고 사용자에게 파싱 실패를 명시합니다.
+정확도로 해석하지 않습니다. 운영 헬스·runtime policy, PDF 텍스트 폴백과 개인정보가
+없는 합성 PDF의 Kordoc 4.9.1 `authenticated_serverless_bridge` smoke를 통과했습니다.
+다만 로컬 Kordoc에서 처리되던 특정 복잡 PDF 한 건이 운영에서 `422`를 반환한 사례가
+있어 문서별 Kordoc 호환성은 후속 추적 대상입니다. 이 경우 오류를 숨겨 추정 결과를
+만들지 않고 사용자에게 파싱 실패를 명시합니다.
 
 ### 업데이트 내역 구독하기
 
@@ -52,7 +54,9 @@ GitHub의 **Follow**와 저장소 **Star**만으로는 모든 변경 알림이 �
 **All Activity**를 선택하면 커밋·이슈·Pull Request를 포함한 전체 활동 알림을 받을 수
 있습니다. 배포별 상세 내용은 다음 위치에서 확인할 수 있습니다.
 
-- 사용자용 변경 요약: 이 README의 `최신 운영 릴리스`와 버전별 GitHub Releases
+- 사용자용 변경 요약: 이 README의 `최신 운영 릴리스`,
+  [`v1.4.12` 릴리스 노트](docs/releases/v1.4.12.md),
+  [버전별 GitHub Releases](https://github.com/koul777/NCScope/releases)
 - 코드 변경 내역: [`main` 커밋 기록](https://github.com/koul777/NCScope/commits/main/)
 - 자동 검증 결과: [GitHub Actions](https://github.com/koul777/NCScope/actions)
 - 운영 서비스: [ncscope.vercel.app](https://ncscope.vercel.app)

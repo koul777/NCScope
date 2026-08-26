@@ -1,5 +1,5 @@
 {
-  "schema_version": "ncscope_release_evidence_v2",
+  "schema_version": "ncscope_release_evidence_v3",
   "release_version": "1.4.12",
   "generated_at": "2026-08-26T03:11:49+09:00",
   "evidence_scope": "sanitized aggregate release evidence; private source documents and MCP response bodies are excluded",
@@ -120,6 +120,29 @@
       "package_lock",
       "vercel_config"
     ]
+  },
+  "production_deployment": {
+    "verified_at": "2026-08-26T22:41:40+09:00",
+    "url": "https://ncscope.vercel.app",
+    "deployment_id": "dpl_pgLgEQUZPx219AWCScsj6xK157YJ",
+    "status": "ready",
+    "runtime_bundle_sha256": "888689cca5ffd29a05da39c7d6f4f86af6e609584ff675fcbb5db6ed26259efa",
+    "synthetic_pdf_bridge_smoke": {
+      "contains_private_source_data": false,
+      "http_status": 200,
+      "parser": "kordoc",
+      "parser_policy": "default",
+      "mode": "authenticated_serverless_bridge",
+      "parser_version": "4.9.1",
+      "build_identity_kind": "vercel_deployment",
+      "parser_execution_attestation_bundle_match": true
+    },
+    "known_document_specific_limit": {
+      "scope": "one complex PDF that parsed with local Kordoc",
+      "production_result": "HTTP 422 jd_file could not be parsed by Kordoc",
+      "bridge_wide_outage_evidence": false,
+      "fallback_behavior": "fail closed with an explicit parse error; do not infer document contents"
+    }
   },
   "configured_ncs_mcp_contract": {
     "provenance_boundary": "configured ncs_unit_detail response contract, not independent upstream database attestation",

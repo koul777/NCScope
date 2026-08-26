@@ -35,6 +35,7 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
         "current_public_recruitment_candidate",
         "gold_reference_workflow",
         "scoring_runtime_attestation",
+        "production_deployment",
         "configured_ncs_mcp_contract",
         "release_run_source_raw_sha256",
         "source_contract_git_text_sha256",
@@ -65,7 +66,7 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
     assert "tmp/" not in serialized
     assert "tmp\\\\" not in serialized
 
-    assert evidence["schema_version"] == "ncscope_release_evidence_v2"
+    assert evidence["schema_version"] == "ncscope_release_evidence_v3"
     assert evidence["release_version"] == "1.4.12"
     assert evidence["human_gold_accuracy_available"] is False
     assert datetime.fromisoformat(evidence["generated_at"]) <= datetime.fromisoformat(
@@ -179,6 +180,38 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
             "vercel_config",
         ],
     }
+
+    production = evidence["production_deployment"]
+    assert set(production) == {
+        "verified_at",
+        "url",
+        "deployment_id",
+        "status",
+        "runtime_bundle_sha256",
+        "synthetic_pdf_bridge_smoke",
+        "known_document_specific_limit",
+    }
+    assert datetime.fromisoformat(production["verified_at"]) > datetime.fromisoformat(
+        evidence["generated_at"]
+    )
+    assert production["url"] == "https://ncscope.vercel.app"
+    assert production["deployment_id"] == "dpl_pgLgEQUZPx219AWCScsj6xK157YJ"
+    assert production["status"] == "ready"
+    assert HEX64.fullmatch(production["runtime_bundle_sha256"])
+    assert production["synthetic_pdf_bridge_smoke"] == {
+        "contains_private_source_data": False,
+        "http_status": 200,
+        "parser": "kordoc",
+        "parser_policy": "default",
+        "mode": "authenticated_serverless_bridge",
+        "parser_version": "4.9.1",
+        "build_identity_kind": "vercel_deployment",
+        "parser_execution_attestation_bundle_match": True,
+    }
+    known_limit = production["known_document_specific_limit"]
+    assert known_limit["bridge_wide_outage_evidence"] is False
+    assert known_limit["production_result"].startswith("HTTP 422")
+    assert known_limit["fallback_behavior"].startswith("fail closed")
 
     verification = evidence["verification"]
     assert verification["ruff"] == "passed"
