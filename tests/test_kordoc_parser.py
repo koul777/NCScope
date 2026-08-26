@@ -191,6 +191,91 @@ def test_structure_job_description_preserves_exact_kordoc_table_coordinates_and_
     assert result["fields"]["table_coordinate_contract"]["index_base"] == 0
 
 
+def test_positioned_ncs_hierarchy_detail_header_promotes_exact_official_value() -> None:
+    parsed = {
+        "markdown": "",
+        "blocks": [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {"text": "NCS 분류체계", "rowSpan": 2},
+                        {"text": "대분류"},
+                        {"text": "중분류"},
+                        {"text": "소분류"},
+                        {"text": "세분류"},
+                    ],
+                    [
+                        {"text": ""},
+                        {"text": "02.경영·회계·사무"},
+                        {"text": "02.총무·인사"},
+                        {"text": "03.일반사무"},
+                        {"text": "02.사무행정"},
+                    ],
+                ],
+            }
+        ],
+    }
+
+    result = structure_job_description(parsed, filename="positioned-detail.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["사무행정"]
+    detail_item = next(
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ncs_detail"
+    )
+    assert detail_item["source"] == "kordoc_table"
+    assert detail_item["layout"] == "column_header_value"
+
+
+def test_positioned_ncs_hierarchy_detail_header_keeps_colspan_value_coordinates() -> None:
+    markdown = """
+<table>
+<tr><th rowspan="2">NCS 분류체계</th><th>대분류</th><th>중분류</th><th>소분류</th><th colspan="2">세분류</th></tr>
+<tr><td>02.경영·회계·사무</td><td>02.총무·인사</td><td>03.일반사무</td><td colspan="2">02.사무행정</td></tr>
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="colspan-detail.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["사무행정"]
+    detail_item = next(
+        item
+        for item in result["fields"]["positioned_items"]
+        if item["section"] == "ncs_detail"
+    )
+    assert detail_item["value_cell"] == {
+        "row": 1,
+        "column": 4,
+        "row_span": 1,
+        "column_span": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    "data_row",
+    [
+        "<tr><td>02.경영·회계·사무</td><td>02.총무·인사</td><td>03.일반사무</td><td>-</td></tr>",
+        "<tr><td>현재 NCS에 Mapping 가능한 직무(세분류)가 없어 별도 분석</td><td></td><td></td><td>사무행정</td></tr>",
+        "<tr><th>능력단위</th><td colspan=\"3\">01.문서작성</td><td>사무행정</td></tr>",
+    ],
+)
+def test_positioned_ncs_hierarchy_detail_header_rejects_non_detail_values(
+    data_row: str,
+) -> None:
+    markdown = f"""
+<table>
+<tr><th>NCS 분류체계</th><th>대분류</th><th>중분류</th><th>소분류</th><th>세분류</th></tr>
+{data_row}
+</table>
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="rejected-detail.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+
+
 def test_structure_job_description_scopes_horizontal_matrix_cells_by_row() -> None:
     markdown = """
 <table>

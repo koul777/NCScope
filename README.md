@@ -77,6 +77,14 @@ GitHub의 **Follow**와 저장소 **Star**만으로는 모든 변경 알림이 �
 - 현재 source packet은 운영 파서와 같은 Kordoc 계열 추출을 사용하므로 `human_gold_eligible=false`입니다. 독립 원문 렌더/OCR 교차검증이 추가되기 전에는 AI adjudicated reference로만 해석해야 합니다.
 - 개발·CI 도구는 `pytest 9.0.3`, `pytest-asyncio 1.4.0`으로 올렸고, 격리 환경의 `pip-audit`에서 운영·개발 requirements 모두 알려진 취약점 0건을 확인했습니다.
 
+### 2026-08-27 세분류 추출·매칭 후속 보강
+
+- 좌표 표의 명시적 `세분류`/`NCS 세분류` 헤더 값은 같은 표의 NCS 분류체계 문맥, 활성 공식 카탈로그의 정규화 exact, 빈값·미적용·능력단위 차단 조건을 모두 통과할 때만 추출 후보로 승격합니다. Kordoc·HTML·Markdown 표와 rowspan/colspan 좌표를 같은 계약으로 처리합니다.
+- ALIO 코퍼스 프로필 결과는 문서에서 추출한 `ncs_detail_candidates`와 분리해 검토 제안으로만 표시합니다. 기본 선택하지 않으며, 사용자가 직접 고르기 전에는 추출 능력단위를 그 세분류 범위로 재사용하지 않습니다.
+- MCP 능력단위 결과는 공식 세분류명과 8자리 코드 소유권을 함께 확인하고, 10자리 능력단위 코드 형식까지 검증합니다. 직접 일치·공백 정리·구두점 변형·순번 제거·공식 표시명 복원·명시적 안전 별칭을 별도 provenance로 기록합니다.
+- 공식 세분류명 normalized key, 안전 별칭 target, 능력단위의 세분류 코드·명칭 정합성을 정적 불변식으로 검사합니다. 관련 통합 회귀는 399개가 통과했습니다.
+- 공개 ALIO 운영 문서 2건의 네트워크 probe는 파싱 2/2, 현행 공식 세분류 16/16 exact였습니다. 이 값은 연결·회귀 확인용 공개 튜닝 진단이며 사람 골드나 새 블라인드 정확도가 아닙니다. 세부 기록은 [`reports/ncs_detail_matching_6h_20260827.md`](reports/ncs_detail_matching_6h_20260827.md)에 있습니다.
+
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 
 공개 서비스: **https://ncscope.vercel.app**

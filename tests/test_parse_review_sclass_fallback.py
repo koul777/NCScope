@@ -323,6 +323,60 @@ def test_parse_review_skips_pdf_recovery_when_document_declares_no_ncs_mapping(m
     structural.assert_not_called()
 
 
+def test_parse_review_keeps_profile_matches_out_of_extracted_detail_candidates(mocker):
+    mocker.patch(
+        "app.main._parse_upload_document",
+        return_value={"markdown": "문서 작성과 회의 운영", "blocks": []},
+    )
+    mocker.patch(
+        "app.main.structure_job_description",
+        return_value={
+            "document": {"markdown": "문서 작성과 회의 운영"},
+            "fields": {
+                "ncs_detail_candidates": [],
+                "ability_units": ["문서 작성"],
+            },
+        },
+    )
+    suggestions = [
+        {
+            "sclass_name": "사무행정",
+            "ncs_code_no": "02020302",
+            "confidence": 0.91,
+            "evidence": "문서 작성",
+            "review_required": True,
+            "source": "alio_corpus_profile",
+        }
+    ]
+    mocker.patch("app.main.suggest_sclass_from_profile", return_value=suggestions)
+    detail_states = mocker.patch(
+        "app.main.classify_official_detail_names",
+        return_value=[],
+    )
+    ability_states = mocker.patch(
+        "app.main.classify_official_ability_unit_names",
+        return_value=[],
+    )
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/parse-review",
+            files={"jd_file": ("profile-only.txt", b"job", "text/plain")},
+        )
+
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    assert fields["ncs_detail_candidates"] == []
+    assert fields["ncs_detail_suggestions"] == suggestions
+    assert fields["ncs_detail_source"] == "alio_corpus_review_suggestion"
+    assert fields.get("ncs_detail_candidate_evidence", []) == []
+    detail_states.assert_called_once_with([], self_developed_names=[])
+    ability_states.assert_called_once_with(
+        ["문서 작성"],
+        selected_detail_names=[],
+    )
+
+
 def test_parse_review_filters_marker_only_ability_artifacts_before_review_state(
     mocker,
 ):

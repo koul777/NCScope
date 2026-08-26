@@ -28,6 +28,26 @@ def test_lightweight_unit_catalog_covers_every_source_unit_code() -> None:
     assert all(row["detail_code"] in valid_detail_codes for row in rows)
 
 
+def test_every_unit_detail_name_matches_its_canonical_detail_catalog_name() -> None:
+    unit_payload = json.loads(UNIT_CATALOG_PATH.read_text(encoding="utf-8"))
+    detail_payload = json.loads(DETAIL_CATALOG_PATH.read_text(encoding="utf-8"))
+    canonical_names = {
+        str(row["code"]): str(row["name"])
+        for row in detail_payload["details"]
+        if str(row.get("usage_yn") or "").upper() == "Y"
+    }
+
+    mismatches: list[tuple[str, str, str]] = []
+    for row in unit_payload["units"]:
+        detail_code = str(row.get("detail_code") or "")
+        detail_name = str(row.get("detail_name") or "")
+        canonical_name = canonical_names.get(detail_code)
+        if canonical_name is None or detail_name != canonical_name:
+            mismatches.append((detail_code, detail_name, canonical_name or "<missing>"))
+
+    assert mismatches == []
+
+
 def test_exact_unit_catalog_lookup_is_normalized_but_not_semantic() -> None:
     ncs_mcp_client._official_units_by_name_key.cache_clear()
 

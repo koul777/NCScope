@@ -156,6 +156,12 @@ def test_canonicalize_detail_lookup_terms_rejects_code_only_and_preserves_other_
     assert _canonicalize_detail_lookup_terms(["010101 미등록직무"]) == ["미등록직무"]
 
 
+def test_canonicalize_detail_lookup_terms_deduplicates_exact_official_variants():
+    assert _canonicalize_detail_lookup_terms(
+        ["프로젝트 관리", "프로젝트·관리", "프로젝트관리"]
+    ) == ["프로젝트관리"]
+
+
 def test_all_official_sclass_names_have_unique_normalized_keys_and_round_trip():
     with NCS_SCLASS_CSV.open("r", encoding="utf-8-sig", newline="") as handle:
         official_names = {

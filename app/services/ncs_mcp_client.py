@@ -868,6 +868,64 @@ def _detail_search_query_limit(max_units: int) -> int:
     return 200
 
 
+def _detail_resolution_kind(name: str, query_name: str) -> str:
+    """Classify an accepted exact-detail query without widening matching."""
+
+    source_key = _norm(name)
+    query_key = _norm(query_name)
+    known_aliases = _DETAIL_QUERY_ALIASES_BY_KEY.get(source_key, ())
+    if any(query_key == _norm(alias) for alias in known_aliases):
+        return "safe_alias"
+    source_surface = unicodedata.normalize("NFKC", name).casefold().strip()
+    query_surface = unicodedata.normalize("NFKC", query_name).casefold().strip()
+    return "direct" if query_surface == source_surface else "format_variant"
+
+
+def _detail_resolution_rule(name: str, query_name: str) -> str:
+    """Return the exact, auditable rule that produced a detail query."""
+
+    source_key = _norm(name)
+    query_key = _norm(query_name)
+    known_aliases = _DETAIL_QUERY_ALIASES_BY_KEY.get(source_key, ())
+    if any(query_key == _norm(alias) for alias in known_aliases):
+        return "safe_alias"
+
+    source_surface = unicodedata.normalize("NFKC", name).casefold().strip()
+    query_surface = unicodedata.normalize("NFKC", query_name).casefold().strip()
+    if query_surface == source_surface:
+        return "direct"
+
+    whitespace_compact = re.sub(r"\s+", "", source_surface)
+    if query_surface == whitespace_compact:
+        return "whitespace_compact"
+
+    ordinal_stripped = re.sub(
+        r"^\d{1,2}(?:\s*[,.)：:\-]\s*|\s+)",
+        "",
+        source_surface,
+    ).strip(" \\")
+    if query_surface == ordinal_stripped:
+        return "ordinal_prefix_stripped"
+
+    catalog_names = _official_detail_names_by_key().get(source_key, ())
+    if any(
+        query_surface
+        == unicodedata.normalize("NFKC", canonical_name).casefold().strip()
+        for canonical_name in catalog_names
+    ):
+        return "catalog_display_restored"
+
+    punctuation_compact = re.sub(
+        r"[\W_]+",
+        "",
+        source_surface,
+        flags=re.UNICODE,
+    )
+    if query_surface == punctuation_compact:
+        return "punctuation_variant"
+    return "format_variant"
+
+
 def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list[dict[str, Any]]:
     """Resolve confirmed 세분류 names to NCS ability units."""
 
@@ -904,8 +962,26 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 if _norm(sub_name) != _norm(query_name):
                     continue
                 code = str(row.get("id") or row.get("unit_code") or "").strip()
+                # A detail prefix does not make an arbitrary MCP identifier a
+                # valid ability-unit code. Reject truncated and malformed IDs
+                # here so they cannot surface as exact options and fail only
+                # later during the unit-detail/KSA lookup.
+                if not re.fullmatch(r"\d{10}(?:_[0-9A-Za-z]+)?", code):
+                    continue
                 base_code = code.split("_", 1)[0]
-                if base_code[:8] not in _active_official_detail_codes():
+                official_details = [
+                    detail
+                    for detail in _official_details_by_name_key().get(
+                        _norm(sub_name), ()
+                    )
+                    if detail["code"] == base_code[:8]
+                ]
+                # A current code alone is insufficient: the MCP result's
+                # declared path name must own that exact eight-digit detail
+                # prefix in the shipped official catalog. This rejects stale
+                # or internally inconsistent index rows before they can be
+                # treated as an exact reviewed-detail match.
+                if len(official_details) != 1:
                     continue
                 if not code or code in seen:
                     continue
@@ -915,6 +991,9 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 ).casefold().strip() != unicodedata.normalize(
                     "NFKC", name
                 ).casefold().strip()
+                resolution_kind = _detail_resolution_kind(name, query_name)
+                resolution_rule = _detail_resolution_rule(name, query_name)
+                official_detail = official_details[0]
                 group.append(
                     {
                         "ncsClCd": code,
@@ -928,6 +1007,10 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                         "matchedDetailName": name,
                         "resolvedDetailName": sub_name if is_alias else "",
                         "detailQueryName": query_name if is_alias else "",
+                        "officialDetailCode": official_detail["code"],
+                        "officialDetailName": official_detail["name"],
+                        "detailResolutionKind": resolution_kind,
+                        "detailResolutionRule": resolution_rule,
                         "source": "ncs-mcp-detail-alias" if is_alias else "ncs-mcp",
                         "matchScore": 1.0,
                     }

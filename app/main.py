@@ -1625,6 +1625,7 @@ def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
             resolved_decorations_by_key[source_key] = official_names[0]
 
     canonical_terms: list[str] = []
+    canonical_keys: set[str] = set()
     for term in reviewed_terms:
         official_name = resolved_decorations_by_key.get(
             _norm_sclass_key(term),
@@ -1639,7 +1640,17 @@ def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
             ),
             "",
         )
-        canonical_terms.append(official_name or term)
+        canonical_term = official_name or term
+        # Two source surfaces can independently resolve to the same official
+        # detail (for example ``프로젝트 관리`` and ``프로젝트·관리``).  Dedupe
+        # only after exact canonicalization so the review UI, mapping-state
+        # classifier, and MCP lookup never count one detail twice. Unknown
+        # source labels retain punctuation and remain distinct for review.
+        canonical_key = _norm_sclass_key(canonical_term)
+        if not canonical_key or canonical_key in canonical_keys:
+            continue
+        canonical_keys.add(canonical_key)
+        canonical_terms.append(canonical_term)
     return canonical_terms
 
 
@@ -14868,38 +14879,11 @@ async def parse_jd_review_endpoint(request: Request, jd_file: UploadFile = File(
             )
             structured_fields["ncs_detail_suggestions"] = profile_suggestions
             if profile_suggestions:
-                suggested_names = _canonicalize_detail_lookup_terms(
-                    [
-                        str(item.get("sclass_name") or "").strip()
-                        for item in profile_suggestions
-                        if str(item.get("sclass_name") or "").strip()
-                    ]
-                )
-                structured_fields["ncs_detail_candidates"] = suggested_names
+                # Corpus-profile matches are review suggestions, not labels
+                # extracted from this document. Keep them outside the
+                # authoritative candidate/mapping/scope path until the user
+                # explicitly selects one in the review UI.
                 structured_fields["ncs_detail_source"] = "alio_corpus_review_suggestion"
-                suggestion_by_name = {
-                    _norm_sclass_key(str(item.get("sclass_name") or "")): item
-                    for item in profile_suggestions
-                }
-                structured_fields["ncs_detail_candidate_evidence"] = [
-                    {
-                        "detail": name,
-                        "text": name,
-                        "page": 0,
-                        "source": "alio_corpus_review_suggestion",
-                        "raw": name,
-                        "snippet": str(
-                            (suggestion_by_name.get(_norm_sclass_key(name)) or {}).get("evidence")
-                            or "ALIO 명시 세분류 코퍼스 어휘 매칭"
-                        )[:500],
-                        "confidence": float(
-                            (suggestion_by_name.get(_norm_sclass_key(name)) or {}).get("confidence")
-                            or 0.0
-                        ),
-                        "review_required": True,
-                    }
-                    for name in suggested_names
-                ]
         detail_states = classify_official_detail_names(
             list(structured_fields.get("ncs_detail_candidates") or []),
             self_developed_names=list(

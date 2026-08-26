@@ -2543,7 +2543,7 @@ def test_parallel_mcp_ksa_returns_primary_failure_without_waiting_for_active_pee
         assert slow_finished.wait(timeout=1.0)
 
 
-def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
+def test_mcp_search_rejects_legacy_combined_detail_with_single_detail_code(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     mocker.patch(
         "app.services.ncs_mcp_client._call_tool",
@@ -2560,7 +2560,149 @@ def test_mcp_search_normalizes_middle_dot_and_spacing_variants(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["일식· 복어・조리"])
 
-    assert [row["ncsClCd"] for row in rows] == ["1301010401_17v1"]
+    # Current NCS has separate 일식조리(13010104) and 복어조리(13010105)
+    # details. A stale combined path label must not authorize only the first
+    # code, even when punctuation normalization makes the surfaces equal.
+    assert rows == []
+
+
+def _two_distinct_official_detail_rows() -> tuple[dict[str, str], dict[str, str]]:
+    rows = [
+        row
+        for matches in ncs_mcp_client._official_details_by_name_key().values()
+        for row in matches
+    ]
+    first = rows[0]
+    second = next(row for row in rows[1:] if row["code"] != first["code"])
+    return first, second
+
+
+def test_mcp_search_rejects_active_code_owned_by_another_detail(mocker):
+    expected_detail, other_detail = _two_distinct_official_detail_rows()
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                {
+                    "id": f"{other_detail['code']}01_25v1",
+                    "text": "synthetic unit",
+                    "path": {"small": "synthetic", "sub": expected_detail["name"]},
+                }
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([expected_detail["name"]], max_units=5)
+
+    assert rows == []
+
+
+def test_mcp_search_rejects_non_official_path_sub_name(mocker):
+    expected_detail, _other_detail = _two_distinct_official_detail_rows()
+    source_name = "synthetic non-official detail"
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                {
+                    "id": f"{expected_detail['code']}01_25v1",
+                    "text": "synthetic unit",
+                    "path": {"small": "synthetic", "sub": source_name},
+                }
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([source_name], max_units=5)
+
+    assert rows == []
+
+
+def test_mcp_search_attaches_catalog_verified_detail_identity(mocker):
+    expected_detail, _other_detail = _two_distinct_official_detail_rows()
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                {
+                    "id": f"{expected_detail['code']}01_25v1",
+                    "text": "synthetic unit",
+                    "path": {"small": "synthetic", "sub": expected_detail["name"]},
+                }
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([expected_detail["name"]], max_units=5)
+
+    assert len(rows) == 1
+    assert rows[0]["officialDetailCode"] == expected_detail["code"]
+    assert rows[0]["officialDetailName"] == expected_detail["name"]
+    assert rows[0]["detailResolutionKind"] == "direct"
+    assert rows[0]["detailResolutionRule"] == "direct"
+
+
+@pytest.mark.parametrize(
+    "malformed_code",
+    [
+        "{detail_code}",
+        "{detail_code}ab",
+        "{detail_code}01_25v1_extra",
+        "{detail_code}01_25-v1",
+    ],
+)
+def test_mcp_search_rejects_malformed_ability_unit_codes(mocker, malformed_code):
+    expected_detail, _other_detail = _two_distinct_official_detail_rows()
+    code = malformed_code.format(detail_code=expected_detail["code"])
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                {
+                    "id": code,
+                    "text": "synthetic unit",
+                    "path": {
+                        "small": "synthetic",
+                        "sub": expected_detail["name"],
+                    },
+                }
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([expected_detail["name"]], max_units=5)
+
+    assert rows == []
+
+
+@pytest.mark.parametrize("code_suffix", ["01", "01_25v1"])
+def test_mcp_search_accepts_well_formed_ability_unit_codes(mocker, code_suffix):
+    expected_detail, _other_detail = _two_distinct_official_detail_rows()
+    expected_code = f"{expected_detail['code']}{code_suffix}"
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                {
+                    "id": expected_code,
+                    "text": "synthetic unit",
+                    "path": {
+                        "small": "synthetic",
+                        "sub": expected_detail["name"],
+                    },
+                }
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([expected_detail["name"]], max_units=5)
+
+    assert [row["ncsClCd"] for row in rows] == [expected_code]
 
 
 def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
@@ -2603,6 +2745,8 @@ def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
         assert [row["ncsClCd"] for row in rows] == [expected_code]
         assert rows[0]["matchedDetailName"] == source_label
         assert rows[0]["ncsSubdCdnm"] == official_label
+        assert rows[0]["detailResolutionKind"] == "format_variant"
+        assert rows[0]["detailResolutionRule"] == "whitespace_compact"
 
     assert calls == [
         value
@@ -2645,9 +2789,11 @@ def test_mcp_search_retries_punctuation_and_ordinal_formatting_variants(mocker):
     assert [row["ncsClCd"] for row in punctuation] == ["0203020101_17v1"]
     assert punctuation[0]["matchedDetailName"] == "회계.감사"
     assert punctuation[0]["ncsSubdCdnm"] == "회계·감사"
+    assert punctuation[0]["detailResolutionRule"] == "punctuation_variant"
     assert [row["ncsClCd"] for row in ordinal] == ["0803040201_17v1"]
     assert ordinal[0]["matchedDetailName"] == "02 영상촬영"
     assert ordinal[0]["ncsSubdCdnm"] == "영상촬영"
+    assert ordinal[0]["detailResolutionRule"] == "ordinal_prefix_stripped"
     assert calls == ["회계.감사", "회계감사", "02 영상촬영", "02영상촬영", "영상촬영"]
 
 
@@ -2712,17 +2858,29 @@ def test_mcp_search_resolves_safe_detail_alias(mocker):
     assert rows[0]["matchedDetailName"] == "건축감리"
     assert rows[0]["resolvedDetailName"] == "건축공사감리"
     assert rows[0]["detailQueryName"] == "건축공사감리"
+    assert rows[0]["detailResolutionRule"] == "safe_alias"
     assert rows[0]["source"] == "ncs-mcp-detail-alias"
 
 
-def test_mcp_search_does_not_apply_alias_after_exact_detail_match(mocker):
+def test_mcp_search_falls_back_to_safe_alias_after_unverified_direct_match(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     calls = []
 
     def fake_call_tool(name, arguments):
         calls.append(arguments["query"])
         if arguments["query"] == "건축공사감리":
-            raise AssertionError("alias query should not run after an exact 세분류 match")
+            return {
+                "results": [
+                    {
+                        "id": "1403010301_17v1",
+                        "text": "공사착공관리",
+                        "path": {
+                            "small": "건축설계·감리",
+                            "sub": "건축공사감리",
+                        },
+                    }
+                ]
+            }
         return {
             "results": [
                 {
@@ -2737,12 +2895,13 @@ def test_mcp_search_does_not_apply_alias_after_exact_detail_match(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["건축감리"], max_units=5)
 
-    assert calls == ["건축감리"]
+    assert calls == ["건축감리", "건축공사감리"]
     assert [row["ncsClCd"] for row in rows] == ["1403010301_17v1"]
     assert rows[0]["matchedDetailName"] == "건축감리"
-    assert rows[0]["resolvedDetailName"] == ""
-    assert rows[0]["detailQueryName"] == ""
-    assert rows[0]["source"] == "ncs-mcp"
+    assert rows[0]["resolvedDetailName"] == "건축공사감리"
+    assert rows[0]["detailQueryName"] == "건축공사감리"
+    assert rows[0]["detailResolutionKind"] == "safe_alias"
+    assert rows[0]["source"] == "ncs-mcp-detail-alias"
 
 
 def test_mcp_search_matches_parenthetical_secretary_detail_to_official_subdetail(mocker):

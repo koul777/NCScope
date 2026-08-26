@@ -101,6 +101,116 @@ console.log('convergence suggestion behavior ok');
     assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
 
 
+def test_review_only_profile_suggestion_is_separate_and_not_preselected() -> None:
+    _, script = _page()
+    start = script.index("function reviewedConvergenceSuggestions(fields)")
+    end = script.index("function positionedAbilityItemsForReviewedDetail(fields, detail)")
+    functions = script[start:end]
+    harness = """
+const makeElement = (tagName) => ({
+  tagName,
+  children: [],
+  dataset: {},
+  value: '',
+  textContent: '',
+  label: '',
+  appendChild(child) { this.children.push(child); },
+});
+const document = { createElement: makeElement };
+const reviewNcsDetail = makeElement('select');
+const dedupSclassLabels = (values) => [...new Set(
+  values.map(value => String(value || '').trim()).filter(Boolean)
+)];
+""" + functions + """
+const fields = {
+  ncs_detail_candidates: [],
+  ncs_detail_suggestions: [
+    {
+      sclass_name: '경영기획',
+      ncs_code_no: '02010101',
+      confidence: 0.77,
+      review_required: true,
+      source: 'alio_corpus_profile',
+      training_documents: 4,
+      matched_tokens: ['경영계획', '사업환경'],
+    },
+  ],
+};
+const suggestions = reviewedProfileSuggestions(fields);
+if (suggestions.length !== 1 || suggestions[0].name !== '경영기획') {
+  throw new Error('profile review suggestion was not normalized');
+}
+const direct = setReviewedNcsDetailOptions([], '', suggestions);
+if (direct.length !== 0 || reviewNcsDetail.value !== '' || reviewNcsDetail.selectedIndex !== 0) {
+  throw new Error('profile review suggestion was automatically selected');
+}
+const groups = reviewNcsDetail.children.filter(child => child.tagName === 'optgroup');
+if (groups.length !== 1 || !groups[0].label.includes('ALIO')
+    || groups[0].children[0].dataset.reviewSuggestion !== 'true') {
+  throw new Error('profile review suggestion group was not rendered');
+}
+if (reviewNcsDetail.value !== '') {
+  throw new Error('unselected profile suggestion leaked into reviewed details');
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=commonjs"],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
+
+
+def test_profile_suggestion_does_not_reuse_extracted_ability_scope_in_node() -> None:
+    _, script = _page()
+    start = script.index("function reviewedConvergenceSuggestions(fields)")
+    end = script.index("function positionedAbilityItemsForReviewedDetail(fields, detail)")
+    functions = script[start:end]
+    harness = """
+const makeElement = (tagName) => ({
+  tagName,
+  children: [],
+  dataset: {},
+  value: '',
+  textContent: '',
+  label: '',
+  appendChild(child) { this.children.push(child); },
+});
+const document = { createElement: makeElement };
+const reviewNcsDetail = makeElement('select');
+const dedupSclassLabels = (values) => [...new Set(
+  values.map(value => String(value || '').trim()).filter(Boolean)
+)];
+""" + functions + """
+const fields = {
+  ncs_detail_source: 'alio_corpus_review_suggestion',
+  ncs_detail_candidates: ['경영기획'],
+  ncs_detail_suggestions: [
+    {
+      sclass_name: '경영기획',
+      review_required: true,
+      source: 'alio_corpus_profile',
+    },
+  ],
+  ability_units: ['사업환경 분석'],
+};
+const units = abilityUnitsForReviewedDetail(fields, '경영기획');
+if (units.length !== 0) {
+  throw new Error('profile suggestion reused extracted ability scope');
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=commonjs"],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
+
+
 def test_detail_first_official_ability_selection_executes_in_node() -> None:
     _, script = _page()
     start = script.index("function selectedReviewedOfficialAbilityUnits()")
@@ -268,6 +378,7 @@ const makeElement = (tagName) => ({
 });
 const document = { createElement: makeElement };
 const reviewNcsMappingNotice = makeElement('div');
+const reviewedProfileSuggestions = () => [];
 """ + functions + """
 const fields = {
   ncs_detail_candidates: [],
@@ -445,7 +556,8 @@ def test_upload_review_uses_single_select_for_ncs_detail_and_single_method_selec
     assert "reviewNcsDetail.addEventListener('change'" in script
     assert '<textarea id="reviewAbilityUnits"' in html
     assert "function abilityUnitsForReviewedDetail(fields, detail)" in script
-    assert "const singleDetailFallback = detailCandidates.length === 1" in script
+    assert "const singleDetailFallback = !profileSuggestionSelected" in script
+    assert "&& detailCandidates.length === 1" in script
     assert "const convergenceSuggestion = reviewedConvergenceSuggestions(fields).find(" in script
     assert "row?.sourceAbilityUnitName" in script
     assert 'id="reviewNcsMappingNotice"' in html

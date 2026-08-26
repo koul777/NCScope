@@ -389,7 +389,7 @@
             <select id="reviewNcsDetail" class="dropdown" aria-describedby="reviewNcsDetailHelp">
               <option value="">세분류 후보를 기다리는 중...</option>
             </select>
-            <div id="reviewNcsDetailHelp" class="sub" style="margin-top:4px;">문서에 명시된 자동 추출 후보 중 1개를 선택합니다. 직접 후보가 없고 여러 공식 능력단위가 한 세분류로 정확히 수렴하면, 자동 확정하지 않고 별도 검토 제안으로 표시합니다.</div>
+            <div id="reviewNcsDetailHelp" class="sub" style="margin-top:4px;">문서에 명시된 자동 추출 후보 중 1개를 선택합니다. 직접 후보가 없으면 능력단위 또는 ALIO 코퍼스 기반 검토 제안을 별도로 표시하며, 자동 확정하지 않습니다.</div>
             <div id="reviewNcsMappingNotice" class="mapping-review-notice" role="status" aria-live="polite" hidden></div>
             <label for="reviewAbilityUnits">문서에서 추출한 요구능력단위 (참고)</label>
             <textarea id="reviewAbilityUnits" rows="4" readonly aria-describedby="reviewAbilityUnitsHelp reviewAbilityEvidence" placeholder="직무기술서 표에서 추출한 요구능력단위가 여기에 표시됩니다."></textarea>
@@ -1681,6 +1681,31 @@
       });
     }
 
+    function reviewedProfileSuggestions(fields) {
+      const rows = Array.isArray(fields?.ncs_detail_suggestions)
+        ? fields.ncs_detail_suggestions
+        : [];
+      const seen = new Set();
+      return rows.map((row) => ({
+        name: String(row?.sclass_name || '').trim(),
+        count: Number(row?.training_documents || 0),
+        reviewRequired: row?.review_required === true,
+        automaticMappingAllowed: false,
+        mappingState: 'profile_review_suggestion',
+        suggestionKind: 'profile',
+        source: String(row?.source || ''),
+        confidence: Number(row?.confidence || 0),
+        matchedTokens: Array.isArray(row?.matched_tokens) ? row.matched_tokens : [],
+        evidence: [],
+      })).filter((row) => {
+        const key = normalizeNcsReviewKey(row.name);
+        if (!key || seen.has(key)) return false;
+        if (!row.reviewRequired || row.source !== 'alio_corpus_profile') return false;
+        seen.add(key);
+        return true;
+      });
+    }
+
     function setReviewedNcsDetailOptions(candidates, selectedValue = '', suggestions = []) {
       if (!reviewNcsDetail) return [];
       const uniqueCandidates = dedupSclassLabels(Array.isArray(candidates) ? candidates : []);
@@ -1706,18 +1731,37 @@
         option.textContent = candidate;
         reviewNcsDetail.appendChild(option);
       });
-      if (suggestionRows.length) {
+      const appendSuggestionGroup = (label, rows, formatName) => {
+        if (!rows.length) return;
         const group = document.createElement('optgroup');
-        group.label = '능력단위 정확 일치 기반 검토 제안 · 자동 확정 아님';
-        suggestionRows.forEach((row) => {
+        group.label = label;
+        rows.forEach((row) => {
           const option = document.createElement('option');
           option.value = row.name;
-          option.textContent = `${row.name} · 공식 능력단위 ${row.count}개 수렴 · 검토 필요`;
+          option.textContent = formatName(row);
           option.dataset.reviewSuggestion = 'true';
           group.appendChild(option);
         });
         reviewNcsDetail.appendChild(group);
-      }
+      };
+      appendSuggestionGroup(
+        '능력단위 정확 일치 기반 검토 제안 · 자동 확정 아님',
+        suggestionRows.filter(row => row.suggestionKind !== 'profile'),
+        row => `${row.name} · 공식 능력단위 ${row.count}개 수렴 · 검토 필요`,
+      );
+      appendSuggestionGroup(
+        'ALIO 코퍼스 기반 검토 제안 · 자동 확정 아님',
+        suggestionRows.filter(row => row.suggestionKind === 'profile'),
+        (row) => {
+          const confidence = Number.isFinite(row.confidence) && row.confidence > 0
+            ? ` · 신뢰도 ${row.confidence.toFixed(2)}`
+            : '';
+          const tokens = row.matchedTokens.length
+            ? ` · 일치 어휘 ${row.matchedTokens.slice(0, 3).join(', ')}`
+            : '';
+          return `${row.name}${confidence}${tokens} · 검토 필요`;
+        },
+      );
       reviewNcsDetail.value = nextValue;
       if (!reviewNcsDetail.value) {
         reviewNcsDetail.selectedIndex = 0;
@@ -1762,6 +1806,10 @@
         const detailSource = String(fields?.ncs_detail_source || '');
         const absenceReason = String(fields?.ncs_detail_absence_reason || '');
         const absenceState = String(fields?.ncs_detail_absence_state || '');
+        const profileSuggestionNames = reviewedProfileSuggestions(fields)
+          .map(row => row.name)
+          .filter(Boolean)
+          .join(', ');
         const selfDeveloped = mappingSourceNames(detailStates, ['source_declared_self_developed']);
         const unmapped = mappingSourceNames(detailStates, ['not_in_current_official_catalog']);
         const ambiguous = mappingSourceNames(detailStates, ['official_current_name_ambiguous']);
@@ -1781,6 +1829,7 @@
         if (selfDeveloped) add(`자체개발 세분류: ${selfDeveloped} · 공식 코드로 자동 대체하지 않습니다.`);
         if (unmapped) add(`현재 공식 NCS 세분류 미매핑: ${unmapped} · 원문 값을 보존하고 검토가 필요합니다.`);
         if (ambiguous) add(`세분류 공식명 모호: ${ambiguous} · 하나의 공식 코드로 자동 확정하지 않습니다.`);
+        if (profileSuggestionNames) add(`ALIO 코퍼스 기반 세분류 검토 제안: ${profileSuggestionNames} · 문서 추출값이 아니며 자동 확정하지 않습니다.`);
         if (detailSource === 'pdf_table_detail_empty') {
           add('표 기반 세분류 미확정: PDF에서 세분류 열은 확인했지만 공식 세분류 값을 복구하지 못했습니다. 원문 표 검토가 필요합니다.');
         }
@@ -1830,6 +1879,9 @@
         ? fields.ability_units_by_detail
         : {};
       const detailKey = normalizeNcsReviewKey(detail);
+      const profileSuggestionSelected = reviewedProfileSuggestions(fields).some(
+        row => normalizeNcsReviewKey(row.name) === detailKey
+      ) || String(fields?.ncs_detail_source || '') === 'alio_corpus_review_suggestion';
       const scopedKey = Object.keys(mapping || {}).find(
         key => normalizeNcsReviewKey(key) === detailKey
       );
@@ -1838,7 +1890,8 @@
           .map(value => String(value || '').trim())
           .filter(Boolean)
       )];
-      const singleDetailFallback = detailCandidates.length === 1
+      const singleDetailFallback = !profileSuggestionSelected
+        && detailCandidates.length === 1
         && normalizeNcsReviewKey(detailCandidates[0]) === detailKey;
       const convergenceSuggestion = reviewedConvergenceSuggestions(fields).find(
         row => normalizeNcsReviewKey(row.name) === detailKey
@@ -2231,10 +2284,16 @@
         reviewQualifications.value = (fields.qualifications || []).join('\n');
         reviewPreferences.value = (fields.preferences || []).join('\n');
         const convergenceSuggestions = reviewedConvergenceSuggestions(fields);
+        const profileSuggestions = reviewedProfileSuggestions(fields);
+        const reviewSuggestions = [...convergenceSuggestions, ...profileSuggestions];
+        const profileSuggestionSource = String(fields?.ncs_detail_source || '') === 'alio_corpus_review_suggestion';
+        const extractedDetailCandidates = profileSuggestionSource
+          ? []
+          : (Array.isArray(fields.ncs_detail_candidates) ? fields.ncs_detail_candidates : []);
         const reviewedCandidates = setReviewedNcsDetailOptions(
-          fields.ncs_detail_candidates || [],
+          extractedDetailCandidates,
           '',
-          convergenceSuggestions,
+          reviewSuggestions,
         );
         reviewAbilityUnits.value = abilityUnitsForReviewedDetail(
           fields,
@@ -2253,12 +2312,16 @@
         await loadReviewedOfficialAbilityUnits(fields, reviewNcsDetail.value);
         renderQuestionPlanRows();
         const detailCount = reviewedCandidates.length;
-        const suggestionCount = convergenceSuggestions.length;
+        const suggestionCount = reviewSuggestions.length;
+        const suggestionLabels = [
+          convergenceSuggestions.length ? `능력단위 기반 ${convergenceSuggestions.length}개` : '',
+          profileSuggestions.length ? `ALIO 코퍼스 기반 ${profileSuggestions.length}개` : '',
+        ].filter(Boolean).join(' · ');
         const parserLabel = documentParserLabel(data);
         jdReviewStatus.textContent = detailCount
           ? `${parserLabel} 분석 완료 · 검토 필요 · 세분류 후보 ${detailCount}개`
           : (suggestionCount
-            ? `${parserLabel} 분석 완료 · 직접 세분류 없음 · 능력단위 기반 검토 제안 ${suggestionCount}개 · 자동 확정 안 됨`
+            ? `${parserLabel} 분석 완료 · 직접 세분류 없음 · ${suggestionLabels} 검토 제안 · 자동 확정 안 됨`
             : `${parserLabel} 분석 완료 · 세분류 후보가 없어 확정할 수 없습니다`);
         btnConfirmReview.disabled = false;
         btnConfirmReview.textContent = '추출 결과 검토·확정';

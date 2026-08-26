@@ -946,6 +946,8 @@ def _official_ncs_detail_name_keys() -> frozenset[str]:
         for row in payload.get("details") or []:
             if not isinstance(row, dict):
                 continue
+            if str(row.get("usage_yn") or "").strip().upper() != "Y":
+                continue
             key = _norm(row.get("name"))
             if key:
                 keys.add(key)
@@ -2132,6 +2134,91 @@ def _table_label_records(
     return records
 
 
+def _table_has_ncs_hierarchy_context(grid: list[list[dict[str, Any]]]) -> bool:
+    """Return whether a table explicitly declares an NCS hierarchy."""
+
+    # Do not treat a standalone ``NCS 세분류명`` column as a hierarchy table.
+    # The source must explicitly mark the table as a classification system.
+    marker_keys = {"분류체계", "ncs분류체계"}
+    for row in grid:
+        for cell in _origin_cells(row):
+            text = unicodedata.normalize("NFKC", str(cell.get("text") or ""))
+            key = re.sub(r"\s+", "", text).casefold()
+            if key in marker_keys:
+                return True
+    return False
+
+
+def _promote_explicit_positioned_detail_candidates(
+    grid: list[list[dict[str, Any]]],
+    records: list[dict[str, Any]],
+    valid_detail_candidates: list[str] | None,
+) -> None:
+    """Promote only exact official values bound to an explicit detail header.
+
+    Positional table extraction is intentionally not a general NCS-detail
+    detector.  This narrow exception covers a lossless table grid whose
+    explicit ``세분류``/``NCS 세분류`` header points at a current official
+    detail value and whose table also declares an NCS hierarchy.
+    """
+
+    if valid_detail_candidates is None or not _table_has_ncs_hierarchy_context(grid):
+        return
+    official_keys = _official_ncs_detail_name_keys()
+    known_keys = {_norm(value) for value in valid_detail_candidates if _norm(value)}
+    blocked_reasons = {
+        "blank_or_dash_detail_cell",
+        "declared_no_mapping",
+        "undeveloped_ncs_value",
+        "classification_label_not_value",
+        "value_too_long",
+        "duty_text_not_detail",
+        "bullet_or_note_text",
+    }
+    for record in records:
+        if record.get("section") != "ncs_detail":
+            continue
+        label_cell = record.get("label_cell") if isinstance(record.get("label_cell"), dict) else {}
+        value_cell = record.get("value_cell") if isinstance(record.get("value_cell"), dict) else {}
+        label_row = int(label_cell.get("row") or 0)
+        value_row = int(value_cell.get("row") or 0)
+        if (
+            record.get("layout") == "row_label_value" and value_row != label_row
+        ) or (
+            record.get("layout") == "column_header_value" and value_row <= label_row
+        ):
+            # A rowspan/colspan value carried into a label row is not a fresh
+            # same-row value, nor is it a fresh detail cell below a column
+            # header.
+            continue
+        row_values = [
+            str(cell.get("text") or "").strip()
+            for cell in record.get("row_context_cells") or []
+            if isinstance(cell, dict)
+        ]
+        if _row_declares_no_ncs_mapping(row_values) or any(
+            _is_detail_value_stop_label(value)
+            or (
+                _section_for_label(value) is not None
+                and _section_for_label(value) != "ncs_detail"
+            )
+            for value in row_values
+        ):
+            continue
+        candidate = _clean_detail_candidate_text(str(record.get("text") or ""))
+        key = _norm(candidate)
+        if (
+            not key
+            or key in known_keys
+            or _is_detail_value_stop_label(candidate)
+            or _detail_candidate_filter_reason(candidate) in blocked_reasons
+            or key not in official_keys
+        ):
+            continue
+        valid_detail_candidates.append(candidate)
+        known_keys.add(key)
+
+
 def _scope_positioned_records(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     job_fields = [record for record in records if record.get("section") == "job_fields"]
     details = [record for record in records if record.get("section") == "ncs_detail"]
@@ -2846,6 +2933,11 @@ def _base_extract_positioned_table_evidence(
             source="kordoc_table",
             bbox=block.get("bbox"),
         )
+        _promote_explicit_positioned_detail_candidates(
+            grid,
+            records,
+            valid_detail_candidates,
+        )
         records = keep_valid_details(records)
         records, scope = _scope_positioned_records(records)
         if records:
@@ -2895,6 +2987,11 @@ def _base_extract_positioned_table_evidence(
             page=0,
             source="kordoc_html_table",
         )
+        _promote_explicit_positioned_detail_candidates(
+            grid,
+            records,
+            valid_detail_candidates,
+        )
         records = keep_valid_details(records)
         records, scope = _scope_positioned_records(records)
         records = [record for record in records if not redundant_joined_html_ability(record)]
@@ -2919,6 +3016,11 @@ def _base_extract_positioned_table_evidence(
             table_index=table_index,
             page=0,
             source="kordoc_markdown_table",
+        )
+        _promote_explicit_positioned_detail_candidates(
+            grid,
+            records,
+            valid_detail_candidates,
         )
         records = keep_valid_details(records)
         records, scope = _scope_positioned_records(records)
