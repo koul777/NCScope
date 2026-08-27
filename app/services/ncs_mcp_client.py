@@ -1069,11 +1069,12 @@ def _split_unbracketed_detail_surface(
         "｛": "｝",
     }
     closers = {closer: opener for opener, closer in pairs.items()}
+    token_boundaries = delimiters | frozenset("\n,，、;/|")
     stack: list[tuple[str, int, bool]] = []
     protection_delta = [0] * (len(text) + 1)
     malformed_token = False
     for index, char in enumerate(text):
-        if char.isspace() or char in delimiters:
+        if char.isspace() or char in token_boundaries:
             malformed_token = False
         if char in pairs:
             stack.append((char, index, not malformed_token))

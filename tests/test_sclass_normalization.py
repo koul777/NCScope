@@ -96,6 +96,12 @@ def test_close_open_noise_on_both_sides_does_not_hide_detail_delimiters():
         "X）（",
         "UI/UX엔지니어링",
     ]
+    assert _parse_sclass_terms(
+        "X)(/조선비계(족장, 발판, scaffolding)/X)("
+    ) == [
+        "X)(",
+        "조선비계(족장, 발판, scaffolding)",
+    ]
 
 
 def test_pdf_sclass_page_limit_covers_multi_role_job_descriptions(monkeypatch):
