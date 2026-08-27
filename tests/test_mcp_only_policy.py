@@ -3335,6 +3335,21 @@ def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):
     assert "Exact detail-class match" in body["message"]
 
 
+def test_ncs_unit_options_surfaces_suggestion_search_failures(monkeypatch, mocker):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    mocker.patch("app.main.search_units_by_detail", return_value=[])
+    mocker.patch(
+        "app.main.suggest_units_by_text",
+        side_effect=main.NcsMcpError("NCS MCP search returned an invalid response"),
+    )
+
+    with TestClient(main.app) as client:
+        resp = client.get("/api/ncs/units/options?q=\uc784\uc0c1\ubcd1\ub9ac&limit=10")
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "ncs_mcp_search_failed"
+
+
 def test_ncs_unit_options_splits_multi_term_query(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     exact = {
