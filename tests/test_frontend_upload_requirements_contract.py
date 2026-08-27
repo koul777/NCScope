@@ -227,6 +227,7 @@ const makeSelect = () => ({
 const document = { createElement: () => ({ value: '', textContent: '', selected: false }) };
 const reviewOfficialAbilityUnits = makeSelect();
 const reviewOfficialAbilityUnitsStatus = { textContent: '' };
+const reviewOfficialAbilityUnitsCoverage = { textContent: '', hidden: true };
 let reviewAbilityRequestId = 0;
 const normalizeNcsReviewKey = value => String(value || '').toLowerCase().replace(/[\\s\\-_/|(),.·・]+/g, '');
 const abilityUnitsForReviewedDetail = () => ['Document Writing', 'Unknown Extracted'];
@@ -257,10 +258,103 @@ const fetch = async () => ({ ok: true, payload: fetchPayload });
   if (!reviewOfficialAbilityUnitsStatus.textContent.includes('코드가 하나로 확정되지 않는 공식명 1개 제외')) {
     throw new Error('ambiguous official unit name exclusion was not disclosed');
   }
-  fetchPayload = { source: 'ncs-mcp-suggest', items: [{ compeUnitName: 'Suggested' }] };
+  fetchPayload = {
+    source: 'ncs-mcp',
+    items: [{
+      compeUnitName: 'Document Writing',
+      ncsClCd: '0201010101_24v1',
+      ncsSubdCdnm: 'Office Admin',
+      officialDetailCode: '02010101',
+      detailExpectedUnitBaseCount: 2,
+      detailVerifiedUnitBaseCount: 1,
+      detailRetrievalComplete: false,
+      detailRetrievalCapLimited: false,
+    }],
+  };
+  await loadReviewedOfficialAbilityUnits({}, 'Office Admin');
+  if (reviewOfficialAbilityUnitsCoverage.hidden
+      || !reviewOfficialAbilityUnitsCoverage.textContent.includes('2개 중 1개')) {
+    throw new Error('partial official retrieval coverage was not disclosed');
+  }
+  fetchPayload = {
+    source: 'ncs-mcp',
+    items: [{
+      compeUnitName: 'Document Writing',
+      ncsClCd: '0201010101_24v1',
+      ncsSubdCdnm: 'Office Admin',
+      officialDetailCode: '02010101',
+      detailExpectedUnitBaseCount: 2,
+      detailVerifiedUnitBaseCount: 2,
+      detailRetrievalComplete: true,
+      detailRetrievalCapLimited: false,
+    }],
+  };
+  await loadReviewedOfficialAbilityUnits({}, 'Office Admin');
+  if (!reviewOfficialAbilityUnitsCoverage.hidden || reviewOfficialAbilityUnitsCoverage.textContent) {
+    throw new Error('complete uncapped retrieval must not create a warning');
+  }
+  fetchPayload = {
+    source: 'ncs-mcp',
+    items: [{
+      compeUnitName: 'Document Writing',
+      ncsClCd: '0201010101_24v1',
+      ncsSubdCdnm: 'Office Admin',
+      officialDetailCode: '02010101',
+      detailExpectedUnitBaseCount: 2,
+      detailVerifiedUnitBaseCount: 2,
+      detailRetrievalComplete: true,
+      detailRetrievalCapLimited: true,
+    }],
+  };
+  await loadReviewedOfficialAbilityUnits({}, 'Office Admin');
+  if (!reviewOfficialAbilityUnitsCoverage.textContent.includes('조회 한도')) {
+    throw new Error('complete but response-capped retrieval was not disclosed');
+  }
+  fetchPayload = {
+    source: 'ncs-mcp',
+    items: [
+      {
+        compeUnitName: 'Document Writing',
+        ncsClCd: '0201010101_24v1',
+        ncsSubdCdnm: 'Office Admin',
+        officialDetailCode: '02010101',
+        detailExpectedUnitBaseCount: 2,
+        detailVerifiedUnitBaseCount: 1,
+        detailRetrievalComplete: false,
+        detailRetrievalCapLimited: false,
+      },
+      {
+        compeUnitName: 'Document Writing',
+        ncsClCd: '0201010101_24v1',
+        ncsSubdCdnm: 'Office Admin',
+        officialDetailCode: '02010101',
+        detailExpectedUnitBaseCount: 2,
+        detailVerifiedUnitBaseCount: 2,
+        detailRetrievalComplete: true,
+        detailRetrievalCapLimited: false,
+      },
+    ],
+  };
+  await loadReviewedOfficialAbilityUnits({}, 'Office Admin');
+  if (!reviewOfficialAbilityUnitsCoverage.hidden || reviewOfficialAbilityUnitsCoverage.textContent) {
+    throw new Error('conflicting same-detail retrieval metadata must be ignored');
+  }
+  fetchPayload = {
+    source: 'ncs-mcp-suggest',
+    items: [{
+      compeUnitName: 'Suggested',
+      detailExpectedUnitBaseCount: 2,
+      detailVerifiedUnitBaseCount: 1,
+      detailRetrievalComplete: false,
+      detailRetrievalCapLimited: true,
+    }],
+  };
   await loadReviewedOfficialAbilityUnits({}, 'Office Admin');
   if (reviewOfficialAbilityUnits.children.length !== 0 || !reviewOfficialAbilityUnits.disabled) {
     throw new Error('suggested units must not enter the exact ability selector');
+  }
+  if (!reviewOfficialAbilityUnitsCoverage.hidden || reviewOfficialAbilityUnitsCoverage.textContent) {
+    throw new Error('suggestion metadata must not create an exact coverage warning');
   }
   console.log('detail-first official ability selection ok');
 })().catch(error => { console.error(error); process.exit(1); });
@@ -573,6 +667,8 @@ def test_upload_review_uses_single_select_for_ncs_detail_and_single_method_selec
     assert "function selectedReviewedOfficialAbilityUnits()" in script
     assert "function populateReviewedOfficialAbilityUnits(items, extractedNames = [])" in script
     assert "async function loadReviewedOfficialAbilityUnits(fields, detail)" in script
+    assert "function exactDetailRetrievalNotice(data, items = [])" in script
+    assert "renderExactDetailRetrievalNotice(ncsRetrievalNotice, data, data.items || []);" in script
     assert "String(data.source || '') === 'ncs-mcp'" in script
     assert "normalizeNcsReviewKey(item?.ncsSubdCdnm) === normalizeNcsReviewKey(reviewedDetail)" in script
     assert "jdReviewPayload.fields.extracted_ability_units = reviewAbilityUnits.value.split(/\\n+/)" in script

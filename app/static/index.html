@@ -399,8 +399,9 @@
               <div id="reviewAbilityEvidenceList" class="coordinate-evidence-list"></div>
             </details>
             <label for="reviewOfficialAbilityUnits">질문에 사용할 공식 능력단위 (선택)</label>
-            <select id="reviewOfficialAbilityUnits" class="dropdown" multiple size="6" aria-describedby="reviewOfficialAbilityUnitsStatus"></select>
+            <select id="reviewOfficialAbilityUnits" class="dropdown" multiple size="6" aria-describedby="reviewOfficialAbilityUnitsStatus reviewOfficialAbilityUnitsCoverage"></select>
             <div id="reviewOfficialAbilityUnitsStatus" class="sub" role="status" aria-live="polite" style="margin-top:4px;">세분류를 선택하면 공식 능력단위를 불러옵니다. 선택하지 않으면 확정 세분류 전체 범위에서 KSA를 조회합니다.</div>
+            <div id="reviewOfficialAbilityUnitsCoverage" class="sub" role="status" aria-live="polite" style="margin-top:4px;" hidden></div>
             <button type="button" id="btnConfirmReview" style="background:#0f766e; margin-top:8px;">추출 결과 검토·확정</button>
           </div>
 
@@ -522,6 +523,7 @@
             <option value="">검색 결과에서 1개를 선택하세요</option>
           </select>
           <div class="sub" id="selectedCount">선택된 NCS 코드: 없음</div>
+          <div class="sub" id="ncsRetrievalNotice" role="status" aria-live="polite" hidden></div>
         </div>
         </div>
 
@@ -605,6 +607,7 @@
     const ncsSearch = document.getElementById('ncsSearch');
     const ncsSelect = document.getElementById('ncsSelect');
     const selectedCount = document.getElementById('selectedCount');
+    const ncsRetrievalNotice = document.getElementById('ncsRetrievalNotice');
     const raw = document.getElementById('raw');
     const rawJsonDetails = document.getElementById('rawJsonDetails');
     const errorBox = document.getElementById('errorBox');
@@ -667,6 +670,7 @@
     const reviewAbilityUnits = document.getElementById('reviewAbilityUnits');
     const reviewOfficialAbilityUnits = document.getElementById('reviewOfficialAbilityUnits');
     const reviewOfficialAbilityUnitsStatus = document.getElementById('reviewOfficialAbilityUnitsStatus');
+    const reviewOfficialAbilityUnitsCoverage = document.getElementById('reviewOfficialAbilityUnitsCoverage');
     const reviewAbilityEvidence = document.getElementById('reviewAbilityEvidence');
     const reviewAbilityEvidenceSummary = document.getElementById('reviewAbilityEvidenceSummary');
     const reviewAbilityEvidenceList = document.getElementById('reviewAbilityEvidenceList');
@@ -1915,6 +1919,57 @@
         .filter(Boolean);
     }
 
+    function exactDetailRetrievalNotice(data, items = []) {
+      if (String(data?.source || '') !== 'ncs-mcp') return '';
+      const groups = new Map();
+      (Array.isArray(items) ? items : []).forEach((item) => {
+        if (!item || typeof item !== 'object') return;
+        const code = String(item.officialDetailCode || item.ncsClCd || '').trim().slice(0, 8);
+        if (!/^\d{8}$/.test(code)) return;
+        const expected = item.detailExpectedUnitBaseCount;
+        const verified = item.detailVerifiedUnitBaseCount;
+        const complete = item.detailRetrievalComplete;
+        const capLimited = item.detailRetrievalCapLimited;
+        if (
+          !Number.isInteger(expected) || expected < 0
+          || !Number.isInteger(verified) || verified < 0 || verified > expected
+          || typeof complete !== 'boolean'
+          || typeof capLimited !== 'boolean'
+          || complete !== (verified === expected)
+        ) {
+          groups.set(code, null);
+          return;
+        }
+        const state = { expected, verified, complete, capLimited };
+        if (groups.has(code)) {
+          const prior = groups.get(code);
+          if (prior && JSON.stringify(prior) !== JSON.stringify(state)) {
+            groups.set(code, null);
+          }
+          return;
+        }
+        groups.set(code, state);
+      });
+      const warnings = [];
+      groups.forEach((state, code) => {
+        if (!state) return;
+        if (!state.complete) {
+          warnings.push(`${code}: 공식 능력단위 기준 코드 ${state.expected}개 중 ${state.verified}개 연결만 확인되어 목록이 일부일 수 있습니다.`);
+        }
+        if (state.capLimited) {
+          warnings.push(`${code}: 조회 한도에 도달해 확인된 능력단위 중 일부만 표시합니다. 세분류를 하나씩 검색해 주세요.`);
+        }
+      });
+      return warnings.join(' ');
+    }
+
+    function renderExactDetailRetrievalNotice(element, data, items = []) {
+      if (!element) return;
+      const message = exactDetailRetrievalNotice(data, items);
+      element.textContent = message;
+      element.hidden = !message;
+    }
+
     function populateReviewedOfficialAbilityUnits(items, extractedNames = []) {
       if (!reviewOfficialAbilityUnits) return { optionCount: 0, selectedCount: 0, unmatchedCount: 0, ambiguousCount: 0 };
       const extractedKeys = new Set(
@@ -1968,6 +2023,7 @@
       const extractedNames = abilityUnitsForReviewedDetail(fields, reviewedDetail);
       if (!reviewOfficialAbilityUnits || !reviewOfficialAbilityUnitsStatus) return;
       reviewOfficialAbilityUnits.replaceChildren();
+      renderExactDetailRetrievalNotice(reviewOfficialAbilityUnitsCoverage, {}, []);
       if (!reviewedDetail) {
         reviewOfficialAbilityUnits.disabled = true;
         reviewOfficialAbilityUnitsStatus.textContent = '세분류를 먼저 선택해 주세요.';
@@ -1986,6 +2042,11 @@
             item => normalizeNcsReviewKey(item?.ncsSubdCdnm) === normalizeNcsReviewKey(reviewedDetail)
           )
           : [];
+        renderExactDetailRetrievalNotice(
+          reviewOfficialAbilityUnitsCoverage,
+          data,
+          exactItems,
+        );
         const summary = populateReviewedOfficialAbilityUnits(exactItems, extractedNames);
         reviewOfficialAbilityUnits.disabled = summary.optionCount === 0;
         const ambiguity = summary.ambiguousCount
@@ -4087,6 +4148,7 @@
       if (suggestions.length) {
         inputMode.value = 'manual';
         setInputMode('manual');
+        renderExactDetailRetrievalNotice(ncsRetrievalNotice, {}, []);
         populateNcsUnitSelect(suggestions, false);
         ncsSearch.value = displayTerms[0] || '';
         if (!noticeText.value.trim()) {
@@ -4139,12 +4201,14 @@
     }
 
     async function loadNcsOptions(query='') {
+      renderExactDetailRetrievalNotice(ncsRetrievalNotice, {}, []);
       const q = encodeURIComponent(query || '');
       const res = await fetch(`/api/ncs/units/options?q=${q}&limit=500`);
       const data = await readApiResponse(res);
       if (!res.ok) {
         throw new Error(apiErrorMessage(data, 'NCS 목록 조회 실패'));
       }
+      renderExactDetailRetrievalNotice(ncsRetrievalNotice, data, data.items || []);
       populateNcsUnitSelect(data.items || [], false);
       if (data.source === 'ncs-mcp-suggest' && (data.items || []).length) {
         selectedCount.textContent = `자동 확정 보류 · 후보 ${(data.items || []).length}개를 확인해 주세요.`;
