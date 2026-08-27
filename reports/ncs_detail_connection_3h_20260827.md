@@ -94,7 +94,7 @@
 - `pytest -q tests/test_mcp_only_policy.py`: 149 passed
 - Focused detail recovery, KSA identity, live-probe, and runtime catalog
   integrity suites: passed
-- `pytest -q`: 5323 passed, 72 skipped
+- `pytest -q`: 5326 passed, 72 skipped
 - `ruff check` on every changed Python file: passed
 - Independent diff review: no confirmed P0/P1 findings
 - `python scripts/audit_ncs_detail_connections.py`: pass

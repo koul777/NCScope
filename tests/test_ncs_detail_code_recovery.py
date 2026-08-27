@@ -265,6 +265,15 @@ def test_client_splitter_does_not_protect_a_mismatched_group() -> None:
     ]
 
 
+def test_client_splitter_does_not_protect_close_open_noise_spans() -> None:
+    assert client._split_detail_terms(
+        ["X][|조선비계(족장, 발판, scaffolding)|X]["]
+    ) == [
+        "X][",
+        "조선비계(족장, 발판, scaffolding)",
+    ]
+
+
 def test_client_detail_splitter_splits_distinct_acronym_official_names() -> None:
     assert client._split_detail_terms(["PR/SCM"]) == ["PR", "SCM"]
 

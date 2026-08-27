@@ -3459,6 +3459,51 @@ def test_ncs_unit_options_keeps_official_zero_as_incomplete_exact_coverage(
     suggest.assert_not_called()
 
 
+def test_ncs_unit_options_reports_mixed_unresolved_terms_when_exact_is_zero(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    mocker.patch(
+        "app.main.search_units_by_detail_result",
+        return_value={
+            "items": [],
+            "exactCoverage": {
+                "details": [
+                    {
+                        "sourceDetailName": "detail-alpha",
+                        "mappingState": "official_detail_resolved",
+                        "officialDetailCode": "12345678",
+                    },
+                    {
+                        "sourceDetailName": "unknown-detail",
+                        "mappingState": "official_detail_unresolved",
+                        "officialDetailCode": "",
+                    },
+                ],
+                "resolvedOfficialDetailCount": 1,
+                "unresolvedDetailCount": 1,
+            },
+        },
+    )
+    suggest = mocker.patch("app.main.suggest_units_by_text")
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/ncs/units/options",
+            params={"q": "detail-alpha, unknown-detail", "limit": 10},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "ncs-mcp"
+    assert body["items"] == []
+    assert "no catalog-verified" in body["message"]
+    assert "1 detail term(s)" in body["message"]
+    assert "were excluded" in body["message"]
+    suggest.assert_not_called()
+
+
 def test_ncs_unit_options_reports_mixed_unresolved_exact_terms(
     monkeypatch,
     mocker,

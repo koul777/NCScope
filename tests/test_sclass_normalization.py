@@ -87,6 +87,17 @@ def test_mismatched_closer_does_not_hide_a_detail_delimiter():
     ]
 
 
+def test_close_open_noise_on_both_sides_does_not_hide_detail_delimiters():
+    assert _parse_sclass_terms("X)(,공적개발원조사업관리,X)(") == [
+        "X)(",
+        "공적개발원조사업관리",
+    ]
+    assert _parse_sclass_terms("X）（/UI/UX엔지니어링/X）（") == [
+        "X）（",
+        "UI/UX엔지니어링",
+    ]
+
+
 def test_pdf_sclass_page_limit_covers_multi_role_job_descriptions(monkeypatch):
     monkeypatch.delenv("PDF_SCLASS_MAX_PAGES", raising=False)
     assert _pdf_sclass_page_limit() == 24

@@ -1172,22 +1172,31 @@ def _split_unbracketed_sclass_surface(
     closers = {closer: opener for opener, closer in pairs.items()}
     stack: list[tuple[str, int, bool]] = []
     protection_delta = [0] * (len(text) + 1)
+    malformed_token = False
     for index, char in enumerate(text):
+        if char.isspace() or char in delimiters:
+            malformed_token = False
         if char in pairs:
-            stack.append((char, index, True))
+            stack.append((char, index, not malformed_token))
             continue
         expected_opener = closers.get(char)
-        if not expected_opener or not stack:
+        if not expected_opener:
+            continue
+        if not stack:
+            malformed_token = True
             continue
         if stack[-1][0] == expected_opener:
             _opener, opener_index, locally_valid = stack.pop()
             if locally_valid:
                 protection_delta[opener_index + 1] += 1
                 protection_delta[index] -= 1
+            else:
+                malformed_token = True
             continue
         # A wrong closer inside an open group invalidates only those still-open
         # spans. Already completed groups elsewhere keep their protection.
         stack = [(opener, opener_index, False) for opener, opener_index, _ in stack]
+        malformed_token = True
 
     parts: list[str] = []
     start = 0
@@ -14192,6 +14201,14 @@ def ncs_unit_options(
                 "The official detail was resolved, but no catalog-verified "
                 "ability units were returned. Review exactCoverage and retry."
             )
+            unresolved_count = int(
+                exact_coverage.get("unresolvedDetailCount", 0) or 0
+            )
+            if unresolved_count > 0:
+                message += (
+                    f" {unresolved_count} detail term(s) could not be resolved "
+                    "to one official classification and were excluded."
+                )
         elif exact_coverage.get("unresolvedDetailCount", 0) > 0:
             message = (
                 f"{exact_coverage['unresolvedDetailCount']} detail term(s) could "
