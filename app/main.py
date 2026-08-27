@@ -14177,9 +14177,16 @@ def ncs_unit_options(
             not items
             and exact_coverage.get("resolvedOfficialDetailCount", 0) == 0
         ):
-            items = suggest_units_by_text(terms, max_units=min(limit, 50))
             source = "ncs-mcp-suggest"
-            message = "Exact detail-class match was not found. Review suggested NCS units manually."
+            try:
+                items = suggest_units_by_text(terms, max_units=min(limit, 50))
+                message = "Exact detail-class match was not found. Review suggested NCS units manually."
+            except NcsMcpError:
+                items = []
+                message = (
+                    "Exact detail-class match was not found, and suggestion "
+                    "search is temporarily unavailable. Retry shortly."
+                )
         elif not items:
             message = (
                 "The official detail was resolved, but no catalog-verified "

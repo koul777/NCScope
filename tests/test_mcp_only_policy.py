@@ -3385,7 +3385,9 @@ def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):
     assert body["exactCoverage"]["unresolvedDetailCount"] == 1
 
 
-def test_ncs_unit_options_surfaces_suggestion_search_failures(monkeypatch, mocker):
+def test_ncs_unit_options_degrades_when_suggestion_search_fails(
+    monkeypatch, mocker
+):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     mocker.patch(
         "app.main.search_units_by_detail_result",
@@ -3406,8 +3408,16 @@ def test_ncs_unit_options_surfaces_suggestion_search_failures(monkeypatch, mocke
     with TestClient(main.app) as client:
         resp = client.get("/api/ncs/units/options?q=\uc784\uc0c1\ubcd1\ub9ac&limit=10")
 
-    assert resp.status_code == 502
-    assert resp.json()["detail"]["code"] == "ncs_mcp_search_failed"
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["source"] == "ncs-mcp-suggest"
+    assert body["items"] == []
+    assert "temporarily unavailable" in body["message"]
+    assert body["exactCoverage"] == {
+        "details": [],
+        "resolvedOfficialDetailCount": 0,
+        "unresolvedDetailCount": 1,
+    }
 
 
 def test_ncs_unit_options_keeps_official_zero_as_incomplete_exact_coverage(
