@@ -72,6 +72,21 @@ def test_unbalanced_grouping_does_not_merge_separate_reviewed_terms():
     ) == ["총무", "인사", "사무행정"]
 
 
+def test_unmatched_trailing_group_does_not_break_prior_official_group():
+    official = "조선비계(족장, 발판, scaffolding)"
+    source = f"{official}, 총무("
+
+    assert _parse_sclass_terms(source) == [official, "총무("]
+    assert _canonicalize_detail_lookup_terms([source]) == [official, "총무"]
+
+
+def test_mismatched_closer_does_not_hide_a_detail_delimiter():
+    assert _parse_sclass_terms("총무(인사], 사무행정)") == [
+        "총무(인사]",
+        "사무행정)",
+    ]
+
+
 def test_pdf_sclass_page_limit_covers_multi_role_job_descriptions(monkeypatch):
     monkeypatch.delenv("PDF_SCLASS_MAX_PAGES", raising=False)
     assert _pdf_sclass_page_limit() == 24

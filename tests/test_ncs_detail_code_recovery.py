@@ -245,6 +245,26 @@ def test_unknown_detail_keeps_delimiters_inside_brackets_as_one_term(
     )
 
 
+def test_client_splitter_keeps_prior_matched_group_when_later_group_is_unmatched() -> None:
+    official = "조선비계(족장, 발판, scaffolding)"
+
+    assert client._split_detail_terms([f"{official}, 총무("]) == [
+        official,
+        "총무(",
+    ]
+    assert client._split_detail_terms([f"{official}|총무("]) == [
+        official,
+        "총무(",
+    ]
+
+
+def test_client_splitter_does_not_protect_a_mismatched_group() -> None:
+    assert client._split_detail_terms(["총무(인사], 사무행정)"]) == [
+        "총무(인사]",
+        "사무행정)",
+    ]
+
+
 def test_client_detail_splitter_splits_distinct_acronym_official_names() -> None:
     assert client._split_detail_terms(["PR/SCM"]) == ["PR", "SCM"]
 

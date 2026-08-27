@@ -1057,7 +1057,7 @@ def _split_unbracketed_detail_surface(
     value: str,
     delimiters: frozenset[str],
 ) -> list[str]:
-    """Split transport delimiters while preserving only balanced grouping."""
+    """Split delimiters while preserving every locally matched group span."""
 
     text = str(value or "")
     pairs = {
@@ -1069,32 +1069,31 @@ def _split_unbracketed_detail_surface(
         "｛": "｝",
     }
     closers = {closer: opener for opener, closer in pairs.items()}
-    stack: list[str] = []
-    balanced = True
-    for char in text:
+    stack: list[tuple[str, int, bool]] = []
+    protection_delta = [0] * (len(text) + 1)
+    for index, char in enumerate(text):
         if char in pairs:
-            stack.append(char)
-        elif char in closers:
-            if not stack or stack[-1] != closers[char]:
-                balanced = False
-                break
-            stack.pop()
-    if stack:
-        balanced = False
+            stack.append((char, index, True))
+            continue
+        expected_opener = closers.get(char)
+        if not expected_opener or not stack:
+            continue
+        if stack[-1][0] == expected_opener:
+            _opener, opener_index, locally_valid = stack.pop()
+            if locally_valid:
+                protection_delta[opener_index + 1] += 1
+                protection_delta[index] -= 1
+            continue
+        # A wrong closer inside an open group invalidates only those still-open
+        # spans. Already completed groups elsewhere keep their protection.
+        stack = [(opener, opener_index, False) for opener, opener_index, _ in stack]
 
     parts: list[str] = []
     start = 0
-    stack = []
+    protection_depth = 0
     for index, char in enumerate(text):
-        if balanced and char in pairs:
-            stack.append(char)
-            continue
-        if balanced and char in closers and stack:
-            stack.pop()
-            continue
-        if stack:
-            continue
-        if char in delimiters:
+        protection_depth += protection_delta[index]
+        if protection_depth == 0 and char in delimiters:
             parts.append(text[start:index])
             start = index + 1
     parts.append(text[start:])
