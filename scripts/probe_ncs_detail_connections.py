@@ -535,7 +535,10 @@ def main(argv: list[str] | None = None) -> int:
             detail_names=args.detail_name,
         )
         counter = SearchCallCounter()
-        with counter.installed():
+        # Reuse one initialized read-only MCP transport across the full public
+        # sweep. This changes neither query order nor validation semantics and
+        # avoids creating a fresh HTTP client for every detail.
+        with client.use_ncs_mcp_request_session(), counter.installed():
             report = probe_connections(
                 scope,
                 details,

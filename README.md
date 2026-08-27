@@ -88,7 +88,9 @@ GitHub의 **Follow**와 저장소 **Star**만으로는 모든 변경 알림이 �
 - 쉼표가 포함된 공식 세분류명은 전체 이름이 카탈로그에서 하나로 확인될 때 원자적으로 보존합니다. 200행 이름 조회로 공식 능력단위가 덜 회수된 경우에만 8자리 세분류 코드 조회를 한 번 추가하고, 동일한 path·코드 소유권·canonical 이름 검증을 통과한 누락 identity만 합칩니다.
 - MCP `isError`·검색 schema drift·동일 base의 버전 간 identity 충돌·서로 다른 alias 필드값·복수 공식 세분류로 갈라지는 alias drift는 모두 자동연결 전에 차단합니다. 배포된 detail/unit 카탈로그는 LF 정규화 SHA-256까지 확인하므로 일부만 남은 손상 카탈로그도 정상적인 무결과로 위장할 수 없습니다.
 - 수동 `selected_ncs`도 클라이언트 값을 신뢰하지 않고 서버에서 공식 코드·능력단위명·세분류명을 다시 확인합니다. KSA 조회는 응답 코드·canonical 능력단위명·4단계 분류코드로 만든 8자리 세분류 코드·세분류명을 모두 재검증한 뒤에만 공식 근거로 표시합니다.
-- 재현 가능한 `python scripts/probe_ncs_detail_connections.py --output <path>` 공개 전수 probe는 1,094개 세분류의 예상 13,281개 base 중 13,278개를 연결했고 예상 밖 연결과 identity 위반은 각각 0개, complete 1,091개, partial 3개, zero 0개였습니다. 남은 3개는 MCP path 오결합으로 격리했으며, 상세 근거는 [`reports/ncs_detail_connection_3h_20260827.md`](reports/ncs_detail_connection_3h_20260827.md)에 있습니다.
+- 각 공식 능력단위 행에 `detailExpectedUnitBaseCount`·`detailVerifiedUnitBaseCount`를 남겨 해당 세분류의 공식 예상 base와 실제 검증 base를 비교할 수 있게 했습니다. `detailRetrievalComplete`는 공식 예상 집합을 모두 검증했음을, `detailRetrievalCapLimited`는 호출자의 출력 한도로 회수·반환이 줄었음을 뜻합니다. 따라서 전체 집합을 검증한 후 반환만 잘린 경우에는 두 값이 모두 `true`일 수 있습니다.
+- 사람이 고르는 비권위 `ncs-mcp-suggest` 경로도 검색 응답 schema를 엄격히 해석하고, 코드·능력단위명·세분류 path의 중복 alias 필드가 충돌하면 제안에서 제외합니다. path가 현행 공식 세분류명을 쓰면 능력단위 코드의 세분류 범위와 다른 경우도 차단하며, 비현행·자유 라벨은 공식 연결로 승격하지 않고 수동 검토 후보로만 남깁니다.
+- 재현 가능한 `python scripts/probe_ncs_detail_connections.py --output <path>` 공개 전수 probe는 하나의 공유 MCP transport session으로 23.848초 동안 1,094개 세분류의 예상 13,281개 base 중 13,278개를 연결했고 예상 밖 연결과 identity 위반은 각각 0개, complete 1,091개, partial 3개, zero 0개였습니다. 이 값은 공개 카탈로그 연결 진단이지 사람 골드·신규 블라인드 정확도가 아닙니다. 남은 3개는 MCP path 오결합으로 격리했으며, 상세 근거는 [`reports/ncs_detail_connection_3h_20260827.md`](reports/ncs_detail_connection_3h_20260827.md)에 있습니다.
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 

@@ -1875,6 +1875,10 @@ def test_ncs_link_provenance_copies_only_controlled_fields():
                 "unitRetrievalQuery": "02010101",
                 "unitCatalogVerified": True,
                 "unitVersionCompatible": False,
+                "detailExpectedUnitBaseCount": 12,
+                "detailVerifiedUnitBaseCount": 11,
+                "detailRetrievalComplete": False,
+                "detailRetrievalCapLimited": True,
                 "catalogUnitCodes": [code, code, ""],
                 "matchScore": 1,
                 "untrustedSecret": "must-not-copy",
@@ -1890,10 +1894,28 @@ def test_ncs_link_provenance_copies_only_controlled_fields():
             "unitRetrievalQuery": "02010101",
             "unitCatalogVerified": True,
             "unitVersionCompatible": False,
+            "detailExpectedUnitBaseCount": 12,
+            "detailVerifiedUnitBaseCount": 11,
+            "detailRetrievalComplete": False,
+            "detailRetrievalCapLimited": True,
             "catalogUnitCodes": [code],
             "matchScore": 1.0,
         }
     ]
+
+
+def test_ncs_link_provenance_rejects_invalid_retrieval_metadata_types():
+    output = main._ncs_link_provenance(
+        {
+            "detailExpectedUnitBaseCount": True,
+            "detailVerifiedUnitBaseCount": -1,
+            "detailRetrievalComplete": 1,
+            "detailRetrievalCapLimited": "false",
+            "untrustedSecret": "must-not-copy",
+        }
+    )
+
+    assert output == {}
 
 
 def test_verified_detail_unit_decoration_uses_canonical_detail_at_endpoint(
@@ -3315,9 +3337,16 @@ def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):
 
 def test_ncs_unit_options_splits_multi_term_query(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    exact = {
+        "ncsClCd": "0202020101_23v3",
+        "detailExpectedUnitBaseCount": 8,
+        "detailVerifiedUnitBaseCount": 8,
+        "detailRetrievalComplete": True,
+        "detailRetrievalCapLimited": False,
+    }
     search = mocker.patch(
         "app.main.search_units_by_detail",
-        return_value=[{"ncsClCd": "0202020101_23v3"}],
+        return_value=[exact],
     )
 
     with TestClient(main.app) as client:
@@ -3327,6 +3356,7 @@ def test_ncs_unit_options_splits_multi_term_query(monkeypatch, mocker):
         )
 
     assert response.status_code == 200
+    assert response.json()["items"] == [exact]
     search.assert_called_once_with(["인사", "프로젝트관리"], max_units=20)
 
 

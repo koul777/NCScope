@@ -146,6 +146,10 @@ def test_broad_name_zero_recovers_by_exact_official_detail_code(
     )
     assert all(row["unitRetrievalQuery"] == DETAIL["code"] for row in rows)
     assert all(row["source"] == "ncs-mcp-detail-code-recovery" for row in rows)
+    assert all(row["detailExpectedUnitBaseCount"] == 2 for row in rows)
+    assert all(row["detailVerifiedUnitBaseCount"] == 2 for row in rows)
+    assert all(row["detailRetrievalComplete"] is True for row in rows)
+    assert all(row["detailRetrievalCapLimited"] is False for row in rows)
 
 
 def test_partial_name_result_merges_only_missing_code_recovery_rows(
@@ -174,6 +178,10 @@ def test_partial_name_result_merges_only_missing_code_recovery_rows(
         "official_detail_code_query_recovery",
     ]
     assert [call["query"] for call in calls] == [DETAIL["name"], DETAIL["code"]]
+    assert all(row["detailExpectedUnitBaseCount"] == 2 for row in rows)
+    assert all(row["detailVerifiedUnitBaseCount"] == 2 for row in rows)
+    assert all(row["detailRetrievalComplete"] is True for row in rows)
+    assert all(row["detailRetrievalCapLimited"] is False for row in rows)
 
 
 def test_complete_name_result_does_not_add_a_code_query(
@@ -198,6 +206,10 @@ def test_complete_name_result_does_not_add_a_code_query(
         row["unitRetrievalKind"] == "official_detail_name_query"
         for row in rows
     )
+    assert all(row["detailExpectedUnitBaseCount"] == 2 for row in rows)
+    assert all(row["detailVerifiedUnitBaseCount"] == 2 for row in rows)
+    assert all(row["detailRetrievalComplete"] is True for row in rows)
+    assert all(row["detailRetrievalCapLimited"] is False for row in rows)
 
 
 def test_partial_group_at_output_limit_does_not_add_a_recovery_query(
@@ -214,6 +226,57 @@ def test_partial_group_at_output_limit_does_not_add_a_recovery_query(
 
     assert [row["ncsClCd"] for row in rows] == [first["ncsClCd"]]
     assert [call["query"] for call in calls] == [DETAIL["name"]]
+    assert rows[0]["detailExpectedUnitBaseCount"] == 2
+    assert rows[0]["detailVerifiedUnitBaseCount"] == 1
+    assert rows[0]["detailRetrievalComplete"] is False
+    assert rows[0]["detailRetrievalCapLimited"] is True
+
+
+def test_complete_group_reports_global_output_cap_without_losing_completeness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = _two_units()
+    _install_catalog(monkeypatch, [first, second])
+    calls = _install_responses(
+        monkeypatch,
+        {
+            DETAIL["name"]: {
+                "results": [_mcp_row(first), _mcp_row(second)]
+            }
+        },
+    )
+
+    rows = client.search_units_by_detail([DETAIL["name"]], max_units=1)
+
+    assert [row["ncsClCd"] for row in rows] == [first["ncsClCd"]]
+    assert [call["query"] for call in calls] == [DETAIL["name"]]
+    assert rows[0]["detailExpectedUnitBaseCount"] == 2
+    assert rows[0]["detailVerifiedUnitBaseCount"] == 2
+    assert rows[0]["detailRetrievalComplete"] is True
+    assert rows[0]["detailRetrievalCapLimited"] is True
+
+
+def test_partial_recovery_reports_upstream_gap_without_call_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = _two_units()
+    _install_catalog(monkeypatch, [first, second])
+    calls = _install_responses(
+        monkeypatch,
+        {
+            DETAIL["name"]: {"results": [_mcp_row(first)]},
+            DETAIL["code"]: {"results": []},
+        },
+    )
+
+    rows = client.search_units_by_detail([DETAIL["name"]], max_units=10)
+
+    assert [row["ncsClCd"] for row in rows] == [first["ncsClCd"]]
+    assert [call["query"] for call in calls] == [DETAIL["name"], DETAIL["code"]]
+    assert rows[0]["detailExpectedUnitBaseCount"] == 2
+    assert rows[0]["detailVerifiedUnitBaseCount"] == 1
+    assert rows[0]["detailRetrievalComplete"] is False
+    assert rows[0]["detailRetrievalCapLimited"] is False
 
 
 def test_code_recovery_rejects_unrelated_wrong_path_and_renamed_rows(

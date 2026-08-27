@@ -1947,9 +1947,21 @@ def _ncs_link_provenance(row: Any) -> dict[str, Any]:
     for field in _NCS_LINK_PROVENANCE_TEXT_FIELDS:
         if field in row:
             output[field] = str(row.get(field) or "").strip()
-    for field in ("unitCatalogVerified", "unitVersionCompatible"):
+    for field in (
+        "unitCatalogVerified",
+        "unitVersionCompatible",
+        "detailRetrievalComplete",
+        "detailRetrievalCapLimited",
+    ):
         if isinstance(row.get(field), bool):
             output[field] = row[field]
+    for field in (
+        "detailExpectedUnitBaseCount",
+        "detailVerifiedUnitBaseCount",
+    ):
+        value = row.get(field)
+        if type(value) is int and 0 <= value <= 100_000:
+            output[field] = value
     if isinstance(row.get("matchScore"), (int, float)) and not isinstance(
         row.get("matchScore"), bool
     ):

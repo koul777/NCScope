@@ -35,10 +35,22 @@
      network session. The response code, canonical unit name, four two-digit
      classification segments, and canonical detail name must all agree before
      KSA rows receive verified provenance.
+   - Every returned official unit row carries the detail's official expected
+     and verified base counts. `detailRetrievalComplete` means the expected
+     base set was fully verified; `detailRetrievalCapLimited` separately means
+     recovery or returned rows were reduced by the caller's output limit, so a
+     complete-but-output-truncated group can validly set both flags to `true`.
+   - Non-authoritative text suggestions now use the strict search-envelope
+     parser and require code, unit-name, and detail-path aliases to agree. A
+     path that names a current official detail but contradicts the unit code's
+     current detail scope is discarded; stale/free-form labels remain manual
+     review suggestions and are not promoted to official links.
 
 2. `app/main.py`
    - Added a shared provenance reattachment path so MCP/catalog evidence survives rerank, safe fallback, and `selected_ncs` generation input reconstruction.
    - Preserved fields include `officialUnitBaseCode`, `officialUnitName`, `unitResolutionKind`, `unitVersionCompatible`, `catalogUnitCodes`, `mcpUnitName`, and the reviewed-unit lock fields.
+   - Per-row expected/verified counts and the complete/cap-limited retrieval
+     flags now survive the same server-controlled provenance path.
    - Manual `selected_ncs` rows are no longer trusted as client assertions.
      The server re-resolves code, canonical unit name, and canonical detail;
      mismatches stop with `422 selected_ncs_official_identity_mismatch` before
@@ -78,7 +90,8 @@
   - name/format/alias retrieval: 13235 bases
   - eight-digit code recovery: 43 bases
   - resolution: 13278 full-code exact, 0 natural base-version fallback
-  - measured elapsed time for the recorded fresh-server run: 47.084 seconds
+  - measured elapsed time for the recorded fresh-server run with one shared
+    MCP transport session: 23.848 seconds
 - Live KSA identity probe: one normal public unit passed canonical response-path
   verification; the three known upstream wrong-path units all failed with a
   classification-code mismatch.
@@ -103,6 +116,12 @@
 - exact suffixes cannot bypass a conflicting stable base identity
 - alias catalog drift and conflicting duplicate identity fields fail closed
 - result limits below the number of details retain input-order precedence
+- complete, partial, output-cap-limited, and upstream-gap retrieval states
+  retain the official expected/verified base counts on every returned row;
+  these fields survive server-controlled provenance reconstruction
+- non-authoritative suggestion schema drift raises explicitly; malformed unit
+  codes, conflicting code/name/path aliases, and current-detail code/path
+  contradictions are rejected without treating suggestions as official links
 - valid-JSON catalog byte drift fails before MCP access, while CRLF checkouts
   preserve the pinned LF-normalized digest
 - KSA input tampering, response name drift, response code/path drift, and

@@ -1356,6 +1356,7 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
     if len(details) > 64:
         raise NcsMcpError("NCS detail term limit exceeded")
     groups: list[list[dict[str, Any]]] = []
+    group_retrieval_states: list[dict[str, Any]] = []
     expected_bases_by_detail = _official_unit_base_codes_by_detail_code()
     # A stable ten-digit ability-unit code is the semantic identity.  Several
     # published suffixes can describe that same identity; retain the first MCP
@@ -1367,6 +1368,13 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
             continue
         group: list[dict[str, Any]] = []
         groups.append(group)
+        retrieval_state: dict[str, Any] = {
+            "detailExpectedUnitBaseCount": 0,
+            "detailVerifiedUnitBaseCount": 0,
+            "detailRetrievalComplete": False,
+            "detailRetrievalCapLimited": False,
+        }
+        group_retrieval_states.append(retrieval_state)
         query_names = _detail_query_names(name)
         official_candidates = {
             (row["code"], _norm(row["name"])): row
@@ -1504,6 +1512,9 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
             frozenset(),
         )
         missing_base_codes = expected_base_codes - verified_detail_identities
+        recovery_skipped_for_output_limit = bool(
+            missing_base_codes and len(group) >= limit
+        )
         # A numeric detail-code query is a bounded recovery path for broad
         # labels whose name search exhausts the MCP ranking window. It is never
         # called for a complete response or when this detail already fills the
@@ -1532,6 +1543,22 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 seen_semantic_identities.add(semantic_identity)
                 group.append(recovered_row)
 
+        verified_expected_base_codes = (
+            expected_base_codes & verified_detail_identities
+        )
+        retrieval_state.update(
+            {
+                "detailExpectedUnitBaseCount": len(expected_base_codes),
+                "detailVerifiedUnitBaseCount": len(verified_expected_base_codes),
+                "detailRetrievalComplete": (
+                    verified_detail_identities == set(expected_base_codes)
+                ),
+                "detailRetrievalCapLimited": recovery_skipped_for_output_limit,
+            }
+        )
+        for row in group:
+            row.update(retrieval_state)
+
     # Preserve at least one exact unit from each confirmed detail before a
     # large first classification can consume the global response limit.
     output: list[dict[str, Any]] = []
@@ -1546,6 +1573,12 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 continue
             output.append(group[offsets[index]])
             offsets[index] += 1
+    for index, group in enumerate(groups):
+        if offsets[index] >= len(group):
+            continue
+        group_retrieval_states[index]["detailRetrievalCapLimited"] = True
+        for row in group:
+            row["detailRetrievalCapLimited"] = True
     return output
 
 
@@ -1561,31 +1594,75 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
     limit = max(1, int(max_units or 20))
+    detail_index = _official_details_by_name_key()
+    active_detail_codes = _active_official_detail_codes()
     for term in _split_detail_terms(terms):
         query = str(term or "").strip()
         if not query:
             continue
-        result = _call_tool("ncs_search", {"query": query, "scope": "unit", "limit": min(50, max(5, limit))})
-        rows = result.get("results") or result.get("units") or []
-        if isinstance(rows, dict):
-            rows = rows.get("items") or []
+        result = _call_tool(
+            "ncs_search",
+            {
+                "query": query,
+                "scope": "unit",
+                "limit": min(50, max(5, limit)),
+            },
+        )
+        rows = _search_result_rows(result)
         for row in rows:
-            if not isinstance(row, dict):
+            code = _consistent_identity_value(
+                row,
+                "id",
+                "unit_code",
+                normalize=False,
+            )
+            if code is None or not re.fullmatch(
+                r"\d{10}(?:_[0-9A-Za-z]+)?",
+                code,
+            ):
                 continue
-            code = str(row.get("id") or row.get("unit_code") or "").strip()
             base_code = code.split("_", 1)[0]
-            if base_code[:8] not in _active_official_detail_codes():
+            detail_code = base_code[:8]
+            if detail_code not in active_detail_codes:
                 continue
-            if not code or code in seen:
+            mcp_unit_name = _consistent_identity_value(
+                row,
+                "text",
+                "unit_name",
+                normalize=True,
+            )
+            if not mcp_unit_name:
+                continue
+            path = row.get("path") if isinstance(row.get("path"), dict) else {}
+            sub_name = _consistent_identity_value(
+                path,
+                "sub",
+                "sub_name",
+                "ncsSubdCdnm",
+                normalize=True,
+            )
+            if not sub_name:
+                continue
+            current_name_candidates = detail_index.get(_norm(sub_name), ())
+            # A non-current/free-form path label remains eligible for manual
+            # review, but a path that names a different *current* official
+            # detail is an internal identity contradiction and is discarded.
+            detail_path_verified = False
+            if current_name_candidates:
+                if (
+                    len(current_name_candidates) != 1
+                    or current_name_candidates[0]["code"] != detail_code
+                ):
+                    continue
+                detail_path_verified = True
+            if code in seen:
                 continue
             seen.add(code)
-            path = row.get("path") if isinstance(row.get("path"), dict) else {}
-            sub_name = _path_value(path, "sub", "sub_name", "ncsSubdCdnm")
             small_name = _path_value(path, "small", "small_name", "ncsSclasCdnm")
             output.append(
                 {
                     "ncsClCd": code,
-                    "compeUnitName": str(row.get("text") or row.get("unit_name") or "").strip(),
+                    "compeUnitName": mcp_unit_name,
                     "compeUnitLevel": str(row.get("level") or "").strip(),
                     "compeUnitDef": str(row.get("api_definition") or row.get("definition") or "").strip(),
                     "ncsLclasCdnm": _path_value(path, "major", "major_name"),
@@ -1594,10 +1671,13 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
                     "ncsSubdCdnm": sub_name,
                     "canonicalDetailName": sub_name,
                     "matchedDetailName": query,
+                    "officialDetailCode": detail_code,
+                    "detailPathVerified": detail_path_verified,
+                    "unitIdentityFieldsConsistent": True,
                     "source": "ncs-mcp-suggest",
                     "matchScore": row.get("score", 0.0),
                     "isExactDetailMatch": _norm(sub_name) == _norm(query),
-                    "isExactUnitNameMatch": _norm(str(row.get("text") or row.get("unit_name") or "")) == _norm(query),
+                    "isExactUnitNameMatch": _norm(mcp_unit_name) == _norm(query),
                 }
             )
             if len(output) >= limit:
