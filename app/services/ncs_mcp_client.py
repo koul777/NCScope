@@ -1053,6 +1053,78 @@ def derive_detail_candidates_from_exact_ability_scopes(
     return output
 
 
+def _split_unbracketed_detail_surface(
+    value: str,
+    delimiters: frozenset[str],
+) -> list[str]:
+    """Split transport delimiters while preserving only balanced grouping."""
+
+    text = str(value or "")
+    pairs = {
+        "(": ")",
+        "[": "]",
+        "{": "}",
+        "（": "）",
+        "［": "］",
+        "｛": "｝",
+    }
+    closers = {closer: opener for opener, closer in pairs.items()}
+    stack: list[str] = []
+    balanced = True
+    for char in text:
+        if char in pairs:
+            stack.append(char)
+        elif char in closers:
+            if not stack or stack[-1] != closers[char]:
+                balanced = False
+                break
+            stack.pop()
+    if stack:
+        balanced = False
+
+    parts: list[str] = []
+    start = 0
+    stack = []
+    for index, char in enumerate(text):
+        if balanced and char in pairs:
+            stack.append(char)
+            continue
+        if balanced and char in closers and stack:
+            stack.pop()
+            continue
+        if stack:
+            continue
+        if char in delimiters:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _split_slash_detail_surface(value: str) -> list[str]:
+    """Preserve the longest catalog-exact slash spans, then split the rest."""
+
+    slash_parts = _split_unbracketed_detail_surface(
+        value,
+        frozenset("/"),
+    )
+    if len(slash_parts) <= 1:
+        return slash_parts
+    output: list[str] = []
+    index = 0
+    detail_index = _official_details_by_name_key()
+    while index < len(slash_parts):
+        matched_end = index + 1
+        for end in range(len(slash_parts), index + 1, -1):
+            candidate = "/".join(slash_parts[index:end]).strip()
+            if len(detail_index.get(_norm(candidate), ())) == 1:
+                matched_end = end
+                break
+        output.append("/".join(slash_parts[index:matched_end]))
+        index = matched_end
+    return output
+
+
 def _split_detail_terms(values: list[str]) -> list[str]:
     """Flatten UI/parser multi-label values into distinct NCS detail terms."""
 
@@ -1076,14 +1148,20 @@ def _split_detail_terms(values: list[str]) -> list[str]:
                 seen.add(key)
                 terms.append(raw_value)
             continue
-        protected_slash = "\ufff0"
-        split_value = re.sub(
-            r"(?<=[A-Za-z])/(?=[A-Za-z])",
-            protected_slash,
+        parts: list[str] = []
+        for coarse_part in _split_unbracketed_detail_surface(
             raw_value,
-        )
-        for part in re.split(r"[\n,;/|]+", split_value):
-            part = part.replace(protected_slash, "/")
+            frozenset("\n,，、;|"),
+        ):
+            coarse_matches = _official_details_by_name_key().get(
+                _norm(coarse_part),
+                (),
+            )
+            if len(coarse_matches) == 1:
+                parts.append(coarse_part)
+            else:
+                parts.extend(_split_slash_detail_surface(coarse_part))
+        for part in parts:
             term = part.strip()
             key = _norm(term)
             if not term or not key or key in seen:
@@ -1294,6 +1372,12 @@ def _detail_code_recovery_rows(
             or _norm(resolved_detail["name"]) != _norm(official_name)
         ):
             continue
+        path_code_verification = _search_path_detail_code_verification(
+            path,
+            official_code,
+        )
+        if path_code_verification is False:
+            continue
         mcp_unit_name = _consistent_identity_value(
             row,
             "text",
@@ -1336,6 +1420,7 @@ def _detail_code_recovery_rows(
                 "detailResolutionRule": resolution_rule,
                 "unitRetrievalKind": "official_detail_code_query_recovery",
                 "unitRetrievalQuery": official_code,
+                "detailPathCodeVerified": path_code_verification is True,
                 "mcpUnitName": mcp_unit_name,
                 **catalog_resolution,
                 "source": "ncs-mcp-detail-code-recovery",
@@ -1345,8 +1430,11 @@ def _detail_code_recovery_rows(
     return output
 
 
-def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list[dict[str, Any]]:
-    """Resolve confirmed 세분류 names to NCS ability units."""
+def _search_units_by_detail_result(
+    detail_names: list[str],
+    max_units: int = 80,
+) -> dict[str, Any]:
+    """Resolve confirmed details while retaining zero-row coverage state."""
 
     # Call the versioned generation tool directly. Full discovery remains a
     # readiness concern and must not add a cold-path round trip here.
@@ -1369,6 +1457,10 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
         group: list[dict[str, Any]] = []
         groups.append(group)
         retrieval_state: dict[str, Any] = {
+            "sourceDetailName": name,
+            "mappingState": "official_detail_unresolved",
+            "officialDetailCode": "",
+            "officialDetailName": "",
             "detailExpectedUnitBaseCount": 0,
             "detailVerifiedUnitBaseCount": 0,
             "detailRetrievalComplete": False,
@@ -1388,6 +1480,13 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
         if len(official_candidates) != 1:
             continue
         expected_detail = next(iter(official_candidates.values()))
+        retrieval_state.update(
+            {
+                "mappingState": "official_detail_resolved",
+                "officialDetailCode": expected_detail["code"],
+                "officialDetailName": expected_detail["name"],
+            }
+        )
         verified_detail_identities: set[str] = set()
         for query_name in query_names:
             result = _call_tool(
@@ -1448,6 +1547,12 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                     != _norm(expected_detail["name"])
                 ):
                     continue
+                path_code_verification = _search_path_detail_code_verification(
+                    path,
+                    official_detail["code"],
+                )
+                if path_code_verification is False:
+                    continue
                 mcp_unit_name = _consistent_identity_value(
                     row,
                     "text",
@@ -1498,6 +1603,7 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                         "detailResolutionRule": resolution_rule,
                         "unitRetrievalKind": "official_detail_name_query",
                         "unitRetrievalQuery": query_name,
+                        "detailPathCodeVerified": path_code_verification is True,
                         "mcpUnitName": mcp_unit_name,
                         **catalog_resolution,
                         "source": "ncs-mcp-detail-alias" if is_alias else "ncs-mcp",
@@ -1556,8 +1662,17 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 "detailRetrievalCapLimited": recovery_skipped_for_output_limit,
             }
         )
+        row_coverage = {
+            field: retrieval_state[field]
+            for field in (
+                "detailExpectedUnitBaseCount",
+                "detailVerifiedUnitBaseCount",
+                "detailRetrievalComplete",
+                "detailRetrievalCapLimited",
+            )
+        }
         for row in group:
-            row.update(retrieval_state)
+            row.update(row_coverage)
 
     # Preserve at least one exact unit from each confirmed detail before a
     # large first classification can consume the global response limit.
@@ -1579,7 +1694,41 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
         group_retrieval_states[index]["detailRetrievalCapLimited"] = True
         for row in group:
             row["detailRetrievalCapLimited"] = True
-    return output
+    coverage_details = [dict(state) for state in group_retrieval_states]
+    return {
+        "items": output,
+        "exactCoverage": {
+            "details": coverage_details,
+            "resolvedOfficialDetailCount": sum(
+                state["mappingState"] == "official_detail_resolved"
+                for state in coverage_details
+            ),
+            "unresolvedDetailCount": sum(
+                state["mappingState"] != "official_detail_resolved"
+                for state in coverage_details
+            ),
+        },
+    }
+
+
+def search_units_by_detail_result(
+    detail_names: list[str],
+    max_units: int = 80,
+) -> dict[str, Any]:
+    """Return verified units plus per-detail exact retrieval coverage."""
+
+    return _search_units_by_detail_result(detail_names, max_units=max_units)
+
+
+def search_units_by_detail(
+    detail_names: list[str],
+    max_units: int = 80,
+) -> list[dict[str, Any]]:
+    """Resolve confirmed 세분류 names to NCS ability units."""
+
+    return list(
+        _search_units_by_detail_result(detail_names, max_units=max_units)["items"]
+    )
 
 
 def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[str, Any]]:
@@ -1643,6 +1792,12 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
             )
             if not sub_name:
                 continue
+            path_code_verification = _search_path_detail_code_verification(
+                path,
+                detail_code,
+            )
+            if path_code_verification is False:
+                continue
             current_name_candidates = detail_index.get(_norm(sub_name), ())
             # A non-current/free-form path label remains eligible for manual
             # review, but a path that names a different *current* official
@@ -1673,6 +1828,7 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
                     "matchedDetailName": query,
                     "officialDetailCode": detail_code,
                     "detailPathVerified": detail_path_verified,
+                    "detailPathCodeVerified": path_code_verification is True,
                     "unitIdentityFieldsConsistent": True,
                     "source": "ncs-mcp-suggest",
                     "matchScore": row.get("score", 0.0),
@@ -1698,6 +1854,30 @@ def _first_ksa_value(row: dict[str, Any], *keys: str) -> str:
         if value:
             return value
     return ""
+
+
+def _search_path_detail_code_verification(
+    path: Any,
+    expected_detail_code: str,
+) -> bool | None:
+    """Verify a search row's four-level classification code when supplied.
+
+    Older compatible MCP fixtures omitted path codes entirely, so absence is
+    reported as ``None``. A partially populated, malformed, or contradictory
+    path is an explicit failure and must never be treated like absence.
+    """
+
+    if not isinstance(path, dict):
+        return None
+    segments = [
+        str(path.get(field) or "").strip()
+        for field in ("major_code", "middle_code", "small_code", "sub_code")
+    ]
+    if not any(segments):
+        return None
+    if not all(re.fullmatch(r"\d{2}", segment) for segment in segments):
+        return False
+    return "".join(segments) == expected_detail_code
 
 
 def _consistent_identity_value(
@@ -2047,7 +2227,7 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
                     "ncsClCd": code,
                     "requestedUnitCode": code,
                     "responseUnitCode": response_code,
-                    "unitIdentityVerified": True,
+                    "unitIdentityVerified": catalog_verified,
                     **identity_provenance,
                     "compeUnitName": (
                         unit.get("compeUnitName")
@@ -2067,8 +2247,10 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
                     "ksaNo": _first_ksa_value(row, "ksa_no", "ksaNo", "number"),
                     "factorSource": "ncs-mcp",
                     "source": "ncs-mcp",
-                    "ksaStatus": "official",
-                    "isOfficialKsa": True,
+                    "ksaStatus": (
+                        "official" if catalog_verified else "unverified"
+                    ),
+                    "isOfficialKsa": catalog_verified,
                     "provenanceScope": (
                         "configured-ncs-mcp-client-contract-not-independent-"
                         "upstream-database-attestation"

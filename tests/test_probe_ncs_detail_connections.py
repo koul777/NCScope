@@ -78,6 +78,7 @@ def _verified_row(
         "officialDetailCode": detail["code"],
         "officialDetailName": detail["name"],
         "unitCatalogVerified": True,
+        "detailPathCodeVerified": True,
         "unitVersionCompatible": resolution_kind
         == "catalog_base_version_compatible",
         "catalogUnitCodes": [full_code],

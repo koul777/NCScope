@@ -8,6 +8,7 @@ from app.main import (
     _canonicalize_detail_lookup_terms,
     _find_sclass_code_tuple,
     _norm_detail_coverage_key,
+    _normalize_ncs_detail_term,
     _parse_sclass_terms,
 )
 from app.services import jd_strategy
@@ -30,6 +31,21 @@ def test_detail_term_splitters_preserve_official_acronym_slash_names():
     ]
 
 
+def test_detail_term_splitter_splits_distinct_acronym_details():
+    assert _parse_sclass_terms("PR/SCM") == ["PR", "SCM"]
+
+
+def test_detail_term_splitter_preserves_official_slash_span_before_next_term():
+    assert _parse_sclass_terms("QM/QC관리/총무") == ["QM/QC관리", "총무"]
+
+
+def test_detail_term_splitter_recovers_punctuation_equivalent_official_name():
+    assert _canonicalize_detail_lookup_terms(["QM,QC관리"]) == ["QM/QC관리"]
+    assert _canonicalize_detail_lookup_terms(["UI;UX엔지니어링"]) == [
+        "UI/UX엔지니어링"
+    ]
+
+
 def test_detail_term_splitter_preserves_delimiters_inside_official_parentheses():
     assert _parse_sclass_terms("조선비계(족장, 발판, scaffolding), 사무행정") == [
         "조선비계(족장, 발판, scaffolding)",
@@ -38,6 +54,22 @@ def test_detail_term_splitter_preserves_delimiters_inside_official_parentheses()
     assert _canonicalize_detail_lookup_terms(
         ["조선비계(족장, 발판, scaffolding)"]
     ) == ["조선비계(족장, 발판, scaffolding)"]
+
+
+def test_long_numbered_row_preserves_parentheses_inside_official_detail_name():
+    row = (
+        "NCS 세분류: 항만(해양)설계 "
+        "01. 설계 조건 검토와 자료 분석을 수행한다 "
+        "02. 설계 기준을 적용하고 결과를 검증한다"
+    )
+
+    assert _normalize_ncs_detail_term(row) == "항만(해양)설계"
+
+
+def test_unbalanced_grouping_does_not_merge_separate_reviewed_terms():
+    assert _canonicalize_detail_lookup_terms(
+        ["총무(", "인사", "사무행정"]
+    ) == ["총무", "인사", "사무행정"]
 
 
 def test_pdf_sclass_page_limit_covers_multi_role_job_descriptions(monkeypatch):

@@ -26,6 +26,38 @@ def _sample_catalog() -> list[dict[str, str]]:
     ]
 
 
+def _patch_sclass_unit_resolver(monkeypatch) -> None:
+    def fake_resolve(code, unit_name, detail_name):
+        if str(unit_name).startswith("stale"):
+            return None
+        base_code = str(code).split("_", 1)[0]
+        canonical_detail = str(detail_name or "synthetic-detail")
+        return {
+            "ncsClCd": str(code),
+            "compeUnitName": str(unit_name),
+            "ncsSubdCdnm": canonical_detail,
+            "canonicalDetailName": canonical_detail,
+            "officialDetailCode": base_code[:8],
+            "officialDetailName": canonical_detail,
+            "officialUnitBaseCode": base_code,
+            "officialUnitName": str(unit_name),
+            "unitResolutionKind": (
+                "catalog_base_version_compatible"
+                if "_24v" in str(code)
+                else "catalog_full_code_exact"
+            ),
+            "unitCatalogVerified": True,
+            "unitVersionCompatible": "_24v" in str(code),
+            "catalogUnitCodes": [str(code)],
+        }
+
+    monkeypatch.setattr(
+        jd_strategy,
+        "resolve_official_unit_selection",
+        fake_resolve,
+    )
+
+
 def test_reverse_dictionary_prefers_anchor_synonym(monkeypatch):
     monkeypatch.setattr(jd_strategy, "load_sclass_catalog_from_csv", lambda *args, **kwargs: _sample_catalog())
     monkeypatch.setattr(
@@ -167,13 +199,24 @@ def test_ncs_code_cannot_enable_template_fallback_by_environment(monkeypatch):
 
 
 def test_sclass_does_not_top_up_empty_ai_output_with_templates(monkeypatch):
+    _patch_sclass_unit_resolver(monkeypatch)
     units = [
-        {"ncsClCd": "A", "compeUnitName": "A 능력단위", "ncsSclasCdnm": "테스트 세분류"},
-        {"ncsClCd": "B", "compeUnitName": "B 능력단위", "ncsSclasCdnm": "테스트 세분류"},
+        {
+            "ncsClCd": "0202030101_25v1",
+            "compeUnitName": "A 능력단위",
+            "ncsSclasCdnm": "테스트 세분류",
+            "unitCatalogVerified": True,
+        },
+        {
+            "ncsClCd": "0202030201_25v1",
+            "compeUnitName": "B 능력단위",
+            "ncsSclasCdnm": "테스트 세분류",
+            "unitCatalogVerified": True,
+        },
     ]
     factors = {
-        "A": ["A-factor-1", "A-factor-2"],
-        "B": ["B-factor-1"],
+        "0202030101_25v1": ["A-factor-1", "A-factor-2"],
+        "0202030201_25v1": ["B-factor-1"],
     }
 
     def fake_fetch_ksa(*, ncs_matches, **kwargs):
@@ -211,6 +254,164 @@ def test_sclass_does_not_top_up_empty_ai_output_with_templates(monkeypatch):
     assert result["template_fallback_used"] is False
 
 
+def test_sclass_code_scope_rejects_name_matched_units_from_other_prefix(
+    monkeypatch,
+):
+    _patch_sclass_unit_resolver(monkeypatch)
+    wrong_scope = {
+        "ncsClCd": "0202010101_25v1",
+        "compeUnitName": "총무 문서관리",
+        "ncsSclasCdnm": "총무",
+    }
+    unverified_same_scope = {
+        "ncsClCd": "0202030101_25v1",
+        "compeUnitName": "stale MCP unit",
+        "ncsSclasCdnm": "일반사무",
+        "unitCatalogVerified": False,
+    }
+    right_scope = {
+        "ncsClCd": "0202030201_25v1",
+        "compeUnitName": "사무행정 문서작성",
+        "ncsSclasCdnm": "사무행정",
+        "unitCatalogVerified": True,
+    }
+    suggested_terms = []
+    fetched_units = []
+
+    def fake_suggest(terms, **_kwargs):
+        suggested_terms.extend(terms)
+        return [wrong_scope, unverified_same_scope, right_scope]
+
+    def fake_fetch(*, ncs_matches, **_kwargs):
+        fetched_units.extend(ncs_matches)
+        return [
+            {
+                "ncsClCd": right_scope["ncsClCd"],
+                "compeUnitName": right_scope["compeUnitName"],
+                "factorName": "문서 요구사항 파악",
+            }
+        ]
+
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.setattr(jd_strategy, "suggest_units_by_text", fake_suggest)
+    monkeypatch.setattr(jd_strategy, "fetch_ncs_ksa_by_units", fake_fetch)
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **_kwargs: [],
+    )
+
+    jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="020203",
+        competency_name="총무",
+        target_count=1,
+        include_followups=False,
+    )
+
+    assert suggested_terms[:2] == ["020203", "총무"]
+    assert [row["ncsClCd"] for row in fetched_units] == [right_scope["ncsClCd"]]
+
+
+def test_sclass_name_query_runs_when_numeric_results_are_all_out_of_scope(
+    monkeypatch,
+):
+    _patch_sclass_unit_resolver(monkeypatch)
+    wrong_scope = {
+        "ncsClCd": "0202010101_25v1",
+        "compeUnitName": "총무 문서관리",
+        "ncsSclasCdnm": "총무",
+    }
+    right_scope = {
+        "ncsClCd": "0202030201_25v1",
+        "compeUnitName": "사무행정 문서작성",
+        "ncsSclasCdnm": "사무행정",
+        "unitCatalogVerified": True,
+    }
+    queries = []
+    fetched_units = []
+
+    def fake_suggest(terms, **_kwargs):
+        queries.append(list(terms))
+        if terms == ["020203"]:
+            return [dict(wrong_scope) for _index in range(80)]
+        return [right_scope]
+
+    def fake_fetch(*, ncs_matches, **_kwargs):
+        fetched_units.extend(ncs_matches)
+        return [
+            {
+                "ncsClCd": right_scope["ncsClCd"],
+                "compeUnitName": right_scope["compeUnitName"],
+                "factorName": "문서 요구사항 파악",
+            }
+        ]
+
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.setattr(jd_strategy, "suggest_units_by_text", fake_suggest)
+    monkeypatch.setattr(jd_strategy, "fetch_ncs_ksa_by_units", fake_fetch)
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **_kwargs: [],
+    )
+
+    jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="020203",
+        competency_name="총무",
+        target_count=1,
+        include_followups=False,
+    )
+
+    assert queries == [["020203"], ["총무"]]
+    assert [row["ncsClCd"] for row in fetched_units] == [right_scope["ncsClCd"]]
+
+
+def test_sclass_dedupes_versions_by_official_unit_base_and_prefers_exact(
+    monkeypatch,
+):
+    _patch_sclass_unit_resolver(monkeypatch)
+    compatible = {
+        "ncsClCd": "0202030201_24v1",
+        "compeUnitName": "문서작성",
+        "ncsSubdCdnm": "사무행정",
+        "ncsSclasCdnm": "일반사무",
+    }
+    exact = {**compatible, "ncsClCd": "0202030201_25v1"}
+    fetched_units = []
+
+    def fake_suggest(terms, **_kwargs):
+        return [compatible] if terms == ["020203"] else [exact]
+
+    def fake_fetch(*, ncs_matches, **_kwargs):
+        fetched_units.extend(ncs_matches)
+        return [
+            {
+                "ncsClCd": exact["ncsClCd"],
+                "compeUnitName": exact["compeUnitName"],
+                "factorName": "문서 요구사항 파악",
+            }
+        ]
+
+    monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
+    monkeypatch.setattr(jd_strategy, "suggest_units_by_text", fake_suggest)
+    monkeypatch.setattr(jd_strategy, "fetch_ncs_ksa_by_units", fake_fetch)
+    monkeypatch.setattr(
+        jd_strategy,
+        "_generate_questions_with_openai_from_ncs",
+        lambda **_kwargs: [],
+    )
+
+    jd_strategy.generate_interview_questions_by_ncs_code(
+        ncs_code="020203",
+        competency_name="일반사무",
+        target_count=1,
+        include_followups=False,
+    )
+
+    assert [row["ncsClCd"] for row in fetched_units] == [exact["ncsClCd"]]
+    assert fetched_units[0]["officialUnitBaseCode"] == "0202030201"
+
+
 def test_ncs_code_returns_no_questions_when_ksa_mcp_is_missing(monkeypatch):
     monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")
     monkeypatch.setenv("NCS_AI_TOPUP_ATTEMPTS", "0")
@@ -234,20 +435,31 @@ def test_ncs_code_returns_no_questions_when_ksa_mcp_is_missing(monkeypatch):
 
 
 def test_sclass_result_is_unavailable_when_any_unit_lacks_official_ksa(monkeypatch):
+    _patch_sclass_unit_resolver(monkeypatch)
     units = [
-        {"ncsClCd": "A", "compeUnitName": "A 능력단위", "ncsSclasCdnm": "테스트 세분류"},
-        {"ncsClCd": "B", "compeUnitName": "B 능력단위", "ncsSclasCdnm": "테스트 세분류"},
+        {
+            "ncsClCd": "0202030101_25v1",
+            "compeUnitName": "A 능력단위",
+            "ncsSclasCdnm": "테스트 세분류",
+            "unitCatalogVerified": True,
+        },
+        {
+            "ncsClCd": "0202030201_25v1",
+            "compeUnitName": "B 능력단위",
+            "ncsSclasCdnm": "테스트 세분류",
+            "unitCatalogVerified": True,
+        },
     ]
 
     def fake_fetch_ksa(*, ncs_matches, **kwargs):
         return [
             {
-                "ncsClCd": "A",
+                "ncsClCd": "0202030101_25v1",
                 "compeUnitName": "A 능력단위",
                 "factorName": "A 공식요소",
             }
             for unit in ncs_matches
-            if unit["ncsClCd"] == "A"
+            if unit["ncsClCd"] == "0202030101_25v1"
         ]
 
     monkeypatch.setenv("NCS_ALLOW_TEMPLATE_FALLBACK", "true")

@@ -24,6 +24,9 @@ def _evidence() -> dict[str, Any]:
         "ksaTypeName": "지식",
         "factorSource": "ncs-mcp",
         "ksaStatus": "official",
+        "isOfficialKsa": True,
+        "unitCatalogVerified": True,
+        "unitResponsePathVerified": True,
     }
     return {**row, "evidence_id": main.stable_ksa_evidence_id(row)}
 

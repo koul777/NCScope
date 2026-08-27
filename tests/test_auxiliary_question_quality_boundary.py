@@ -14,7 +14,7 @@ REQUEST_KEY = "sk-request-scoped-aux-quality-test"
 NCS_CODE = "0202030201_25v3"
 
 
-def _official_ksa() -> dict[str, str]:
+def _official_ksa() -> dict[str, Any]:
     return {
         "ncsClCd": NCS_CODE,
         "compeUnitName": "문서작성",
@@ -22,6 +22,9 @@ def _official_ksa() -> dict[str, str]:
         "ksaTypeName": "기술",
         "factorSource": "ncs-mcp",
         "ksaStatus": "official",
+        "isOfficialKsa": True,
+        "unitCatalogVerified": True,
+        "unitResponsePathVerified": True,
     }
 
 
@@ -226,6 +229,23 @@ def test_question_local_evidence_cannot_self_attest_a_forged_id() -> None:
 
     with pytest.raises(main.HTTPException) as exc_info:
         main._require_official_ksa_result(_result(question))
+
+    assert exc_info.value.status_code == 502
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["unitCatalogVerified", "unitResponsePathVerified", "isOfficialKsa"],
+)
+def test_public_quality_boundary_rejects_unverified_registry_rows(
+    field: str,
+) -> None:
+    question = _ready_question()
+    result = _result(question)
+    result["official_ksa_evidence"][0][field] = False
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._require_official_ksa_result(result)
 
     assert exc_info.value.status_code == 502
 

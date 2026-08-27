@@ -45,6 +45,25 @@
      path that names a current official detail but contradicts the unit code's
      current detail scope is discarded; stale/free-form labels remain manual
      review suggestions and are not promoted to official links.
+   - Search rows that expose four two-digit classification path segments must
+     reproduce the official eight-digit detail code exactly. Partial,
+     malformed, or contradictory path-code tuples are rejected; compatible
+     rows that omit the tuple remain explicitly marked unverified.
+   - A result-returning wrapper preserves per-term coverage even when no row
+     survives validation or a global cap hides an entire group. The public
+     options endpoint keeps official zero-row results fail-closed instead of
+     replacing them with non-authoritative suggestions.
+   - Six-digit small-class question generation scopes units by code prefix
+     only. Code and label searches run independently, candidates are resolved
+     against the immutable unit catalog, and multiple published versions are
+     deduplicated by their ten-digit semantic base before KSA lookup. Public
+     official-KSA evidence requires both catalog and response path
+     verification, so legacy fixture identifiers cannot attest public
+     questions.
+   - Detail transport parsing protects balanced parenthetical delimiters and
+     unique catalog-exact slash names, but splits distinct names such as
+     `PR/SCM`. Unbalanced grouping cannot consume later structured terms, and
+     long numbered rows preserve all 23 current parenthetical detail names.
 
 2. `app/main.py`
    - Added a shared provenance reattachment path so MCP/catalog evidence survives rerank, safe fallback, and `selected_ncs` generation input reconstruction.
@@ -72,10 +91,10 @@
 
 ## Validation
 
-- `pytest -q tests/test_mcp_only_policy.py`: 143 passed
+- `pytest -q tests/test_mcp_only_policy.py`: 149 passed
 - Focused detail recovery, KSA identity, live-probe, and runtime catalog
   integrity suites: passed
-- `pytest -q`: 5276 passed, 72 skipped
+- `pytest -q`: 5319 passed, 72 skipped
 - `ruff check` on every changed Python file: passed
 - Independent diff review: no confirmed P0/P1 findings
 - `python scripts/audit_ncs_detail_connections.py`: pass
@@ -95,6 +114,10 @@
 - Live KSA identity probe: one normal public unit passed canonical response-path
   verification; the three known upstream wrong-path units all failed with a
   classification-code mismatch.
+- Live six-digit scope probe for `020203`: 12/12 selected units retained the
+  requested prefix, passed immutable catalog resolution, and had 12 distinct
+  semantic base identities. A sampled unit returned three KSA rows with the
+  catalog, response-path, and official-KSA flags all verified.
 - A measured 500-row query recovered the broad `이용` result but increased a
   warm request from 21.5 ms to 39.8 ms and payload from 332,043 to 840,571
   bytes. Applying it by name length/unit count would affect 1013/1094 details,
@@ -122,6 +145,17 @@
 - non-authoritative suggestion schema drift raises explicitly; malformed unit
   codes, conflicting code/name/path aliases, and current-detail code/path
   contradictions are rejected without treating suggestions as official links
+- official zero-row coverage survives without a sentinel option or suggestion
+  fallback; unresolved labels retain the existing manual suggestion path
+- four-level search path codes accept exact tuples and reject partial or
+  conflicting tuples in both exact and suggestion paths
+- contradictory six-digit small-class names cannot introduce another code
+  prefix; numeric-search saturation cannot hide the independent name query;
+  semantic unit versions are deduplicated; and unverified KSA registry rows
+  fail the public quality gate
+- bracketed delimiters, distinct acronym slash labels, malformed grouping,
+  punctuation-equivalent official labels, and all 1,094 official detail-name
+  round trips retain the intended atomic/split boundary
 - valid-JSON catalog byte drift fails before MCP access, while CRLF checkouts
   preserve the pinned LF-normalized digest
 - KSA input tampering, response name drift, response code/path drift, and

@@ -1875,6 +1875,7 @@ def test_ncs_link_provenance_copies_only_controlled_fields():
                 "unitRetrievalQuery": "02010101",
                 "unitCatalogVerified": True,
                 "unitVersionCompatible": False,
+                "detailPathCodeVerified": True,
                 "detailExpectedUnitBaseCount": 12,
                 "detailVerifiedUnitBaseCount": 11,
                 "detailRetrievalComplete": False,
@@ -1894,6 +1895,7 @@ def test_ncs_link_provenance_copies_only_controlled_fields():
             "unitRetrievalQuery": "02010101",
             "unitCatalogVerified": True,
             "unitVersionCompatible": False,
+            "detailPathCodeVerified": True,
             "detailExpectedUnitBaseCount": 12,
             "detailVerifiedUnitBaseCount": 11,
             "detailRetrievalComplete": False,
@@ -1911,6 +1913,7 @@ def test_ncs_link_provenance_rejects_invalid_retrieval_metadata_types():
             "detailVerifiedUnitBaseCount": -1,
             "detailRetrievalComplete": 1,
             "detailRetrievalCapLimited": "false",
+            "detailPathCodeVerified": "true",
             "untrustedSecret": "must-not-copy",
         }
     )
@@ -2536,6 +2539,41 @@ def test_mcp_search_limit_smaller_than_detail_count_preserves_input_order(
     assert [row["matchedDetailName"] for row in rows] == expected_details
 
 
+def test_mcp_search_result_retains_coverage_for_groups_hidden_by_global_cap(
+    mocker,
+):
+    details = ["인사", "프로젝트관리", "총무"]
+    rows_by_query = {
+        detail: _catalog_units_for_detail(detail)[:2]
+        for detail in details
+    }
+
+    def fake_call_tool(_name, arguments):
+        return {
+            "results": [
+                _mcp_catalog_row(row)
+                for row in rows_by_query.get(arguments["query"], [])
+            ]
+        }
+
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        side_effect=fake_call_tool,
+    )
+
+    result = ncs_mcp_client.search_units_by_detail_result(
+        details,
+        max_units=1,
+    )
+
+    assert [row["matchedDetailName"] for row in result["items"]] == ["인사"]
+    coverage = result["exactCoverage"]
+    assert coverage["resolvedOfficialDetailCount"] == 3
+    assert coverage["unresolvedDetailCount"] == 0
+    assert [row["sourceDetailName"] for row in coverage["details"]] == details
+    assert all(row["detailRetrievalCapLimited"] is True for row in coverage["details"])
+
+
 def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
     query = "\uacbd\uc601\uae30\ud68d"
     catalog_row = _catalog_units_for_detail(query)[0]
@@ -2634,7 +2672,8 @@ def test_mcp_ksa_alias_fields_preserve_and_balance_knowledge_skill_attitude(mock
     assert [row["ksaTypeName"] for row in rows] == ["지식", "기술", "태도"]
     assert [row["factorName"] for row in rows] == ["문서 분류 기준", "오류 대조 점검", "책임 있는 보고 자세"]
     assert [row["ksaNo"] for row in rows] == ["K-1", "S-1", "A-1"]
-    assert all(row["isOfficialKsa"] is True for row in rows)
+    assert all(row["isOfficialKsa"] is False for row in rows)
+    assert all(row["ksaStatus"] == "unverified" for row in rows)
 
 
 def test_mcp_ksa_limit_balances_types_without_hiding_later_elements(mocker):
@@ -2741,7 +2780,7 @@ def test_mcp_ksa_concurrency_preserves_confirmed_unit_order(monkeypatch, mocker)
 
     assert max_active >= 2
     assert [row["ncsClCd"] for row in rows] == ["U1", "U2", "U3"]
-    assert all(row["unitIdentityVerified"] is True for row in rows)
+    assert all(row["unitIdentityVerified"] is False for row in rows)
 
 
 def test_mcp_ksa_rejects_missing_or_mismatched_response_unit_identity(mocker):
@@ -3316,7 +3355,17 @@ def test_mcp_suggest_units_by_text_marks_exact_unit_name_match(mocker):
 
 def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
-    mocker.patch("app.main.search_units_by_detail", return_value=[])
+    mocker.patch(
+        "app.main.search_units_by_detail_result",
+        return_value={
+            "items": [],
+            "exactCoverage": {
+                "details": [],
+                "resolvedOfficialDetailCount": 0,
+                "unresolvedDetailCount": 1,
+            },
+        },
+    )
     suggestion = {
         "ncsClCd": "0601010101_20v1",
         "compeUnitName": "\uc758\ub8cc\uc9c0\uc6d0 \ud6c4\ubcf4",
@@ -3333,11 +3382,22 @@ def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):
     assert body["source"] == "ncs-mcp-suggest"
     assert body["items"] == [suggestion]
     assert "Exact detail-class match" in body["message"]
+    assert body["exactCoverage"]["unresolvedDetailCount"] == 1
 
 
 def test_ncs_unit_options_surfaces_suggestion_search_failures(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
-    mocker.patch("app.main.search_units_by_detail", return_value=[])
+    mocker.patch(
+        "app.main.search_units_by_detail_result",
+        return_value={
+            "items": [],
+            "exactCoverage": {
+                "details": [],
+                "resolvedOfficialDetailCount": 0,
+                "unresolvedDetailCount": 1,
+            },
+        },
+    )
     mocker.patch(
         "app.main.suggest_units_by_text",
         side_effect=main.NcsMcpError("NCS MCP search returned an invalid response"),
@@ -3350,6 +3410,103 @@ def test_ncs_unit_options_surfaces_suggestion_search_failures(monkeypatch, mocke
     assert resp.json()["detail"]["code"] == "ncs_mcp_search_failed"
 
 
+def test_ncs_unit_options_keeps_official_zero_as_incomplete_exact_coverage(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    detail_coverage = {
+        "sourceDetailName": "detail-alpha",
+        "mappingState": "official_detail_resolved",
+        "officialDetailCode": "12345678",
+        "officialDetailName": "detail-alpha",
+        "detailExpectedUnitBaseCount": 2,
+        "detailVerifiedUnitBaseCount": 0,
+        "detailRetrievalComplete": False,
+        "detailRetrievalCapLimited": False,
+    }
+    mocker.patch(
+        "app.main.search_units_by_detail_result",
+        return_value={
+            "items": [],
+            "exactCoverage": {
+                "details": [detail_coverage],
+                "resolvedOfficialDetailCount": 1,
+                "unresolvedDetailCount": 0,
+            },
+        },
+    )
+    suggest = mocker.patch("app.main.suggest_units_by_text")
+
+    with TestClient(main.app) as client:
+        resp = client.get("/api/ncs/units/options?q=detail-alpha&limit=10")
+
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "ncs-mcp"
+    assert resp.json()["items"] == []
+    assert resp.json()["exactCoverage"]["details"] == [detail_coverage]
+    assert "no catalog-verified" in resp.json()["message"]
+    suggest.assert_not_called()
+
+
+def test_ncs_unit_options_reports_mixed_unresolved_exact_terms(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    exact = {"ncsClCd": "0202030201_25v1", "compeUnitName": "문서작성"}
+    mocker.patch(
+        "app.main.search_units_by_detail_result",
+        return_value={
+            "items": [exact],
+            "exactCoverage": {
+                "details": [
+                    {
+                        "sourceDetailName": "사무행정",
+                        "mappingState": "official_detail_resolved",
+                        "officialDetailCode": "02020302",
+                    },
+                    {
+                        "sourceDetailName": "기관직무 (A,B)",
+                        "mappingState": "official_detail_unresolved",
+                        "officialDetailCode": "",
+                    },
+                ],
+                "resolvedOfficialDetailCount": 1,
+                "unresolvedDetailCount": 1,
+            },
+        },
+    )
+    suggest = mocker.patch("app.main.suggest_units_by_text")
+
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/ncs/units/options",
+            params={"q": "사무행정, 기관직무 (A,B)", "limit": 10},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"] == [exact]
+    assert body["exactCoverage"]["unresolvedDetailCount"] == 1
+    assert "1 detail term(s)" in body["message"]
+    suggest.assert_not_called()
+
+
+def test_ncs_unit_options_empty_query_returns_empty_exact_coverage(monkeypatch):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+
+    with TestClient(main.app) as client:
+        response = client.get("/api/ncs/units/options?q=")
+
+    assert response.status_code == 200
+    assert response.json()["exactCoverage"] == {
+        "details": [],
+        "resolvedOfficialDetailCount": 0,
+        "unresolvedDetailCount": 0,
+    }
+
+
 def test_ncs_unit_options_splits_multi_term_query(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     exact = {
@@ -3360,8 +3517,15 @@ def test_ncs_unit_options_splits_multi_term_query(monkeypatch, mocker):
         "detailRetrievalCapLimited": False,
     }
     search = mocker.patch(
-        "app.main.search_units_by_detail",
-        return_value=[exact],
+        "app.main.search_units_by_detail_result",
+        return_value={
+            "items": [exact],
+            "exactCoverage": {
+                "details": [],
+                "resolvedOfficialDetailCount": 2,
+                "unresolvedDetailCount": 0,
+            },
+        },
     )
 
     with TestClient(main.app) as client:

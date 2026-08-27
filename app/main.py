@@ -74,6 +74,7 @@ from app.services.ncs_mcp_client import (
     ncs_mcp_status,
     resolve_official_unit_selection,
     search_units_by_detail,
+    search_units_by_detail_result,
     suggest_units_by_text,
     use_detached_work_lease,
     use_ncs_mcp_request_session,
@@ -1126,48 +1127,140 @@ def _normalize_ncs_detail_term(value: Any) -> str:
         r"(?:^|\s)0?2\s*[.)]", text
     )
     if len(text) >= 60 and numbered:
-        parenthesized = re.search(r"\(([^()\n]{2,80})\)", text)
-        if parenthesized:
-            candidate = re.sub(r"\s+", " ", parenthesized.group(1)).strip(" -:：")
-            if candidate:
-                return candidate
         prefix = re.split(r"\s+(?=0?1\s*[.)])", text, maxsplit=1)[0]
         prefix = re.sub(r"^(?:공고\s*[·ㆍ./]?\s*직무\s*기술\s*서\s*상?|NCS\s*세분류\s*[:：]?)\s*", "", prefix, flags=re.IGNORECASE)
-        prefix = prefix.strip(" -:：()")
+        prefix = prefix.strip(" -:：")
+        wrapped = re.fullmatch(r"\(([^()\n]{2,80})\)", prefix)
+        if wrapped:
+            prefix = wrapped.group(1).strip(" -:：")
+        # Retain the old recovery shape only when the parenthesized value is
+        # itself one unique official detail. This avoids reducing an official
+        # name such as ``항만(해양)설계`` to its internal qualifier while still
+        # recovering a label embedded after unusually long table headers.
+        parenthesized = re.search(r"\(([^()\n]{2,80})\)", text)
+        prefix_is_official = _is_single_official_detail_surface(prefix)
+        if 2 <= len(prefix) <= 80 and prefix_is_official:
+            return prefix
+        if parenthesized:
+            candidate = re.sub(
+                r"\s+",
+                " ",
+                parenthesized.group(1),
+            ).strip(" -:：")
+            if candidate and _is_single_official_detail_surface(candidate):
+                return candidate
         if 2 <= len(prefix) <= 80:
             return prefix
     return text
 
 
-def _parse_sclass_terms(raw: str | None) -> list[str]:
-    text = str(raw or "")
+def _split_unbracketed_sclass_surface(
+    value: str,
+    delimiters: frozenset[str],
+) -> list[str]:
+    """Split transport delimiters while preserving only balanced grouping."""
+
+    text = str(value or "")
+    pairs = {
+        "(": ")",
+        "[": "]",
+        "{": "}",
+        "（": "）",
+        "［": "］",
+        "｛": "｝",
+    }
+    closers = {closer: opener for opener, closer in pairs.items()}
+    stack: list[str] = []
+    balanced = True
+    for char in text:
+        if char in pairs:
+            stack.append(char)
+        elif char in closers:
+            if not stack or stack[-1] != closers[char]:
+                balanced = False
+                break
+            stack.pop()
+    if stack:
+        balanced = False
+
     parts: list[str] = []
     start = 0
-    depth = 0
-    pairs = {"(": ")", "[": "]", "{": "}"}
-    closers = set(pairs.values())
+    stack = []
     for index, char in enumerate(text):
-        if char in pairs:
-            depth += 1
+        if balanced and char in pairs:
+            stack.append(char)
             continue
-        if char in closers and depth:
-            depth -= 1
+        if balanced and char in closers and stack:
+            stack.pop()
             continue
-        if depth:
+        if stack:
             continue
-        is_acronym_slash = (
-            char == "/"
-            and index > 0
-            and index + 1 < len(text)
-            and text[index - 1].isascii()
-            and text[index - 1].isalpha()
-            and text[index + 1].isascii()
-            and text[index + 1].isalpha()
-        )
-        if char in "\n,，、;/|" and not is_acronym_slash:
+        if char in delimiters:
             parts.append(text[start:index])
             start = index + 1
     parts.append(text[start:])
+    return parts
+
+
+def _is_single_official_detail_surface(value: str) -> bool:
+    source = str(value or "").strip()
+    if not source:
+        return False
+    without_header = re.sub(
+        r"^(?:NCS\s*)?세분류(?:명|\(\s*직무(?:명)?\s*\))?\s*[:：\-]\s*",
+        "",
+        source,
+        flags=re.IGNORECASE,
+    ).strip()
+    without_code = _strip_full_ncs_code_prefix(without_header).strip()
+    surfaces = list(dict.fromkeys([source, without_header, without_code]))
+    rows = classify_official_detail_names(surfaces)
+    return any(
+        row.get("mappingState") == "official_current_exact"
+        and row.get("resolvedCatalogExact") is True
+        and len(row.get("officialDetailCodes") or []) == 1
+        for row in rows
+    )
+
+
+def _split_slash_sclass_surface(value: str) -> list[str]:
+    """Preserve the longest catalog-exact slash spans, then split the rest."""
+
+    slash_parts = _split_unbracketed_sclass_surface(
+        value,
+        frozenset("/"),
+    )
+    if len(slash_parts) <= 1:
+        return slash_parts
+    output: list[str] = []
+    index = 0
+    while index < len(slash_parts):
+        matched_end = index + 1
+        for end in range(len(slash_parts), index + 1, -1):
+            candidate = "/".join(slash_parts[index:end]).strip()
+            if _is_single_official_detail_surface(candidate):
+                matched_end = end
+                break
+        output.append("/".join(slash_parts[index:matched_end]))
+        index = matched_end
+    return output
+
+
+def _parse_sclass_terms(raw: str | None) -> list[str]:
+    text = str(raw or "")
+    has_transport_delimiter = bool(re.search(r"[\n,，、;/|]", text))
+    if has_transport_delimiter and _is_single_official_detail_surface(text):
+        parts = [text]
+    else:
+        parts: list[str] = []
+        for coarse_part in _split_unbracketed_sclass_surface(
+            text,
+            frozenset("\n,，、;|"),
+        ):
+            if "/" in coarse_part and _is_single_official_detail_surface(coarse_part):
+                parts.append(coarse_part)
+            else:
+                parts.extend(_split_slash_sclass_surface(coarse_part))
     out: list[str] = []
     seen: set[str] = set()
     for part in parts:
@@ -1527,9 +1620,11 @@ def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
     untouched so they still require human selection.
     """
 
-    parsed_terms = _parse_sclass_terms(
-        "\n".join(str(term or "").strip() for term in (lookup_terms or []))
-    )
+    parsed_terms = [
+        parsed
+        for source_term in (lookup_terms or [])
+        for parsed in _parse_sclass_terms(str(source_term or "").strip())
+    ]
     reviewed_terms: list[str] = []
     reviewed_keys: set[str] = set()
     for parsed_term in parsed_terms:
@@ -1621,6 +1716,22 @@ def _canonicalize_detail_lookup_terms(lookup_terms: list[str]) -> list[str]:
                 row.get("matchMethod")
                 == "official_detail_with_exact_ordinal_unit_decoration"
                 or source_surface == official_surface
+                or (
+                    re.search(r"[,，、;/|]", str(row.get("sourceName") or ""))
+                    and re.search(r"[,，、;/|]", official_names[0])
+                    and re.sub(
+                        r"[\W_]+",
+                        "",
+                        str(row.get("sourceName") or "").casefold(),
+                        flags=re.UNICODE,
+                    )
+                    == re.sub(
+                        r"[\W_]+",
+                        "",
+                        official_names[0].casefold(),
+                        flags=re.UNICODE,
+                    )
+                )
             )
         ):
             resolved_decorations_by_key[source_key] = official_names[0]
@@ -1950,6 +2061,7 @@ def _ncs_link_provenance(row: Any) -> dict[str, Any]:
     for field in (
         "unitCatalogVerified",
         "unitVersionCompatible",
+        "detailPathCodeVerified",
         "detailRetrievalComplete",
         "detailRetrievalCapLimited",
     ):
@@ -6944,6 +7056,12 @@ def _require_official_ksa_result(result: dict[str, Any]) -> None:
         }
         for row in rows:
             if not isinstance(row, dict):
+                continue
+            if (
+                row.get("unitCatalogVerified") is not True
+                or row.get("unitResponsePathVerified") is not True
+                or row.get("isOfficialKsa") is not True
+            ):
                 continue
             row_code = str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
             row_factor = str(row.get("factorName") or row.get("factor_name") or "").strip()
@@ -14036,25 +14154,56 @@ def ncs_unit_options(
     _require_ncs_mcp_url()
     term = str(q or "").strip()
     if not term:
-        return {"count": 0, "items": [], "source": "ncs-mcp", "message": "Enter a confirmed NCS detail classification."}
+        return {
+            "count": 0,
+            "items": [],
+            "source": "ncs-mcp",
+            "message": "Enter a confirmed NCS detail classification.",
+            "exactCoverage": {
+                "details": [],
+                "resolvedOfficialDetailCount": 0,
+                "unresolvedDetailCount": 0,
+            },
+        }
     terms = _canonicalize_detail_lookup_terms(_parse_sclass_terms(term))
     if len(terms) > 40:
         raise HTTPException(status_code=422, detail="at most 40 NCS detail terms are allowed")
     try:
-        items = search_units_by_detail(terms, max_units=limit)
+        exact_result = search_units_by_detail_result(terms, max_units=limit)
+        items = list(exact_result["items"])
+        exact_coverage = dict(exact_result["exactCoverage"])
         source = "ncs-mcp"
         message = ""
-        if not items:
+        if (
+            not items
+            and exact_coverage.get("resolvedOfficialDetailCount", 0) == 0
+        ):
             items = suggest_units_by_text(terms, max_units=min(limit, 50))
             source = "ncs-mcp-suggest"
             message = "Exact detail-class match was not found. Review suggested NCS units manually."
+        elif not items:
+            message = (
+                "The official detail was resolved, but no catalog-verified "
+                "ability units were returned. Review exactCoverage and retry."
+            )
+        elif exact_coverage.get("unresolvedDetailCount", 0) > 0:
+            message = (
+                f"{exact_coverage['unresolvedDetailCount']} detail term(s) could "
+                "not be resolved to one official classification and were excluded."
+            )
     except NcsMcpError as exc:
         raise _internal_http_error(
             "ncs_mcp_search_failed",
             exc,
             status_code=502,
         ) from exc
-    return {"count": len(items), "items": items, "source": source, "message": message}
+    return {
+        "count": len(items),
+        "items": items,
+        "source": source,
+        "message": message,
+        "exactCoverage": exact_coverage,
+    }
 
 
 @app.get("/api/ncs/sclass/ksa")

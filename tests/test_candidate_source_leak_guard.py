@@ -38,6 +38,16 @@ def test_long_numbered_detail_row_is_reduced_to_one_ncs_label() -> None:
     assert _normalize_ncs_detail_term(POLLUTED_DETAIL) == "전기안전관리"
 
 
+def test_long_unrecognized_header_recovers_only_official_parenthesized_detail() -> None:
+    text = (
+        "기관 내부 표 제목과 설명이 매우 길어 일반 머리말 규칙으로 제거되지 않는 문구 "
+        "추가 설명과 적용 범위 안내 (전기안전관리) "
+        "01.전기작업 안전관리 02.정전기 위험관리 03.전기 화재 위험관리"
+    )
+
+    assert _normalize_ncs_detail_term(text) == "전기안전관리"
+
+
 def test_all_public_methods_remove_notice_boilerplate_from_candidate_text() -> None:
     methods = [
         "경험면접",

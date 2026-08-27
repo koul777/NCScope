@@ -278,6 +278,60 @@ const fetch = async () => ({ ok: true, payload: fetchPayload });
   }
   fetchPayload = {
     source: 'ncs-mcp',
+    items: [],
+    exactCoverage: {
+      details: [{
+        mappingState: 'official_detail_resolved',
+        officialDetailCode: '02010101',
+        detailExpectedUnitBaseCount: 2,
+        detailVerifiedUnitBaseCount: 0,
+        detailRetrievalComplete: false,
+        detailRetrievalCapLimited: false,
+      }],
+    },
+  };
+  await loadReviewedOfficialAbilityUnits({}, 'Office Admin');
+  if (reviewOfficialAbilityUnitsCoverage.hidden
+      || !reviewOfficialAbilityUnitsCoverage.textContent.includes('2개 중 0개')) {
+    throw new Error('zero-row official retrieval coverage was lost');
+  }
+  fetchPayload = {
+    source: 'ncs-mcp',
+    items: [{
+      ncsClCd: '0201010101_25v1',
+      officialDetailCode: '02010101',
+      detailExpectedUnitBaseCount: 1,
+      detailVerifiedUnitBaseCount: 1,
+      detailRetrievalComplete: true,
+      detailRetrievalCapLimited: false,
+    }],
+    exactCoverage: {
+      details: [{
+        sourceDetailName: 'Office Admin',
+        mappingState: 'official_detail_resolved',
+        officialDetailCode: '02010101',
+        detailExpectedUnitBaseCount: 1,
+        detailVerifiedUnitBaseCount: 1,
+        detailRetrievalComplete: true,
+        detailRetrievalCapLimited: false,
+      }, {
+        sourceDetailName: 'unknown detail',
+        mappingState: 'official_detail_unresolved',
+        officialDetailCode: '',
+        detailExpectedUnitBaseCount: 0,
+        detailVerifiedUnitBaseCount: 0,
+        detailRetrievalComplete: false,
+        detailRetrievalCapLimited: false,
+      }],
+    },
+  };
+  await loadReviewedOfficialAbilityUnits({}, 'Office Admin, unknown detail');
+  if (reviewOfficialAbilityUnitsCoverage.hidden
+      || !reviewOfficialAbilityUnitsCoverage.textContent.includes('unknown detail')) {
+    throw new Error('mixed unresolved detail coverage was not disclosed');
+  }
+  fetchPayload = {
+    source: 'ncs-mcp',
     items: [{
       compeUnitName: 'Document Writing',
       ncsClCd: '0201010101_24v1',
@@ -445,6 +499,122 @@ if (!invalidRow.className.includes('invalid') || !rowText(invalidRow).includes('
   throw new Error('invalid coordinate shape was silently normalized');
 }
 console.log('coordinate rendering behavior ok');
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=commonjs"],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
+
+
+def test_manual_ncs_search_ignores_out_of_order_responses_in_node() -> None:
+    _, script = _page()
+    helper_start = script.index("function exactDetailRetrievalNotice(data, items = [])")
+    helper_end = script.index("function populateReviewedOfficialAbilityUnits", helper_start)
+    load_start = script.index("async function loadNcsOptions(query='')")
+    load_end = script.index("\n\n    btn.onclick", load_start)
+    functions = script[helper_start:helper_end] + script[load_start:load_end]
+    harness = r"""
+const ncsRetrievalNotice = { textContent: '', hidden: true };
+const selectedCount = { textContent: '' };
+let manualNcsRequestId = 0;
+let populatedItems = [];
+const populateNcsUnitSelect = items => { populatedItems = items; };
+const readApiResponse = async response => response.payload;
+const apiErrorMessage = (_payload, fallback) => fallback;
+const pending = new Map();
+const fetch = url => new Promise(resolve => {
+  const query = new URL(url, 'https://example.test').searchParams.get('q');
+  pending.set(query, resolve);
+});
+""" + functions + r"""
+(async () => {
+  const older = loadNcsOptions('older');
+  const newer = loadNcsOptions('newer');
+  pending.get('newer')({
+    ok: true,
+    payload: {
+      source: 'ncs-mcp',
+      items: [{
+        ncsClCd: '0201010101_24v1',
+        officialDetailCode: '02010101',
+        detailExpectedUnitBaseCount: 2,
+        detailVerifiedUnitBaseCount: 1,
+        detailRetrievalComplete: false,
+        detailRetrievalCapLimited: false,
+      }],
+    },
+  });
+  if (await newer !== true) throw new Error('newest request was not applied');
+  pending.get('older')({ ok: false, payload: { detail: 'stale failure' } });
+  if (await older !== false) throw new Error('stale request was not ignored');
+  if (populatedItems[0]?.ncsClCd !== '0201010101_24v1') {
+    throw new Error('stale response replaced newest options');
+  }
+  if (!ncsRetrievalNotice.textContent.includes('2개 중 1개')) {
+    throw new Error('stale response replaced newest retrieval notice');
+  }
+  const missing = loadNcsOptions('missing');
+  pending.get('missing')({
+    ok: true,
+    payload: { source: 'ncs-mcp-suggest', items: [], message: 'no suggestions' },
+  });
+  if (await missing !== true) throw new Error('empty suggestion response was not applied');
+  if (!selectedCount.textContent.includes('후보를 찾지 못했습니다')) {
+    throw new Error('empty suggestion result did not explain the empty list');
+  }
+  const exactZero = loadNcsOptions('exact-zero');
+  pending.get('exact-zero')({
+    ok: true,
+    payload: {
+      source: 'ncs-mcp',
+      items: [],
+      exactCoverage: {
+        resolvedOfficialDetailCount: 1,
+        unresolvedDetailCount: 0,
+        details: [{
+          mappingState: 'official_detail_resolved',
+          officialDetailCode: '02010101',
+          detailExpectedUnitBaseCount: 2,
+          detailVerifiedUnitBaseCount: 0,
+          detailRetrievalComplete: false,
+          detailRetrievalCapLimited: false,
+        }],
+      },
+    },
+  });
+  if (await exactZero !== true) throw new Error('exact-zero response was not applied');
+  if (!selectedCount.textContent.includes('검증된 능력단위가 0개')) {
+    throw new Error('exact-zero result retained stale selection status');
+  }
+  const suggested = loadNcsOptions('suggested');
+  pending.get('suggested')({
+    ok: true,
+    payload: {
+      source: 'ncs-mcp-suggest',
+      items: [{ ncsClCd: '0201010109_25v1' }],
+    },
+  });
+  if (await suggested !== true || !selectedCount.textContent.includes('자동 확정 보류')) {
+    throw new Error('suggestion status was not rendered');
+  }
+  const exact = loadNcsOptions('exact');
+  pending.get('exact')({
+    ok: true,
+    payload: {
+      source: 'ncs-mcp',
+      items: [{ ncsClCd: '0201010101_25v1' }],
+    },
+  });
+  if (await exact !== true) throw new Error('exact response was not applied');
+  if (selectedCount.textContent.includes('자동 확정 보류')) {
+    throw new Error('exact result retained stale suggestion status');
+  }
+  console.log('manual NCS request ordering ok');
+})().catch(error => { console.error(error); process.exit(1); });
 """
     completed = subprocess.run(
         ["node", "--input-type=commonjs"],
@@ -674,6 +844,9 @@ def test_upload_review_uses_single_select_for_ncs_detail_and_single_method_selec
     assert "jdReviewPayload.fields.extracted_ability_units = reviewAbilityUnits.value.split(/\\n+/)" in script
     assert "jdReviewPayload.fields.ability_units = selectedReviewedOfficialAbilityUnits();" in script
     assert "reviewOfficialAbilityUnits?.addEventListener('change'" in script
+    clear_start = script.index("function clearJdReviewExtractedFields()")
+    clear_end = script.index("function noticeConfirmButtons()", clear_start)
+    assert "reviewOfficialAbilityUnitsCoverage" in script[clear_start:clear_end]
 
     assert 'id="reviewAbilityEvidence"' in html
     assert 'id="reviewAbilityEvidenceSummary"' in html

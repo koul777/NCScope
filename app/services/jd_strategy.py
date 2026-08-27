@@ -72,6 +72,7 @@ from app.services.question_surface import (
 from app.services.ncs_mcp_client import (
     NcsMcpError,
     get_ksa_by_units,
+    resolve_official_unit_selection,
     suggest_units_by_text,
 )
 from app.settings import settings
@@ -2177,7 +2178,13 @@ def _server_official_ksa_evidence(
         row = dict(raw_row)
         ncs_code = str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
         factor = str(row.get("factorName") or row.get("factor_name") or "").strip()
-        if not ncs_code or not factor:
+        if (
+            not ncs_code
+            or not factor
+            or row.get("unitCatalogVerified") is not True
+            or row.get("unitResponsePathVerified") is not True
+            or row.get("isOfficialKsa") is not True
+        ):
             continue
         evidence_id = stable_ksa_evidence_id(row)
         if evidence_id in seen_ids:
@@ -3148,20 +3155,61 @@ def generate_interview_questions_by_ncs_code(
     # question generation.
     code6 = re.sub(r"[^0-9]", "", code)[:6]
     if is_sclass_mode:
-        try:
-            candidates = suggest_units_by_text([comp_name, code], max_units=80)
-        except NcsMcpError:
-            candidates = []
-        sclass_units = [
+        # Query code and label independently. A noisy numeric result is not
+        # allowed to exhaust the shared suggestion limit before the label
+        # query runs, while the six-digit code remains the sole scope
+        # authority for every retained unit.
+        candidate_batches: list[list[dict[str, Any]]] = []
+        for query in dict.fromkeys([code, comp_name]):
+            if not str(query or "").strip():
+                continue
+            try:
+                candidate_batches.append(
+                    suggest_units_by_text([str(query)], max_units=80)
+                )
+            except NcsMcpError:
+                continue
+        sclass_units = []
+        base_code_indices: dict[str, int] = {}
+        for unit in (
             unit
-            for unit in candidates
-            if re.sub(r"\D", "", str(unit.get("ncsClCd") or ""))[:6] == code6
-            or (
-                comp_name
-                and _norm_text(str(unit.get("ncsSclasCdnm") or ""))
-                == _norm_text(comp_name)
-            )
-        ]
+            for batch in candidate_batches
+            for unit in batch
+            if isinstance(unit, dict)
+        ):
+            unit_code = str(unit.get("ncsClCd") or "").strip()
+            if re.sub(r"\D", "", unit_code)[:6] != code6:
+                continue
+            try:
+                resolved = resolve_official_unit_selection(
+                    unit_code,
+                    str(unit.get("compeUnitName") or ""),
+                    str(
+                        unit.get("ncsSubdCdnm")
+                        or unit.get("canonicalDetailName")
+                        or unit.get("officialDetailName")
+                        or ""
+                    ),
+                )
+            except NcsMcpError:
+                continue
+            if resolved is None:
+                continue
+            canonical_unit = {**unit, **resolved}
+            base_code = str(resolved.get("officialUnitBaseCode") or "").strip()
+            if not base_code:
+                continue
+            prior_index = base_code_indices.get(base_code)
+            if prior_index is not None:
+                prior = sclass_units[prior_index]
+                if (
+                    prior.get("unitVersionCompatible") is True
+                    and canonical_unit.get("unitVersionCompatible") is False
+                ):
+                    sclass_units[prior_index] = canonical_unit
+                continue
+            base_code_indices[base_code] = len(sclass_units)
+            sclass_units.append(canonical_unit)
         ncs_matches = (
             sclass_units[: max(8, min(12, len(sclass_units)))]
             if sclass_units

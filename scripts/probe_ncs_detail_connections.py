@@ -266,6 +266,8 @@ def _row_violation_reasons(
         reasons.append("base_detail_code_mismatch")
     if row.get("unitCatalogVerified") is not True:
         reasons.append("catalog_verification_missing")
+    if row.get("detailPathCodeVerified") is not True:
+        reasons.append("detail_path_code_verification_missing")
     if str(row.get("officialDetailCode") or "").strip() != detail.code:
         reasons.append("official_detail_code_mismatch")
     if _norm(row.get("officialDetailName")) != _norm(detail.name):

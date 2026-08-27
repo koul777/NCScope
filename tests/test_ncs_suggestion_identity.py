@@ -41,14 +41,25 @@ def _mcp_row(
     code: str = "1234567801_25v1",
     text: str = "unitalpha",
     detail_name: str = "detailalpha",
+    path_detail_code: str | None = None,
 ) -> dict[str, Any]:
+    path = {
+        "small": "smallalpha",
+        "sub": detail_name,
+    }
+    if path_detail_code is not None:
+        path.update(
+            {
+                "major_code": path_detail_code[0:2],
+                "middle_code": path_detail_code[2:4],
+                "small_code": path_detail_code[4:6],
+                "sub_code": path_detail_code[6:8],
+            }
+        )
     return {
         "id": code,
         "text": text,
-        "path": {
-            "small": "smallalpha",
-            "sub": detail_name,
-        },
+        "path": path,
     }
 
 
@@ -133,6 +144,43 @@ def test_suggestion_rejects_official_detail_code_name_scope_conflict(
     assert client.suggest_units_by_text(["freeform"], max_units=5) == []
 
 
+def test_suggestion_verifies_four_level_path_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_active_details(monkeypatch, [DETAIL_ALPHA])
+    monkeypatch.setattr(
+        client,
+        "_call_tool",
+        lambda *_args, **_kwargs: {
+            "results": [
+                _mcp_row(path_detail_code=DETAIL_ALPHA["code"])
+            ]
+        },
+    )
+
+    rows = client.suggest_units_by_text(["freeform"], max_units=5)
+
+    assert len(rows) == 1
+    assert rows[0]["detailPathCodeVerified"] is True
+
+
+@pytest.mark.parametrize("path_detail_code", [DETAIL_BETA["code"], "123456"])
+def test_suggestion_rejects_conflicting_or_partial_path_code(
+    monkeypatch: pytest.MonkeyPatch,
+    path_detail_code: str,
+) -> None:
+    _install_active_details(monkeypatch, [DETAIL_ALPHA, DETAIL_BETA])
+    monkeypatch.setattr(
+        client,
+        "_call_tool",
+        lambda *_args, **_kwargs: {
+            "results": [_mcp_row(path_detail_code=path_detail_code)]
+        },
+    )
+
+    assert client.suggest_units_by_text(["freeform"], max_units=5) == []
+
+
 def test_suggestion_keeps_stale_but_active_candidate_when_code_scope_is_current(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,3 +205,4 @@ def test_suggestion_keeps_stale_but_active_candidate_when_code_scope_is_current(
     assert rows[0]["ncsSubdCdnm"] == stale_name
     assert rows[0]["canonicalDetailName"] == stale_name
     assert rows[0]["source"] == "ncs-mcp-suggest"
+    assert rows[0]["detailPathCodeVerified"] is False

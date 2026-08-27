@@ -90,6 +90,10 @@ GitHub의 **Follow**와 저장소 **Star**만으로는 모든 변경 알림이 �
 - 수동 `selected_ncs`도 클라이언트 값을 신뢰하지 않고 서버에서 공식 코드·능력단위명·세분류명을 다시 확인합니다. KSA 조회는 응답 코드·canonical 능력단위명·4단계 분류코드로 만든 8자리 세분류 코드·세분류명을 모두 재검증한 뒤에만 공식 근거로 표시합니다.
 - 각 공식 능력단위 행에 `detailExpectedUnitBaseCount`·`detailVerifiedUnitBaseCount`를 남겨 해당 세분류의 공식 예상 base와 실제 검증 base를 비교할 수 있게 했습니다. `detailRetrievalComplete`는 공식 예상 집합을 모두 검증했음을, `detailRetrievalCapLimited`는 호출자의 출력 한도로 회수·반환이 줄었음을 뜻합니다. 따라서 전체 집합을 검증한 후 반환만 잘린 경우에는 두 값이 모두 `true`일 수 있습니다.
 - 사람이 고르는 비권위 `ncs-mcp-suggest` 경로도 검색 응답 schema를 엄격히 해석하고, 코드·능력단위명·세분류 path의 중복 alias 필드가 충돌하면 제안에서 제외합니다. path가 현행 공식 세분류명을 쓰면 능력단위 코드의 세분류 범위와 다른 경우도 차단하며, 비현행·자유 라벨은 공식 연결로 승격하지 않고 수동 검토 후보로만 남깁니다.
+- MCP 검색 path가 대·중·소·세분류 2자리 코드 4개를 제공하면 이들을 합친 8자리 코드도 공식 세분류와 같아야 합니다. 일부 코드만 있거나 형식·범위가 모순되면 자동 연결과 수동 제안 모두에서 제외하고, 검증 여부를 `detailPathCodeVerified`로 남깁니다.
+- `/api/ncs/units/options`는 행이 0개여도 공식 세분류별 예상·검증 수를 top-level `exactCoverage`에 보존합니다. 공식 세분류가 확인된 0건은 느슨한 제안으로 바꾸지 않고 불완전 exact 조회로 표시하며, 제안 fallback은 공식 세분류로 해석되지 않은 입력에만 사용합니다. 여러 입력 중 일부가 미해석이면 API와 화면에 제외된 항목을 명시합니다.
+- 세분류 입력 분리는 균형 잡힌 괄호 안 구분자를 보존하고, `QM/QC관리` 같은 단일 공식명은 카탈로그 exact 확인 후 보호합니다. 반대로 `PR/SCM`처럼 서로 다른 공식명은 나누며, 미닫힌 괄호가 다음 항목을 삼키지 않게 했습니다. 긴 번호 행에서도 괄호 포함 공식명 23개와 전체 공식 세분류 1,094개를 원형대로 보존합니다.
+- 6자리 소분류 질문 생성은 코드·명칭 검색을 독립 실행하되 요청 코드 접두어만 능력단위 범위의 권위로 사용합니다. 후보를 공식 코드·명칭·세분류로 재확인하고 10자리 base 기준으로 중복 제거한 뒤 KSA를 조회합니다. 공개 질문의 공식 KSA evidence는 `unitCatalogVerified`, `unitResponsePathVerified`, `isOfficialKsa`가 모두 참인 행만 품질 게이트를 통과합니다.
 - 재현 가능한 `python scripts/probe_ncs_detail_connections.py --output <path>` 공개 전수 probe는 하나의 공유 MCP transport session으로 23.848초 동안 1,094개 세분류의 예상 13,281개 base 중 13,278개를 연결했고 예상 밖 연결과 identity 위반은 각각 0개, complete 1,091개, partial 3개, zero 0개였습니다. 이 값은 공개 카탈로그 연결 진단이지 사람 골드·신규 블라인드 정확도가 아닙니다. 남은 3개는 MCP path 오결합으로 격리했으며, 상세 근거는 [`reports/ncs_detail_connection_3h_20260827.md`](reports/ncs_detail_connection_3h_20260827.md)에 있습니다.
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.

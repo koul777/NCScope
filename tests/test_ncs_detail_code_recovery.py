@@ -33,14 +33,25 @@ def _mcp_row(
     code: str | None = None,
     name: str | None = None,
     detail_name: str | None = None,
+    path_detail_code: str | None = None,
 ) -> dict[str, Any]:
+    path = {
+        "small": "smallalpha",
+        "sub": detail_name or catalog_row["canonicalDetailName"],
+    }
+    if path_detail_code is not None:
+        path.update(
+            {
+                "major_code": path_detail_code[0:2],
+                "middle_code": path_detail_code[2:4],
+                "small_code": path_detail_code[4:6],
+                "sub_code": path_detail_code[6:8],
+            }
+        )
     return {
         "id": code or catalog_row["ncsClCd"],
         "text": name or catalog_row["compeUnitName"],
-        "path": {
-            "small": "smallalpha",
-            "sub": detail_name or catalog_row["canonicalDetailName"],
-        },
+        "path": path,
     }
 
 
@@ -127,7 +138,10 @@ def test_broad_name_zero_recovers_by_exact_official_detail_code(
                 ]
             },
             DETAIL["code"]: {
-                "results": [_mcp_row(first), _mcp_row(second)]
+                "results": [
+                    _mcp_row(first, path_detail_code=DETAIL["code"]),
+                    _mcp_row(second, path_detail_code=DETAIL["code"]),
+                ]
             },
         },
     )
@@ -150,6 +164,103 @@ def test_broad_name_zero_recovers_by_exact_official_detail_code(
     assert all(row["detailVerifiedUnitBaseCount"] == 2 for row in rows)
     assert all(row["detailRetrievalComplete"] is True for row in rows)
     assert all(row["detailRetrievalCapLimited"] is False for row in rows)
+    assert all(row["detailPathCodeVerified"] is True for row in rows)
+
+
+def test_result_retains_resolved_detail_coverage_when_both_queries_are_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = _two_units()
+    _install_catalog(monkeypatch, [first, second])
+    calls = _install_responses(
+        monkeypatch,
+        {
+            DETAIL["name"]: {"results": []},
+            DETAIL["code"]: {"results": []},
+        },
+    )
+
+    result = client.search_units_by_detail_result(
+        [DETAIL["name"]],
+        max_units=10,
+    )
+
+    assert result["items"] == []
+    assert [call["query"] for call in calls] == [DETAIL["name"], DETAIL["code"]]
+    assert result["exactCoverage"] == {
+        "details": [
+            {
+                "sourceDetailName": DETAIL["name"],
+                "mappingState": "official_detail_resolved",
+                "officialDetailCode": DETAIL["code"],
+                "officialDetailName": DETAIL["name"],
+                "detailExpectedUnitBaseCount": 2,
+                "detailVerifiedUnitBaseCount": 0,
+                "detailRetrievalComplete": False,
+                "detailRetrievalCapLimited": False,
+            }
+        ],
+        "resolvedOfficialDetailCount": 1,
+        "unresolvedDetailCount": 0,
+    }
+
+
+def test_result_marks_unknown_source_detail_unresolved_without_network_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, _second = _two_units()
+    _install_catalog(monkeypatch, [first])
+    calls = _install_responses(monkeypatch, {})
+
+    result = client.search_units_by_detail_result(
+        ["unknown-source-label"],
+        max_units=10,
+    )
+
+    assert result["items"] == []
+    assert calls == []
+    assert result["exactCoverage"]["details"][0]["mappingState"] == (
+        "official_detail_unresolved"
+    )
+    assert result["exactCoverage"]["resolvedOfficialDetailCount"] == 0
+    assert result["exactCoverage"]["unresolvedDetailCount"] == 1
+
+
+def test_unknown_detail_keeps_delimiters_inside_brackets_as_one_term(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, _second = _two_units()
+    _install_catalog(monkeypatch, [first])
+    calls = _install_responses(monkeypatch, {})
+
+    result = client.search_units_by_detail_result(
+        ["institution role (A,B)"],
+        max_units=10,
+    )
+
+    assert calls == []
+    assert result["exactCoverage"]["unresolvedDetailCount"] == 1
+    assert result["exactCoverage"]["details"][0]["sourceDetailName"] == (
+        "institution role (A,B)"
+    )
+
+
+def test_client_detail_splitter_splits_distinct_acronym_official_names() -> None:
+    assert client._split_detail_terms(["PR/SCM"]) == ["PR", "SCM"]
+
+
+def test_client_detail_splitter_preserves_official_slash_surface() -> None:
+    assert client._split_detail_terms(["QM/QC관리, 총무"]) == [
+        "QM/QC관리",
+        "총무",
+    ]
+
+
+def test_client_splitter_preserves_official_slash_span_before_next_term() -> None:
+    assert client._split_detail_terms(["QM/QC관리/총무"]) == [
+        "QM/QC관리",
+        "총무",
+    ]
 
 
 def test_partial_name_result_merges_only_missing_code_recovery_rows(
@@ -210,6 +321,51 @@ def test_complete_name_result_does_not_add_a_code_query(
     assert all(row["detailVerifiedUnitBaseCount"] == 2 for row in rows)
     assert all(row["detailRetrievalComplete"] is True for row in rows)
     assert all(row["detailRetrievalCapLimited"] is False for row in rows)
+    assert all(row["detailPathCodeVerified"] is False for row in rows)
+
+
+def test_name_result_verifies_four_level_path_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, _second = _two_units()
+    _install_catalog(monkeypatch, [first])
+    _install_responses(
+        monkeypatch,
+        {
+            DETAIL["name"]: {
+                "results": [
+                    _mcp_row(first, path_detail_code=DETAIL["code"])
+                ]
+            }
+        },
+    )
+
+    rows = client.search_units_by_detail([DETAIL["name"]], max_units=10)
+
+    assert len(rows) == 1
+    assert rows[0]["detailPathCodeVerified"] is True
+
+
+@pytest.mark.parametrize("path_detail_code", ["87654321", "123456"])
+def test_name_result_rejects_conflicting_or_partial_path_code(
+    monkeypatch: pytest.MonkeyPatch,
+    path_detail_code: str,
+) -> None:
+    first, _second = _two_units()
+    _install_catalog(monkeypatch, [first])
+    _install_responses(
+        monkeypatch,
+        {
+            DETAIL["name"]: {
+                "results": [
+                    _mcp_row(first, path_detail_code=path_detail_code)
+                ]
+            },
+            DETAIL["code"]: {"results": []},
+        },
+    )
+
+    assert client.search_units_by_detail([DETAIL["name"]], max_units=10) == []
 
 
 def test_partial_group_at_output_limit_does_not_add_a_recovery_query(
