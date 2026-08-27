@@ -1926,6 +1926,8 @@ _NCS_LINK_PROVENANCE_TEXT_FIELDS = (
     "officialDetailName",
     "detailResolutionKind",
     "detailResolutionRule",
+    "unitRetrievalKind",
+    "unitRetrievalQuery",
     "mcpUnitName",
     "officialUnitBaseCode",
     "officialUnitName",
@@ -16209,11 +16211,24 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
             )
             continue
         seen_codes.add(code)
-        verified = resolve_official_unit_selection(
-            code,
-            str(row.get("compeUnitName", "")),
-            str(row.get("ncsSubdCdnm", "")),
-        )
+        try:
+            verified = resolve_official_unit_selection(
+                code,
+                str(row.get("compeUnitName", "")),
+                str(row.get("ncsSubdCdnm", "")),
+            )
+        except NcsMcpError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "ncs_catalog_validation_unavailable",
+                    "message": (
+                        "공식 NCS 연결 카탈로그를 확인할 수 없어 "
+                        "선택한 능력단위를 검증하지 못했습니다."
+                    ),
+                    "retryable": True,
+                },
+            ) from exc
         if verified is None:
             invalid_selections.append(
                 {"index": index, "ncsClCd": code, "reason": "catalog_mismatch"}

@@ -1,40 +1,81 @@
 {
+  "calls": {
+    "detail_code_query": 4,
+    "detail_name_query": 1094,
+    "instrumented": true,
+    "ncs_search_total": 1098,
+    "other_query": 0
+  },
+  "counts": {
+    "complete_details": 1091,
+    "expected_base_codes": 13281,
+    "identity_violation_findings": 0,
+    "identity_violation_rows": 0,
+    "missing_base_codes": 3,
+    "partial_details": 3,
+    "processed_details": 1094,
+    "returned_rows": 13278,
+    "search_invocations": 1094,
+    "unexpected_base_codes": 0,
+    "unprocessed_details": 0,
+    "verified_expected_base_codes": 13278,
+    "zero_details": 0
+  },
+  "coverage_ratio": 0.999774113,
+  "elapsed_seconds": 47.084,
+  "errors": [],
+  "identity_violation_detail_codes": [],
+  "identity_violation_reason_counts": {},
+  "probe_kind": "ncs_detail_to_unit_live_coverage",
+  "resolution_kind_counts": {
+    "catalog_base_version_compatible": 0,
+    "catalog_full_code_exact": 13278,
+    "invalid_or_missing": 0
+  },
+  "retrieval_kind_counts": {
+    "invalid_or_missing": 0,
+    "official_detail_code_query_recovery": 43,
+    "official_detail_name_query": 13235
+  },
+  "runtime_failure_detail_code": "",
   "schema_version": 1,
-  "captured_on": "2026-08-27",
-  "endpoint": "http://127.0.0.1:8766/mcp",
-  "scope": "all_active_official_detail_names",
-  "active_detail_count": 1094,
-  "expected_unit_bases": 13281,
-  "actual_unit_bases": 13278,
-  "complete_details": 1091,
-  "partial_details": 3,
-  "zero_details": 0,
-  "details_with_missing": 3,
-  "details_with_extra": 0,
+  "scope": {
+    "active_official_details": 1094,
+    "catalog_stable_base_codes": 13281,
+    "catalog_unit_rows": 13282,
+    "max_units_per_detail": 200,
+    "selected_detail_codes": [],
+    "selected_details": 1094
+  },
+  "status": "pass_with_gaps",
   "top_gaps": [
     {
       "detail_code": "02010101",
-      "detail_name": "경영기획",
-      "expected": 9,
-      "actual": 8,
-      "missing": 1,
-      "extra": 0
+      "expected_base_codes": 9,
+      "missing_base_codes": [
+        "0201010106"
+      ],
+      "missing_count": 1,
+      "verified_base_codes": 8
     },
     {
       "detail_code": "02020302",
-      "detail_name": "사무행정",
-      "expected": 9,
-      "actual": 8,
-      "missing": 1,
-      "extra": 0
+      "expected_base_codes": 9,
+      "missing_base_codes": [
+        "0202030207"
+      ],
+      "missing_count": 1,
+      "verified_base_codes": 8
     },
     {
       "detail_code": "23040102",
-      "detail_name": "환경시설운영",
-      "expected": 11,
-      "actual": 10,
-      "missing": 1,
-      "extra": 0
+      "expected_base_codes": 11,
+      "missing_base_codes": [
+        "2304010211"
+      ],
+      "missing_count": 1,
+      "verified_base_codes": 10
     }
-  ]
+  ],
+  "unexpected_identities": []
 }

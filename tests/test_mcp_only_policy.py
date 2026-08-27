@@ -1607,7 +1607,11 @@ def test_mcp_only_upload_accepts_parenthetical_secretary_detail_without_manual_b
 
     body = resp.json()
     assert resp.status_code == 200
-    assert calls == ["비서 (글로벌경영사무 지원)", unit["ncsSubdCdnm"]]
+    assert calls == [
+        "비서 (글로벌경영사무 지원)",
+        unit["ncsSubdCdnm"],
+        unit["ncsClCd"][:8],
+    ]
     rerank.assert_called_once()
     assert build_strategy.call_count >= 1
     assert body["ncs_matches"][0]["ncsClCd"] == unit["ncsClCd"]
@@ -1867,6 +1871,8 @@ def test_ncs_link_provenance_copies_only_controlled_fields():
             {
                 "ncsClCd": code,
                 "officialDetailCode": "02010101",
+                "unitRetrievalKind": "official_detail_code_query_recovery",
+                "unitRetrievalQuery": "02010101",
                 "unitCatalogVerified": True,
                 "unitVersionCompatible": False,
                 "catalogUnitCodes": [code, code, ""],
@@ -1880,6 +1886,8 @@ def test_ncs_link_provenance_copies_only_controlled_fields():
         {
             "ncsClCd": code,
             "officialDetailCode": "02010101",
+            "unitRetrievalKind": "official_detail_code_query_recovery",
+            "unitRetrievalQuery": "02010101",
             "unitCatalogVerified": True,
             "unitVersionCompatible": False,
             "catalogUnitCodes": [code],
@@ -2096,6 +2104,49 @@ def test_generate_from_text_rejects_tampered_selected_unit_before_ksa(
             }
         ],
         "retryable": False,
+    }
+    fetch_ksa.assert_not_called()
+    build_strategy.assert_not_called()
+
+
+def test_generate_from_text_fails_closed_when_unit_catalog_is_unavailable(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    catalog_row = _catalog_unit_by_code("0201010103_22v2")
+    mocker.patch(
+        "app.main.resolve_official_unit_selection",
+        side_effect=main.NcsMcpError("catalog unavailable"),
+    )
+    fetch_ksa = mocker.patch("app.main.fetch_ncs_ksa_by_units")
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai")
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/questions/generate-from-text",
+            json={
+                "openai_api_key": REQUEST_OPENAI_KEY,
+                "notice_text": "management planning",
+                "selected_ncs": [
+                    {
+                        "ncsClCd": catalog_row["ncsClCd"],
+                        "compeUnitName": catalog_row["compeUnitName"],
+                        "ncsSubdCdnm": catalog_row["canonicalDetailName"],
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == {
+        "code": "ncs_catalog_validation_unavailable",
+        "message": (
+            "\uacf5\uc2dd NCS \uc5f0\uacb0 \uce74\ud0c8\ub85c\uadf8\ub97c \ud655\uc778\ud560 \uc218 \uc5c6\uc5b4 "
+            "\uc120\ud0dd\ud55c \ub2a5\ub825\ub2e8\uc704\ub97c \uac80\uc99d\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."
+        ),
+        "retryable": True,
     }
     fetch_ksa.assert_not_called()
     build_strategy.assert_not_called()
@@ -2361,7 +2412,7 @@ def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["인사, 프로젝트관리"], max_units=10)
 
-    assert calls == ["인사", "프로젝트관리"]
+    assert calls == ["인사", "02020201", "프로젝트관리", "01010102"]
     assert [row["matchedDetailName"] for row in rows] == ["인사", "프로젝트관리"]
 
 
@@ -2378,7 +2429,7 @@ def test_mcp_search_preserves_official_detail_with_internal_commas(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail([detail_name], max_units=5)
 
-    assert calls == [detail_name]
+    assert calls == [detail_name, "15080205"]
     assert [row["ncsClCd"] for row in rows] == [catalog_row["ncsClCd"]]
     assert rows[0]["officialDetailCode"] == "15080205"
 
@@ -2425,6 +2476,44 @@ def test_mcp_search_global_limit_preserves_each_confirmed_detail(mocker):
     assert [row["matchedDetailName"] for row in rows] == ["인사", "프로젝트관리"]
 
 
+@pytest.mark.parametrize(
+    ("max_units", "expected_details"),
+    [
+        (1, ["인사"]),
+        (2, ["인사", "프로젝트관리"]),
+    ],
+)
+def test_mcp_search_limit_smaller_than_detail_count_preserves_input_order(
+    mocker,
+    max_units,
+    expected_details,
+):
+    details = ["인사", "프로젝트관리", "총무"]
+    rows_by_query = {
+        detail: _catalog_units_for_detail(detail)[:2]
+        for detail in details
+    }
+    assert all(len(rows) == 2 for rows in rows_by_query.values())
+    calls: list[str] = []
+
+    def fake_call_tool(_name, arguments):
+        query = arguments["query"]
+        calls.append(query)
+        return {
+            "results": [
+                _mcp_catalog_row(row)
+                for row in rows_by_query.get(query, [])
+            ]
+        }
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail(details, max_units=max_units)
+
+    assert calls == details
+    assert [row["matchedDetailName"] for row in rows] == expected_details
+
+
 def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
     query = "\uacbd\uc601\uae30\ud68d"
     catalog_row = _catalog_units_for_detail(query)[0]
@@ -2439,7 +2528,7 @@ def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
     exact_row = _mcp_catalog_row(catalog_row)
 
     def fake_call_tool(_name, arguments):
-        assert arguments["limit"] == 500
+        assert arguments["limit"] == 200
         return {"results": [*broad_rows, exact_row]}
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
@@ -2487,7 +2576,7 @@ def test_mcp_search_preserves_official_acronym_slash_detail(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["QM/QC관리"], max_units=5)
 
-    assert calls == ["QM/QC관리"]
+    assert calls == ["QM/QC관리", "02040201"]
     assert [row["ncsClCd"] for row in rows] == ["0204020101_14v1"]
     assert rows[0]["matchedDetailName"] == "QM/QC관리"
 
@@ -2929,7 +3018,11 @@ def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
     assert calls == [
         value
         for source_label, official_label in cases
-        for value in (source_label, official_label)
+        for value in (
+            source_label,
+            official_label,
+            catalog_by_query[official_label]["officialDetailCode"],
+        )
     ]
 
 
@@ -2969,7 +3062,15 @@ def test_mcp_search_retries_punctuation_and_ordinal_formatting_variants(mocker):
     assert ordinal[0]["matchedDetailName"] == "02 영상촬영"
     assert ordinal[0]["ncsSubdCdnm"] == "영상촬영"
     assert ordinal[0]["detailResolutionRule"] == "ordinal_prefix_stripped"
-    assert calls == ["회계.감사", "회계감사", "02 영상촬영", "02영상촬영", "영상촬영"]
+    assert calls == [
+        "회계.감사",
+        "회계감사",
+        "02030201",
+        "02 영상촬영",
+        "02영상촬영",
+        "영상촬영",
+        "08030402",
+    ]
 
 
 def test_mcp_search_accepts_unicode_dot_leader_as_exact_format_variant(mocker):
@@ -3001,7 +3102,7 @@ def test_mcp_search_accepts_unicode_dot_leader_as_exact_format_variant(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["회계․감사"], max_units=5)
 
-    assert calls == ["회계․감사", "회계감사"]
+    assert calls == ["회계․감사", "회계감사", "02030201"]
     assert rows[0]["matchedDetailName"] == "회계․감사"
     assert rows[0]["ncsSubdCdnm"] == "회계·감사"
 
@@ -3028,7 +3129,7 @@ def test_mcp_search_resolves_safe_detail_alias(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["건축감리"], max_units=5)
 
-    assert calls == ["건축감리", "건축공사감리"]
+    assert calls == ["건축감리", "건축공사감리", "14030103"]
     assert [row["ncsClCd"] for row in rows] == ["1403010301_17v1"]
     assert rows[0]["matchedDetailName"] == "건축감리"
     assert rows[0]["resolvedDetailName"] == "건축공사감리"
@@ -3070,7 +3171,7 @@ def test_mcp_search_falls_back_to_safe_alias_after_unverified_direct_match(mocke
 
     rows = ncs_mcp_client.search_units_by_detail(["건축감리"], max_units=5)
 
-    assert calls == ["건축감리", "건축공사감리"]
+    assert calls == ["건축감리", "건축공사감리", "14030103"]
     assert [row["ncsClCd"] for row in rows] == ["1403010301_17v1"]
     assert rows[0]["matchedDetailName"] == "건축감리"
     assert rows[0]["resolvedDetailName"] == "건축공사감리"
@@ -3098,7 +3199,7 @@ def test_mcp_search_matches_parenthetical_secretary_detail_to_official_subdetail
 
     rows = ncs_mcp_client.search_units_by_detail([query], max_units=5)
 
-    assert calls == [query, "비서"]
+    assert calls == [query, "비서", "02020301"]
     assert [row["ncsClCd"] for row in rows] == ["0202030101_22v2"]
     assert rows[0]["ncsSubdCdnm"] == "비서"
     assert rows[0]["matchedDetailName"] == query

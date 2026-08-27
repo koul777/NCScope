@@ -7,6 +7,7 @@ the extracted 세분류.  ``ncs_unit_detail`` is the authoritative KSA path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -35,6 +36,12 @@ MCP_PROTOCOL_VERSION = "2025-03-26"
 _TOOLS_TTL = 300.0
 _STATUS_TTL = 10.0
 _STATUS_PROBE_BUDGET_SEC = 8.0
+_OFFICIAL_DETAIL_CATALOG_SHA256 = (
+    "a031d1817baa69e6b97bc89b2e75a592afb8067443152dc5ab46ceb2f4c58a8b"
+)
+_OFFICIAL_UNIT_CATALOG_SHA256 = (
+    "8f7bdc665b06ea560d2414c4acb6e1e4088fac37455b8ae8ba864775c13b0357"
+)
 _tools_cache: tuple[float, str, set[str]] | None = None
 _status_cache: tuple[float, str, dict[str, Any]] | None = None
 _status_cache_lock = threading.Lock()
@@ -338,7 +345,22 @@ def _tool_names(*, force_refresh: bool = False) -> set[str]:
 
 
 def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    return _payload(_rpc("tools/call", {"name": name, "arguments": arguments}))
+    result = _rpc("tools/call", {"name": name, "arguments": arguments})
+    if not isinstance(result, dict):
+        global _last_error
+        _last_error = "ncs_mcp_tool_schema_error"
+        raise NcsMcpError(f"NCS MCP tool {name} returned an invalid response")
+    if result.get("isError") is True:
+        _last_error = "ncs_mcp_tool_error"
+        # MCP error content can include upstream payload details. Keep the
+        # public exception stable and non-reflective while preserving the tool
+        # boundary that failed.
+        raise NcsMcpError(f"NCS MCP tool {name} failed")
+    payload = _payload(result)
+    if not isinstance(payload, dict):
+        _last_error = "ncs_mcp_tool_schema_error"
+        raise NcsMcpError(f"NCS MCP tool {name} returned an invalid response")
+    return payload
 
 
 def _path_value(path: Any, *keys: str) -> str:
@@ -377,7 +399,11 @@ def _official_details_by_name_key() -> dict[str, tuple[dict[str, str], ...]]:
 
     path = Path(__file__).resolve().parents[1] / "data" / "ncs_detail_catalog.json"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        normalized_raw = raw.replace(b"\r\n", b"\n")
+        if hashlib.sha256(normalized_raw).hexdigest() != _OFFICIAL_DETAIL_CATALOG_SHA256:
+            return {}
+        payload = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     rows = payload.get("details") if isinstance(payload, dict) else []
@@ -535,7 +561,11 @@ def _official_unit_catalog_rows() -> tuple[dict[str, Any], ...]:
 
     path = Path(__file__).resolve().parents[1] / "data" / "ncs_unit_catalog.json"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        normalized_raw = raw.replace(b"\r\n", b"\n")
+        if hashlib.sha256(normalized_raw).hexdigest() != _OFFICIAL_UNIT_CATALOG_SHA256:
+            return ()
+        payload = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return ()
     rows = payload.get("units") if isinstance(payload, dict) else []
@@ -623,20 +653,6 @@ def _official_unit_base_codes_by_detail_code() -> dict[str, frozenset[str]]:
     }
 
 
-@lru_cache(maxsize=1)
-def _official_unit_base_counts_by_detail_key() -> dict[str, int]:
-    """Count unique stable unit identities per official detail label."""
-
-    bases_by_detail: dict[str, set[str]] = {}
-    for row in _official_unit_catalog_rows():
-        key = _norm(row.get("canonicalDetailName"))
-        base_code = str(row.get("officialUnitBaseCode") or "").strip()
-        if not key or not base_code:
-            continue
-        bases_by_detail.setdefault(key, set()).add(base_code)
-    return {key: len(base_codes) for key, base_codes in bases_by_detail.items()}
-
-
 def _catalog_unit_matches_mcp(
     catalog_row: dict[str, Any],
     *,
@@ -671,6 +687,23 @@ def _resolve_catalog_unit(
     involved.
     """
 
+    base_code = mcp_code.split("_", 1)[0]
+    base_rows = _official_units_by_base_code().get(base_code, ())
+    base_identities = {
+        (
+            str(row["officialUnitBaseCode"]),
+            _norm(row["compeUnitName"]),
+            str(row["officialDetailCode"]),
+            _norm(row["canonicalDetailName"]),
+        )
+        for row in base_rows
+    }
+    # A full suffix is not allowed to bypass a conflict elsewhere on the same
+    # stable ten-digit identity. Exact and forward-compatible versions share
+    # one semantic-identity gate.
+    if len(base_identities) != 1:
+        return None
+
     exact_rows = _official_units_by_full_code().get(mcp_code, ())
     if exact_rows:
         # A duplicated published code is a corrupt identity even when only one
@@ -693,19 +726,6 @@ def _resolve_catalog_unit(
         resolved = matching_rows[0]
         resolution_kind = "catalog_full_code_exact"
     else:
-        base_code = mcp_code.split("_", 1)[0]
-        base_rows = _official_units_by_base_code().get(base_code, ())
-        base_identities = {
-            (
-                str(row["officialUnitBaseCode"]),
-                _norm(row["compeUnitName"]),
-                str(row["officialDetailCode"]),
-                _norm(row["canonicalDetailName"]),
-            )
-            for row in base_rows
-        }
-        if len(base_identities) != 1:
-            return None
         matching_rows = [
             row
             for row in base_rows
@@ -773,10 +793,11 @@ def resolve_official_unit_selection(
     ):
         return None
 
+    detail_index = _require_official_catalogs_for_unit_search()
     detail_code = input_code[:8]
     detail_rows = [
         row
-        for rows in _official_details_by_name_key().values()
+        for rows in detail_index.values()
         for row in rows
         if str(row.get("code") or "") == detail_code
     ]
@@ -1141,16 +1162,10 @@ def _detail_query_names(name: str) -> list[str]:
     return names
 
 
-def _detail_search_query_limit(max_units: int, detail_name: str) -> int:
+def _detail_search_query_limit(max_units: int) -> int:
     # The MCP ranker can place the first exact-detail row well below the
     # caller's final output cap.  Keep discovery deep and bound the retained
     # rows separately so a small UI limit does not turn into a false miss.
-    detail_key = _norm(detail_name)
-    if (
-        len(detail_key) <= 2
-        or _official_unit_base_counts_by_detail_key().get(detail_key, 0) >= 8
-    ):
-        return 500
     return 200
 
 
@@ -1212,6 +1227,124 @@ def _detail_resolution_rule(name: str, query_name: str) -> str:
     return "format_variant"
 
 
+def _detail_code_recovery_rows(
+    result: dict[str, Any],
+    *,
+    source_detail_name: str,
+    official_detail: dict[str, str],
+    detail_index: dict[str, tuple[dict[str, str], ...]],
+) -> list[dict[str, Any]]:
+    """Validate rows returned by an exact eight-digit detail-code query."""
+
+    rows = _search_result_rows(result)
+    official_name = official_detail["name"]
+    official_code = official_detail["code"]
+    is_alias = unicodedata.normalize(
+        "NFKC", official_name
+    ).casefold().strip() != unicodedata.normalize(
+        "NFKC", source_detail_name
+    ).casefold().strip()
+    resolution_kind = _detail_resolution_kind(
+        source_detail_name,
+        official_name,
+    )
+    resolution_rule = _detail_resolution_rule(
+        source_detail_name,
+        official_name,
+    )
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        path = row.get("path") if isinstance(row.get("path"), dict) else {}
+        sub_name = _consistent_identity_value(
+            path,
+            "sub",
+            "sub_name",
+            "ncsSubdCdnm",
+            normalize=True,
+        )
+        if sub_name is None:
+            continue
+        if _norm(sub_name) != _norm(official_name):
+            continue
+        code = _consistent_identity_value(
+            row,
+            "id",
+            "unit_code",
+            normalize=False,
+        )
+        if code is None:
+            continue
+        if not re.fullmatch(r"\d{10}(?:_[0-9A-Za-z]+)?", code):
+            continue
+        base_code = code.split("_", 1)[0]
+        if base_code[:8] != official_code:
+            continue
+        official_details = [
+            candidate
+            for candidate in detail_index.get(_norm(sub_name), ())
+            if candidate["code"] == base_code[:8]
+        ]
+        if len(official_details) != 1:
+            continue
+        resolved_detail = official_details[0]
+        if (
+            resolved_detail["code"] != official_code
+            or _norm(resolved_detail["name"]) != _norm(official_name)
+        ):
+            continue
+        mcp_unit_name = _consistent_identity_value(
+            row,
+            "text",
+            "unit_name",
+            normalize=True,
+        )
+        if mcp_unit_name is None:
+            continue
+        catalog_resolution = _resolve_catalog_unit(
+            mcp_code=code,
+            mcp_unit_name=mcp_unit_name,
+            path_sub_name=sub_name,
+            official_detail_code=official_code,
+        )
+        if catalog_resolution is None:
+            continue
+        output.append(
+            {
+                "ncsClCd": code,
+                "compeUnitName": mcp_unit_name,
+                "compeUnitLevel": str(row.get("level") or "").strip(),
+                "compeUnitDef": str(
+                    row.get("api_definition") or row.get("definition") or ""
+                ).strip(),
+                "ncsLclasCdnm": _path_value(path, "major", "major_name"),
+                "ncsMclasCdnm": _path_value(path, "middle", "middle_name"),
+                "ncsSclasCdnm": _path_value(
+                    path,
+                    "small",
+                    "small_name",
+                    "ncsSclasCdnm",
+                ),
+                "ncsSubdCdnm": sub_name,
+                "matchedDetailName": source_detail_name,
+                "resolvedDetailName": sub_name if is_alias else "",
+                "detailQueryName": official_name if is_alias else "",
+                "officialDetailCode": official_code,
+                "officialDetailName": official_name,
+                "detailResolutionKind": resolution_kind,
+                "detailResolutionRule": resolution_rule,
+                "unitRetrievalKind": "official_detail_code_query_recovery",
+                "unitRetrievalQuery": official_code,
+                "mcpUnitName": mcp_unit_name,
+                **catalog_resolution,
+                "source": "ncs-mcp-detail-code-recovery",
+                "matchScore": 1.0,
+            }
+        )
+    return output
+
+
 def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list[dict[str, Any]]:
     """Resolve confirmed 세분류 names to NCS ability units."""
 
@@ -1223,7 +1356,7 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
     if len(details) > 64:
         raise NcsMcpError("NCS detail term limit exceeded")
     groups: list[list[dict[str, Any]]] = []
-    retained_count = 0
+    expected_bases_by_detail = _official_unit_base_codes_by_detail_code()
     # A stable ten-digit ability-unit code is the semantic identity.  Several
     # published suffixes can describe that same identity; retain the first MCP
     # ranked row only after all validation succeeds.
@@ -1234,28 +1367,53 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
             continue
         group: list[dict[str, Any]] = []
         groups.append(group)
-        for query_name in _detail_query_names(name):
+        query_names = _detail_query_names(name)
+        official_candidates = {
+            (row["code"], _norm(row["name"])): row
+            for query_name in query_names
+            for row in detail_index.get(_norm(query_name), ())
+        }
+        # A source label and all of its narrowly allowed formatting/alias
+        # variants must converge on exactly one current official identity.
+        # If a former alias becomes a separate official detail, fail closed
+        # before querying instead of merging two classifications.
+        if len(official_candidates) != 1:
+            continue
+        expected_detail = next(iter(official_candidates.values()))
+        verified_detail_identities: set[str] = set()
+        for query_name in query_names:
             result = _call_tool(
                 "ncs_search",
                 {
                     "query": query_name,
                     "scope": "unit",
-                    "limit": _detail_search_query_limit(limit, name),
+                    "limit": _detail_search_query_limit(limit),
                 },
             )
-            rows = result.get("results") or result.get("units") or []
-            if isinstance(rows, dict):
-                rows = rows.get("items") or []
+            rows = _search_result_rows(result)
             matched_before = len(group)
             for row in rows:
-                if not isinstance(row, dict):
-                    continue
                 path = row.get("path") if isinstance(row.get("path"), dict) else {}
-                sub_name = _path_value(path, "sub", "sub_name", "ncsSubdCdnm")
+                sub_name = _consistent_identity_value(
+                    path,
+                    "sub",
+                    "sub_name",
+                    "ncsSubdCdnm",
+                    normalize=True,
+                )
+                if sub_name is None:
+                    continue
                 small_name = _path_value(path, "small", "small_name", "ncsSclasCdnm")
                 if _norm(sub_name) != _norm(query_name):
                     continue
-                code = str(row.get("id") or row.get("unit_code") or "").strip()
+                code = _consistent_identity_value(
+                    row,
+                    "id",
+                    "unit_code",
+                    normalize=False,
+                )
+                if code is None:
+                    continue
                 # A detail prefix does not make an arbitrary MCP identifier a
                 # valid ability-unit code. Reject truncated and malformed IDs
                 # here so they cannot surface as exact options and fail only
@@ -1275,12 +1433,26 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 # treated as an exact reviewed-detail match.
                 if len(official_details) != 1:
                     continue
-                mcp_unit_name = str(row.get("text") or row.get("unit_name") or "").strip()
+                official_detail = official_details[0]
+                if (
+                    official_detail["code"] != expected_detail["code"]
+                    or _norm(official_detail["name"])
+                    != _norm(expected_detail["name"])
+                ):
+                    continue
+                mcp_unit_name = _consistent_identity_value(
+                    row,
+                    "text",
+                    "unit_name",
+                    normalize=True,
+                )
+                if mcp_unit_name is None:
+                    continue
                 catalog_resolution = _resolve_catalog_unit(
                     mcp_code=code,
                     mcp_unit_name=mcp_unit_name,
                     path_sub_name=sub_name,
-                    official_detail_code=official_details[0]["code"],
+                    official_detail_code=official_detail["code"],
                 )
                 # Catalog validation intentionally happens before seen/cap
                 # accounting so malformed, stale, or renamed MCP rows cannot
@@ -1288,6 +1460,7 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 if catalog_resolution is None:
                     continue
                 semantic_identity = catalog_resolution["officialUnitBaseCode"]
+                verified_detail_identities.add(semantic_identity)
                 if semantic_identity in seen_semantic_identities:
                     continue
                 seen_semantic_identities.add(semantic_identity)
@@ -1298,7 +1471,6 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 ).casefold().strip()
                 resolution_kind = _detail_resolution_kind(name, query_name)
                 resolution_rule = _detail_resolution_rule(name, query_name)
-                official_detail = official_details[0]
                 group.append(
                     {
                         "ncsClCd": code,
@@ -1316,23 +1488,49 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                         "officialDetailName": official_detail["name"],
                         "detailResolutionKind": resolution_kind,
                         "detailResolutionRule": resolution_rule,
+                        "unitRetrievalKind": "official_detail_name_query",
+                        "unitRetrievalQuery": query_name,
                         "mcpUnitName": mcp_unit_name,
                         **catalog_resolution,
                         "source": "ncs-mcp-detail-alias" if is_alias else "ncs-mcp",
                         "matchScore": 1.0,
                     }
                 )
-                retained_count += 1
-                if retained_count > limit:
-                    # Keep total retained rows bounded while continuously
-                    # rebalancing toward round-robin fairness. Sparse groups
-                    # donate unused capacity to dense groups instead of
-                    # losing otherwise valid results to a fixed pre-quota.
-                    longest_group = max(groups, key=len)
-                    longest_group.pop()
-                    retained_count -= 1
             if len(group) > matched_before and _norm(query_name) == _norm(name):
                 break
+
+        expected_base_codes = expected_bases_by_detail.get(
+            expected_detail["code"],
+            frozenset(),
+        )
+        missing_base_codes = expected_base_codes - verified_detail_identities
+        # A numeric detail-code query is a bounded recovery path for broad
+        # labels whose name search exhausts the MCP ranking window. It is never
+        # called for a complete response or when this detail already fills the
+        # caller's output budget.
+        if missing_base_codes and len(group) < limit:
+            recovery_result = _call_tool(
+                "ncs_search",
+                {
+                    "query": expected_detail["code"],
+                    "scope": "unit",
+                    "limit": _detail_search_query_limit(limit),
+                },
+            )
+            for recovered_row in _detail_code_recovery_rows(
+                recovery_result,
+                source_detail_name=name,
+                official_detail=expected_detail,
+                detail_index=detail_index,
+            ):
+                semantic_identity = recovered_row["officialUnitBaseCode"]
+                if semantic_identity not in missing_base_codes:
+                    continue
+                verified_detail_identities.add(semantic_identity)
+                if semantic_identity in seen_semantic_identities:
+                    continue
+                seen_semantic_identities.add(semantic_identity)
+                group.append(recovered_row)
 
     # Preserve at least one exact unit from each confirmed detail before a
     # large first classification can consume the global response limit.
@@ -1420,6 +1618,56 @@ def _first_ksa_value(row: dict[str, Any], *keys: str) -> str:
         if value:
             return value
     return ""
+
+
+def _consistent_identity_value(
+    payload: Any,
+    *keys: str,
+    normalize: bool,
+) -> str | None:
+    """Return one identity value, rejecting conflicting alias fields.
+
+    MCP versions can expose the same semantic value under multiple field
+    names. A first-non-empty fallback would hide a conflicting secondary field,
+    so every populated alias must agree before the row can be trusted.
+    ``None`` means conflict; an empty string means no alias was populated.
+    """
+
+    if not isinstance(payload, dict):
+        return ""
+    values = [str(payload.get(key) or "").strip() for key in keys]
+    values = [value for value in values if value]
+    if not values:
+        return ""
+    identity_keys = {_norm(value) if normalize else value for value in values}
+    if len(identity_keys) != 1:
+        return None
+    return values[0]
+
+
+def _search_result_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse one search result without turning schema drift into no-match."""
+
+    if "results" in result:
+        rows: Any = result["results"]
+    elif "units" in result:
+        rows = result["units"]
+    else:
+        global _last_error
+        _last_error = "ncs_mcp_search_schema_error"
+        raise NcsMcpError("NCS MCP search returned an invalid response")
+    if isinstance(rows, dict):
+        if "items" not in rows:
+            _last_error = "ncs_mcp_search_schema_error"
+            raise NcsMcpError("NCS MCP search returned an invalid response")
+        rows = rows["items"]
+    if not isinstance(rows, list):
+        _last_error = "ncs_mcp_search_schema_error"
+        raise NcsMcpError("NCS MCP search returned an invalid response")
+    if any(not isinstance(row, dict) for row in rows):
+        _last_error = "ncs_mcp_search_schema_error"
+        raise NcsMcpError("NCS MCP search returned an invalid response")
+    return rows
 
 
 def _criteria_texts(value: Any) -> list[str]:
@@ -1522,16 +1770,95 @@ def _interleave_element_ksa(elements: list[dict[str, Any]]) -> list[dict[str, An
     return interleaved
 
 
+def _preflight_ksa_unit_identity(unit: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize official-shaped KSA inputs before any MCP request.
+
+    Ten-digit NCS unit codes embed their owning eight-digit detail code.  A
+    caller-supplied name or detail label must therefore resolve to that exact
+    immutable catalog identity before it is allowed to select remote KSA
+    evidence.  Synthetic/legacy fixture identifiers retain the historical
+    response-code-only contract.
+    """
+
+    code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+    if not re.fullmatch(r"\d{10}(?:_[0-9A-Za-z]+)?", code):
+        return dict(unit)
+
+    for identity_field in ("ncsClCd", "unit_code"):
+        alias_code = str(unit.get(identity_field) or "").strip()
+        if alias_code and alias_code != code:
+            raise NcsMcpError("NCS MCP KSA request unit code identity mismatch")
+
+    unit_name = _first_ksa_value(
+        unit,
+        "compeUnitName",
+        "unit_name",
+        "officialUnitName",
+    )
+    detail_name = _first_ksa_value(
+        unit,
+        "ncsSubdCdnm",
+        "canonicalDetailName",
+        "officialDetailName",
+    )
+    resolved = resolve_official_unit_selection(code, unit_name, detail_name)
+    if resolved is None:
+        raise NcsMcpError(
+            "NCS MCP KSA request unit identity is not verified by official catalogs"
+        )
+
+    canonical_unit_name = str(resolved["compeUnitName"])
+    canonical_detail_name = str(resolved["ncsSubdCdnm"])
+    for identity_field in ("compeUnitName", "unit_name", "officialUnitName"):
+        value = str(unit.get(identity_field) or "").strip()
+        if value and _norm(value) != _norm(canonical_unit_name):
+            raise NcsMcpError("NCS MCP KSA request unit name identity mismatch")
+    for identity_field in (
+        "ncsSubdCdnm",
+        "canonicalDetailName",
+        "officialDetailName",
+    ):
+        value = str(unit.get(identity_field) or "").strip()
+        if value and _norm(value) != _norm(canonical_detail_name):
+            raise NcsMcpError("NCS MCP KSA request detail name identity mismatch")
+
+    official_detail_code = str(unit.get("officialDetailCode") or "").strip()
+    if official_detail_code and official_detail_code != code[:8]:
+        raise NcsMcpError("NCS MCP KSA request detail code identity mismatch")
+    official_base_code = str(unit.get("officialUnitBaseCode") or "").strip()
+    if official_base_code and official_base_code != code.split("_", 1)[0]:
+        raise NcsMcpError("NCS MCP KSA request unit base identity mismatch")
+
+    canonical = dict(unit)
+    canonical.update(resolved)
+    return canonical
+
+
+def _classification_detail_code(classification: dict[str, Any]) -> str:
+    """Return the exact eight-digit code from the MCP four-level path."""
+
+    segments = [
+        str(classification.get(field) or "").strip()
+        for field in ("major_code", "middle_code", "small_code", "sub_code")
+    ]
+    if not all(re.fullmatch(r"\d{2}", segment) for segment in segments):
+        return ""
+    return "".join(segments)
+
+
 def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12) -> list[dict[str, Any]]:
     """Fetch official KSA rows from NCS_MCP's ncs_unit_detail tool."""
 
     per_unit_limit = max(1, int(max_factors_per_unit or 12))
-    selected_units = [
+    submitted_units = [
         dict(unit)
         for unit in (units or [])
         if isinstance(unit, dict)
         and str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
     ]
+    # Resolve the complete batch before opening an MCP request session.  An
+    # invalid later row must not race a valid earlier row into a network call.
+    selected_units = [_preflight_ksa_unit_identity(unit) for unit in submitted_units]
     parallel_stop = threading.Event()
     retry_budget_lock = threading.Lock()
     parallel_retry_budget = 1
@@ -1568,19 +1895,68 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
             raise NcsMcpError("NCS MCP unit detail request returned no result")
         detail = _detail_payload(result)
         detail_unit = detail.get("unit") if isinstance(detail.get("unit"), dict) else {}
-        response_code = str(
-            detail_unit.get("unit_code")
-            or detail_unit.get("ncsClCd")
-            or detail_unit.get("id")
-            or ""
-        ).strip()
-        if response_code != code:
+        response_code = _consistent_identity_value(
+            detail_unit,
+            "unit_code",
+            "ncsClCd",
+            "id",
+            normalize=False,
+        )
+        if response_code is None or response_code != code:
             raise NcsMcpError("NCS MCP unit detail identity mismatch")
         classification = (
             detail_unit.get("classification")
             if isinstance(detail_unit.get("classification"), dict)
             else {}
         )
+        catalog_verified = bool(unit.get("unitCatalogVerified")) and bool(
+            re.fullmatch(r"\d{10}(?:_[0-9A-Za-z]+)?", code)
+        )
+        identity_provenance: dict[str, Any] = {}
+        if catalog_verified:
+            canonical_unit_name = str(unit.get("officialUnitName") or "").strip()
+            canonical_detail_name = str(unit.get("officialDetailName") or "").strip()
+            expected_detail_code = str(unit.get("officialDetailCode") or "").strip()
+            response_unit_name = _consistent_identity_value(
+                detail_unit,
+                "unit_name",
+                "compeUnitName",
+                normalize=True,
+            )
+            response_detail_code = _classification_detail_code(classification)
+            response_detail_name = _consistent_identity_value(
+                classification,
+                "sub",
+                "sub_name",
+                "ncsSubdCdnm",
+                normalize=True,
+            )
+            if (
+                response_unit_name is None
+                or _norm(response_unit_name) != _norm(canonical_unit_name)
+            ):
+                raise NcsMcpError("NCS MCP unit detail name identity mismatch")
+            if response_detail_code != expected_detail_code:
+                raise NcsMcpError("NCS MCP unit detail classification code mismatch")
+            if (
+                response_detail_name is None
+                or _norm(response_detail_name) != _norm(canonical_detail_name)
+            ):
+                raise NcsMcpError("NCS MCP unit detail classification name mismatch")
+            identity_provenance = {
+                "unitCatalogVerified": True,
+                "unitResponsePathVerified": True,
+                "unitIdentityVerificationKind": (
+                    "immutable_catalog_and_mcp_response_path_exact"
+                ),
+                "officialUnitName": canonical_unit_name,
+                "officialDetailCode": expected_detail_code,
+                "officialDetailName": canonical_detail_name,
+                "responseDetailCode": response_detail_code,
+                "unitResolutionKind": unit.get("unitResolutionKind"),
+                "unitVersionCompatible": bool(unit.get("unitVersionCompatible")),
+                "catalogUnitCodes": list(unit.get("catalogUnitCodes") or []),
+            }
         interleaved = _interleave_element_ksa(
             [element for element in (detail.get("elements") or []) if isinstance(element, dict)]
         )
@@ -1592,8 +1968,17 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
                     "requestedUnitCode": code,
                     "responseUnitCode": response_code,
                     "unitIdentityVerified": True,
-                    "compeUnitName": unit.get("compeUnitName") or detail_unit.get("unit_name", ""),
-                    "ncsSubdCdnm": unit.get("ncsSubdCdnm") or classification.get("sub", ""),
+                    **identity_provenance,
+                    "compeUnitName": (
+                        unit.get("compeUnitName")
+                        if catalog_verified
+                        else unit.get("compeUnitName") or detail_unit.get("unit_name", "")
+                    ),
+                    "ncsSubdCdnm": (
+                        unit.get("ncsSubdCdnm")
+                        if catalog_verified
+                        else unit.get("ncsSubdCdnm") or classification.get("sub", "")
+                    ),
                     "elementId": row.get("_ncscope_element_id"),
                     "elementName": row.get("_ncscope_element_name", ""),
                     "performanceCriteria": row.get("_ncscope_element_criteria") or [],
