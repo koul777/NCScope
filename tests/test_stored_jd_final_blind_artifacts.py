@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -11,11 +12,34 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
+RELEASE_TAG = "v1.4.12"
+RELEASE_COMMIT = "57352c7e988767105b1fd68ac5aad73cb299a2e8"
 
 
 def _git_text_sha256(path: Path) -> str:
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _release_git_text_sha256(relative: str) -> str:
+    content = subprocess.run(
+        ["git", "show", f"{RELEASE_COMMIT}:{relative}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8")
+    text = content.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _release_tag_commit() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", f"{RELEASE_TAG}^{{}}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() -> None:
@@ -27,6 +51,17 @@ def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() ->
             encoding="utf-8"
         )
     )
+    assert _release_tag_commit() == RELEASE_COMMIT
+    for immutable_relative in (
+        "tests/fixtures/stored_jd_final_blind_freeze.json",
+        "tests/fixtures/stored_jd_final_blind_freeze_addendum.json",
+        "tests/fixtures/stored_jd_final_blind_reference.json",
+        "tests/fixtures/stored_jd_final_blind_result.json",
+        "tests/fixtures/stored_jd_final_blind_comparison_ledger.json",
+    ):
+        assert _git_text_sha256(ROOT / immutable_relative) == (
+            _release_git_text_sha256(immutable_relative)
+        )
 
     git_text_hashes = addendum["git_text_sha256"]
     assert addendum["git_text_hash_canonicalization"].startswith("UTF-8")
@@ -38,16 +73,16 @@ def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() ->
     ):
         if relative in freeze["sha256"]:
             assert re.fullmatch(r"[0-9a-f]{64}", freeze["sha256"][relative])
-        assert _git_text_sha256(ROOT / relative) == git_text_hashes[relative]
+        assert _release_git_text_sha256(relative) == git_text_hashes[relative]
     parser = "app/services/kordoc_parser.py"
     assert freeze["sha256"][parser] == addendum["initial_kordoc_parser_sha256"]
-    assert _git_text_sha256(ROOT / parser) == git_text_hashes[parser]
+    assert _release_git_text_sha256(parser) == git_text_hashes[parser]
     assert addendum["coordinate_provenance_change_affected_frozen_scoring_count"] == 0
     ncs_client = "app/services/ncs_mcp_client.py"
     assert freeze["sha256"][ncs_client] == addendum[
         "initial_ncs_mcp_client_sha256"
     ]
-    assert _git_text_sha256(ROOT / ncs_client) == git_text_hashes[ncs_client]
+    assert _release_git_text_sha256(ncs_client) == git_text_hashes[ncs_client]
     detail_catalog = "app/data/ncs_detail_catalog.json"
     unit_catalog = "app/data/ncs_unit_catalog.json"
     assert freeze["sha256"][detail_catalog] == addendum[
@@ -56,12 +91,14 @@ def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() ->
     assert freeze["sha256"][unit_catalog] == addendum[
         "initial_unit_catalog_sha256"
     ]
-    assert _git_text_sha256(ROOT / detail_catalog) == addendum[
+    assert _release_git_text_sha256(detail_catalog) == addendum[
         "final_detail_catalog_sha256"
     ]
-    assert _git_text_sha256(ROOT / unit_catalog) == addendum["final_unit_catalog_sha256"]
+    assert _release_git_text_sha256(unit_catalog) == addendum[
+        "final_unit_catalog_sha256"
+    ]
     scorer = "scripts/score_stored_jd_holdout.py"
-    assert _git_text_sha256(ROOT / scorer) == git_text_hashes[scorer]
+    assert _release_git_text_sha256(scorer) == git_text_hashes[scorer]
     assert addendum["previous_final_ncs_mcp_client_sha256"] == (
         "d4225e751f420fb76304bfe819f1ad8d9268dbd4caa14a238f0b977114597652"
     )
@@ -93,7 +130,7 @@ def test_final_blind_freeze_preserves_pre_change_result_and_discloses_drift() ->
     ):
         assert re.fullmatch(r"[0-9a-f]{64}", addendum[field])
     result = "tests/fixtures/stored_jd_final_blind_result.json"
-    assert _git_text_sha256(ROOT / result) == git_text_hashes[result]
+    assert _release_git_text_sha256(result) == git_text_hashes[result]
     assert set(addendum["final_raw_sha256"]) == set(git_text_hashes)
     for relative, expected in addendum["final_raw_sha256"].items():
         assert re.fullmatch(r"[0-9a-f]{64}", expected)

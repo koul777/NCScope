@@ -84,6 +84,7 @@ GitHub의 **Follow**와 저장소 **Star**만으로는 모든 변경 알림이 �
 - MCP 능력단위 결과는 공식 세분류명과 8자리 코드 소유권을 함께 확인하고, 10자리 능력단위 코드 형식까지 검증합니다. 직접 일치·공백 정리·구두점 변형·순번 제거·공식 표시명 복원·명시적 안전 별칭을 별도 provenance로 기록합니다.
 - 공식 세분류명 normalized key, 안전 별칭 target, 능력단위의 세분류 코드·명칭 정합성을 정적 불변식으로 검사합니다. 관련 통합 회귀는 399개가 통과했습니다.
 - 공개 ALIO 운영 문서 2건의 네트워크 probe는 파싱 2/2, 현행 공식 세분류 16/16 exact였습니다. 이 값은 연결·회귀 확인용 공개 튜닝 진단이며 사람 골드나 새 블라인드 정확도가 아닙니다. 세부 기록은 [`reports/ncs_detail_matching_6h_20260827.md`](reports/ncs_detail_matching_6h_20260827.md)에 있습니다.
+- 2026-08-27 추가 보강으로 `세분류 -> 능력단위` 연결은 `full code exact`를 우선 검증하고, exact code가 없을 때만 `base code + canonical unit name + verified detail ownership`이 하나의 안정 identity로 증명될 경우에만 fallback합니다. 정적 detail/unit 카탈로그가 비거나 읽기 실패하면 조용히 빈 결과를 돌려주지 않고 즉시 오류로 종료하며, `unitResolutionKind`, `unitVersionCompatible`, `catalogUnitCodes` provenance는 재정렬과 `selected_ncs` 생성 경로 이후에도 유지됩니다.
 
 NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 공식 NCS KSA 근거가 추적되는 구조화 면접 질문 초안을 만드는 프로그램입니다.
 

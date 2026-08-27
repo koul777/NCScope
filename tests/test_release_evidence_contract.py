@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -13,16 +14,45 @@ ADDENDUM_PATH = (
     ROOT / "tests" / "fixtures" / "stored_jd_final_blind_freeze_addendum.json"
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+RELEASE_TAG = "v1.4.12"
+RELEASE_COMMIT = "57352c7e988767105b1fd68ac5aad73cb299a2e8"
 
 
-def _git_text_sha256(path: Path) -> str:
-    text = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+def _release_git_text_sha256(relative: str) -> str:
+    content = subprocess.run(
+        ["git", "show", f"{RELEASE_COMMIT}:{relative}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8")
+    text = content.replace("\r\n", "\n").replace("\r", "\n")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _worktree_git_text_sha256(relative: str) -> str:
+    text = (ROOT / relative).read_text(encoding="utf-8")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _release_tag_commit() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", f"{RELEASE_TAG}^{{}}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
     evidence = json.loads(EVIDENCE_PATH.read_text(encoding="utf-8"))
     addendum = json.loads(ADDENDUM_PATH.read_text(encoding="utf-8"))
+    assert _release_tag_commit() == RELEASE_COMMIT
+    evidence_relative = "reports/ncscope_1_4_12_release_evidence.json"
+    assert _worktree_git_text_sha256(evidence_relative) == (
+        _release_git_text_sha256(evidence_relative)
+    )
 
     assert set(evidence) == {
         "schema_version",
@@ -123,11 +153,11 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
         assert row["verified_rows"] == addendum[f"{prefix}_ksa_contract_row_count"]
 
     source_paths = {
-        "app_main": ROOT / "app" / "main.py",
-        "benchmark_alio": ROOT / "scripts" / "benchmark_alio_jd.py",
-        "kordoc_parser": ROOT / "app" / "services" / "kordoc_parser.py",
-        "ncs_mcp_client": ROOT / "app" / "services" / "ncs_mcp_client.py",
-        "ksa_audit_script": ROOT / "scripts" / "audit_stored_jd_ksa_contract.py",
+        "app_main": "app/main.py",
+        "benchmark_alio": "scripts/benchmark_alio_jd.py",
+        "kordoc_parser": "app/services/kordoc_parser.py",
+        "ncs_mcp_client": "app/services/ncs_mcp_client.py",
+        "ksa_audit_script": "scripts/audit_stored_jd_ksa_contract.py",
     }
     source_hashes = evidence["source_contract_git_text_sha256"]
     raw_source_hashes = evidence["release_run_source_raw_sha256"]
@@ -137,7 +167,7 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
     for name, path in source_paths.items():
         digest = source_hashes[name]
         assert HEX64.fullmatch(digest)
-        assert _git_text_sha256(path) == digest
+        assert _release_git_text_sha256(path) == digest
         raw_digest = raw_source_hashes["digests"][name]
         assert HEX64.fullmatch(raw_digest)
 
@@ -147,18 +177,18 @@ def test_release_evidence_is_sanitized_and_bound_to_tracked_contracts() -> None:
     assert gold["current_source_packets_human_gold_eligible"] is False
     assert gold["historical_published_metrics_split"].startswith("v1_")
     gold_paths = {
-        "split_contract": ROOT / "scripts" / "ncs_recruitment_split.py",
-        "prepare_goldset": ROOT / "scripts" / "prepare_ncs_recruitment_goldset.py",
-        "prepare_source_packets": (
-            ROOT / "scripts" / "prepare_ncs_recruitment_source_packets.py"
-        ),
-        "finalize_goldset": ROOT / "scripts" / "finalize_ncs_recruitment_goldset.py",
-        "score_goldset": ROOT / "scripts" / "score_ncs_recruitment_goldset.py",
-        "official_detail_catalog": ROOT / "app" / "data" / "ncs_detail_catalog.json",
+        "split_contract": "scripts/ncs_recruitment_split.py",
+        "prepare_goldset": "scripts/prepare_ncs_recruitment_goldset.py",
+        "prepare_source_packets": "scripts/prepare_ncs_recruitment_source_packets.py",
+        "finalize_goldset": "scripts/finalize_ncs_recruitment_goldset.py",
+        "score_goldset": "scripts/score_ncs_recruitment_goldset.py",
+        "official_detail_catalog": "app/data/ncs_detail_catalog.json",
     }
     assert set(gold["source_contract_git_text_sha256"]) == set(gold_paths)
     for name, path in gold_paths.items():
-        assert gold["source_contract_git_text_sha256"][name] == _git_text_sha256(path)
+        assert gold["source_contract_git_text_sha256"][name] == (
+            _release_git_text_sha256(path)
+        )
 
     attestation = evidence["scoring_runtime_attestation"]
     assert attestation == {

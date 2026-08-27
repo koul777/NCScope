@@ -636,9 +636,9 @@ def test_review_then_regenerate_uses_feedback_and_rotates_quality_run(monkeypatc
     code = "0202030201_25v3"
     unit = {
         "ncsClCd": code,
-        "compeUnitName": "운영문서검토",
+        "compeUnitName": "문서 작성",
         "compeUnitLevel": "3",
-        "ncsSubdCdnm": "운영지원",
+        "ncsSubdCdnm": "사무행정",
         "compeUnitDef": "운영 문서의 오류와 기준 불일치를 점검한다",
     }
     ksa = {
@@ -683,7 +683,7 @@ def test_review_then_regenerate_uses_feedback_and_rotates_quality_run(monkeypatc
         "selected_ncs": [unit],
         "question_plan": {
             "items": [
-                {"detail": "운영지원", "enabled": True, "main_count": 1, "follow_up_count": 3}
+                {"detail": "사무행정", "enabled": True, "main_count": 1, "follow_up_count": 3}
             ]
         },
         "interview_methods": ["경험면접"],
@@ -734,7 +734,7 @@ def test_generate_from_text_repair_exception_returns_sanitized_502_without_fallb
     code = "0202030202_25v3"
     unit = {
         "ncsClCd": code,
-        "compeUnitName": "문서작성",
+        "compeUnitName": "문서 관리",
         "compeUnitLevel": "3",
         "ncsSubdCdnm": "사무행정",
         "compeUnitDef": "문서 요구사항을 파악하고 오류를 점검한다",
@@ -821,7 +821,7 @@ def test_generate_from_text_bypasses_legacy_adjustment_without_rule_fallback(
     code = "0202030203_25v3"
     unit = {
         "ncsClCd": code,
-        "compeUnitName": "문서작성",
+        "compeUnitName": "자료 관리",
         "compeUnitLevel": "3",
         "ncsSubdCdnm": "사무행정",
         "compeUnitDef": "문서 요구사항을 확인하고 오류를 검증한다.",

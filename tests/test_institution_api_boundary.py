@@ -396,15 +396,29 @@ def test_one_question_fetches_ksa_only_for_its_planned_unit(
         return [_ksa()]
 
     monkeypatch.setattr(main, "_fetch_ncs_ksa_or_502", capture_fetch)
-    selected_units = [_unit()]
-    for index in range(2, 6):
-        selected_units.append(
-            {
-                **_unit(),
-                "ncsClCd": f"020101010{index}_22v2",
-                "compeUnitName": f"UNUSED_UNIT_{index}",
-            }
-        )
+    selected_units = [
+        _unit(),
+        {
+            **_unit(),
+            "ncsClCd": "0201010101_22v3",
+            "compeUnitName": "사업환경 분석",
+        },
+        {
+            **_unit(),
+            "ncsClCd": "0201010102_22v2",
+            "compeUnitName": "경영방침 수립",
+        },
+        {
+            **_unit(),
+            "ncsClCd": "0201010104_22v2",
+            "compeUnitName": "신규사업 기획",
+        },
+        {
+            **_unit(),
+            "ncsClCd": "0201010105_22v2",
+            "compeUnitName": "사업별 투자 관리",
+        },
+    ]
     payload = _generation_payload(selected_ncs=selected_units)
 
     with TestClient(main.app, client=REMOTE_CLIENT) as client:

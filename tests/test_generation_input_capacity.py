@@ -137,8 +137,16 @@ def test_from_text_rejects_multiple_ncs_details_before_ncs_work(
             json={
                 "notice_text": "공고",
                 "selected_ncs": [
-                    {"ncsClCd": "02020302", "ncsSubdCdnm": "경영기획"},
-                    {"ncsClCd": "02020303", "ncsSubdCdnm": "사무행정"},
+                    {
+                        "ncsClCd": "0201010103_22v2",
+                        "compeUnitName": "경영계획 수립",
+                        "ncsSubdCdnm": "경영기획",
+                    },
+                    {
+                        "ncsClCd": "0202030201_22v3",
+                        "compeUnitName": "문서 작성",
+                        "ncsSubdCdnm": "사무행정",
+                    },
                 ],
                 "question_plan": {
                     "items": [

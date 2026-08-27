@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-08-27",
+  "endpoint": "http://127.0.0.1:8766/mcp",
+  "scope": "all_active_official_detail_names",
+  "active_detail_count": 1094,
+  "expected_unit_bases": 13281,
+  "actual_unit_bases": 13278,
+  "complete_details": 1091,
+  "partial_details": 3,
+  "zero_details": 0,
+  "details_with_missing": 3,
+  "details_with_extra": 0,
+  "top_gaps": [
+    {
+      "detail_code": "02010101",
+      "detail_name": "경영기획",
+      "expected": 9,
+      "actual": 8,
+      "missing": 1,
+      "extra": 0
+    },
+    {
+      "detail_code": "02020302",
+      "detail_name": "사무행정",
+      "expected": 9,
+      "actual": 8,
+      "missing": 1,
+      "extra": 0
+    },
+    {
+      "detail_code": "23040102",
+      "detail_name": "환경시설운영",
+      "expected": 11,
+      "actual": 10,
+      "missing": 1,
+      "extra": 0
+    }
+  ]
+}

@@ -1554,10 +1554,11 @@ def test_mcp_only_upload_accepts_parenthetical_secretary_detail_without_manual_b
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     _patch_mcp_upload_common(mocker)
+    catalog_row = _catalog_unit_by_code("0202030101_22v2")
     unit = {
-        "ncsClCd": "0202030101_22v2",
-        "compeUnitName": "임원 일정 관리",
-        "ncsSubdCdnm": "비서",
+        "ncsClCd": catalog_row["ncsClCd"],
+        "compeUnitName": catalog_row["compeUnitName"],
+        "ncsSubdCdnm": catalog_row["canonicalDetailName"],
         "compeUnitDef": "경영진 지원과 일정 관리를 수행한다",
         "score": 1.0,
     }
@@ -1579,15 +1580,7 @@ def test_mcp_only_upload_accepts_parenthetical_secretary_detail_without_manual_b
         calls.append(arguments["query"])
         if arguments["query"] != unit["ncsSubdCdnm"]:
             return {"results": []}
-        return {
-            "results": [
-                {
-                    "id": unit["ncsClCd"],
-                    "text": unit["compeUnitName"],
-                    "path": {"small": "총무·인사", "sub": unit["ncsSubdCdnm"]},
-                }
-            ]
-        }
+        return {"results": [_mcp_catalog_row(catalog_row)]}
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
     rerank = mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
@@ -1630,6 +1623,15 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
         "compeUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
         "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
         "compeUnitDef": "\uacbd\uc601\ubaa9\ud45c\ub97c \uc218\ub9bd\ud55c\ub2e4",
+        "officialDetailCode": "02010101",
+        "officialDetailName": "\uacbd\uc601\uae30\ud68d",
+        "detailResolutionKind": "direct",
+        "detailResolutionRule": "direct",
+        "officialUnitBaseCode": "0201010103",
+        "officialUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
+        "unitResolutionKind": "catalog_full_code_exact",
+        "unitVersionCompatible": False,
+        "catalogUnitCodes": ["0201010103_22v2"],
         "score": 1.0,
     }
     ksa = {
@@ -1645,7 +1647,23 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     mocker.patch("app.main.search_units_by_detail", return_value=[unit])
     rerank = mocker.patch(
         "app.main.rerank_ncs_matches",
-        side_effect=lambda **kwargs: (kwargs["ncs_items"], "rule"),
+        side_effect=lambda **kwargs: (
+            [
+                {
+                    key: value
+                    for key, value in kwargs["ncs_items"][0].items()
+                    if key
+                    in {
+                        "ncsClCd",
+                        "compeUnitName",
+                        "ncsSubdCdnm",
+                        "compeUnitDef",
+                        "score",
+                    }
+                }
+            ],
+            "rule",
+        ),
     )
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[ksa])
     rank_ksa = mocker.patch("app.main.rank_ksa_factors_by_query", return_value=[ksa])
@@ -1700,6 +1718,10 @@ def test_mcp_only_success_uses_official_ksa(monkeypatch, mocker):
     assert body["required_ability_units_reviewed"] == ["\uacbd\uc601\uacc4\ud68d \uc218\ub9bd"]
     assert body["required_ability_unit_lock_applied"] is True
     assert body["ncs_matches"][0]["requiredAbilityUnitMatch"] == "exact"
+    assert body["ncs_matches"][0]["officialDetailCode"] == "02010101"
+    assert body["ncs_matches"][0]["officialUnitBaseCode"] == "0201010103"
+    assert body["ncs_matches"][0]["unitResolutionKind"] == "catalog_full_code_exact"
+    assert body["ncs_matches"][0]["catalogUnitCodes"] == ["0201010103_22v2"]
     assert body["ncs_ksa"][0]["factorSource"] == "ncs-mcp"
     assert body["ncs_ksa"][0]["ksaStatus"] == "official"
     question = body["strategy"]["interview_questions"][0]
@@ -1824,6 +1846,48 @@ def test_recovered_required_unit_provenance_survives_endpoint_rerank(
     assert body["ncs_matches"][0]["requiredAbilityUnitMatch"] == match_mode
 
 
+def test_ncs_link_provenance_reattach_rejects_conflicting_same_code():
+    code = "0201010103_22v2"
+    matches = [{"ncsClCd": code, "compeUnitName": "ranked"}]
+    sources = [
+        {"ncsClCd": code, "officialDetailCode": "02010101"},
+        {"ncsClCd": code, "officialDetailCode": "02010102"},
+    ]
+
+    output = main._reattach_ncs_link_provenance(matches, sources)
+
+    assert output == matches
+
+
+def test_ncs_link_provenance_copies_only_controlled_fields():
+    code = "0201010103_22v2"
+    output = main._reattach_ncs_link_provenance(
+        [{"ncsClCd": code}],
+        [
+            {
+                "ncsClCd": code,
+                "officialDetailCode": "02010101",
+                "unitCatalogVerified": True,
+                "unitVersionCompatible": False,
+                "catalogUnitCodes": [code, code, ""],
+                "matchScore": 1,
+                "untrustedSecret": "must-not-copy",
+            }
+        ],
+    )
+
+    assert output == [
+        {
+            "ncsClCd": code,
+            "officialDetailCode": "02010101",
+            "unitCatalogVerified": True,
+            "unitVersionCompatible": False,
+            "catalogUnitCodes": [code],
+            "matchScore": 1.0,
+        }
+    ]
+
+
 def test_verified_detail_unit_decoration_uses_canonical_detail_at_endpoint(
     monkeypatch,
     mocker,
@@ -1912,6 +1976,14 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
         "compeUnitLevel": "5",
         "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
         "compeUnitDef": "\uacbd\uc601\ubaa9\ud45c\ub97c \uc218\ub9bd\ud55c\ub2e4",
+        "officialDetailCode": "02010101",
+        "officialDetailName": "\uacbd\uc601\uae30\ud68d",
+        "officialUnitBaseCode": "0201010103",
+        "officialUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
+        "unitResolutionKind": "catalog_full_code_exact",
+        "unitVersionCompatible": False,
+        "catalogUnitCodes": ["0201010103_22v2"],
+        "mcpUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
     }
     ksa = {
         "ncsClCd": unit["ncsClCd"],
@@ -1960,6 +2032,9 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
     assert body["question_plan"]["total_main_count"] == 1
     assert body["question_plan"]["follow_up_count"] == 4
     assert body["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811"]
+    assert body["ncs_matches"][0]["officialUnitBaseCode"] == "0201010103"
+    assert body["ncs_matches"][0]["unitResolutionKind"] == "catalog_full_code_exact"
+    assert body["ncs_matches"][0]["catalogUnitCodes"] == ["0201010103_22v2"]
     rank_ksa.assert_called_once()
     ksa_query_text = rank_ksa.call_args.kwargs["query_text"]
     assert "duty: board reporting and KPI dashboard" in ksa_query_text
@@ -1974,6 +2049,56 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
     assert kwargs["question_plan"]["selected_terms"] == ["\uacbd\uc601\uae30\ud68d"]
     assert kwargs["interview_methods"] == ["\ubc1c\ud45c\uba74\uc811"]
     assert REQUEST_OPENAI_KEY not in resp.text
+    assert body["ncs_matches"][0]["unitCatalogVerified"] is True
+    assert body["ncs_matches"][0]["unitVersionCompatible"] is False
+    assert body["ncs_matches"][0]["officialDetailCode"] == "02010101"
+    assert body["ncs_matches"][0]["officialUnitBaseCode"] == "0201010103"
+
+
+def test_generate_from_text_rejects_tampered_selected_unit_before_ksa(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    catalog_row = _catalog_unit_by_code("0201010103_22v2")
+    fetch_ksa = mocker.patch("app.main.fetch_ncs_ksa_by_units")
+    build_strategy = mocker.patch("app.main.build_jd_strategy_with_openai")
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/questions/generate-from-text",
+            json={
+                "openai_api_key": REQUEST_OPENAI_KEY,
+                "notice_text": "공고",
+                "selected_ncs": [
+                    {
+                        "ncsClCd": catalog_row["ncsClCd"],
+                        "compeUnitName": "변조된 능력단위명",
+                        "ncsSubdCdnm": catalog_row["canonicalDetailName"],
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "selected_ncs_official_identity_mismatch",
+        "message": (
+            "선택한 NCS 능력단위의 코드·명칭·세분류 연결을 "
+            "공식 카탈로그에서 확인할 수 없습니다."
+        ),
+        "invalid_items": [
+            {
+                "index": 0,
+                "ncsClCd": catalog_row["ncsClCd"],
+                "reason": "catalog_mismatch",
+            }
+        ],
+        "retryable": False,
+    }
+    fetch_ksa.assert_not_called()
+    build_strategy.assert_not_called()
 
 
 def test_generate_from_text_requires_request_key_even_with_server_openai_env(monkeypatch, mocker):
@@ -2133,7 +2258,63 @@ def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkey
     assert REQUEST_OPENAI_KEY not in resp.text
 
 
+def _catalog_units_for_detail(detail_name: str) -> list[dict]:
+    """Return real immutable catalog identities for an official detail label."""
+
+    details = ncs_mcp_client._official_details_by_name_key().get(
+        ncs_mcp_client._norm(detail_name), ()
+    )
+    assert len(details) == 1, detail_name
+    detail = details[0]
+    rows = [
+        row
+        for row in ncs_mcp_client._official_unit_catalog_rows()
+        if row["officialDetailCode"] == detail["code"]
+        and ncs_mcp_client._norm(row["canonicalDetailName"])
+        == ncs_mcp_client._norm(detail["name"])
+    ]
+    assert rows, detail_name
+    return rows
+
+
+def _mcp_catalog_row(catalog_row: dict, *, code: str | None = None) -> dict:
+    """Build an MCP response row with the selected catalog identity."""
+
+    return {
+        "id": code or catalog_row["ncsClCd"],
+        "text": catalog_row["compeUnitName"],
+        "path": {
+            "small": "catalog-small",
+            "sub": catalog_row["canonicalDetailName"],
+        },
+    }
+
+
+def _catalog_unit_by_code(code: str) -> dict:
+    rows = ncs_mcp_client._official_units_by_full_code().get(code, ())
+    assert len(rows) == 1, code
+    return rows[0]
+
+
+def _patch_catalog_version_identity(mocker, catalog_row: dict, *codes: str) -> None:
+    """Declare test-only static versions for one real canonical identity."""
+
+    rows = [
+        {**catalog_row, "ncsClCd": code, "officialUnitBaseCode": code.split("_", 1)[0]}
+        for code in codes
+    ]
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_units_by_full_code",
+        return_value={row["ncsClCd"]: (row,) for row in rows},
+    )
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_units_by_base_code",
+        return_value={rows[0]["officialUnitBaseCode"]: tuple(rows)},
+    )
+
+
 def test_mcp_search_matches_detail_not_small_category(mocker):
+    target = _catalog_units_for_detail("\uacbd\uc601\uae30\ud68d")[0]
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     mocker.patch(
         "app.services.ncs_mcp_client._call_tool",
@@ -2145,9 +2326,7 @@ def test_mcp_search_matches_detail_not_small_category(mocker):
                     "path": {"small": "\uacbd\uc601\uae30\ud68d", "sub": "\uacbd\uc601\ubd84\uc11d"},
                 },
                 {
-                    "id": "0201010101_22v3",
-                    "text": "\uc138\ubd84\ub958 \uc77c\uce58",
-                    "path": {"small": "\uae30\ud68d\uc0ac\ubb34", "sub": "\uacbd\uc601\uae30\ud68d"},
+                    **_mcp_catalog_row(target),
                 },
             ]
         },
@@ -2155,7 +2334,7 @@ def test_mcp_search_matches_detail_not_small_category(mocker):
 
     rows = ncs_mcp_client.search_units_by_detail(["\uacbd\uc601\uae30\ud68d"])
 
-    assert [row["ncsClCd"] for row in rows] == ["0201010101_22v3"]
+    assert [row["ncsClCd"] for row in rows] == [target["ncsClCd"]]
 
 
 def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
@@ -2165,13 +2344,15 @@ def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
     def fake_call_tool(_name, arguments):
         query = arguments["query"]
         calls.append(query)
-        code = "0202020101_23v3" if query == "인사" else "0101010201_17v2"
+        catalog_row = (
+            _catalog_unit_by_code("0202020101_23v3")
+            if query == _catalog_unit_by_code("0202020101_23v3")["canonicalDetailName"]
+            else _catalog_unit_by_code("0101010201_17v2")
+        )
         return {
             "results": [
                 {
-                    "id": code,
-                    "text": f"{query} 능력단위",
-                    "path": {"small": query, "sub": query},
+                    **_mcp_catalog_row(catalog_row),
                 }
             ]
         }
@@ -2184,25 +2365,53 @@ def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
     assert [row["matchedDetailName"] for row in rows] == ["인사", "프로젝트관리"]
 
 
+def test_mcp_search_preserves_official_detail_with_internal_commas(mocker):
+    detail_name = "조선비계(족장, 발판, scaffolding)"
+    catalog_row = _catalog_units_for_detail(detail_name)[0]
+    calls: list[str] = []
+
+    def fake_call_tool(_name, arguments):
+        calls.append(arguments["query"])
+        return {"results": [_mcp_catalog_row(catalog_row)]}
+
+    mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
+
+    rows = ncs_mcp_client.search_units_by_detail([detail_name], max_units=5)
+
+    assert calls == [detail_name]
+    assert [row["ncsClCd"] for row in rows] == [catalog_row["ncsClCd"]]
+    assert rows[0]["officialDetailCode"] == "15080205"
+
+
+def test_every_official_detail_label_is_an_atomic_split_term():
+    official_rows = [
+        row
+        for rows in ncs_mcp_client._official_details_by_name_key().values()
+        for row in rows
+    ]
+
+    assert len(official_rows) == 1094
+    assert all(
+        ncs_mcp_client._split_detail_terms([row["name"]]) == [row["name"]]
+        for row in official_rows
+    )
+
+
 def test_mcp_search_global_limit_preserves_each_confirmed_detail(mocker):
     calls: list[str] = []
+    personnel_rows = _catalog_units_for_detail("인사")[:3]
+    project_rows = _catalog_units_for_detail("프로젝트관리")[:2]
 
     def fake_call_tool(_name, arguments):
         query = arguments["query"]
         calls.append(query)
-        if query == "인사":
-            codes = ["0202020101_23v3", "0202020102_23v3", "0202020103_23v3"]
-        else:
-            codes = ["0101010201_17v2", "0101010202_17v2"]
+        catalog_rows = (
+            personnel_rows
+            if query == personnel_rows[0]["canonicalDetailName"]
+            else project_rows
+        )
         return {
-            "results": [
-                {
-                    "id": code,
-                    "text": f"{query} {index}",
-                    "path": {"small": query, "sub": query},
-                }
-                for index, code in enumerate(codes, start=1)
-            ]
+            "results": [_mcp_catalog_row(row) for row in catalog_rows]
         }
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
@@ -2218,6 +2427,7 @@ def test_mcp_search_global_limit_preserves_each_confirmed_detail(mocker):
 
 def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
     query = "\uacbd\uc601\uae30\ud68d"
+    catalog_row = _catalog_units_for_detail(query)[0]
     broad_rows = [
         {
             "id": f"010000{index:04d}_26v1",
@@ -2226,14 +2436,10 @@ def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
         }
         for index in range(149)
     ]
-    exact_row = {
-        "id": "0201010101_22v3",
-        "text": "\uacbd\uc601\uae30\ud68d \uc218\ub9bd",
-        "path": {"small": "\uae30\ud68d\uc0ac\ubb34", "sub": query},
-    }
+    exact_row = _mcp_catalog_row(catalog_row)
 
     def fake_call_tool(_name, arguments):
-        assert arguments["limit"] == 200
+        assert arguments["limit"] == 500
         return {"results": [*broad_rows, exact_row]}
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
@@ -2246,19 +2452,14 @@ def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
 def test_mcp_search_reallocates_unused_sparse_group_capacity(mocker):
     sparse = "\uc778\uc0ac"
     dense = "\ud504\ub85c\uc81d\ud2b8\uad00\ub9ac"
+    sparse_rows = _catalog_units_for_detail(sparse)[:1]
+    dense_rows = _catalog_units_for_detail(dense)[:10]
 
     def fake_call_tool(_name, arguments):
         query = arguments["query"]
-        count = 1 if query == sparse else 10
+        catalog_rows = sparse_rows if query == sparse else dense_rows
         return {
-            "results": [
-                {
-                    "id": f"{'01010102' if query == dense else '02020201'}{index:02d}_26v1",
-                    "text": f"{query} {index}",
-                    "path": {"small": query, "sub": query},
-                }
-                for index in range(1, count + 1)
-            ]
+            "results": [_mcp_catalog_row(row) for row in catalog_rows]
         }
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
@@ -2273,18 +2474,13 @@ def test_mcp_search_reallocates_unused_sparse_group_capacity(mocker):
 def test_mcp_search_preserves_official_acronym_slash_detail(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     calls: list[str] = []
+    catalog_row = _catalog_unit_by_code("0204020101_14v1")
 
     def fake_call_tool(_name, arguments):
         query = arguments["query"]
         calls.append(query)
         return {
-            "results": [
-                {
-                    "id": "0204020101_14v1",
-                    "text": "품질전략수립",
-                    "path": {"small": "품질관리", "sub": "QM/QC관리"},
-                }
-            ]
+            "results": [_mcp_catalog_row(catalog_row)]
         }
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
@@ -2622,17 +2818,12 @@ def test_mcp_search_rejects_non_official_path_sub_name(mocker):
 
 def test_mcp_search_attaches_catalog_verified_detail_identity(mocker):
     expected_detail, _other_detail = _two_distinct_official_detail_rows()
+    catalog_row = _catalog_units_for_detail(expected_detail["name"])[0]
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     mocker.patch(
         "app.services.ncs_mcp_client._call_tool",
         return_value={
-            "results": [
-                {
-                    "id": f"{expected_detail['code']}01_25v1",
-                    "text": "synthetic unit",
-                    "path": {"small": "synthetic", "sub": expected_detail["name"]},
-                }
-            ]
+            "results": [_mcp_catalog_row(catalog_row)]
         },
     )
 
@@ -2682,21 +2873,14 @@ def test_mcp_search_rejects_malformed_ability_unit_codes(mocker, malformed_code)
 @pytest.mark.parametrize("code_suffix", ["01", "01_25v1"])
 def test_mcp_search_accepts_well_formed_ability_unit_codes(mocker, code_suffix):
     expected_detail, _other_detail = _two_distinct_official_detail_rows()
+    catalog_row = _catalog_units_for_detail(expected_detail["name"])[0]
     expected_code = f"{expected_detail['code']}{code_suffix}"
+    _patch_catalog_version_identity(mocker, catalog_row, expected_code)
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     mocker.patch(
         "app.services.ncs_mcp_client._call_tool",
         return_value={
-            "results": [
-                {
-                    "id": expected_code,
-                    "text": "synthetic unit",
-                    "path": {
-                        "small": "synthetic",
-                        "sub": expected_detail["name"],
-                    },
-                }
-            ]
+            "results": [_mcp_catalog_row(catalog_row, code=expected_code)]
         },
     )
 
@@ -2708,41 +2892,35 @@ def test_mcp_search_accepts_well_formed_ability_unit_codes(mocker, code_suffix):
 def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     calls = []
-    official_by_query = {
-        "프로젝트관리": "0101010201_17v1",
-        "산학협력관리": "0101010301_17v1",
-        "시각디자인": "0802010101_17v1",
-        "경영기획": "0201010101_22v3",
+    catalog_by_query = {
+        name: _catalog_units_for_detail(name)[0]
+        for name in ("프로젝트관리", "산학협력관리", "시각디자인", "경영기획")
     }
 
     def fake_call_tool(name, arguments):
         assert name == "ncs_search"
         query = arguments["query"]
         calls.append(query)
-        code = official_by_query.get(query)
-        if not code:
+        catalog_row = catalog_by_query.get(query)
+        if not catalog_row:
             return {"results": []}
         return {
-            "results": [
-                {
-                    "id": code,
-                    "text": f"{query} 능력단위",
-                    "path": {"small": "공식 소분류", "sub": query},
-                }
-            ]
+            "results": [_mcp_catalog_row(catalog_row)]
         }
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
 
     cases = [
-        ("프로젝트 관리", "프로젝트관리", "0101010201_17v1"),
-        ("산학협력 관리", "산학협력관리", "0101010301_17v1"),
-        ("시각 디자인", "시각디자인", "0802010101_17v1"),
-        ("경영 기획", "경영기획", "0201010101_22v3"),
+        ("프로젝트 관리", "프로젝트관리"),
+        ("산학협력 관리", "산학협력관리"),
+        ("시각 디자인", "시각디자인"),
+        ("경영 기획", "경영기획"),
     ]
-    for source_label, official_label, expected_code in cases:
+    for source_label, official_label in cases:
         rows = ncs_mcp_client.search_units_by_detail([source_label], max_units=5)
-        assert [row["ncsClCd"] for row in rows] == [expected_code]
+        assert [row["ncsClCd"] for row in rows] == [
+            catalog_by_query[official_label]["ncsClCd"]
+        ]
         assert rows[0]["matchedDetailName"] == source_label
         assert rows[0]["ncsSubdCdnm"] == official_label
         assert rows[0]["detailResolutionKind"] == "format_variant"
@@ -2750,7 +2928,7 @@ def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
 
     assert calls == [
         value
-        for source_label, official_label, _code in cases
+        for source_label, official_label in cases
         for value in (source_label, official_label)
     ]
 
@@ -2758,27 +2936,20 @@ def test_mcp_search_retries_simple_split_table_labels_in_compact_form(mocker):
 def test_mcp_search_retries_punctuation_and_ordinal_formatting_variants(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     calls = []
-    official_by_query = {
-        "회계감사": ("회계·감사", "0203020101_17v1"),
-        "영상촬영": ("영상촬영", "0803040201_17v1"),
+    catalog_by_query = {
+        "회계감사": _catalog_units_for_detail("회계·감사")[0],
+        "영상촬영": _catalog_units_for_detail("영상촬영")[0],
     }
 
     def fake_call_tool(name, arguments):
         assert name == "ncs_search"
         query = arguments["query"]
         calls.append(query)
-        matched = official_by_query.get(query)
-        if not matched:
+        catalog_row = catalog_by_query.get(query)
+        if not catalog_row:
             return {"results": []}
-        official, code = matched
         return {
-            "results": [
-                {
-                    "id": code,
-                    "text": f"{official} 능력단위",
-                    "path": {"small": "공식 소분류", "sub": official},
-                }
-            ]
+            "results": [_mcp_catalog_row(catalog_row)]
         }
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
@@ -2786,11 +2957,15 @@ def test_mcp_search_retries_punctuation_and_ordinal_formatting_variants(mocker):
     punctuation = ncs_mcp_client.search_units_by_detail(["회계.감사"], max_units=5)
     ordinal = ncs_mcp_client.search_units_by_detail(["02 영상촬영"], max_units=5)
 
-    assert [row["ncsClCd"] for row in punctuation] == ["0203020101_17v1"]
+    assert [row["ncsClCd"] for row in punctuation] == [
+        catalog_by_query["회계감사"]["ncsClCd"]
+    ]
     assert punctuation[0]["matchedDetailName"] == "회계.감사"
     assert punctuation[0]["ncsSubdCdnm"] == "회계·감사"
     assert punctuation[0]["detailResolutionRule"] == "punctuation_variant"
-    assert [row["ncsClCd"] for row in ordinal] == ["0803040201_17v1"]
+    assert [row["ncsClCd"] for row in ordinal] == [
+        catalog_by_query["영상촬영"]["ncsClCd"]
+    ]
     assert ordinal[0]["matchedDetailName"] == "02 영상촬영"
     assert ordinal[0]["ncsSubdCdnm"] == "영상촬영"
     assert ordinal[0]["detailResolutionRule"] == "ordinal_prefix_stripped"
@@ -2908,6 +3083,7 @@ def test_mcp_search_matches_parenthetical_secretary_detail_to_official_subdetail
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     query = "비서 (글로벌경영사무 지원)"
     calls = []
+    catalog_row = _catalog_unit_by_code("0202030101_22v2")
 
     def fake_call_tool(name, arguments):
         assert name == "ncs_search"
@@ -2915,13 +3091,7 @@ def test_mcp_search_matches_parenthetical_secretary_detail_to_official_subdetail
         if arguments["query"] != "비서":
             return {"results": []}
         return {
-            "results": [
-                {
-                    "id": "0202030101_22v2",
-                    "text": "임원 일정 관리",
-                    "path": {"small": "총무·인사", "sub": "비서"},
-                }
-            ]
+            "results": [_mcp_catalog_row(catalog_row)]
         }
 
     mocker.patch("app.services.ncs_mcp_client._call_tool", side_effect=fake_call_tool)
@@ -3057,6 +3227,225 @@ def test_ncs_unit_options_splits_multi_term_query(monkeypatch, mocker):
 
     assert response.status_code == 200
     search.assert_called_once_with(["인사", "프로젝트관리"], max_units=20)
+
+
+def _install_synthetic_unit_catalog(mocker, rows):
+    """Keep MCP-link verification tests independent of shipped catalog rows."""
+
+    detail = {"code": "12345678", "name": "detail-alpha"}
+    full_code_index = {}
+    base_code_index = {}
+    for row in rows:
+        full_code_index.setdefault(row["ncsClCd"], []).append(row)
+        base_code_index.setdefault(row["officialUnitBaseCode"], []).append(row)
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_details_by_name_key",
+        return_value={ncs_mcp_client._norm(detail["name"]): (detail,)},
+    )
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_units_by_full_code",
+        return_value={key: tuple(value) for key, value in full_code_index.items()},
+    )
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_units_by_base_code",
+        return_value={key: tuple(value) for key, value in base_code_index.items()},
+    )
+    return detail
+
+
+def _synthetic_catalog_unit(code="1234567801_25v1", name="unit-alpha"):
+    return {
+        "ncsClCd": code,
+        "officialUnitBaseCode": code.split("_", 1)[0],
+        "compeUnitName": name,
+        "officialDetailCode": "12345678",
+        "canonicalDetailName": "detail-alpha",
+    }
+
+
+def _search_result(code, name="unit-alpha", detail="detail-alpha"):
+    return {
+        "id": code,
+        "text": name,
+        "path": {"small": "small-alpha", "sub": detail},
+    }
+
+
+def test_mcp_search_requires_full_catalog_code_and_canonical_unit_identity(mocker):
+    catalog = _synthetic_catalog_unit()
+    detail = _install_synthetic_unit_catalog(mocker, [catalog])
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={"results": [_search_result(catalog["ncsClCd"])]},
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([detail["name"]], max_units=1)
+
+    assert len(rows) == 1
+    assert rows[0]["officialUnitBaseCode"] == "1234567801"
+    assert rows[0]["officialUnitName"] == "unit-alpha"
+    assert rows[0]["mcpUnitName"] == "unit-alpha"
+    assert rows[0]["unitResolutionKind"] == "catalog_full_code_exact"
+    assert rows[0]["unitVersionCompatible"] is False
+    assert rows[0]["catalogUnitCodes"] == [catalog["ncsClCd"]]
+
+
+def test_mcp_search_rejects_exact_catalog_code_with_name_mismatch_without_fallback(mocker):
+    catalog = _synthetic_catalog_unit()
+    detail = _install_synthetic_unit_catalog(mocker, [catalog])
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                _search_result(catalog["ncsClCd"], name="renamed unit"),
+            ]
+        },
+    )
+
+    assert ncs_mcp_client.search_units_by_detail([detail["name"]]) == []
+
+
+def test_mcp_search_rejects_duplicated_full_catalog_code(mocker):
+    catalog = _synthetic_catalog_unit()
+    duplicate = {**catalog, "compeUnitName": "conflicting unit"}
+    detail = _install_synthetic_unit_catalog(mocker, [catalog, duplicate])
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={"results": [_search_result(catalog["ncsClCd"])]},
+    )
+
+    assert ncs_mcp_client.search_units_by_detail([detail["name"]]) == []
+
+
+def test_mcp_search_rejects_duplicate_exact_catalog_code_identity(mocker):
+    catalog_rows = [
+        _synthetic_catalog_unit("1234567801_25v1", name="unit-alpha"),
+        _synthetic_catalog_unit("1234567801_25v1", name="unit-alpha"),
+    ]
+    detail = _install_synthetic_unit_catalog(mocker, catalog_rows)
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={"results": [_search_result("1234567801_25v1")]},
+    )
+
+    assert ncs_mcp_client.search_units_by_detail([detail["name"]]) == []
+
+
+def test_mcp_search_allows_only_catalog_proven_base_version_compatibility(mocker):
+    catalog_rows = [
+        _synthetic_catalog_unit("1234567801_24v1"),
+        _synthetic_catalog_unit("1234567801_25v1"),
+    ]
+    detail = _install_synthetic_unit_catalog(mocker, catalog_rows)
+    mcp_code = "1234567801_26v9"
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={"results": [_search_result(mcp_code)]},
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([detail["name"]])
+
+    assert [row["ncsClCd"] for row in rows] == [mcp_code]
+    assert rows[0]["unitResolutionKind"] == "catalog_base_version_compatible"
+    assert rows[0]["catalogUnitCodes"] == [
+        "1234567801_24v1",
+        "1234567801_25v1",
+    ]
+    assert rows[0]["unitVersionCompatible"] is True
+
+
+def test_mcp_search_rejects_base_version_fallback_when_same_base_has_multiple_names(mocker):
+    catalog_rows = [
+        _synthetic_catalog_unit("1234567801_24v1", name="unit-alpha"),
+        _synthetic_catalog_unit("1234567801_25v1", name="unit-beta"),
+    ]
+    detail = _install_synthetic_unit_catalog(mocker, catalog_rows)
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={"results": [_search_result("1234567801_26v1", name="unit-alpha")]},
+    )
+
+    assert ncs_mcp_client.search_units_by_detail([detail["name"]]) == []
+
+
+def test_mcp_search_invalid_row_does_not_consume_identity_or_limit(mocker):
+    catalog = _synthetic_catalog_unit()
+    detail = _install_synthetic_unit_catalog(mocker, [catalog])
+    compatible_code = "1234567801_26v1"
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                _search_result(catalog["ncsClCd"], name="renamed unit"),
+                _search_result(compatible_code),
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([detail["name"]], max_units=1)
+
+    assert [row["ncsClCd"] for row in rows] == [compatible_code]
+
+
+def test_mcp_search_dedupes_versions_by_first_mcp_rank_without_suffix_inference(mocker):
+    catalog_rows = [
+        _synthetic_catalog_unit("1234567801_25v1"),
+        _synthetic_catalog_unit("1234567801_24v1"),
+    ]
+    detail = _install_synthetic_unit_catalog(mocker, catalog_rows)
+    first_mcp_code = "1234567801_26v1"
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "results": [
+                _search_result(first_mcp_code),
+                _search_result("1234567801_25v1"),
+            ]
+        },
+    )
+
+    rows = ncs_mcp_client.search_units_by_detail([detail["name"]], max_units=5)
+
+    assert [row["ncsClCd"] for row in rows] == [first_mcp_code]
+    assert rows[0]["unitResolutionKind"] == "catalog_base_version_compatible"
+
+
+def test_mcp_search_fails_loudly_when_bundled_detail_catalog_is_unavailable(mocker):
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_details_by_name_key",
+        return_value={},
+    )
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_unit_catalog_rows",
+        return_value=(_synthetic_catalog_unit(),),
+    )
+
+    with pytest.raises(ncs_mcp_client.NcsMcpError, match="detail catalog"):
+        ncs_mcp_client.search_units_by_detail(["detail-alpha"])
+
+
+def test_ncs_units_options_reports_catalog_failure_instead_of_empty_result(
+    mocker, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("NCS_MCP_URL", "http://ncs-mcp.test/mcp")
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_details_by_name_key",
+        return_value={
+            ncs_mcp_client._norm("detail-alpha"): (
+                {"code": "12345678", "name": "detail-alpha"},
+            )
+        },
+    )
+    mocker.patch(
+        "app.services.ncs_mcp_client._official_unit_catalog_rows",
+        return_value=(),
+    )
+
+    with TestClient(main.app) as client:
+        response = client.get("/api/ncs/units/options", params={"q": "detail-alpha"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "ncs_mcp_search_failed"
 
 
 def test_legacy_ncs_sclass_ksa_endpoint_disabled_by_default(monkeypatch):

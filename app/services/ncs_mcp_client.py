@@ -415,6 +415,25 @@ def _active_official_detail_codes() -> frozenset[str]:
     )
 
 
+def _require_official_catalogs_for_unit_search() -> dict[str, tuple[dict[str, str], ...]]:
+    """Raise when bundled validation catalogs are unavailable.
+
+    Detail-to-unit search uses the shipped catalogs as a fail-closed gate for
+    remote MCP rows.  If the catalogs disappear or normalize to zero rows,
+    returning an ordinary no-match result would hide a runtime defect.
+    """
+
+    detail_index = _official_details_by_name_key()
+    if not detail_index:
+        global _last_error
+        _last_error = "ncs_detail_catalog_unavailable"
+        raise NcsMcpError("Bundled NCS detail catalog is unavailable")
+    if not _official_unit_catalog_rows():
+        _last_error = "ncs_unit_catalog_unavailable"
+        raise NcsMcpError("Bundled NCS unit catalog is unavailable")
+    return detail_index
+
+
 def _official_detail_from_ordinal_unit_decoration(
     source_name: str,
     detail_index: dict[str, tuple[dict[str, str], ...]],
@@ -505,23 +524,23 @@ def classify_official_detail_names(
 
 
 @lru_cache(maxsize=1)
-def _official_units_by_name_key() -> dict[str, tuple[dict[str, Any], ...]]:
-    """Load the deployable exact-name index for all official NCS units.
+def _official_unit_catalog_rows() -> tuple[dict[str, Any], ...]:
+    """Load normalized immutable official-unit catalog rows once.
 
-    This catalog is only an immutable lookup index.  A row becomes an
-    authoritative application result only after its ten-digit code prefix is
-    checked against an exact-resolved detail and the code is subsequently
-    served by ``ncs_unit_detail`` for KSA.
+    The catalog deliberately retains every published version.  Callers may
+    verify an exact full code first and may only use a base-code match when
+    the catalog proves the same canonical unit name and detail ownership.
+    It must never be used to infer a "latest" suffix.
     """
 
     path = Path(__file__).resolve().parents[1] / "data" / "ncs_unit_catalog.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
+        return ()
     rows = payload.get("units") if isinstance(payload, dict) else []
     active_detail_codes = _active_official_detail_codes()
-    output: dict[str, list[dict[str, Any]]] = {}
+    output: list[dict[str, Any]] = []
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
             continue
@@ -529,18 +548,18 @@ def _official_units_by_name_key() -> dict[str, tuple[dict[str, Any], ...]]:
         name = str(row.get("name") or "").strip()
         detail_code = str(row.get("detail_code") or "").strip()
         detail_name = str(row.get("detail_name") or "").strip()
-        key = _norm(name)
         if not (
-            key
+            _norm(name)
             and re.fullmatch(r"\d{10}(?:_[0-9A-Za-z]+)?", code)
             and re.fullmatch(r"\d{8}", detail_code)
             and code.startswith(detail_code)
             and detail_code in active_detail_codes
         ):
             continue
-        output.setdefault(key, []).append(
+        output.append(
             {
                 "ncsClCd": code,
+                "officialUnitBaseCode": code.split("_", 1)[0],
                 "compeUnitName": name,
                 "ncsSubdCdnm": detail_name,
                 "canonicalDetailName": detail_name,
@@ -550,7 +569,251 @@ def _official_units_by_name_key() -> dict[str, tuple[dict[str, Any], ...]]:
                 "isExactUnitNameMatch": True,
             }
         )
+    return tuple(output)
+
+
+@lru_cache(maxsize=1)
+def _official_units_by_name_key() -> dict[str, tuple[dict[str, Any], ...]]:
+    """Return immutable catalog rows keyed by normalized official name."""
+
+    output: dict[str, list[dict[str, Any]]] = {}
+    for row in _official_unit_catalog_rows():
+        output.setdefault(_norm(row["compeUnitName"]), []).append(row)
     return {key: tuple(items) for key, items in output.items()}
+
+
+@lru_cache(maxsize=1)
+def _official_units_by_full_code() -> dict[str, tuple[dict[str, Any], ...]]:
+    """Return immutable catalog rows keyed by their complete published code."""
+
+    output: dict[str, list[dict[str, Any]]] = {}
+    for row in _official_unit_catalog_rows():
+        output.setdefault(str(row["ncsClCd"]), []).append(row)
+    return {key: tuple(items) for key, items in output.items()}
+
+
+@lru_cache(maxsize=1)
+def _official_units_by_base_code() -> dict[str, tuple[dict[str, Any], ...]]:
+    """Return all catalog versions keyed by stable ten-digit unit identity."""
+
+    output: dict[str, list[dict[str, Any]]] = {}
+    for row in _official_unit_catalog_rows():
+        output.setdefault(str(row["officialUnitBaseCode"]), []).append(row)
+    return {key: tuple(items) for key, items in output.items()}
+
+
+@lru_cache(maxsize=1)
+def _official_unit_base_codes_by_detail_code() -> dict[str, frozenset[str]]:
+    """Return the complete bundled unit identity set for each active detail.
+
+    The set is used only to detect an incomplete name-search response.  Every
+    recovery row still has to pass the same canonical path, code ownership,
+    and full/base catalog checks as an ordinary MCP name-search row.
+    """
+
+    output: dict[str, set[str]] = {}
+    for row in _official_unit_catalog_rows():
+        detail_code = str(row["officialDetailCode"])
+        output.setdefault(detail_code, set()).add(
+            str(row["officialUnitBaseCode"])
+        )
+    return {
+        detail_code: frozenset(base_codes)
+        for detail_code, base_codes in output.items()
+    }
+
+
+@lru_cache(maxsize=1)
+def _official_unit_base_counts_by_detail_key() -> dict[str, int]:
+    """Count unique stable unit identities per official detail label."""
+
+    bases_by_detail: dict[str, set[str]] = {}
+    for row in _official_unit_catalog_rows():
+        key = _norm(row.get("canonicalDetailName"))
+        base_code = str(row.get("officialUnitBaseCode") or "").strip()
+        if not key or not base_code:
+            continue
+        bases_by_detail.setdefault(key, set()).add(base_code)
+    return {key: len(base_codes) for key, base_codes in bases_by_detail.items()}
+
+
+def _catalog_unit_matches_mcp(
+    catalog_row: dict[str, Any],
+    *,
+    mcp_unit_name: str,
+    path_sub_name: str,
+    official_detail_code: str,
+) -> bool:
+    """Require the catalog's canonical unit and detail identities to agree."""
+
+    return (
+        _norm(catalog_row.get("compeUnitName")) == _norm(mcp_unit_name)
+        and str(catalog_row.get("officialDetailCode") or "")
+        == official_detail_code
+        and _norm(catalog_row.get("canonicalDetailName")) == _norm(path_sub_name)
+    )
+
+
+def _resolve_catalog_unit(
+    *,
+    mcp_code: str,
+    mcp_unit_name: str,
+    path_sub_name: str,
+    official_detail_code: str,
+) -> dict[str, Any] | None:
+    """Resolve one MCP unit without accepting stale or renamed identities.
+
+    A present full catalog code is authoritative: a name/detail disagreement
+    rejects that row and intentionally cannot fall through to base-code
+    matching.  When a full code is absent (for example an MCP catalog version
+    released after the bundled static catalog), only one matching stable base
+    identity is allowed.  No suffix ordering or "newest version" heuristic is
+    involved.
+    """
+
+    exact_rows = _official_units_by_full_code().get(mcp_code, ())
+    if exact_rows:
+        # A duplicated published code is a corrupt identity even when only one
+        # duplicate happens to match the MCP text. Never select through that
+        # ambiguity; the catalog audit reports the underlying defect.
+        if len(exact_rows) != 1:
+            return None
+        matching_rows = [
+            row
+            for row in exact_rows
+            if _catalog_unit_matches_mcp(
+                row,
+                mcp_unit_name=mcp_unit_name,
+                path_sub_name=path_sub_name,
+                official_detail_code=official_detail_code,
+            )
+        ]
+        if len(matching_rows) != 1:
+            return None
+        resolved = matching_rows[0]
+        resolution_kind = "catalog_full_code_exact"
+    else:
+        base_code = mcp_code.split("_", 1)[0]
+        base_rows = _official_units_by_base_code().get(base_code, ())
+        base_identities = {
+            (
+                str(row["officialUnitBaseCode"]),
+                _norm(row["compeUnitName"]),
+                str(row["officialDetailCode"]),
+                _norm(row["canonicalDetailName"]),
+            )
+            for row in base_rows
+        }
+        if len(base_identities) != 1:
+            return None
+        matching_rows = [
+            row
+            for row in base_rows
+            if _catalog_unit_matches_mcp(
+                row,
+                mcp_unit_name=mcp_unit_name,
+                path_sub_name=path_sub_name,
+                official_detail_code=official_detail_code,
+            )
+        ]
+        if not matching_rows:
+            return None
+        resolved = matching_rows[0]
+        resolution_kind = "catalog_base_version_compatible"
+
+    semantic_rows = [
+        row
+        for row in _official_units_by_base_code().get(
+            str(resolved["officialUnitBaseCode"]), ()
+        )
+        if _catalog_unit_matches_mcp(
+            row,
+            mcp_unit_name=mcp_unit_name,
+            path_sub_name=path_sub_name,
+            official_detail_code=official_detail_code,
+        )
+    ]
+    return {
+        "officialUnitBaseCode": str(resolved["officialUnitBaseCode"]),
+        "officialUnitName": str(resolved["compeUnitName"]),
+        "unitResolutionKind": resolution_kind,
+        "unitCatalogVerified": True,
+        "unitVersionCompatible": resolution_kind
+        == "catalog_base_version_compatible",
+        # Preserve source-catalog order. It is audit evidence, not a version
+        # recommendation or a basis for inferring the latest suffix.
+        "catalogUnitCodes": list(
+            dict.fromkeys(str(row["ncsClCd"]) for row in semantic_rows)
+        ),
+    }
+
+
+def resolve_official_unit_selection(
+    code: str,
+    unit_name: str,
+    detail_name: str,
+) -> dict[str, Any] | None:
+    """Fail closed unless one selected unit is owned by one active detail.
+
+    Client-submitted ``selected_ncs`` rows are untrusted even when they were
+    originally rendered from an MCP response.  Re-resolve their code, unit
+    name, and detail name against the bundled immutable catalogs before they
+    can drive KSA lookup or generation.  A code for a newer remote catalog
+    version may reuse a proven ten-digit base identity, but no suffix ordering
+    or latest-version inference is allowed.
+    """
+
+    input_code = str(code or "").strip()
+    input_unit_name = str(unit_name or "").strip()
+    input_detail_name = str(detail_name or "").strip()
+    if not (
+        re.fullmatch(r"\d{10}(?:_[0-9A-Za-z]+)?", input_code)
+        and _norm(input_unit_name)
+        and _norm(input_detail_name)
+    ):
+        return None
+
+    detail_code = input_code[:8]
+    detail_rows = [
+        row
+        for rows in _official_details_by_name_key().values()
+        for row in rows
+        if str(row.get("code") or "") == detail_code
+    ]
+    # More than one active row for a code is catalog corruption, even if the
+    # duplicate display names happen to normalize alike.  Do not silently
+    # choose one or let a client-supplied name break the tie.
+    if len(detail_rows) != 1:
+        return None
+    official_detail = detail_rows[0]
+    if _norm(official_detail.get("name")) != _norm(input_detail_name):
+        return None
+
+    unit_resolution = _resolve_catalog_unit(
+        mcp_code=input_code,
+        mcp_unit_name=input_unit_name,
+        path_sub_name=str(official_detail["name"]),
+        official_detail_code=detail_code,
+    )
+    if unit_resolution is None:
+        return None
+
+    canonical_unit_name = str(unit_resolution["officialUnitName"])
+    canonical_detail_name = str(official_detail["name"])
+    return {
+        # Preserve the exact submitted full code.  For a proven base-version
+        # fallback it is intentionally distinct from ``catalogUnitCodes``.
+        "ncsClCd": input_code,
+        "compeUnitName": canonical_unit_name,
+        "ncsSubdCdnm": canonical_detail_name,
+        "canonicalDetailName": canonical_detail_name,
+        "officialDetailCode": detail_code,
+        "officialDetailName": canonical_detail_name,
+        "detailResolutionKind": "selected_catalog_verified",
+        "detailResolutionRule": "selected_catalog_verified",
+        **unit_resolution,
+        "source": "selected-ncs-catalog-verified",
+    }
 
 
 def exact_official_units_by_name(names: list[str]) -> list[dict[str, Any]]:
@@ -775,11 +1038,28 @@ def _split_detail_terms(values: list[str]) -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
     for value in values or []:
+        raw_value = str(value or "").strip()
+        whole_matches = _official_details_by_name_key().get(_norm(raw_value), ())
+        # Some official detail labels contain the same punctuation used by the
+        # UI for multi-value transport (for example commas inside parentheses).
+        # Preserve the whole value only when it resolves to one official name
+        # that itself contains a transport delimiter; otherwise a genuine
+        # ``detail A, detail B`` input must still be split.
+        if (
+            raw_value
+            and len(whole_matches) == 1
+            and re.search(r"[,;/|]", whole_matches[0]["name"])
+        ):
+            key = _norm(raw_value)
+            if key not in seen:
+                seen.add(key)
+                terms.append(raw_value)
+            continue
         protected_slash = "\ufff0"
         split_value = re.sub(
             r"(?<=[A-Za-z])/(?=[A-Za-z])",
             protected_slash,
-            str(value or ""),
+            raw_value,
         )
         for part in re.split(r"[\n,;/|]+", split_value):
             part = part.replace(protected_slash, "/")
@@ -861,10 +1141,16 @@ def _detail_query_names(name: str) -> list[str]:
     return names
 
 
-def _detail_search_query_limit(max_units: int) -> int:
+def _detail_search_query_limit(max_units: int, detail_name: str) -> int:
     # The MCP ranker can place the first exact-detail row well below the
     # caller's final output cap.  Keep discovery deep and bound the retained
     # rows separately so a small UI limit does not turn into a false miss.
+    detail_key = _norm(detail_name)
+    if (
+        len(detail_key) <= 2
+        or _official_unit_base_counts_by_detail_key().get(detail_key, 0) >= 8
+    ):
+        return 500
     return 200
 
 
@@ -932,12 +1218,16 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
     # Call the versioned generation tool directly. Full discovery remains a
     # readiness concern and must not add a cold-path round trip here.
     limit = max(1, int(max_units or 80))
+    detail_index = _require_official_catalogs_for_unit_search()
     details = _split_detail_terms(detail_names)
     if len(details) > 64:
         raise NcsMcpError("NCS detail term limit exceeded")
     groups: list[list[dict[str, Any]]] = []
     retained_count = 0
-    seen: set[str] = set()
+    # A stable ten-digit ability-unit code is the semantic identity.  Several
+    # published suffixes can describe that same identity; retain the first MCP
+    # ranked row only after all validation succeeds.
+    seen_semantic_identities: set[str] = set()
     for detail in details:
         name = str(detail or "").strip()
         if not name:
@@ -947,7 +1237,11 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
         for query_name in _detail_query_names(name):
             result = _call_tool(
                 "ncs_search",
-                {"query": query_name, "scope": "unit", "limit": _detail_search_query_limit(limit)},
+                {
+                    "query": query_name,
+                    "scope": "unit",
+                    "limit": _detail_search_query_limit(limit, name),
+                },
             )
             rows = result.get("results") or result.get("units") or []
             if isinstance(rows, dict):
@@ -971,9 +1265,7 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 base_code = code.split("_", 1)[0]
                 official_details = [
                     detail
-                    for detail in _official_details_by_name_key().get(
-                        _norm(sub_name), ()
-                    )
+                    for detail in detail_index.get(_norm(sub_name), ())
                     if detail["code"] == base_code[:8]
                 ]
                 # A current code alone is insufficient: the MCP result's
@@ -983,9 +1275,22 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 # treated as an exact reviewed-detail match.
                 if len(official_details) != 1:
                     continue
-                if not code or code in seen:
+                mcp_unit_name = str(row.get("text") or row.get("unit_name") or "").strip()
+                catalog_resolution = _resolve_catalog_unit(
+                    mcp_code=code,
+                    mcp_unit_name=mcp_unit_name,
+                    path_sub_name=sub_name,
+                    official_detail_code=official_details[0]["code"],
+                )
+                # Catalog validation intentionally happens before seen/cap
+                # accounting so malformed, stale, or renamed MCP rows cannot
+                # suppress a later valid row for the same semantic identity.
+                if catalog_resolution is None:
                     continue
-                seen.add(code)
+                semantic_identity = catalog_resolution["officialUnitBaseCode"]
+                if semantic_identity in seen_semantic_identities:
+                    continue
+                seen_semantic_identities.add(semantic_identity)
                 is_alias = unicodedata.normalize(
                     "NFKC", query_name
                 ).casefold().strip() != unicodedata.normalize(
@@ -997,7 +1302,7 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                 group.append(
                     {
                         "ncsClCd": code,
-                        "compeUnitName": str(row.get("text") or row.get("unit_name") or "").strip(),
+                        "compeUnitName": mcp_unit_name,
                         "compeUnitLevel": str(row.get("level") or "").strip(),
                         "compeUnitDef": str(row.get("api_definition") or row.get("definition") or "").strip(),
                         "ncsLclasCdnm": _path_value(path, "major", "major_name"),
@@ -1011,6 +1316,8 @@ def search_units_by_detail(detail_names: list[str], max_units: int = 80) -> list
                         "officialDetailName": official_detail["name"],
                         "detailResolutionKind": resolution_kind,
                         "detailResolutionRule": resolution_rule,
+                        "mcpUnitName": mcp_unit_name,
+                        **catalog_resolution,
                         "source": "ncs-mcp-detail-alias" if is_alias else "ncs-mcp",
                         "matchScore": 1.0,
                     }

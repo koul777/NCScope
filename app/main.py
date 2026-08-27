@@ -72,6 +72,7 @@ from app.services.ncs_mcp_client import (
     derive_detail_candidates_from_exact_ability_scopes,
     exact_official_units_by_name,
     ncs_mcp_status,
+    resolve_official_unit_selection,
     search_units_by_detail,
     suggest_units_by_text,
     use_detached_work_lease,
@@ -1915,6 +1916,84 @@ def _detail_lookup_coverage(
     matched = [term for key, term in requested.items() if key in covered_keys]
     unmatched = [term for key, term in requested.items() if key not in covered_keys]
     return matched, unmatched
+
+
+_NCS_LINK_PROVENANCE_TEXT_FIELDS = (
+    "matchedDetailName",
+    "resolvedDetailName",
+    "detailQueryName",
+    "officialDetailCode",
+    "officialDetailName",
+    "detailResolutionKind",
+    "detailResolutionRule",
+    "mcpUnitName",
+    "officialUnitBaseCode",
+    "officialUnitName",
+    "unitResolutionKind",
+    "source",
+    "requiredAbilityUnitName",
+    "requiredAbilityUnitMatch",
+)
+
+
+def _ncs_link_provenance(row: Any) -> dict[str, Any]:
+    """Copy only server-produced detail/unit link evidence from one row."""
+
+    if not isinstance(row, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for field in _NCS_LINK_PROVENANCE_TEXT_FIELDS:
+        if field in row:
+            output[field] = str(row.get(field) or "").strip()
+    for field in ("unitCatalogVerified", "unitVersionCompatible"):
+        if isinstance(row.get(field), bool):
+            output[field] = row[field]
+    if isinstance(row.get("matchScore"), (int, float)) and not isinstance(
+        row.get("matchScore"), bool
+    ):
+        output["matchScore"] = float(row["matchScore"])
+    if isinstance(row.get("catalogUnitCodes"), list):
+        output["catalogUnitCodes"] = list(
+            dict.fromkeys(
+                str(code or "").strip()
+                for code in row["catalogUnitCodes"][:20]
+                if str(code or "").strip()
+            )
+        )
+    return output
+
+
+def _reattach_ncs_link_provenance(
+    matches: list[dict[str, Any]],
+    source_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Restore validated link evidence after ranking rebuilds row dictionaries."""
+
+    provenance_by_code: dict[str, dict[str, Any]] = {}
+    ambiguous_codes: set[str] = set()
+    for row in source_rows or []:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
+        if not code or code in ambiguous_codes:
+            continue
+        provenance = _ncs_link_provenance(row)
+        if code in provenance_by_code and provenance_by_code[code] != provenance:
+            provenance_by_code.pop(code, None)
+            ambiguous_codes.add(code)
+            continue
+        provenance_by_code[code] = provenance
+    return [
+        {
+            **match,
+            **provenance_by_code.get(
+                str(match.get("ncsClCd") or match.get("unit_code") or "").strip(),
+                {},
+            ),
+        }
+        for match in matches or []
+        if isinstance(match, dict)
+    ]
 
 
 def _merge_sclass_terms(
@@ -15717,35 +15796,11 @@ async def jd_strategy_upload(
         ncs_matches,
         ncs_items,
     )
-    if reviewed_ability_units and ncs_matches:
-        # Ranking may rebuild row dictionaries. Re-attach the exact-lock audit
-        # fields by official unit code so the response proves which reviewed
-        # cell selected every KSA lookup target.
-        locked_by_code = {
-            str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip(): unit
-            for unit in ncs_items
-            if str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
-        }
-        ncs_matches = [
-            {
-                **match,
-                "requiredAbilityUnitName": str(
-                    locked_by_code.get(
-                        str(match.get("ncsClCd") or match.get("unit_code") or "").strip(),
-                        {},
-                    ).get("requiredAbilityUnitName")
-                    or ""
-                ).strip(),
-                "requiredAbilityUnitMatch": str(
-                    locked_by_code.get(
-                        str(match.get("ncsClCd") or match.get("unit_code") or "").strip(),
-                        {},
-                    ).get("requiredAbilityUnitMatch")
-                    or ""
-                ).strip(),
-            }
-            for match in ncs_matches
-        ]
+    if ncs_matches and ncs_items:
+        # Ranking and safe fallbacks may rebuild row dictionaries. Re-attach
+        # only the evidence created by the server-side MCP/catalog join so the
+        # response keeps an auditable detail -> unit chain.
+        ncs_matches = _reattach_ncs_link_provenance(ncs_matches, ncs_items)
 
     # NCS 평가요소를 수집해 OpenAI 입력에 함께 전달한다.
     # 질문계획에서 실제 배정될 능력단위만 조회한 뒤, JD 핵심 +
@@ -16139,23 +16194,52 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
 
     ncs_matches: list[dict[str, Any]] = []
     seen_codes: set[str] = set()
-    for row in selected_ncs:
+    invalid_selections: list[dict[str, Any]] = []
+    for index, row in enumerate(selected_ncs):
         if not isinstance(row, dict):
+            invalid_selections.append({"index": index, "reason": "row_not_object"})
             continue
         code = str(row.get("ncsClCd", "")).strip()
-        if not code or code in seen_codes:
+        if not code:
+            invalid_selections.append({"index": index, "reason": "code_missing"})
+            continue
+        if code in seen_codes:
+            invalid_selections.append(
+                {"index": index, "ncsClCd": code, "reason": "duplicate_code"}
+            )
             continue
         seen_codes.add(code)
+        verified = resolve_official_unit_selection(
+            code,
+            str(row.get("compeUnitName", "")),
+            str(row.get("ncsSubdCdnm", "")),
+        )
+        if verified is None:
+            invalid_selections.append(
+                {"index": index, "ncsClCd": code, "reason": "catalog_mismatch"}
+            )
+            continue
         ncs_matches.append(
             {
-                "ncsClCd": code,
-                "compeUnitName": str(row.get("compeUnitName", "")).strip() or f"NCS-{code}",
+                **verified,
                 "compeUnitLevel": str(row.get("compeUnitLevel", "")).strip(),
-                "ncsSubdCdnm": str(row.get("ncsSubdCdnm", "")).strip(),
                 "compeUnitDef": str(row.get("compeUnitDef", "")).strip(),
                 "score": 1.0,
                 "matched_keywords": [code],
             }
+        )
+    if invalid_selections:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "selected_ncs_official_identity_mismatch",
+                "message": (
+                    "선택한 NCS 능력단위의 코드·명칭·세분류 연결을 "
+                    "공식 카탈로그에서 확인할 수 없습니다."
+                ),
+                "invalid_items": invalid_selections,
+                "retryable": False,
+            },
         )
     if not ncs_matches:
         raise HTTPException(status_code=400, detail="selected_ncs has no valid ncsClCd")

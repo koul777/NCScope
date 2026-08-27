@@ -14,6 +14,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          # Historical release evidence is verified against the immutable
+          # release commit, while main can continue with post-release work.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -44,7 +49,11 @@ jobs:
             app/services/question_generation.py \
             app/services/kordoc_parser.py \
             app/services/external_api.py \
-            scripts/benchmark_alio_jd.py
+            scripts/benchmark_alio_jd.py \
+            scripts/audit_ncs_detail_connections.py
+
+      - name: Audit NCS detail-to-unit connections
+        run: python scripts/audit_ncs_detail_connections.py
 
       - name: Run tests
         env:
