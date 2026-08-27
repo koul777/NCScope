@@ -243,6 +243,7 @@ def test_vercel_runtime_uses_ephemeral_sqlite_and_small_upload_boundary() -> Non
     assert environment["INTERVIEW_GENERATION_PROVIDER"] == "openai_api"
     assert environment["NCS_MCP_URL"] == "https://ncscope-ncs-mcp.vercel.app/api/mcp"
     assert environment["NCS_MCP_TIMEOUT_SEC"] == "5"
+    assert environment["NCS_MCP_DETAIL_CONCURRENCY"] == "4"
     assert environment["NCS_MCP_KSA_CONCURRENCY"] == "4"
     assert environment["KSA_RANK_MAX_UNITS"] == "5"
     assert environment["OPENAI_NET_CHECK_ENABLED"] == "false"

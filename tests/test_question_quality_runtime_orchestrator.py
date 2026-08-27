@@ -4,7 +4,9 @@ import pytest
 
 from app.services.question_quality_orchestrator import (
     evaluate_ksa_measurement,
+    is_history_duplicate,
     orchestrate_question_set,
+    question_scenario_signature,
 )
 from app.services.question_realism import evaluate_question_realism
 from app.main import (
@@ -620,6 +622,36 @@ def test_orchestrator_repairs_history_duplicate_and_rechecks() -> None:
     assert metadata["status"] == "passed"
     assert metadata["repaired_count"] == 1
     assert metadata["unresolved_count"] == 0
+
+
+def test_history_duplicate_ignores_shared_printable_material_appendix() -> None:
+    shared_appendix = (
+        " [제공자료] 요구사항 목록/판단 사실 1=긴급 요청 1건; "
+        "추가 제약 카드/운영 제약=성과지표 원인 자료와 안전·보안 기준을 검토함; "
+        "주제 축 카드/분석 초점=조직학습·인수인계"
+    )
+    current = (
+        "[발표과제] 성과지표는 악화됐지만 원인 자료가 불충분한 조건에서 "
+        "현황과 대안을 발표해 주세요."
+        + shared_appendix
+    )
+    previous = (
+        "[발표과제] 안전·보안 기준을 지키면서 긴급 요청을 처리해야 하는 조건에서 "
+        "현황과 대안을 발표해 주세요."
+        + shared_appendix
+    )
+
+    assert question_scenario_signature(current) == "metric_evidence_gap"
+    assert question_scenario_signature(previous) == "security_urgent_request"
+    assert is_history_duplicate(current, [previous]) is False
+
+
+def test_history_duplicate_matches_same_authored_question_across_material_appendices() -> None:
+    stem = "[발표과제] 자료 누락 원인을 진단하고 개선 대안을 발표해 주세요."
+    current = stem + " [제공자료] 자료 A/상태=최신"
+    previous = stem + " [제공자료] 자료 A/상태=이전"
+
+    assert is_history_duplicate(current, [previous]) is True
 
 
 def test_orchestrator_can_require_a_logged_repair_without_faking_history() -> None:

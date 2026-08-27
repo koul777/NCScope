@@ -2574,6 +2574,133 @@ def test_mcp_search_result_retains_coverage_for_groups_hidden_by_global_cap(
     assert all(row["detailRetrievalCapLimited"] is True for row in coverage["details"])
 
 
+@pytest.mark.parametrize("max_units", [1, 2, 10])
+def test_parallel_mcp_detail_search_matches_sequential_order_and_coverage(
+    monkeypatch,
+    mocker,
+    max_units,
+):
+    details = ["인사", "프로젝트관리", "총무"]
+    rows_by_query = {
+        detail: _catalog_units_for_detail(detail)
+        for detail in details
+    }
+
+    def fake_call_tool(_name, arguments):
+        return {
+            "results": [
+                _mcp_catalog_row(row)
+                for row in rows_by_query.get(arguments["query"], [])
+            ]
+        }
+
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        side_effect=fake_call_tool,
+    )
+    monkeypatch.setenv("NCS_MCP_DETAIL_CONCURRENCY", "1")
+    sequential = ncs_mcp_client.search_units_by_detail_result(
+        details,
+        max_units=max_units,
+    )
+
+    monkeypatch.setenv("NCS_MCP_DETAIL_CONCURRENCY", "3")
+    parallel = ncs_mcp_client.search_units_by_detail_result(
+        details,
+        max_units=max_units,
+    )
+
+    assert parallel == sequential
+
+
+def test_parallel_mcp_detail_search_runs_independent_details_concurrently(
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setenv("NCS_MCP_DETAIL_CONCURRENCY", "3")
+    details = ["인사", "프로젝트관리", "총무"]
+    rows_by_query = {
+        detail: _catalog_units_for_detail(detail)
+        for detail in details
+    }
+    active = 0
+    max_active = 0
+    active_lock = threading.Lock()
+
+    def fake_call_tool(_name, arguments):
+        nonlocal active, max_active
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.03)
+            return {
+                "results": [
+                    _mcp_catalog_row(row)
+                    for row in rows_by_query.get(arguments["query"], [])
+                ]
+            }
+        finally:
+            with active_lock:
+                active -= 1
+
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        side_effect=fake_call_tool,
+    )
+
+    result = ncs_mcp_client.search_units_by_detail_result(
+        details,
+        max_units=1000,
+    )
+
+    assert max_active >= 2
+    assert [
+        row["sourceDetailName"]
+        for row in result["exactCoverage"]["details"]
+    ] == details
+    assert [row["matchedDetailName"] for row in result["items"][:3]] == details
+
+
+def test_parallel_mcp_detail_search_returns_failure_without_waiting_for_active_peer(
+    mocker,
+):
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    slow_finished = threading.Event()
+
+    def mixed_search(details, _limit):
+        if details == ["fast-failure"]:
+            assert slow_started.wait(timeout=1.0)
+            raise ncs_mcp_client.NcsMcpError("primary fast detail failure")
+        slow_started.set()
+        try:
+            assert release_slow.wait(timeout=2.0)
+        finally:
+            slow_finished.set()
+        return {"items": [], "exactCoverage": {"details": []}}
+
+    mocker.patch(
+        "app.services.ncs_mcp_client._search_units_by_detail_result",
+        side_effect=mixed_search,
+    )
+    started_at = time.monotonic()
+    try:
+        with pytest.raises(
+            ncs_mcp_client.NcsMcpError,
+            match="primary fast detail failure",
+        ):
+            ncs_mcp_client._parallel_detail_search_results(
+                ["fast-failure", "slow-peer"],
+                limit=10,
+                concurrency=2,
+            )
+        assert time.monotonic() - started_at < 0.5
+    finally:
+        release_slow.set()
+        assert slow_finished.wait(timeout=1.0)
+
+
 def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
     query = "\uacbd\uc601\uae30\ud68d"
     catalog_row = _catalog_units_for_detail(query)[0]
@@ -3351,6 +3478,69 @@ def test_mcp_suggest_units_by_text_marks_exact_unit_name_match(mocker):
     assert rows[0]["isExactDetailMatch"] is False
     assert rows[0]["isExactUnitNameMatch"] is True
     assert rows[0]["canonicalDetailName"] == "\uce74\uc9c0\ub178\uc6b4\uc601\uad00\ub9ac"
+
+
+def test_mcp_suggestions_round_robin_across_reviewed_terms(mocker):
+    terms = ["인사", "프로젝트관리"]
+    rows_by_query = {
+        term: _catalog_units_for_detail(term)[:3]
+        for term in terms
+    }
+    calls: list[str] = []
+
+    def fake_call_tool(_name, arguments):
+        query = arguments["query"]
+        calls.append(query)
+        return {
+            "results": [
+                _mcp_catalog_row(row)
+                for row in rows_by_query[query]
+            ]
+        }
+
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        side_effect=fake_call_tool,
+    )
+
+    rows = ncs_mcp_client.suggest_units_by_text(terms, max_units=4)
+
+    assert calls == terms
+    assert [row["matchedDetailName"] for row in rows] == [
+        "인사",
+        "프로젝트관리",
+        "인사",
+        "프로젝트관리",
+    ]
+
+
+def test_mcp_suggestions_keep_searching_after_an_empty_earlier_term(mocker):
+    project_row = _catalog_units_for_detail("프로젝트관리")[0]
+    calls: list[str] = []
+
+    def fake_call_tool(_name, arguments):
+        query = arguments["query"]
+        calls.append(query)
+        return {
+            "results": (
+                []
+                if query == "기관 내부 표현"
+                else [_mcp_catalog_row(project_row)]
+            )
+        }
+
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        side_effect=fake_call_tool,
+    )
+
+    rows = ncs_mcp_client.suggest_units_by_text(
+        ["기관 내부 표현", "프로젝트관리"],
+        max_units=1,
+    )
+
+    assert calls == ["기관 내부 표현", "프로젝트관리"]
+    assert [row["matchedDetailName"] for row in rows] == ["프로젝트관리"]
 
 
 def test_ncs_unit_options_falls_back_to_manual_suggestions(monkeypatch, mocker):

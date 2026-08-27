@@ -4039,6 +4039,18 @@ def _compact(value: Any) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "")).lower()
 
 
+_SHARED_MATERIAL_APPENDIX_PATTERN = re.compile(
+    r"\s+\[(?:제공자료|공통자료)\]\s+.*\Z",
+    re.DOTALL,
+)
+
+
+def _authored_question_text(value: Any) -> str:
+    """Remove the shared printable case appendix before duplicate checks."""
+
+    return _SHARED_MATERIAL_APPENDIX_PATTERN.sub("", str(value or "")).strip()
+
+
 def _question_text(item: dict[str, Any]) -> str:
     return str((item or {}).get("question") or "").strip()
 
@@ -5006,7 +5018,7 @@ def evaluate_ksa_measurement(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_history_key(value: Any) -> str:
-    return _compact(value)
+    return _compact(_authored_question_text(value))
 
 
 def question_text_similarity(left: Any, right: Any) -> float:
@@ -5025,7 +5037,7 @@ def question_text_similarity(left: Any, right: Any) -> float:
 
 
 def question_scenario_signature(value: Any) -> str:
-    compact = _compact(value)
+    compact = normalize_history_key(value)
     if not compact:
         return ""
     matches = [

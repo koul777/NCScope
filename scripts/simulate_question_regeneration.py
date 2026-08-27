@@ -27,6 +27,8 @@ from app.services.question_quality_orchestrator import (  # noqa: E402
     RUNTIME_QUESTION_ORCHESTRATION_POLICY,
     evaluate_ksa_measurement,
     is_history_duplicate,
+    question_scenario_signature,
+    question_text_similarity,
 )
 
 
@@ -210,7 +212,15 @@ def run_simulation(
                 report = result.get("question_quality_report") or {}
                 question = str(questions[0].get("question") or "").strip() if questions else ""
                 measurement = evaluate_ksa_measurement(questions[0]) if questions else {"passed": False, "issues": ["empty_result"]}
-                duplicated = is_history_duplicate(question, history) if question else False
+                duplicate_match = next(
+                    (
+                        previous
+                        for previous in history
+                        if is_history_duplicate(question, [previous])
+                    ),
+                    "",
+                ) if question else ""
+                duplicated = bool(duplicate_match)
                 cycle_issues: list[str] = []
                 if len(questions) != 1:
                     cycle_issues.append("question_count")
@@ -242,6 +252,19 @@ def run_simulation(
                         "issues": list(dict.fromkeys(cycle_issues)),
                         "metadata": metadata,
                     }
+                    if duplicate_match:
+                        failure["duplicate_evidence"] = {
+                            "question": question,
+                            "matched_history_question": duplicate_match,
+                            "similarity": question_text_similarity(
+                                question,
+                                duplicate_match,
+                            ),
+                            "question_scenario": question_scenario_signature(question),
+                            "matched_scenario": question_scenario_signature(
+                                duplicate_match
+                            ),
+                        }
                     case_failures.append(failure)
                     failures.append(failure)
                 if question:

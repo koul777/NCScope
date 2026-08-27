@@ -1256,6 +1256,172 @@ def _detail_search_query_limit(max_units: int) -> int:
     return 200
 
 
+def _detail_search_concurrency(detail_count: int) -> int:
+    """Return the bounded per-detail search concurrency for this process."""
+
+    try:
+        configured = int(
+            str(os.getenv("NCS_MCP_DETAIL_CONCURRENCY", "1")).strip()
+        )
+    except (TypeError, ValueError):
+        configured = 1
+    return max(1, min(8, configured, max(1, int(detail_count or 1))))
+
+
+def _merge_parallel_detail_search_results(
+    results: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    """Merge single-detail searches with the sequential path's stable policy."""
+
+    groups: list[list[dict[str, Any]]] = []
+    coverage_details: list[dict[str, Any]] = []
+    seen_semantic_identities: set[str] = set()
+    for result in results:
+        exact_coverage = (
+            result.get("exactCoverage")
+            if isinstance(result.get("exactCoverage"), dict)
+            else {}
+        )
+        states = exact_coverage.get("details")
+        state = (
+            dict(states[0])
+            if isinstance(states, list) and states and isinstance(states[0], dict)
+            else {
+                "sourceDetailName": "",
+                "mappingState": "official_detail_unresolved",
+                "officialDetailCode": "",
+                "officialDetailName": "",
+                "detailExpectedUnitBaseCount": 0,
+                "detailVerifiedUnitBaseCount": 0,
+                "detailRetrievalComplete": False,
+                "detailRetrievalCapLimited": False,
+            }
+        )
+        coverage_details.append(state)
+        group: list[dict[str, Any]] = []
+        for row in result.get("items") or []:
+            if not isinstance(row, dict):
+                continue
+            semantic_identity = str(
+                row.get("officialUnitBaseCode")
+                or str(row.get("ncsClCd") or "").split("_", 1)[0]
+            ).strip()
+            if not semantic_identity or semantic_identity in seen_semantic_identities:
+                continue
+            seen_semantic_identities.add(semantic_identity)
+            group.append(row)
+        groups.append(group)
+
+    output: list[dict[str, Any]] = []
+    offsets = [0 for _group in groups]
+    while len(output) < limit and any(
+        offset < len(group) for offset, group in zip(offsets, groups)
+    ):
+        for index, group in enumerate(groups):
+            if len(output) >= limit:
+                break
+            if offsets[index] >= len(group):
+                continue
+            output.append(group[offsets[index]])
+            offsets[index] += 1
+    for index, group in enumerate(groups):
+        if offsets[index] >= len(group):
+            continue
+        coverage_details[index]["detailRetrievalCapLimited"] = True
+        for row in group:
+            row["detailRetrievalCapLimited"] = True
+
+    return {
+        "items": output,
+        "exactCoverage": {
+            "details": coverage_details,
+            "resolvedOfficialDetailCount": sum(
+                state.get("mappingState") == "official_detail_resolved"
+                for state in coverage_details
+            ),
+            "unresolvedDetailCount": sum(
+                state.get("mappingState") != "official_detail_resolved"
+                for state in coverage_details
+            ),
+        },
+    }
+
+
+def _parallel_detail_search_results(
+    details: list[str],
+    *,
+    limit: int,
+    concurrency: int,
+) -> dict[str, Any]:
+    """Search independent official details concurrently in bounded batches."""
+
+    per_detail_results: list[dict[str, Any]] = []
+    with use_ncs_mcp_request_session() as request_session:
+        executor = ThreadPoolExecutor(
+            max_workers=concurrency,
+            thread_name_prefix="ncs-mcp-detail",
+        )
+        shutdown_without_wait = False
+        try:
+            for offset in range(0, len(details), concurrency):
+                futures = []
+                for detail in details[offset : offset + concurrency]:
+                    request_session.retain_worker()
+                    release_detached_work = _retain_detached_work()
+                    try:
+                        future = executor.submit(
+                            copy_context().run,
+                            _search_units_by_detail_result,
+                            [detail],
+                            limit,
+                        )
+                    except BaseException:
+                        request_session.release_worker()
+                        release_detached_work()
+                        raise
+
+                    def release_worker_leases(
+                        _future,
+                        session=request_session,
+                        release_outer=release_detached_work,
+                    ) -> None:
+                        try:
+                            session.release_worker()
+                        finally:
+                            release_outer()
+
+                    future.add_done_callback(release_worker_leases)
+                    futures.append(future)
+                completed, pending = wait(futures, return_when=FIRST_EXCEPTION)
+                failure = next(
+                    (
+                        future.exception()
+                        for future in completed
+                        if not future.cancelled() and future.exception() is not None
+                    ),
+                    None,
+                )
+                if failure is not None:
+                    for future in pending:
+                        future.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    shutdown_without_wait = True
+                    raise failure
+                # Read results in submitted order so concurrency cannot change
+                # input precedence, coverage ordering, or round-robin output.
+                per_detail_results.extend(future.result() for future in futures)
+        finally:
+            if not shutdown_without_wait:
+                executor.shutdown(wait=True, cancel_futures=True)
+
+    return _merge_parallel_detail_search_results(
+        per_detail_results,
+        limit=limit,
+    )
+
+
 def _detail_resolution_kind(name: str, query_name: str) -> str:
     """Classify an accepted exact-detail query without widening matching."""
 
@@ -1452,6 +1618,13 @@ def _search_units_by_detail_result(
     details = _split_detail_terms(detail_names)
     if len(details) > 64:
         raise NcsMcpError("NCS detail term limit exceeded")
+    concurrency = _detail_search_concurrency(len(details))
+    if len(details) > 1 and concurrency > 1:
+        return _parallel_detail_search_results(
+            details,
+            limit=limit,
+            concurrency=concurrency,
+        )
     groups: list[list[dict[str, Any]]] = []
     group_retrieval_states: list[dict[str, Any]] = []
     expected_bases_by_detail = _official_unit_base_codes_by_detail_code()
@@ -1749,7 +1922,7 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
     institution-specific or out-of-DB classification label.
     """
 
-    output: list[dict[str, Any]] = []
+    groups: list[list[dict[str, Any]]] = []
     seen: set[str] = set()
     limit = max(1, int(max_units or 20))
     detail_index = _official_details_by_name_key()
@@ -1767,6 +1940,7 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
             },
         )
         rows = _search_result_rows(result)
+        group: list[dict[str, Any]] = []
         for row in rows:
             code = _consistent_identity_value(
                 row,
@@ -1823,7 +1997,7 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
                 continue
             seen.add(code)
             small_name = _path_value(path, "small", "small_name", "ncsSclasCdnm")
-            output.append(
+            group.append(
                 {
                     "ncsClCd": code,
                     "compeUnitName": mcp_unit_name,
@@ -1845,8 +2019,23 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
                     "isExactUnitNameMatch": _norm(mcp_unit_name) == _norm(query),
                 }
             )
+        groups.append(group)
+
+    # Each reviewed term deserves a chance to surface a manual-review
+    # suggestion. A global append-and-return cap lets the first productive term
+    # consume the entire result set and silently starves later terms.
+    output: list[dict[str, Any]] = []
+    offsets = [0 for _group in groups]
+    while len(output) < limit and any(
+        offset < len(group) for offset, group in zip(offsets, groups)
+    ):
+        for index, group in enumerate(groups):
             if len(output) >= limit:
-                return output
+                break
+            if offsets[index] >= len(group):
+                continue
+            output.append(group[offsets[index]])
+            offsets[index] += 1
     return output
 
 

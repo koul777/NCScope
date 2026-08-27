@@ -22,6 +22,7 @@
     "KORDOC_BRIDGE_URL": "https://ncscope.vercel.app/api/kordoc-parse",
     "PDF_SCLASS_MAX_PAGES": "24",
     "NCS_MCP_TIMEOUT_SEC": "5",
+    "NCS_MCP_DETAIL_CONCURRENCY": "4",
     "NCS_MCP_KSA_CONCURRENCY": "4",
     "KSA_RANK_MAX_UNITS": "5",
     "OPENAI_HTTP_CURL_FALLBACK_ENABLED": "false",
