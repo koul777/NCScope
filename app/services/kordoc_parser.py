@@ -876,6 +876,7 @@ def _is_full_ncs_code(value: Any) -> bool:
 
 _OFFICIAL_NCS_SCLASS_CODES: frozenset[str] | None = None
 _OFFICIAL_NCS_SCLASS_HIERARCHY_KEYS: frozenset[tuple[str, str, str]] | None = None
+_OFFICIAL_NCS_CLASSIFICATION_NAME_KEYS: frozenset[str] | None = None
 _OFFICIAL_NCS_DETAIL_NAME_KEYS: frozenset[str] | None = None
 _OFFICIAL_NCS_UNIT_NAME_KEYS: frozenset[str] | None = None
 _OFFICIAL_NCS_UNIT_NAME_KEYS: frozenset[str] | None = None
@@ -931,6 +932,31 @@ def _official_ncs_sclass_hierarchy_keys() -> frozenset[tuple[str, str, str]]:
         keys.clear()
     _OFFICIAL_NCS_SCLASS_HIERARCHY_KEYS = frozenset(keys)
     return _OFFICIAL_NCS_SCLASS_HIERARCHY_KEYS
+
+
+def _official_ncs_classification_name_keys() -> frozenset[str]:
+    """Load normalized 대분류, 중분류, and 소분류 names.
+
+    These labels are not 세분류. A middle dot inside ``총무·인사`` or
+    ``세탁·수선`` must not be treated as a list of child detail names.
+    """
+
+    global _OFFICIAL_NCS_CLASSIFICATION_NAME_KEYS
+    if _OFFICIAL_NCS_CLASSIFICATION_NAME_KEYS is not None:
+        return _OFFICIAL_NCS_CLASSIFICATION_NAME_KEYS
+    csv_path = Path(__file__).resolve().parents[2] / "ncs_sclass_codes_with_code_no.csv"
+    keys: set[str] = set()
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                for field in ("NCS_LCLAS_CDNM", "NCS_MCLAS_CDNM", "NCS_SCLAS_CDNM"):
+                    key = _norm(row.get(field))
+                    if key:
+                        keys.add(key)
+    except (OSError, UnicodeError, csv.Error):
+        keys.clear()
+    _OFFICIAL_NCS_CLASSIFICATION_NAME_KEYS = frozenset(keys)
+    return _OFFICIAL_NCS_CLASSIFICATION_NAME_KEYS
 
 
 def _official_ncs_detail_name_keys() -> frozenset[str]:
@@ -1205,6 +1231,112 @@ def _legacy_split_numbered_item_by_safe_commas(
     return [{"text": part, "ordinal": ordinal} for part in parts]
 
 
+def _mask_parenthetical_groups(text: str) -> tuple[str, dict[str, str]]:
+    groups: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        token = f"\ufff0{len(groups)}\ufff0"
+        groups[token] = match.group(0)
+        return token
+
+    masked = re.sub(r"\([^()]*\)|（[^（）]*）", replace, text)
+    return masked, groups
+
+
+def _restore_parenthetical_groups(text: str, groups: dict[str, str]) -> str:
+    restored = text
+    for token, value in groups.items():
+        restored = restored.replace(token, value)
+    return restored
+
+
+def _official_dot_spans(text: str, detail_keys: frozenset[str]) -> list[str]:
+    """Merge the longest official detail spans across middle dots."""
+
+    masked, groups = _mask_parenthetical_groups(text)
+    unified = re.sub(r"[‧･ㆍ•∙⋅・]", "·", masked)
+    if "·" not in unified:
+        restored = _restore_parenthetical_groups(unified, groups).strip()
+        return [restored] if restored else []
+    raw_parts = [part.strip() for part in unified.split("·") if part.strip()]
+    if len(raw_parts) < 2:
+        restored = _restore_parenthetical_groups(unified, groups).strip()
+        return [restored] if restored else []
+
+    merged: list[str] = []
+    index = 0
+    while index < len(raw_parts):
+        matched_end = 0
+        for end in range(len(raw_parts), index, -1):
+            candidate = _restore_parenthetical_groups(
+                "·".join(raw_parts[index:end]),
+                groups,
+            ).strip()
+            if candidate and _norm(candidate) in detail_keys:
+                matched_end = end
+                break
+        if matched_end <= index:
+            merged.append(
+                _restore_parenthetical_groups(raw_parts[index], groups).strip()
+            )
+            index += 1
+            continue
+        merged.append(
+            _restore_parenthetical_groups(
+                "·".join(raw_parts[index:matched_end]),
+                groups,
+            ).strip()
+        )
+        index = matched_end
+    return [part for part in merged if part]
+
+
+def split_joined_official_detail_labels(value: str) -> list[str]:
+    """Split a detail cell only when every piece is a current 세분류.
+
+    Job descriptions join official detail names with a middle dot or ``및``.
+    The same punctuation is also part of official names and of 대·중·소분류
+    labels, so a split is accepted only when the whole label is not itself a
+    current detail or classification name and every resulting span is a
+    current detail. Anything else stays intact for human review.
+    """
+
+    text = str(value or "").strip()
+    if not text or not re.search(r"[·‧･ㆍ•∙⋅・]|및", text):
+        return [text] if text else []
+    detail_keys = _official_ncs_detail_name_keys()
+    if not detail_keys or len(text) > 80:
+        return [text]
+    if _norm(text) in detail_keys or _norm(text) in _official_ncs_classification_name_keys():
+        return [text]
+
+    def accepted(parts: list[str]) -> bool:
+        cleaned = [part.strip() for part in parts if part and part.strip()]
+        return (
+            2 <= len(cleaned) <= 6
+            and all(len(part) <= 40 for part in cleaned)
+            and all(_norm(part) in detail_keys for part in cleaned)
+        )
+
+    and_parts = [part.strip() for part in re.split(r"\s*및\s*", text) if part.strip()]
+    if len(and_parts) > 1:
+        resolved: list[str] = []
+        and_parts_are_official = True
+        for part in and_parts:
+            spans = _official_dot_spans(part, detail_keys)
+            if not spans or not all(_norm(span) in detail_keys for span in spans):
+                and_parts_are_official = False
+                break
+            resolved.extend(spans)
+        if and_parts_are_official and accepted(resolved):
+            return resolved
+
+    spans = _official_dot_spans(text, detail_keys)
+    if accepted(spans):
+        return spans
+    return [text]
+
+
 def _expand_composite_detail_candidate(value: str) -> list[str]:
     text = _clean_detail_candidate_text(value)
     if not text:
@@ -1243,6 +1375,10 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
         )
     if len(numbered) > 1 and all(_looks_like_detail_candidate(part) for part in numbered):
         return numbered
+
+    joined = split_joined_official_detail_labels(text)
+    if len(joined) > 1:
+        return joined
 
     unified = re.sub(r"[‧･ㆍ•∙⋅・]", "·", text)
     parts = [_clean_detail_candidate_text(part) for part in unified.split("·")]

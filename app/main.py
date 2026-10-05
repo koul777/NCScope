@@ -57,6 +57,7 @@ from app.services.kordoc_parser import (
     _strip_full_ncs_code_prefix,
     kordoc_bridge_configuration_status,
     parse_with_kordoc,
+    split_joined_official_detail_labels,
     structure_job_description,
     structure_job_notice,
 )
@@ -1276,11 +1277,13 @@ def _parse_sclass_terms(raw: str | None) -> list[str]:
         term = _normalize_ncs_detail_term(part)
         if not term:
             continue
-        key = _norm_sclass_key(term)
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        out.append(term)
+        expanded_terms = split_joined_official_detail_labels(term) or [term]
+        for expanded in expanded_terms:
+            key = _norm_sclass_key(expanded)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(expanded)
     return out
 
 
