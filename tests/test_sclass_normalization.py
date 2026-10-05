@@ -23,6 +23,24 @@ from app.services.sclass_pipeline import (
 )
 
 
+def test_joined_official_details_split_without_promoting_class_names():
+    assert _parse_sclass_terms("회계·감사·세무") == ["회계·감사", "세무"]
+    assert _canonicalize_detail_lookup_terms(["회계 · 감사 및 세무"]) == [
+        "회계·감사",
+        "세무",
+    ]
+    assert _parse_sclass_terms("총무·인사") == ["총무·인사"]
+    assert _parse_sclass_terms("세탁·수선") == ["세탁·수선"]
+    assert _parse_sclass_terms("제과·제빵·떡제조") == ["제과·제빵·떡제조"]
+    assert _parse_sclass_terms("홍보·광고") == ["홍보·광고"]
+    assert _parse_sclass_terms("지능형교통체계(ITS) 기획 및 설계") == [
+        "지능형교통체계(ITS) 기획 및 설계"
+    ]
+    assert _parse_sclass_terms("기록물관리(생산·분류·편철·이관·보존·폐기)") == [
+        "기록물관리(생산·분류·편철·이관·보존·폐기)"
+    ]
+
+
 def test_detail_term_splitters_preserve_official_acronym_slash_names():
     assert _parse_sclass_terms("QM/QC관리, 총무/사무행정") == [
         "QM/QC관리",

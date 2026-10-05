@@ -39,14 +39,75 @@ def _key(value: Any) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "")).casefold()
 
 
-def normalize_ksa_type(value: Any, factor_name: Any = "") -> str:
-    raw = _key(value)
-    if raw in {"k", "knowledge", "지식"} or "지식" in raw:
+_EXPLICIT_KSA_WORDS = {
+    "지식": frozenset({"knowledge", "지식"}),
+    "기술": frozenset({"skill", "skills", "기술", "스킬"}),
+    "태도": frozenset({"attitude", "attitudes", "태도"}),
+}
+_EXPLICIT_KSA_LETTERS = {"k": "지식", "s": "기술", "a": "태도"}
+_GLUED_KSA_WORDS = frozenset(
+    {"knowledge", "skill", "skills", "attitude", "attitudes"}
+)
+
+
+def classify_explicit_ksa_type(value: Any) -> str:
+    """Map an explicit KSA type label to 지식, 기술, or 태도.
+
+    Official rows and model payloads use Korean names, English names,
+    single-letter codes, and transport forms such as ``K/Knowledge``.
+    A factor name is not consulted here. Mixed labels such as
+    ``Knowledge/Skill`` stay unresolved so one field cannot be forced into
+    the wrong measurement type.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    compact = re.sub(r"[^0-9a-z가-힣]+", "", raw.casefold())
+    # Korean type words keep their historical priority, including labels such
+    # as ``기술적 태도`` that name the earlier type in the source text.
+    if "지식" in compact:
         return "지식"
-    if raw in {"s", "skill", "skills", "기술"} or any(token in raw for token in ("기술", "스킬")):
+    if any(token in compact for token in ("기술", "스킬")):
         return "기술"
-    if raw in {"a", "attitude", "태도"} or "태도" in raw:
+    if "태도" in compact:
         return "태도"
+
+    tokens = re.findall(r"[a-z]+|\d+", raw.casefold())
+    expanded: list[str] = []
+    has_digit = False
+    for token in tokens:
+        if token.isdigit():
+            has_digit = True
+            continue
+        expanded.append(token)
+        if len(token) > 1 and token[0] in _EXPLICIT_KSA_LETTERS:
+            remainder = token[1:]
+            if remainder in _GLUED_KSA_WORDS:
+                expanded.append(remainder)
+
+    word_hits = [
+        kind
+        for kind, vocab in _EXPLICIT_KSA_WORDS.items()
+        if any(token in vocab for token in expanded)
+    ]
+    if len(word_hits) == 1:
+        return word_hits[0]
+    if len(word_hits) > 1:
+        return ""
+    if (
+        not has_digit
+        and len(expanded) == 1
+        and expanded[0] in _EXPLICIT_KSA_LETTERS
+    ):
+        return _EXPLICIT_KSA_LETTERS[expanded[0]]
+    return ""
+
+
+def normalize_ksa_type(value: Any, factor_name: Any = "") -> str:
+    explicit = classify_explicit_ksa_type(value)
+    if explicit:
+        return explicit
 
     factor_key = _key(factor_name)
     if any(token in factor_key for token in ("태도", "자세", "의지", "의식", "성실", "적극성", "책임감")):
