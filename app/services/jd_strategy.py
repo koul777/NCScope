@@ -67,6 +67,7 @@ from app.services.question_intent import (
 )
 from app.services.question_surface import (
     build_question_task_frame,
+    classify_explicit_ksa_type,
     stable_ksa_evidence_id,
 )
 from app.services.ncs_mcp_client import (
@@ -7830,24 +7831,13 @@ def rank_ksa_factors_by_query(
     )
 
     def _ksa_kind(row: dict[str, Any]) -> str:
-        raw = re.sub(
-            r"\s+",
-            "",
-            str(
-                row.get("ksaTypeName")
-                or row.get("factorType")
-                or row.get("ksa_type")
-                or row.get("ksa_type_name")
-                or ""
-            ),
-        ).lower()
-        if raw in {"k", "knowledge", "지식"} or "지식" in raw:
-            return "지식"
-        if raw in {"s", "skill", "skills", "기술"} or any(token in raw for token in ("기술", "스킬")):
-            return "기술"
-        if raw in {"a", "attitude", "태도"} or "태도" in raw:
-            return "태도"
-        return ""
+        return classify_explicit_ksa_type(
+            row.get("ksaTypeName")
+            or row.get("factorType")
+            or row.get("ksa_type")
+            or row.get("ksa_type_name")
+            or ""
+        )
 
     available_types_by_unit: dict[str, set[str]] = {}
     for row in scored_rows:

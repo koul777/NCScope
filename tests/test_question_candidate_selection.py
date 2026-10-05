@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from app.services.question_candidate_selection import select_question_candidates
+from app.services.question_candidate_selection import _ksa_axis, select_question_candidates
 
 
 def _candidate(
@@ -42,6 +42,27 @@ def _candidate(
     if slot is not None:
         item["_candidate_slot"] = slot
     return item
+
+
+def test_slash_ksa_type_aliases_share_one_diversity_axis() -> None:
+    knowledge_tokens = _ksa_axis(
+        {"question": "지식 질문", "ksa_type": "K/Knowledge", "question_focus": "문서 분류"}
+    )[1]
+    same_tokens = _ksa_axis(
+        {"question": "같은 유형", "ksaTypeName": "지식", "question_focus": "문서 분류"}
+    )[1]
+    skill_tokens = _ksa_axis(
+        {
+            "question": "기술 질문",
+            "ksa_evidence": [{"factorName": "오류 점검", "ksaTypeName": "S/Skill"}],
+        }
+    )[1]
+
+    assert "type:지식" in knowledge_tokens
+    assert "type:지식" in same_tokens
+    assert "type:kknowledge" not in knowledge_tokens
+    assert "type:기술" in skill_tokens
+    assert "type:sskill" not in skill_tokens
 
 
 def test_selection_prefers_complete_high_quality_candidate() -> None:

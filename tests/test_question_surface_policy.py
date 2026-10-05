@@ -40,6 +40,27 @@ def _evidence_row() -> dict[str, str]:
     }
 
 
+def test_slash_ksa_type_selects_a_different_public_task_frame() -> None:
+    knowledge, knowledge_source = public_task_object(
+        factor_name="문서 분류 기준",
+        ksa_type="K/Knowledge",
+    )
+    skill, skill_source = public_task_object(
+        factor_name="문서 분류 기준",
+        ksa_type="S/Skill",
+    )
+    attitude, attitude_source = public_task_object(
+        factor_name="문서 분류 기준",
+        ksa_type="A/Attitude",
+    )
+
+    assert knowledge_source == skill_source == attitude_source == "factor_repair"
+    assert knowledge != skill
+    assert skill != attitude
+    assert "행동 기준" in attitude
+    assert "행동 기준" not in knowledge
+
+
 def test_timed_assessment_templates_separate_task_from_operating_conditions() -> None:
     methods = (
         "발표면접",
