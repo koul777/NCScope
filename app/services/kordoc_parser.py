@@ -1334,7 +1334,90 @@ def split_joined_official_detail_labels(value: str) -> list[str]:
     spans = _official_dot_spans(text, detail_keys)
     if accepted(spans):
         return spans
+    completed = _complete_shared_detail_suffix(spans, detail_keys)
+    if accepted(completed):
+        return completed
+    if len(and_parts) > 1:
+        flattened: list[str] = []
+        for part in and_parts:
+            dotted = _official_dot_spans(part, detail_keys)
+            flattened.extend(dotted or [part])
+        completed_and = _complete_shared_detail_suffix(flattened, detail_keys)
+        if accepted(completed_and):
+            return completed_and
     return [text]
+
+
+_SHARED_DETAIL_SUFFIXES = ("조리",)
+
+
+def _complete_shared_detail_suffix(
+    parts: list[str],
+    detail_keys: frozenset[str],
+) -> list[str]:
+    """Restore a suffix shared by a written list, such as ``한식·양식조리``.
+
+    The completion is returned only when every resulting name is a current
+    official detail. A partial or invented suffix never becomes a candidate.
+    """
+
+    if len(parts) < 2:
+        return []
+    last = parts[-1].strip()
+    suffix = next(
+        (
+            item
+            for item in _SHARED_DETAIL_SUFFIXES
+            if last.endswith(item) and last != item
+        ),
+        "",
+    )
+    if not suffix:
+        return []
+    completed: list[str] = []
+    for part in parts:
+        piece = part.strip()
+        if not piece or piece == suffix:
+            continue
+        completed.append(piece if piece.endswith(suffix) else f"{piece}{suffix}")
+    if not completed or any(_norm(part) not in detail_keys for part in completed):
+        return []
+    return completed
+
+
+def unwrap_detail_line_breaks(value: str) -> str:
+    """Join a visual line wrap only when that raises official detail coverage.
+
+    ``시각\\n디자인`` is one current detail, and ``일식·\\n복어조리`` is two.
+    ``회계·감사\\n세무`` is already two complete details, so the line break stays.
+    """
+
+    text = str(value or "")
+    if "\n" not in text:
+        return text
+    collapsed = re.sub(r"\s*\n\s*", "", text)
+    if collapsed == text:
+        return text
+    original_score = _official_detail_piece_count(text)
+    collapsed_score = _official_detail_piece_count(collapsed)
+    if collapsed_score > original_score:
+        return collapsed
+    return text
+
+
+def _official_detail_piece_count(value: str) -> int:
+    keys = _official_ncs_detail_name_keys()
+    if not keys:
+        return 0
+    count = 0
+    for coarse in re.split(r"[\n,，、;/|]+", str(value or "")):
+        part = coarse.strip()
+        if not part:
+            continue
+        spans = split_joined_official_detail_labels(part)
+        pieces = spans if len(spans) > 1 else [part]
+        count += sum(1 for piece in pieces if _norm(piece) in keys)
+    return count
 
 
 def _expand_composite_detail_candidate(value: str) -> list[str]:
@@ -1386,7 +1469,8 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
     if len(parts) < 2:
         return [text]
 
-    for suffix in ("조리",):
+    detail_keys = _official_ncs_detail_name_keys()
+    for suffix in _SHARED_DETAIL_SUFFIXES:
         if not any(part.endswith(suffix) or part == suffix for part in parts):
             continue
         expanded: list[str] = []
@@ -1394,7 +1478,12 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
             if part == suffix:
                 continue
             expanded.append(part if part.endswith(suffix) else f"{part}{suffix}")
-        return expanded or [text]
+        if (
+            expanded
+            and detail_keys
+            and all(_norm(part) in detail_keys for part in expanded)
+        ):
+            return expanded
     return [text]
 
 
