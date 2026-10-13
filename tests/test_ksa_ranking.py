@@ -104,3 +104,47 @@ def test_rank_ksa_two_slot_limit_chooses_two_distinct_available_types() -> None:
 
     assert len(ranked) == 2
     assert {row["ksaTypeName"] for row in ranked} == {"지식", "기술"}
+
+
+def test_rank_ksa_transport_type_aliases_keep_three_way_diversity() -> None:
+    rows = [
+        {
+            "ncsClCd": "A",
+            "compeUnitName": "문서관리",
+            "factorName": "문서 보안 기준 지식",
+            "ksaTypeName": "K/Knowledge",
+        },
+        {
+            "ncsClCd": "A",
+            "compeUnitName": "문서관리",
+            "factorName": "문서 분류 기준 지식",
+            "ksaTypeName": "kknowledge",
+        },
+        {
+            "ncsClCd": "A",
+            "compeUnitName": "문서관리",
+            "factorName": "문서 오류 점검 기술",
+            "ksaTypeName": "S/Skill",
+        },
+        {
+            "ncsClCd": "A",
+            "compeUnitName": "문서관리",
+            "factorName": "정확성을 유지하려는 태도",
+            "ksaTypeName": "A/Attitude",
+        },
+    ]
+
+    ranked = rank_ksa_factors_by_query(
+        ksa_rows=rows,
+        query_text="문서 보안 기준과 문서 분류 지식",
+        unit_scores={"A": 1.0},
+        target_count=3,
+        per_unit_limit=3,
+    )
+
+    assert ranked[0]["factorName"] == "문서 보안 기준 지식"
+    assert {row["ksaTypeName"] for row in ranked} == {
+        "K/Knowledge",
+        "S/Skill",
+        "A/Attitude",
+    }

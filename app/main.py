@@ -57,8 +57,10 @@ from app.services.kordoc_parser import (
     _strip_full_ncs_code_prefix,
     kordoc_bridge_configuration_status,
     parse_with_kordoc,
+    split_joined_official_detail_labels,
     structure_job_description,
     structure_job_notice,
+    unwrap_detail_line_breaks,
 )
 from app.services.hwp_text_fallback import (
     extract_hwp_text,
@@ -1256,7 +1258,7 @@ def _split_slash_sclass_surface(value: str) -> list[str]:
 
 
 def _parse_sclass_terms(raw: str | None) -> list[str]:
-    text = str(raw or "")
+    text = unwrap_detail_line_breaks(str(raw or ""))
     has_transport_delimiter = bool(re.search(r"[\n,，、;/|]", text))
     if has_transport_delimiter and _is_single_official_detail_surface(text):
         parts = [text]
@@ -1276,11 +1278,13 @@ def _parse_sclass_terms(raw: str | None) -> list[str]:
         term = _normalize_ncs_detail_term(part)
         if not term:
             continue
-        key = _norm_sclass_key(term)
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        out.append(term)
+        expanded_terms = split_joined_official_detail_labels(term) or [term]
+        for expanded in expanded_terms:
+            key = _norm_sclass_key(expanded)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(expanded)
     return out
 
 
@@ -3562,6 +3566,38 @@ def _task_conditions_for_method(
                 "반대 입장의 수용·불수용 기준",
                 "공통 행동·점검·실행 책임 또는 미합의 이송 기준",
             ]
+    if method == "직무지식면접":
+        focus_kind = _normalize_ksa_type(focus_type, focus)
+        if focus_kind == "지식":
+            conditions["candidate_instruction"] = (
+                "용어를 나열하지 말고, 적용 범위와 예외상황을 가르는 절차·판단 기준과 "
+                "그 기준을 산출물 품질점검에 어떻게 쓰는지 설명해 주십시오."
+            )
+            conditions["required_outputs"] = [
+                "적용 범위와 예외 구분",
+                "절차·판단 기준과 근거",
+                "산출물 품질점검과 오류 예방",
+            ]
+        elif focus_kind == "기술":
+            conditions["candidate_instruction"] = (
+                "수행 순서와 사용 자료를 밝히고, 절차·기준에 따라 산출물 품질을 확인하는 방법과 "
+                "예외상황의 재작업 기준을 설명해 주십시오."
+            )
+            conditions["required_outputs"] = [
+                "수행 순서와 사용 자료",
+                "산출물 품질 확인",
+                "예외상황의 재작업·오류 예방",
+            ]
+        elif focus_kind == "태도":
+            conditions["candidate_instruction"] = (
+                "상충하는 요구 속에서 선택한 행동과 감수한 비용을 먼저 밝히고, "
+                "그 선택의 절차·판단 기준, 예외상황, 남길 산출물을 연결해 주십시오."
+            )
+            conditions["required_outputs"] = [
+                "상충 요구와 선택한 행동",
+                "감수한 비용과 판단 기준",
+                "예외상황의 산출물·오류 예방",
+            ]
     case_facts = [
         item.strip()
         for item in str(context.get("case_facts") or "").split("|")
@@ -4952,9 +4988,20 @@ def _freeform_ksa_question(
             "무엇을 먼저 확인하고 어떤 조치를 선택하시겠습니까?"
         )
     if method == "직무지식면접":
+        kind = _normalize_ksa_type(focus_type, focus)
+        if kind == "태도":
+            return (
+                f"{label}에서 {anchor}를 지키기 어려운 예외상황입니다. "
+                "어떤 기준으로 선택하고, 그 결과로 남길 산출물과 조정할 절차는 무엇인지 설명해 주세요."
+            )
+        if kind == "기술":
+            return (
+                f"{label}에서 {anchor}를 수행할 때의 절차와 기준, 산출물 확인, "
+                "예외상황에서 다시 고칠 부분을 설명해 주세요."
+            )
         return (
-            f"{label}의 {anchor}를 실제 업무에 적용할 때, 먼저 확인할 근거와 "
-            "예외가 생기면 조정할 부분을 설명해 주세요."
+            f"{label}의 {anchor}를 실제 업무에 적용할 때, 절차와 기준의 적용 범위와 "
+            "예외상황에서 조정할 산출물을 설명해 주세요."
         )
     if method == "인바스켓면접":
         return (
@@ -5152,8 +5199,9 @@ def _question_for_method(
             )
         elif focus_type == "태도":
             knowledge_task = (
-                f"{_quoted_with_josa(prompt_focus, '이', '가')} 요구되는 상황의 절차·판단 기준과 핵심 산출물, "
-                "상충하는 요구나 예외상황 속 선택 행동, 감수할 결과와 오류 예방 방법"
+                "상충하는 요구나 예외상황에서 "
+                f"{_quoted_with_josa(prompt_focus, '을', '를')} 어떤 선택 행동으로 지키는지, "
+                "그 선택의 절차·판단 기준과 감수할 결과, 남길 핵심 산출물과 오류 예방 방법"
             )
         else:
             knowledge_task = (

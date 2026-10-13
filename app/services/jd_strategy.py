@@ -67,6 +67,7 @@ from app.services.question_intent import (
 )
 from app.services.question_surface import (
     build_question_task_frame,
+    classify_explicit_ksa_type,
     stable_ksa_evidence_id,
 )
 from app.services.ncs_mcp_client import (
@@ -2702,16 +2703,40 @@ def _build_ncs_code_template_fallback_question(
         ]
         evaluation_points = ["사실 확인", "판단 기준", "행동 순서와 보고", "위험 통제와 후속점검"]
     elif method == "직무지식면접":
-        question = (
-            f"{candidate_context}에서 {variation_axis} {surface_focus}에 관해 확인해야 할 절차와 기준, 적용 범위, 산출물, "
-            "예외상황 대응 및 오류 예방 방법을 설명해 주세요."
-        )
-        follow_ups = [
-            f"{candidate_context}에서 {surface_focus}의 근거가 되는 문서나 사실은 무엇입니까?",
-            "예외상황에서 기준 적용을 어떻게 조정하겠습니까?",
-            "산출물 품질과 오류 예방은 어떻게 점검하겠습니까?",
-        ]
-        evaluation_points = ["절차·기준 이해", "예외상황 판단", "산출물 품질", "오류 예방"]
+        if ksa_kind == "태도":
+            question = (
+                f"{candidate_context}에서 {variation_axis} 가운데 {surface_focus}와 "
+                "일정·품질 요구가 충돌하는 예외상황입니다. 어떤 행동을 선택하고 무엇을 감수할지, "
+                "그 절차와 판단 기준, 남길 산출물을 설명해 주세요."
+            )
+            follow_ups = [
+                f"{surface_focus}를 지키면 지연이나 품질 손해가 생길 때, 예외상황으로 인정할 기준은 무엇입니까?",
+                "그 선택을 보고할 때 남길 사실과 판단 기준은 무엇입니까?",
+                "같은 충돌 뒤 산출물과 오류 예방 기록을 어떻게 남기겠습니까?",
+            ]
+            evaluation_points = ["상충 요구의 사실", "선택과 감수한 비용", "판단 기준", "산출물·오류 예방"]
+        elif ksa_kind == "기술":
+            question = (
+                f"{candidate_context}에서 {variation_axis} {surface_focus}를 수행할 때의 절차와 기준, "
+                "산출물 확인, 예외상황에서의 재작업을 설명해 주세요."
+            )
+            follow_ups = [
+                f"{surface_focus}의 첫 단계와 마지막 확인 단계에서 대조하는 자료는 무엇입니까?",
+                "산출물이 기준에 못 미치면 어디를 다시 고치고 무엇으로 재확인합니까?",
+                "예외상황 뒤 같은 오류가 반복되지 않게 남길 기록은 무엇입니까?",
+            ]
+            evaluation_points = ["수행 절차", "사용 자료와 기준", "산출물 품질 확인", "예외상황 재작업"]
+        else:
+            question = (
+                f"{candidate_context}에서 {variation_axis} {surface_focus}의 절차와 기준을 "
+                "어떤 범위에 적용하고, 예외상황에서는 산출물을 어떻게 조정하는지 설명해 주세요."
+            )
+            follow_ups = [
+                f"{candidate_context}에서 {surface_focus}가 적용되는 경우와 적용하면 안 되는 경우를 가르는 기준은 무엇입니까?",
+                "그 기준을 잘못 적용하면 산출물이나 다음 업무에 어떤 영향이 있습니까?",
+                "예외상황에서 확인에 사용할 문서나 기록은 무엇입니까?",
+            ]
+            evaluation_points = ["적용 범위", "예외상황 구분", "절차·판단 기준", "산출물 영향"]
     elif method == "인바스켓면접":
         question = (
             f"[인바스켓과제] {candidate_context}에서 {variation_axis} 상황에 관련 요청, 오류 정정, 보고 문서가 동시에 들어왔습니다. "
@@ -3069,6 +3094,33 @@ def _build_ncs_code_template_fallback_question(
                 ],
                 "required_outputs": ["문제 정의와 원인 가설", "대안 2가지와 검증방법", "실행계획·성과지표·리스크 보완"],
                 "timing_basis": "기관 운영기준에 따라 사전 확정한 동일 시간구조를 적용합니다.",
+            }
+        )
+    elif method == "직무지식면접":
+        if ksa_kind == "태도":
+            knowledge_instruction = (
+                "상충하는 요구 속에서 선택한 행동과 감수한 비용을 먼저 밝히고, "
+                "그 선택의 절차·판단 기준, 예외상황, 남길 산출물을 연결해 주십시오."
+            )
+            knowledge_outputs = ["상충 요구와 선택한 행동", "감수한 비용과 판단 기준", "예외상황의 산출물·오류 예방"]
+        elif ksa_kind == "기술":
+            knowledge_instruction = (
+                "수행 순서와 사용 자료를 밝히고, 절차·기준에 따라 산출물 품질을 확인하는 방법과 "
+                "예외상황의 재작업 기준을 설명해 주십시오."
+            )
+            knowledge_outputs = ["수행 순서와 사용 자료", "산출물 품질 확인", "예외상황의 재작업·오류 예방"]
+        else:
+            knowledge_instruction = (
+                "용어를 나열하지 말고, 적용 범위와 예외상황을 가르는 절차·판단 기준과 "
+                "그 기준을 산출물 품질점검에 어떻게 쓰는지 설명해 주십시오."
+            )
+            knowledge_outputs = ["적용 범위와 예외 구분", "절차·판단 기준과 근거", "산출물 품질점검과 오류 예방"]
+        task_conditions.update(
+            {
+                "candidate_instruction": knowledge_instruction,
+                "time_plan": [{"phase": "개별 답변", "minutes": 5}],
+                "required_outputs": knowledge_outputs,
+                "timing_basis": "기관 운영기준에 따라 사전 확정한 동일 응답시간을 적용합니다.",
             }
         )
 
@@ -4765,7 +4817,7 @@ def _legacy_model_question_gate_contract() -> str:
         "- 발표면접 question 필수어: 발표, 진단, 대안, 실행, 성과지표, 질의응답. evaluation_points에는 자료 분석력 또는 논리적 구조화 또는 대안의 실행가능성 또는 질의응답 대응 포함.\n"
         "- 토론면접 question 필수어: 토론, 충돌, 입장, 근거, 합의. evaluation_points에는 입장발표 근거 또는 경청과 상호작용 또는 갈등 조정 또는 최종 합의안 도출 포함.\n"
         "- 인바스켓면접 question 필수어: 인바스켓, 문서, 우선순위, 보고, 위임, 직접처리. evaluation_points에는 우선순위 판단 또는 문서·요청 분류 또는 시간관리 포함.\n"
-        "- 직무지식면접 question 필수어: 절차, 기준, 산출물, 예외상황. evaluation_points에는 절차·기준 이해 또는 직무지식 적용 또는 산출물 품질 포함.\n"
+        "- 직무지식면접 question 필수어: 절차, 기준, 산출물, 예외상황. 지식은 적용 범위와 예외를, 기술은 수행 순서와 산출물 확인을, 태도는 상충 요구 속의 선택과 감수한 비용을 먼저 묻고 절차·기준·산출물은 그 선택의 증거로 연결하세요. evaluation_points에는 절차·기준 이해 또는 직무지식 적용 또는 산출물 품질 포함.\n"
         "- 창의적 문제해결력면접 question 필수어: 창의적, 미래예측, 문제, 정의, 대안, 검증, 실현가능성, 의사결정, 실행. evaluation_points에는 미래예측과 문제 정의 또는 창의적 사고와 대안 도출 또는 검증 방법 또는 실현가능성 또는 의사결정과 실행계획 포함.\n"
         "- type과 question의 형식이 충돌하면 안 됩니다. 예: type=발표면접이면 question은 반드시 발표과제여야 합니다.\n"
         "- question과 follow_ups에 글자 그대로 'KSA'라고 쓰지 마세요. 반드시 [NCS평가요소]의 factorName 원문 중 하나를 복사해 넣으세요.\n"
@@ -4809,7 +4861,7 @@ def _legacy_model_question_gate_contract() -> str:
         "- 토론면접 question 골격: [토론과제] {직무}에서 {KSA} 관련 두 입장이 충돌합니다. 반대 의견 검토, 조정 방식과 최종 합의안을 토론하게 하세요.\n"
         "- 인바스켓면접 question 골격: [인바스켓과제] {직무} 관련 여러 문서와 요청이 동시에 들어왔습니다. {KSA}를 실제로 발휘해 우선순위, 보고, 위임, 직접처리 판단, 첫 조치와 작성할 산출물을 제시하게 하세요.\n"
         "- 준비·발표·토론·질의응답 시간과 제출 방식은 question 본문에 쓰지 말고 별도 task_conditions에만 둡니다.\n"
-        "- 직무지식면접 question 골격: {직무}에서 {KSA}와 관련해 확인해야 할 절차, 기준, 산출물, 예외상황 대응과 품질 점검 방법을 설명해 주세요.\n"
+        "- 직무지식면접 question 골격: 지식이면 {직무}에서 {KSA}의 절차와 기준을 어떤 범위와 예외상황에 적용하고 산출물을 어떻게 조정하는지 물어 주세요. 기술이면 수행 순서, 산출물 확인, 예외상황의 재작업을 물어 주세요. 태도이면 일정·품질이 충돌하는 예외상황에서 어떤 행동을 선택하고 무엇을 감수하는지 먼저 묻고, 그 절차·판단 기준과 남길 산출물을 이어서 물어 주세요.\n"
         "- 창의적 문제해결력면접 question 골격: [창의적 문제해결력과제] {직무}에서 {KSA} 관련 복합 문제가 발생했습니다. 미래예측 관점에서 핵심 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법, 실현가능성, 의사결정 기준, 실행계획과 성과지표를 제시해 주세요.\n"
         "- follow_ups 골격 예시: 1) 먼저 확인할 상황·자료·문서는 무엇입니까? 2) {KSA}를 기준으로 그 판단이나 행동을 선택한 이유는 무엇입니까? 3) 결과 확인, 후속점검, 리스크 보완은 어떻게 하겠습니까?\n"
         "- 면접기법별 지정 slot 예시: 발표 follow_ups[0]={KSA}를 발표 쟁점으로 볼 때 {직무} 현황 진단의 근거자료는 무엇입니까? / 토론 follow_ups[0]={KSA}를 토론 쟁점으로 볼 때 {직무} 입장발표 근거는 무엇입니까? / 인바스켓 follow_ups[0]={KSA}를 처리 기준으로 삼아 {직무} 우선순위를 정한 이유는 무엇입니까? / 직무지식 follow_ups[0]={KSA}와 관련한 기준으로 {직무} 절차를 어떻게 확인하겠습니까? / 창의적 문제해결력 follow_ups[1]={KSA}와 관련한 원인과 대안 관점에서 {직무} 문제를 어떻게 검증하겠습니까?\n"
@@ -7830,24 +7882,13 @@ def rank_ksa_factors_by_query(
     )
 
     def _ksa_kind(row: dict[str, Any]) -> str:
-        raw = re.sub(
-            r"\s+",
-            "",
-            str(
-                row.get("ksaTypeName")
-                or row.get("factorType")
-                or row.get("ksa_type")
-                or row.get("ksa_type_name")
-                or ""
-            ),
-        ).lower()
-        if raw in {"k", "knowledge", "지식"} or "지식" in raw:
-            return "지식"
-        if raw in {"s", "skill", "skills", "기술"} or any(token in raw for token in ("기술", "스킬")):
-            return "기술"
-        if raw in {"a", "attitude", "태도"} or "태도" in raw:
-            return "태도"
-        return ""
+        return classify_explicit_ksa_type(
+            row.get("ksaTypeName")
+            or row.get("factorType")
+            or row.get("ksa_type")
+            or row.get("ksa_type_name")
+            or ""
+        )
 
     available_types_by_unit: dict[str, set[str]] = {}
     for row in scored_rows:
