@@ -12,6 +12,7 @@ from app.main import (
     _parse_sclass_terms,
 )
 from app.services import jd_strategy
+from app.services import ncs_mcp_client
 from app.services.jd_strategy import lookup_ncs_codes_by_sclass
 from app.services.sclass_pipeline import extract_sclass_from_text
 from app.services.sclass_pipeline import (
@@ -21,6 +22,32 @@ from app.services.sclass_pipeline import (
     _pdf_sclass_page_limit,
     _split_candidate_blob,
 )
+
+
+def test_joined_official_details_split_without_promoting_class_names():
+    assert _parse_sclass_terms("회계·감사·세무") == ["회계·감사", "세무"]
+    assert _canonicalize_detail_lookup_terms(["회계 · 감사 및 세무"]) == [
+        "회계·감사",
+        "세무",
+    ]
+    assert _parse_sclass_terms("총무·인사") == ["총무·인사"]
+    assert _parse_sclass_terms("세탁·수선") == ["세탁·수선"]
+    assert _parse_sclass_terms("제과·제빵·떡제조") == ["제과·제빵·떡제조"]
+    assert _parse_sclass_terms("홍보·광고") == ["홍보·광고"]
+    assert _parse_sclass_terms("지능형교통체계(ITS) 기획 및 설계") == [
+        "지능형교통체계(ITS) 기획 및 설계"
+    ]
+    assert _parse_sclass_terms("기록물관리(생산·분류·편철·이관·보존·폐기)") == [
+        "기록물관리(생산·분류·편철·이관·보존·폐기)"
+    ]
+    assert _parse_sclass_terms("한식·양식·중식조리") == ["한식조리", "양식조리", "중식조리"]
+    assert _parse_sclass_terms("일식·\n복어조리") == ["일식조리", "복어조리"]
+    assert _parse_sclass_terms("시각\n디자인") == ["시각디자인"]
+    assert _parse_sclass_terms("회계·감사\n세무") == ["회계·감사", "세무"]
+    assert _canonicalize_detail_lookup_terms(["제과·제빵"]) == ["제과", "제빵"]
+    assert ncs_mcp_client._split_detail_terms(
+        ["회계·감사·세무", "시각\n디자인", "총무·인사", "한식 및 양식조리"]
+    ) == ["회계·감사", "세무", "시각디자인", "총무·인사", "한식조리", "양식조리"]
 
 
 def test_detail_term_splitters_preserve_official_acronym_slash_names():

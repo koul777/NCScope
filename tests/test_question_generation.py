@@ -796,14 +796,21 @@ def test_blind_hiring_filter_does_not_match_key_syllable_inside_ordinary_words()
     response = """
     [
       {"question": "고객요구를 만족시키기 위해 어떤 기준을 확인하겠습니까?", "type": "상황면접"},
+      {"question": "상충하는 요구에서 행동 기준을 어떤 선택 행동으로 지키는지 설명해 주세요.", "type": "직무지식면접"},
+      {"question": "그 선택이 지연시키는 다른 업무를 어떻게 통제하겠습니까?", "type": "상황면접"},
       {"question": "키가 큰 지원자가 유리한 이유를 설명해 주세요.", "type": "경험면접"}
     ]
     """
 
     questions = _parse_openai_response(response)
 
-    assert len(questions) == 1
+    assert len(questions) == 3
     assert "만족시키기" in questions[0]["question"]
+    assert "지키는지" in questions[1]["question"]
+    assert "지연시키는" in questions[2]["question"]
+    assert _contains_blind_hiring_cue("지원자의 키는 180cm입니다.")
+    assert _contains_blind_hiring_cue("키, 체중을 적어 주세요.")
+    assert not _contains_blind_hiring_cue("기준을 지키는 방법과 감수할 결과를 설명해 주세요.")
 
 
 def test_auxiliary_generation_bounds_each_transport_attempt(monkeypatch):
