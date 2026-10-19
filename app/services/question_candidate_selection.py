@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping, Sequence
 
+from app.services.question_surface import classify_explicit_ksa_type
+
 
 _QUESTION_KEYS = ("question", "main_question", "text")
 _METHOD_KEYS = ("type", "method", "interview_type", "question_type")
@@ -476,8 +478,9 @@ def _ksa_axis(item: Mapping[str, Any]) -> tuple[list[str], frozenset[str]]:
     for key in ("ksa_type", "ksaTypeName", "factorType", "ksa_type_name"):
         value = _clean_text(item.get(key))
         if value:
-            labels.append(value)
-            tokens.add(f"type:{_axis_token(value)}")
+            kind = classify_explicit_ksa_type(value)
+            labels.append(kind or value)
+            tokens.add(f"type:{_axis_token(kind or value)}")
             break
 
     trace = item.get("ncs_traceability")
@@ -486,8 +489,9 @@ def _ksa_axis(item: Mapping[str, Any]) -> tuple[list[str], frozenset[str]]:
             trace.get("ksa_type") or trace.get("ksaTypeName") or trace.get("factorType")
         )
         if value:
-            labels.append(value)
-            tokens.add(f"type:{_axis_token(value)}")
+            kind = classify_explicit_ksa_type(value)
+            labels.append(kind or value)
+            tokens.add(f"type:{_axis_token(kind or value)}")
 
     evidence_rows = item.get("ksa_evidence")
     if isinstance(evidence_rows, (list, tuple)):
@@ -498,6 +502,12 @@ def _ksa_axis(item: Mapping[str, Any]) -> tuple[list[str], frozenset[str]]:
                 value = _clean_text(row.get(key))
                 if not value:
                     continue
+                if key in {"ksaTypeName", "ksa_type"}:
+                    kind = classify_explicit_ksa_type(value)
+                    if kind:
+                        labels.append(kind)
+                        tokens.add(f"type:{_axis_token(kind)}")
+                        continue
                 prefix = "id" if key == "evidence_id" else "focus"
                 labels.append(value)
                 tokens.add(f"{prefix}:{_axis_token(value)}")
