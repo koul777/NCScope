@@ -1354,7 +1354,7 @@ def test_adjust_questions_replaces_shallow_focus_restatement_in_experience_quest
     assert question["model_question_preserved"] is False
     assert question["model_followups_raw"] == raw_followups
     assert "ksa_measurement_task" in question["model_replacement_reasons"]
-    assert "실제 판단에 사용한 장면을 골라 무엇을 확인했고 어떤 기준으로 판단" in question["question"]
+    assert "확인·판단 기준을 실제로 적용해 어떤 자료를 확인하고 적용 범위·예외" in question["question"]
     assert "실제 행동과 결과" in question["question"]
     assert any("강점관점 확인·판단 기준" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is False
@@ -1918,7 +1918,7 @@ def test_skill_factor_object_uses_application_verb_for_method_or_tool() -> None:
         "기술",
     )
 
-    assert "수요 예측·검증 절차가 요구된 장면을 골라" in method_question
+    assert "수요 예측·검증 절차를 따라 직접 수행한 행동의 순서" in method_question
     assert "수요예측 기법" not in method_question
     assert "문서관리 도구 활용 절차를 실제로 수행해야" in tool_question
     assert _natural_question_wording_ok(
@@ -1929,7 +1929,7 @@ def test_skill_factor_object_uses_application_verb_for_method_or_tool() -> None:
     assert _natural_question_wording_ok(
         {"type": "경험면접", "question_focus": "수요예측 기법", "question_focus_type": "기술"},
         method_question.replace(
-            "수요 예측·검증 절차가 요구된 장면을 골라",
+            "수요 예측·검증 절차를 따라 직접 수행한 행동의 순서",
             "수요예측 기법을 직접 수행했는지",
         ),
         [],
@@ -2064,7 +2064,7 @@ def test_compound_skill_suffix_still_counts_as_followup_focus_context() -> None:
     item = out["interview_questions"][0]
     assert "갈등중재기술" not in item["question"]
     assert item["question_focus_surface"] == "갈등 조정 절차"
-    assert "갈등 조정 절차가 요구된 장면을 골라" in item["question"]
+    assert "갈등 조정 절차를 따라 직접 수행한 행동의 순서" in item["question"]
     quality = out["question_quality_report"]["items"][0]
     assert quality["ready"] is False
     assert quality["issues"] == ["field_realism"]
@@ -4355,7 +4355,7 @@ def test_experience_template_expresses_attitude_as_observable_behavior() -> None
         focus_type="태도",
     )
 
-    assert "도면 숙지 행동 기준과 관련해 본인이 선택한 행동" in question
+    assert "도면 숙지 행동 기준을 지키기 어려운 압박" in question
     assert "선택한 행동과 그 결과" in question
     assert "실제 경험 한 가지를 선택" in question
     assert "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례" in question

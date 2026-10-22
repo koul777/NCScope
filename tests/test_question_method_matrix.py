@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 
-from app.main import SUPPORTED_INTERVIEW_METHODS
-from scripts.benchmark_question_method_matrix import benchmark_rows
+from app.main import SUPPORTED_INTERVIEW_METHODS, _attach_ksa_evidence_to_strategy
+from scripts.benchmark_question_method_matrix import (
+    benchmark_rows,
+    build_template_question,
+    evidence_row,
+)
 
 
 def _row(factor_name: str, ksa_type: str, *, code: str) -> dict[str, str]:
@@ -39,6 +43,54 @@ def test_all_methods_and_ksa_types_pass_the_template_quality_matrix() -> None:
     assert report["summary"]["exact_surface_duplicate_count"] == 0
     assert report["summary"]["passed"] is True
     assert report["issue_counts"] == {}
+
+
+def test_experience_templates_render_long_official_ksa_as_natural_panel_questions() -> None:
+    rows = [
+        _row(
+            "외부전문가 검색 시스템(국가인재 DB등) 사용법",
+            "지식",
+            code="0201010206_22v2",
+        ),
+        _row(
+            "아이디어 평가, 권리존속평가 등 권리 평가 기술",
+            "기술",
+            code="0501020109_14v1",
+        ),
+        _row(
+            "조사 대상의 수준에 맞는 문항을 구성하려는 태도",
+            "태도",
+            code="0402020102_16v2",
+        ),
+    ]
+    for row, unit_name in zip(
+        rows,
+        ("경영평가활동 수행", "지식재산 해외 법무 수행", "평생교육 요구분석"),
+    ):
+        row["unit_name"] = unit_name
+
+    for variation_index, row in enumerate(rows, start=80):
+        item = build_template_question(
+            row,
+            "경험면접",
+            variation_index=variation_index,
+        )
+        evaluated = _attach_ksa_evidence_to_strategy(
+            {
+                "interview_questions": [item],
+                "question_plan_used": {"total_main_count": 1},
+            },
+            [evidence_row(row)],
+        )
+        quality = evaluated["question_quality_report"]["items"][0]
+        question = evaluated["interview_questions"][0]["question"]
+
+        assert quality["ready"] is True, json.dumps(quality, ensure_ascii=False, indent=2)
+        assert len(question) <= 360
+        assert "조건과 유사한 사례를 우선해 주세요" not in question
+        assert "사용법 확인·판단 기준을 실제 판단에 사용한 장면" not in question
+        assert "권리 평가·검증 절차가 요구된 장면" not in question
+        assert "문항 구성 행동 기준과 관련해" not in question
 
 
 def test_creative_task_operationalizes_long_equipment_operation_skill() -> None:
