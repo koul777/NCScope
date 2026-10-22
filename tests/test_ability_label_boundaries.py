@@ -4,9 +4,11 @@ import pytest
 
 from app.services.kordoc_parser import (
     _split_ability_unit_entries,
+    _split_numbered_ability_units,
     structure_job_description,
 )
 from app.main import _lock_units_to_reviewed_ability_units
+import app.main as main
 
 
 @pytest.mark.parametrize("separator", [" ", "\n"])
@@ -147,3 +149,131 @@ def test_wrapped_labels_keep_source_cell_evidence():
 ])
 def test_source_names_and_unproven_line_boundaries_are_not_rewritten(text, expected):
     assert [row["text"] for row in _split_ability_unit_entries(text)] == expected
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("경영평가활동\n수행, 경영평가 결과보고",
+     ["경영평가활동", "수행", "경영평가 결과보고"]),
+    ("경영평가관련 정보수집, 경영평가활동\n수행\n경영평가 결과보고",
+     ["경영평가관련 정보수집", "경영평가활동", "수행", "경영평가 결과보고"]),
+    ("경영평가관련 정보수집, 경영평가활동\n수행, 기관 자체\n업무",
+     ["경영평가관련 정보수집", "경영평가활동", "수행", "기관 자체", "업무"]),
+    ("경영평가활동\n\n수행, 경영평가 모니\n터링",
+     ["경영평가활동", "수행", "경영평가 모니 터링"]),
+])
+def test_comma_cell_does_not_join_unproven_item_boundaries(source, expected):
+    assert [row["text"] for row in _split_ability_unit_entries(source)] == expected
+
+
+@pytest.mark.parametrize("source", [
+    "고객번호 1234567890. 확인",
+    "고객번호1234567890. 확인",
+    "고객번호 0202030201. 확인",
+    "고객번호 NCS 0202030201. 확인",
+])
+def test_ten_digit_number_inside_ability_name_is_not_a_code_marker(source):
+    assert [row["text"] for row in _split_ability_unit_entries(source)] == [source]
+
+
+def test_versioned_number_inside_ability_name_is_not_a_code_marker():
+    source = "고객번호 1234567890_22v3. 확인"
+    assert _split_numbered_ability_units(source) == [{"text": source, "ordinal": ""}]
+
+
+@pytest.mark.parametrize("separator", [", ", "; ", "\n"])
+def test_full_code_marker_after_explicit_item_boundary(separator):
+    rows = _split_ability_unit_entries("기관 자체업무" + separator + "0202030201. 문서작성")
+    assert [row["text"] for row in rows] == ["기관 자체업무", "문서작성"]
+
+
+def test_inline_coded_list_keeps_numeric_customer_reference_in_name():
+    rows = _split_ability_unit_entries(
+        "0202030201. 문서작성 0202030202. 고객번호 1234567890. 확인"
+    )
+    assert [row["text"] for row in rows] == ["문서작성", "고객번호 1234567890. 확인"]
+
+
+def test_code_shaped_customer_number_inside_coded_item_is_preserved():
+    rows = _split_ability_unit_entries(
+        "0202030201. 문서작성 고객번호 0202030205. 확인"
+    )
+    assert [row["text"] for row in rows] == ["문서작성 고객번호 0202030205. 확인"]
+
+
+def test_explicit_bullet_line_cannot_be_joined_as_a_wrapped_label():
+    rows = _split_ability_unit_entries("경영평가활동\n• 수행, 경영평가 모니\n터링")
+    assert [row["text"] for row in rows] == ["경영평가활동", "수행", "경영평가 모니 터링"]
+
+
+@pytest.mark.parametrize("second_code", ["0901010104_15v1", "0901010203_15v1"])
+@pytest.mark.parametrize("source", ["승객 승ㆍ하차지원", "승객 승·하차지원", "승객 승･하차지원"])
+def test_code_recovery_rejects_normalized_base_code_collision(second_code, source):
+    units = [
+        {"compeUnitName": "승객 승ㆍ하차지원", "ncsClCd": "0901010103_15v1"},
+        {"compeUnitName": "승객 승·하차지원", "ncsClCd": second_code},
+    ]
+    for candidates in (units, units[:1], units[1:]):
+        recovered, missing = main._recover_code_scoped_reviewed_ability_units(
+            units, [source], candidates,
+        )
+        assert recovered == []
+        assert missing == [source]
+
+
+def test_ordinal_recovery_cannot_select_one_base_of_normalized_name_collision():
+    source = "승객 승ㆍ하차지원"
+    units = [
+        {"compeUnitName": source, "ncsClCd": "0901010103_15v1"},
+        {"compeUnitName": "승객 승·하차지원", "ncsClCd": "0901010104_15v1"},
+    ]
+    ordinals = main._reviewed_ability_unit_ordinals({"positioned_items": [
+        {"section": "ability_units", "text": source, "ability_unit_ordinal": "03"},
+    ]})
+    recovered, missing = main._recover_ordinal_scoped_reviewed_ability_units(
+        units, [source], ordinals,
+    )
+    assert recovered == []
+    assert missing == [source]
+
+
+def test_scope_inference_rejects_same_detail_normalized_base_code_collision():
+    source = "승객 승･하차지원"
+    scoped, missing = main._scope_reviewed_ability_units_by_exact_detail_membership(
+        {"철도운전운영": [
+            {"compeUnitName": "승객 승ㆍ하차지원", "ncsClCd": "0901010103_15v1"},
+            {"compeUnitName": "승객 승·하차지원", "ncsClCd": "0901010104_15v1"},
+        ]}, [source],
+    )
+    assert scoped == {}
+    assert missing == [source]
+
+
+def test_ability_name_and_ordinal_keys_share_middle_dot_normalization():
+    source = "승객 승ㆍ하차지원"
+    equivalent = "승객 승･하차지원"
+    assert main._reviewed_ability_unit_names([source, equivalent]) == [source]
+    ordinals = main._reviewed_ability_unit_ordinals({"positioned_items": [
+        {"section": "ability_units", "text": source, "ability_unit_ordinal": "03"},
+        {"section": "ability_units", "text": equivalent, "ability_unit_ordinal": "04"},
+    ]})
+    assert ordinals == {main._norm_ability_coverage_key(source): ["03", "04"]}
+
+
+@pytest.mark.parametrize("route", ["ordinal", "code"])
+def test_recovery_accepts_equivalent_dot_and_versions_of_one_base(route):
+    source = "승객 승･하차지원"
+    units = [
+        {"compeUnitName": "승객 승ㆍ하차지원", "ncsClCd": "0901010103_15v1", "evidence_id": "v1"},
+        {"compeUnitName": "승객 승·하차지원", "ncsClCd": "0901010103_22v2", "evidence_id": "v2"},
+    ]
+    if route == "ordinal":
+        recovered, missing = main._recover_ordinal_scoped_reviewed_ability_units(
+            units, [source], {main._norm_ability_coverage_key(source): ["03"]},
+        )
+    else:
+        recovered, missing = main._recover_code_scoped_reviewed_ability_units(
+            units, [source], units,
+        )
+    assert missing == []
+    assert [row["ncsClCd"] for row in recovered] == [row["ncsClCd"] for row in units]
+    assert [row["evidence_id"] for row in recovered] == ["v1", "v2"]
