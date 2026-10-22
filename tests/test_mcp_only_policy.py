@@ -72,6 +72,11 @@ def _openai_model_strategy(
     focus = str(ksa["factorName"])
     evidence_id = main.stable_ksa_evidence_id(ksa)
     market_focus = "시장" in focus or "환경" in focus
+    public_focus_surface = (
+        "시장 환경 자료 비교"
+        if market_focus
+        else "원문과 요청 기록 대조"
+    )
     experience_question = (
         "다음 연도 사업계획 확정 직전, 고객 수요조사와 전년도 실적이 서로 다른 "
         "방향을 가리킨 실제 경험을 말씀해 주세요. 어떤 시장 환경 자료를 근거로 "
@@ -186,6 +191,7 @@ def _openai_model_strategy(
                 "question_source": "openai_api",
                 "question_evidence_id": evidence_id,
                 "question_focus": focus,
+                "question_focus_surface": public_focus_surface,
                 "question_focus_source": "official_ksa",
                 "question_focus_type": str(ksa.get("ksaTypeName") or "지식"),
                 "ncsClCd": str(unit["ncsClCd"]),
@@ -230,6 +236,94 @@ def _patch_mcp_upload_common(mocker) -> None:
     )
     mocker.patch("app.main.infer_keywords_from_subcategory_ai", return_value=[])
     mocker.patch("app.main.review_ocr_terms_with_openai", return_value=[])
+
+    def exact_bundle_from_legacy_search(terms, **kwargs):
+        lookup_terms = list(terms)
+        try:
+            units = list(
+                main.search_units_by_detail(
+                    lookup_terms,
+                    max_units=int(kwargs.get("max_units") or 200),
+                )
+                or []
+            )
+        except main.NcsMcpError:
+            return {
+                "status": "unavailable",
+                "eligible_for_generation": False,
+                "reason_codes": ["ncs_mcp_unavailable"],
+                "lookup_terms": lookup_terms,
+                "details": [],
+                "units": [],
+                "matcher_version": "test-legacy-search-adapter",
+                "fingerprint": "e" * 64,
+            }
+        matched, unmatched = main._detail_lookup_coverage(lookup_terms, units)
+        if not units or unmatched:
+            return {
+                "status": "unresolved",
+                "eligible_for_generation": False,
+                "reason_codes": ["detail_coverage_missing"],
+                "lookup_terms": lookup_terms,
+                "details": [],
+                "units": units,
+                "matcher_version": "test-legacy-search-adapter",
+                "fingerprint": "f" * 64,
+            }
+        normalized_units = []
+        for row in units:
+            code = str(row.get("ncsClCd") or "").strip()
+            normalized_units.append(
+                {
+                    **row,
+                    "officialUnitBaseCode": str(
+                        row.get("officialUnitBaseCode") or code.split("_", 1)[0]
+                    ),
+                    "unitCatalogVerified": True,
+                }
+            )
+        return {
+            "status": "exact_complete",
+            "eligible_for_generation": True,
+            "reason_codes": [],
+            "lookup_terms": lookup_terms,
+            "details": [{"sourceDetailName": term} for term in matched],
+            "units": normalized_units,
+            "matcher_version": "test-legacy-search-adapter",
+            "fingerprint": "a" * 64,
+        }
+
+    mocker.patch(
+        "app.main.build_ncs_match_bundle",
+        side_effect=exact_bundle_from_legacy_search,
+    )
+
+
+def _patch_exact_match_bundle(mocker, units: list[dict]) -> None:
+    normalized_units = [
+        {
+            **row,
+            "officialUnitBaseCode": str(
+                row.get("officialUnitBaseCode")
+                or str(row.get("ncsClCd") or "").split("_", 1)[0]
+            ),
+            "unitCatalogVerified": True,
+        }
+        for row in units
+    ]
+    mocker.patch(
+        "app.main.build_ncs_match_bundle",
+        side_effect=lambda terms, **_kwargs: {
+            "status": "exact_complete",
+            "eligible_for_generation": True,
+            "reason_codes": [],
+            "lookup_terms": list(terms),
+            "details": [],
+            "units": normalized_units,
+            "matcher_version": "test-exact-complete",
+            "fingerprint": "9" * 64,
+        },
+    )
 
 
 def _zip_bytes(files: dict[str, str]) -> bytes:
@@ -935,7 +1029,11 @@ def test_scope_unassigned_units_rejects_cross_detail_name_collision() -> None:
 
 def test_recover_required_unit_uses_exact_name_and_unit_code_detail_scope() -> None:
     detail_units = [
-        {"ncsClCd": "0202030201_22v3", "compeUnitName": "문서 작성"},
+        {
+            "ncsClCd": "0202030201_22v3",
+            "compeUnitName": "문서 작성",
+            "ncsSubdCdnm": "사무행정",
+        },
     ]
     candidates = [
         {
@@ -960,6 +1058,8 @@ def test_recover_required_unit_uses_exact_name_and_unit_code_detail_scope() -> N
 
     assert [row["ncsClCd"] for row in recovered] == ["0202030207_22v4"]
     assert recovered[0]["requiredAbilityUnitMatch"] == "exact_name_code_scope_recovery"
+    assert recovered[0]["matchedDetailName"] == "사무행정"
+    assert recovered[0]["ncsSubdCdnm"] == "자원봉사관리"
     assert missing == []
 
 
@@ -980,6 +1080,72 @@ def test_recover_required_unit_rejects_wrong_code_scope_and_semantic_name() -> N
 
     assert recovered == []
     assert missing == ["사무행정 업무 관리"]
+
+
+def test_recover_required_unit_uses_normalized_reviewed_detail_alias() -> None:
+    detail_units = [
+        {
+            "ncsClCd": "0202030201_22v3",
+            "compeUnitName": "문서 작성",
+            "matchedDetailName": "사무 행정",
+            "ncsSubdCdnm": "사무행정",
+        },
+        {
+            "ncsClCd": "0202030202_22v3",
+            "compeUnitName": "문서 관리",
+            "matchedDetailName": "사무행정",
+            "ncsSubdCdnm": "사무행정",
+        },
+    ]
+    candidates = [
+        {
+            "ncsClCd": "0202030207_22v4",
+            "compeUnitName": "사무행정 업무 관리",
+            "ncsSubdCdnm": "자원봉사관리",
+        }
+    ]
+
+    recovered, missing = main._recover_code_scoped_reviewed_ability_units(
+        detail_units,
+        ["사무행정 업무 관리"],
+        candidates,
+    )
+
+    assert missing == []
+    assert recovered[0]["matchedDetailName"] == "사무 행정"
+    assert recovered[0]["ncsSubdCdnm"] == "자원봉사관리"
+
+
+def test_recover_required_unit_does_not_decorate_ambiguous_detail_labels() -> None:
+    detail_units = [
+        {
+            "ncsClCd": "0202030201_22v3",
+            "compeUnitName": "문서 작성",
+            "matchedDetailName": "사무행정",
+        },
+        {
+            "ncsClCd": "0202030202_22v3",
+            "compeUnitName": "문서 관리",
+            "matchedDetailName": "총무",
+        },
+    ]
+    candidates = [
+        {
+            "ncsClCd": "0202030207_22v4",
+            "compeUnitName": "사무행정 업무 관리",
+            "ncsSubdCdnm": "자원봉사관리",
+        }
+    ]
+
+    recovered, missing = main._recover_code_scoped_reviewed_ability_units(
+        detail_units,
+        ["사무행정 업무 관리"],
+        candidates,
+    )
+
+    assert missing == []
+    assert "matchedDetailName" not in recovered[0]
+    assert recovered[0]["ncsSubdCdnm"] == "자원봉사관리"
 
 
 def test_recover_required_unit_uses_unique_ordinal_for_small_current_name_change() -> None:
@@ -1232,10 +1398,11 @@ def test_mcp_only_returns_manual_suggestions_when_detail_has_no_exact_match(monk
 
     body = resp.json()
     assert resp.status_code == 422
-    suggest.assert_called_once_with(["\uc784\uc0c1\ubcd1\ub9ac"], max_units=12)
+    suggest.assert_not_called()
+    assert body["detail"]["code"] == "ncs_exact_complete_match_required"
+    assert body["detail"]["match_status"] == "unresolved"
     assert body["detail"]["lookup_terms"] == ["\uc784\uc0c1\ubcd1\ub9ac"]
-    assert body["detail"]["suggested_ncs_units"] == [suggestion]
-    assert "exact competency units" in body["detail"]["message"]
+    assert body["detail"]["reason_codes"] == ["detail_coverage_missing"]
 
 
 def test_mcp_only_fails_closed_when_authoritative_detail_lookup_is_unavailable(
@@ -1377,11 +1544,14 @@ def test_mcp_only_rejects_partial_detail_exact_coverage(monkeypatch, mocker):
 
     body = resp.json()
     assert resp.status_code == 422
-    suggest.assert_called_once_with(["\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870"], max_units=12)
-    assert body["detail"]["matched_detail_terms"] == ["\uacbd\uc601\uae30\ud68d"]
-    assert body["detail"]["unmatched_detail_terms"] == ["\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870"]
-    assert body["detail"]["suggested_ncs_units"] == [suggestion]
-    assert "partial exact coverage" in body["detail"]["message"]
+    suggest.assert_not_called()
+    assert body["detail"]["code"] == "ncs_exact_complete_match_required"
+    assert body["detail"]["match_status"] == "unresolved"
+    assert body["detail"]["lookup_terms"] == [
+        "\uacbd\uc601\uae30\ud68d",
+        "\uac04\ud638\uc5c5\ubb34 \ubcf4\uc870",
+    ]
+    assert body["detail"]["reason_codes"] == ["detail_coverage_missing"]
 
 
 def test_mcp_only_rejects_reviewed_ability_unit_outside_exact_detail_units(monkeypatch, mocker):
@@ -2018,6 +2188,7 @@ def test_generate_from_text_uses_request_scoped_openai_key(monkeypatch, mocker):
         "catalogUnitCodes": ["0201010103_22v2"],
         "mcpUnitName": "\uacbd\uc601\uacc4\ud68d \uc218\ub9bd",
     }
+    _patch_exact_match_bundle(mocker, [unit])
     ksa = {
         "ncsClCd": unit["ncsClCd"],
         "compeUnitName": unit["compeUnitName"],
@@ -2164,12 +2335,12 @@ def test_generate_from_text_fails_closed_when_unit_catalog_is_unavailable(
             },
         )
 
-    assert response.status_code == 502
+    assert response.status_code == 503
     assert response.json()["detail"] == {
-        "code": "ncs_catalog_validation_unavailable",
+        "code": "ncs_mcp_unavailable",
         "message": (
-            "\uacf5\uc2dd NCS \uc5f0\uacb0 \uce74\ud0c8\ub85c\uadf8\ub97c \ud655\uc778\ud560 \uc218 \uc5c6\uc5b4 "
-            "\uc120\ud0dd\ud55c \ub2a5\ub825\ub2e8\uc704\ub97c \uac80\uc99d\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."
+            "NCS \uacf5\uc2dd \uc138\ubd84\ub958\u00b7\ub2a5\ub825\ub2e8\uc704 \uc870\ud68c\uac00 \uc77c\uc2dc\uc801\uc73c\ub85c \ubd88\uac00\ub2a5\ud569\ub2c8\ub2e4. "
+            "\uc120\ud0dd \uc0c1\ud0dc\ub97c \uc720\uc9c0\ud55c \ucc44 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694."
         ),
         "retryable": True,
     }
@@ -2205,6 +2376,7 @@ def test_generate_from_text_never_falls_back_to_server_openai_key(monkeypatch, m
         "ncsSubdCdnm": "\uacbd\uc601\uae30\ud68d",
         "compeUnitDef": "\uacbd\uc601\ubaa9\ud45c\ub97c \uc218\ub9bd\ud55c\ub2e4",
     }
+    _patch_exact_match_bundle(mocker, [unit])
     ksa = {
         "ncsClCd": unit["ncsClCd"],
         "compeUnitName": unit["compeUnitName"],
@@ -2284,6 +2456,7 @@ def test_generate_from_text_restricts_stale_question_plan_to_selected_ncs(monkey
         "ncsSubdCdnm": "\uc0ac\ubb34\ud589\uc815",
         "compeUnitDef": "\ubb38\uc11c \uc694\uad6c\uc0ac\ud56d\uc744 \ud30c\uc545\ud558\uc5ec \ubb38\uc11c\ub97c \uc791\uc131\ud55c\ub2e4",
     }
+    _patch_exact_match_bundle(mocker, [unit])
     ksa = {
         "ncsClCd": unit["ncsClCd"],
         "compeUnitName": unit["compeUnitName"],
@@ -2389,6 +2562,91 @@ def _patch_catalog_version_identity(mocker, catalog_row: dict, *codes: str) -> N
     )
 
 
+def test_compact_search_uses_mcp_structured_data_route(mocker):
+    calls: list[tuple[str, dict]] = []
+
+    def fake_call_tool(name, arguments):
+        calls.append((name, arguments))
+        return {
+            "results": [
+                {
+                    "type": "unit",
+                    "id": "0202030101_22v2",
+                    "text": "경영진 지원업무",
+                    "path": {"sub": "비서"},
+                }
+            ]
+        }
+
+    mocker.patch(
+        "app.services.ncs_mcp_client._tool_names",
+        return_value={"ncs_search", "ncs_execute_tool"},
+    )
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        side_effect=fake_call_tool,
+    )
+
+    result = ncs_mcp_client._call_data_tool(
+        "ncs_search",
+        {"query": "비서", "scope": "unit", "limit": 200},
+    )
+
+    assert result["results"][0]["id"] == "0202030101_22v2"
+    assert calls == [
+        (
+            "ncs_execute_tool",
+            {
+                "tool_name": "ncs_search",
+                "params": {"query": "비서", "scope": "unit", "limit": 200},
+            },
+        ),
+    ]
+
+
+def test_compact_data_tool_fails_closed_without_structured_route(mocker):
+    mocker.patch(
+        "app.services.ncs_mcp_client._tool_names",
+        return_value={"ncs_search"},
+    )
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "content": [{"type": "text", "text": "## NCS 검색 결과"}],
+            "isError": False,
+        },
+    )
+
+    with pytest.raises(ncs_mcp_client.NcsMcpError, match="structured data route"):
+        ncs_mcp_client._call_data_tool(
+            "ncs_search",
+            {"query": "비서", "scope": "unit", "limit": 200},
+        )
+
+
+def test_compact_search_preserves_explicit_not_found_as_empty_result(mocker):
+    mocker.patch(
+        "app.services.ncs_mcp_client._tool_names",
+        return_value={"ncs_search", "ncs_execute_tool"},
+    )
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "ok": False,
+            "error": {"code": "NOT_FOUND", "message": "검색 결과 없음"},
+            "data": {"suggestions": []},
+        },
+    )
+
+    result = ncs_mcp_client._call_data_tool(
+        "ncs_search",
+        {"query": "존재하지않는세분류", "scope": "unit", "limit": 200},
+    )
+
+    assert result["results"] == []
+    assert result["error"]["code"] == "NOT_FOUND"
+
+
 def test_mcp_search_matches_detail_not_small_category(mocker):
     target = _catalog_units_for_detail("\uacbd\uc601\uae30\ud68d")[0]
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
@@ -2442,6 +2700,7 @@ def test_mcp_search_splits_multiple_detail_labels_from_one_input(mocker):
 
 
 def test_mcp_search_preserves_official_detail_with_internal_commas(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     detail_name = "조선비계(족장, 발판, scaffolding)"
     catalog_row = _catalog_units_for_detail(detail_name)[0]
     calls: list[str] = []
@@ -2474,6 +2733,7 @@ def test_every_official_detail_label_is_an_atomic_split_term():
 
 
 def test_mcp_search_global_limit_preserves_each_confirmed_detail(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     calls: list[str] = []
     personnel_rows = _catalog_units_for_detail("인사")[:3]
     project_rows = _catalog_units_for_detail("프로젝트관리")[:2]
@@ -2513,6 +2773,7 @@ def test_mcp_search_limit_smaller_than_detail_count_preserves_input_order(
     max_units,
     expected_details,
 ):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     details = ["인사", "프로젝트관리", "총무"]
     rows_by_query = {
         detail: _catalog_units_for_detail(detail)[:2]
@@ -2542,6 +2803,7 @@ def test_mcp_search_limit_smaller_than_detail_count_preserves_input_order(
 def test_mcp_search_result_retains_coverage_for_groups_hidden_by_global_cap(
     mocker,
 ):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     details = ["인사", "프로젝트관리", "총무"]
     rows_by_query = {
         detail: _catalog_units_for_detail(detail)[:2]
@@ -2580,6 +2842,7 @@ def test_parallel_mcp_detail_search_matches_sequential_order_and_coverage(
     mocker,
     max_units,
 ):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     details = ["인사", "프로젝트관리", "총무"]
     rows_by_query = {
         detail: _catalog_units_for_detail(detail)
@@ -2617,6 +2880,7 @@ def test_parallel_mcp_detail_search_runs_independent_details_concurrently(
     monkeypatch,
     mocker,
 ):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     monkeypatch.setenv("NCS_MCP_DETAIL_CONCURRENCY", "3")
     details = ["인사", "프로젝트관리", "총무"]
     rows_by_query = {
@@ -2702,6 +2966,7 @@ def test_parallel_mcp_detail_search_returns_failure_without_waiting_for_active_p
 
 
 def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     query = "\uacbd\uc601\uae30\ud68d"
     catalog_row = _catalog_units_for_detail(query)[0]
     broad_rows = [
@@ -2726,6 +2991,7 @@ def test_mcp_search_small_output_limit_keeps_deep_exact_detail_match(mocker):
 
 
 def test_mcp_search_reallocates_unused_sparse_group_capacity(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     sparse = "\uc778\uc0ac"
     dense = "\ud504\ub85c\uc81d\ud2b8\uad00\ub9ac"
     sparse_rows = _catalog_units_for_detail(sparse)[:1]
@@ -2958,6 +3224,10 @@ def test_mcp_ksa_retries_one_transient_unit_failure(mocker):
 def test_parallel_mcp_ksa_failure_does_not_submit_or_retry_full_backlog(
     monkeypatch, mocker
 ):
+    mocker.patch(
+        "app.services.ncs_mcp_client._tool_names",
+        return_value={"ncs_unit_detail"},
+    )
     monkeypatch.setenv("NCS_MCP_KSA_CONCURRENCY", "4")
     calls: list[str] = []
     calls_lock = threading.Lock()
@@ -2982,6 +3252,10 @@ def test_parallel_mcp_ksa_failure_does_not_submit_or_retry_full_backlog(
 def test_parallel_mcp_ksa_returns_primary_failure_without_waiting_for_active_peer(
     monkeypatch, mocker
 ):
+    mocker.patch(
+        "app.services.ncs_mcp_client._tool_names",
+        return_value={"ncs_unit_detail"},
+    )
     monkeypatch.setenv("NCS_MCP_KSA_CONCURRENCY", "2")
     slow_started = threading.Event()
     release_slow = threading.Event()
@@ -3481,6 +3755,7 @@ def test_mcp_suggest_units_by_text_marks_exact_unit_name_match(mocker):
 
 
 def test_mcp_suggestions_round_robin_across_reviewed_terms(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     terms = ["인사", "프로젝트관리"]
     rows_by_query = {
         term: _catalog_units_for_detail(term)[:3]
@@ -3515,6 +3790,7 @@ def test_mcp_suggestions_round_robin_across_reviewed_terms(mocker):
 
 
 def test_mcp_suggestions_keep_searching_after_an_empty_earlier_term(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     project_row = _catalog_units_for_detail("프로젝트관리")[0]
     calls: list[str] = []
 
@@ -3827,6 +4103,7 @@ def _search_result(code, name="unit-alpha", detail="detail-alpha"):
 
 
 def test_mcp_search_requires_full_catalog_code_and_canonical_unit_identity(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     catalog = _synthetic_catalog_unit()
     detail = _install_synthetic_unit_catalog(mocker, [catalog])
     mocker.patch(
@@ -3846,6 +4123,7 @@ def test_mcp_search_requires_full_catalog_code_and_canonical_unit_identity(mocke
 
 
 def test_mcp_search_rejects_exact_catalog_code_with_name_mismatch_without_fallback(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     catalog = _synthetic_catalog_unit()
     detail = _install_synthetic_unit_catalog(mocker, [catalog])
     mocker.patch(
@@ -3861,6 +4139,7 @@ def test_mcp_search_rejects_exact_catalog_code_with_name_mismatch_without_fallba
 
 
 def test_mcp_search_rejects_duplicated_full_catalog_code(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     catalog = _synthetic_catalog_unit()
     duplicate = {**catalog, "compeUnitName": "conflicting unit"}
     detail = _install_synthetic_unit_catalog(mocker, [catalog, duplicate])
@@ -3873,6 +4152,7 @@ def test_mcp_search_rejects_duplicated_full_catalog_code(mocker):
 
 
 def test_mcp_search_rejects_duplicate_exact_catalog_code_identity(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     catalog_rows = [
         _synthetic_catalog_unit("1234567801_25v1", name="unit-alpha"),
         _synthetic_catalog_unit("1234567801_25v1", name="unit-alpha"),
@@ -3887,6 +4167,7 @@ def test_mcp_search_rejects_duplicate_exact_catalog_code_identity(mocker):
 
 
 def test_mcp_search_allows_only_catalog_proven_base_version_compatibility(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     catalog_rows = [
         _synthetic_catalog_unit("1234567801_24v1"),
         _synthetic_catalog_unit("1234567801_25v1"),
@@ -3910,6 +4191,7 @@ def test_mcp_search_allows_only_catalog_proven_base_version_compatibility(mocker
 
 
 def test_mcp_search_rejects_base_version_fallback_when_same_base_has_multiple_names(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     catalog_rows = [
         _synthetic_catalog_unit("1234567801_24v1", name="unit-alpha"),
         _synthetic_catalog_unit("1234567801_25v1", name="unit-beta"),
@@ -3924,6 +4206,7 @@ def test_mcp_search_rejects_base_version_fallback_when_same_base_has_multiple_na
 
 
 def test_mcp_search_invalid_row_does_not_consume_identity_or_limit(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     catalog = _synthetic_catalog_unit()
     detail = _install_synthetic_unit_catalog(mocker, [catalog])
     compatible_code = "1234567801_26v1"
@@ -3943,6 +4226,7 @@ def test_mcp_search_invalid_row_does_not_consume_identity_or_limit(mocker):
 
 
 def test_mcp_search_dedupes_versions_by_first_mcp_rank_without_suffix_inference(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_search"})
     catalog_rows = [
         _synthetic_catalog_unit("1234567801_25v1"),
         _synthetic_catalog_unit("1234567801_24v1"),
@@ -4224,6 +4508,11 @@ def test_mcp_request_session_reinitializes_after_transport_failure(monkeypatch):
 def test_parallel_ksa_calls_share_one_initialized_mcp_transport(monkeypatch):
     monkeypatch.setenv("NCS_MCP_URL", "https://ncs.example/api/mcp")
     monkeypatch.setenv("NCS_MCP_KSA_CONCURRENCY", "4")
+    monkeypatch.setattr(
+        ncs_mcp_client,
+        "_tool_names",
+        lambda **_kwargs: {"ncs_search", "ncs_unit_detail"},
+    )
     calls: list[dict] = []
     clients: list[object] = []
     calls_lock = ncs_mcp_client.threading.Lock()

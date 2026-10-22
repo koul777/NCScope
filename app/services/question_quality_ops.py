@@ -33,6 +33,7 @@ _FEEDBACK_FIELDS = frozenset(
     {
         "run_id",
         "question_hash",
+        "question_artifact_hash",
         "verdict",
         "issue_codes",
         "note",
@@ -365,7 +366,12 @@ def sanitize_feedback_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     free_text_values = (
         value
         for key, value in payload.items()
-        if str(key) not in {"review_token", "run_id", "question_hash"}
+        if str(key) not in {
+            "review_token",
+            "run_id",
+            "question_hash",
+            "question_artifact_hash",
+        }
     )
     for value in free_text_values:
         values = value if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)) else [value]
@@ -411,6 +417,14 @@ def sanitize_feedback_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "verdict": normalized_verdict,
         "issue_codes": issue_codes,
     }
+
+    if "question_artifact_hash" in payload and payload.get("question_artifact_hash") is not None:
+        artifact_hash = payload.get("question_artifact_hash")
+        if not isinstance(artifact_hash, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", artifact_hash.strip().casefold()
+        ):
+            raise ValueError("question_artifact_hash must be a SHA-256 hex digest")
+        sanitized["question_artifact_hash"] = artifact_hash.strip().casefold()
 
     for field, max_length in (("note", 500), ("reviewer_ref", 80), ("review_token", 128)):
         if field not in payload or payload.get(field) is None:

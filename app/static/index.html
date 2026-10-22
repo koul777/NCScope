@@ -3288,6 +3288,50 @@
       empty.style.display = 'none';
     }
 
+    const INTERVIEW_PROBE_TRIGGER_LABELS = Object.freeze({
+      always: '항상 질문',
+      if_decision_or_action_basis_missing: '판단 근거·직접 행동이 불명확할 때',
+      if_result_or_verification_missing: '결과·검증 근거가 불명확할 때',
+      if_additional_evidence_missing: '추가 행동증거가 필요할 때',
+    });
+
+    const INTERVIEW_ANSWER_SLOT_LABELS = Object.freeze({
+      situation_and_role: '상황·본인 역할',
+      decision_and_action: '판단·직접 행동',
+      result_and_learning: '결과·학습',
+      facts_and_constraints: '사실·제약조건',
+      risk_and_followup: '위험·후속조치',
+      evidence_and_assumption: '근거자료·가정',
+      alternative_and_priority: '대안·우선순위',
+      metric_and_followup: '성과지표·후속점검',
+      position_and_basis: '입장·근거',
+      counterargument_and_adjustment: '반대논거·조정',
+      agreement_and_followup: '합의·후속조치',
+      document_and_urgency: '문서·긴급도',
+      priority_and_ownership: '우선순위·담당',
+      reporting_and_followup: '보고·후속기록',
+      standard_and_scope: '기준·적용범위',
+      procedure_and_exception: '절차·예외',
+      output_and_quality_check: '산출물·품질점검',
+      problem_and_hypothesis: '문제·가설',
+      alternative_and_test: '대안·검증',
+      decision_and_followup: '의사결정·후속실행',
+      context_and_basis: '맥락·판단근거',
+      result_and_verification: '결과·검증',
+    });
+
+    function interviewerProbeTriggerLabel(value) {
+      const key = String(value || '').trim();
+      return INTERVIEW_PROBE_TRIGGER_LABELS[key] || key || '-';
+    }
+
+    function interviewerAnswerSlotLabel(value) {
+      const key = String(value || '').trim();
+      if (INTERVIEW_ANSWER_SLOT_LABELS[key]) return INTERVIEW_ANSWER_SLOT_LABELS[key];
+      if (key.startsWith('additional_evidence_')) return '추가 행동증거';
+      return key || '-';
+    }
+
     function renderQuestionList(items) {
       const root = document.getElementById('questionList');
       const empty = document.getElementById('questionEmpty');
@@ -3321,6 +3365,9 @@
       };
       const sourceLabels = {
         openai_api: 'OpenAI API 작성',
+        openrouter_api: 'OpenRouter API 작성',
+        codex_cli: 'Codex 작성',
+        claude_code: 'Claude 작성',
       };
       const qualityReasonLabels = {
         no_model_question: 'AI 초안 없음',
@@ -3363,6 +3410,9 @@
         const code = q.ncsClCd || '-';
         const ev = Array.isArray(q.evaluation_points) ? q.evaluation_points.join(', ') : '-';
         const fus = getFollowUps(q);
+        const structuredFus = Array.isArray(q.structured_follow_ups)
+          ? q.structured_follow_ups.filter(row => row && typeof row === 'object')
+          : [];
         const no = start + i + 1;
 
         const head = document.createElement('div');
@@ -3379,7 +3429,9 @@
         if (source) {
           const sourceEl = document.createElement('span');
           sourceEl.className = 'pill good';
-          sourceEl.textContent = sourceLabels[source] || source;
+          sourceEl.textContent = sourceLabels[source]
+            || sourceLabels[releasedAiSourceBase(source)]
+            || source;
           head.appendChild(sourceEl);
         }
         box.appendChild(head);
@@ -3417,6 +3469,13 @@
           label.textContent = `↳ 꼬리${idx + 1}`;
           step.appendChild(label);
           step.appendChild(document.createTextNode(` ${fu || '-'}`));
+          const operating = structuredFus[idx];
+          if (operating && String(operating.prompt || '').trim() === String(fu || '').trim()) {
+            const metadata = document.createElement('div');
+            metadata.className = 'sub';
+            metadata.textContent = `질문 조건: ${interviewerProbeTriggerLabel(operating.trigger)} · 답변 슬롯: ${interviewerAnswerSlotLabel(operating.answer_slot)} · 관찰 근거: ${String(operating.evidence_target || '-')} · 질문 상한: ${Number(operating.ask_limit || 0)}회`;
+            step.appendChild(metadata);
+          }
           chain.appendChild(step);
         });
         box.appendChild(chain);
@@ -3493,6 +3552,30 @@
             row.textContent = String(level.anchor || '');
             details.appendChild(row);
           });
+          const dimensionRubrics = Array.isArray(guide.dimension_rubrics)
+            ? guide.dimension_rubrics.filter(row => row && typeof row === 'object')
+            : [];
+          dimensionRubrics.forEach((rubric) => {
+            const dimension = document.createElement('div');
+            dimension.className = 'rating-anchor';
+            const rubricAnchors = rubric.anchors && typeof rubric.anchors === 'object'
+              ? rubric.anchors
+              : {};
+            dimension.textContent = `${String(rubric.dimension || '-')} (${Number(rubric.weight || 0)}%) · 관찰: ${String(rubric.observable_evidence || '-')} · 5점 ${String(rubricAnchors['5'] || '-')} · 3점 ${String(rubricAnchors['3'] || '-')} · 1점 ${String(rubricAnchors['1'] || '-')}`;
+            details.appendChild(dimension);
+          });
+          if (guide.critical_floor && guide.critical_floor.rule) {
+            const floor = document.createElement('div');
+            floor.className = 'rating-instruction';
+            floor.textContent = `임계점: ${String(guide.critical_floor.rule)}`;
+            details.appendChild(floor);
+          }
+          if (guide.no_answer_rule && guide.no_answer_rule.rule) {
+            const noAnswer = document.createElement('div');
+            noAnswer.className = 'rating-instruction';
+            noAnswer.textContent = `무응답: ${String(guide.no_answer_rule.rule)}`;
+            details.appendChild(noAnswer);
+          }
           if (guide.interviewer_instruction) {
             const instruction = document.createElement('div');
             instruction.className = 'rating-instruction';
@@ -3541,7 +3624,8 @@
           const result = document.createElement('span');
           result.className = 'review-result';
           const reviewRunId = String(currentQualityControl.run_id || '');
-          const reviewStateKey = `${reviewRunId}|${String(q.question_hash || '')}`;
+          const reviewArtifactHash = String(q.question_artifact_hash || q.question_hash || '');
+          const reviewStateKey = `${reviewRunId}|${reviewArtifactHash}`;
           const applyReviewState = () => {
             const state = questionReviewStates.get(reviewStateKey) || { phase: 'idle', message: '' };
             const busy = state.phase === 'recording' || state.phase === 'rolling_back';
@@ -3566,6 +3650,7 @@
                 body: JSON.stringify({
                   review_token: currentQualityControl.review_token,
                   question_hash: q.question_hash || '',
+                  question_artifact_hash: q.question_artifact_hash || '',
                   question_text: String(q.question || '').trim(),
                   question_index: no,
                   ncs_code: String(q.ncsClCd || '').trim(),
@@ -3614,7 +3699,7 @@
             beginQuestionReviewRequest();
             try {
               const response = await fetch(
-                `/api/quality/runs/${encodeURIComponent(reviewRunId)}/questions/${encodeURIComponent(q.question_hash || '')}/rollback-review`,
+                `/api/quality/runs/${encodeURIComponent(reviewRunId)}/questions/${encodeURIComponent(reviewArtifactHash)}/rollback-review`,
                 {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -3690,7 +3775,8 @@
           traceSummary.textContent = 'NCS 연결 근거';
           traceDetails.appendChild(traceSummary);
           const traceRows = [
-            `능력단위: ${String(ncsTrace.ability_unit_name || comp || '-')}`,
+            `세분류: [${String(ncsTrace.detail_code || '-')}] ${String(ncsTrace.detail_name || '-')}`,
+            `능력단위: [${String(ncsTrace.ability_unit_base_code || ncsTrace.ncs_code || code || '-')}] ${String(ncsTrace.ability_unit_name || comp || '-')}`,
             `요소: ${String(ncsTrace.element_name || '-')}`,
           ];
           const criteria = Array.isArray(ncsTrace.performance_criteria)
@@ -3714,6 +3800,20 @@
       updateQNav();
     }
 
+    const RELEASED_AI_SOURCE_BASES = Object.freeze([
+      'openai_api',
+      'openrouter_api',
+      'codex_cli',
+      'claude_code',
+    ]);
+
+    function releasedAiSourceBase(value) {
+      const source = String(value || '').trim();
+      return RELEASED_AI_SOURCE_BASES.find(
+        (base) => source === base || source.startsWith(`${base}_`)
+      ) || '';
+    }
+
     function isReleasedAiQuestion(item) {
       const row = item && typeof item === 'object' ? item : {};
       const ready = typeof row.ready === 'boolean'
@@ -3722,7 +3822,7 @@
       return Boolean(
         ready
         && String(row.question || '').trim()
-        && String(row.question_source || '').trim() === 'openai_api'
+        && releasedAiSourceBase(row.question_source)
         && row.degraded !== true
         && row.human_review_required !== true
         && row.review_required !== true
@@ -3804,6 +3904,12 @@
         const followUps = Array.isArray((q || {}).follow_ups)
           ? (q || {}).follow_ups.filter((item) => String(item || '').trim())
           : [];
+        const structuredFollowUps = Array.isArray((q || {}).structured_follow_ups)
+          ? (q || {}).structured_follow_ups.filter(row => row && typeof row === 'object')
+          : [];
+        const evaluationPoints = Array.isArray((q || {}).evaluation_points)
+          ? (q || {}).evaluation_points.filter((item) => String(item || '').trim())
+          : [];
         const singleFollow = String((q || {}).follow_up || '').trim();
         if (singleFollow && !followUps.includes(singleFollow)) {
           followUps.unshift(singleFollow);
@@ -3811,9 +3917,119 @@
         lines.push(`${no}. [${code}] ${type} / ${competency} (${status})`);
         lines.push(`   ${question || '-'}${source ? ` (${source})` : ''}`);
         if (followUps.length) {
-          for (const fu of followUps) {
+          for (const [fuIndex, fu] of followUps.entries()) {
             lines.push(`   - 꼬리질문: ${String(fu || '').trim()}`);
+            const operating = structuredFollowUps[fuIndex];
+            if (operating && String(operating.prompt || '').trim() === String(fu || '').trim()) {
+              lines.push(`     · 질문 조건: ${interviewerProbeTriggerLabel(operating.trigger)} / 답변 슬롯: ${interviewerAnswerSlotLabel(operating.answer_slot)} / 관찰 근거: ${String(operating.evidence_target || '-')} / 질문 상한: ${Number(operating.ask_limit || 0)}회`);
+            }
           }
+        }
+        if (evaluationPoints.length) {
+          lines.push(`   - 평가 포인트: ${evaluationPoints.join(' · ')}`);
+        }
+
+        const conditions = q.task_conditions && typeof q.task_conditions === 'object'
+          ? q.task_conditions
+          : null;
+        if (conditions) {
+          if (conditions.candidate_instruction) {
+            lines.push(`   - 응시자 지시문: ${String(conditions.candidate_instruction)}`);
+          }
+          const timePlan = Array.isArray(conditions.time_plan) ? conditions.time_plan : [];
+          if (timePlan.length) {
+            lines.push(`   - 시간: ${timePlan.map(row => `${String(row.phase || '')} ${Number(row.minutes || 0)}분`).join(' · ')}`);
+          } else if (conditions.timing_basis) {
+            lines.push(`   - 시간 기준: ${String(conditions.timing_basis)}`);
+          }
+          const materials = Array.isArray(conditions.provided_materials)
+            ? conditions.provided_materials.filter(value => String(value || '').trim())
+            : [];
+          if (materials.length) lines.push(`   - 제공자료: ${materials.join(', ')}`);
+          const caseMaterials = Array.isArray(conditions.case_materials)
+            ? conditions.case_materials.filter(row => row && row.source && row.field && row.value)
+            : [];
+          if (caseMaterials.length) {
+            lines.push('   - 사례자료:');
+            caseMaterials.forEach((row) => {
+              lines.push(`     · ${String(row.source)} / ${String(row.field)}: ${String(row.value)}`);
+            });
+          } else {
+            const caseFacts = Array.isArray(conditions.case_facts)
+              ? conditions.case_facts.filter(value => String(value || '').trim())
+              : [];
+            if (caseFacts.length) lines.push(`   - 사례사실: ${caseFacts.join(' · ')}`);
+          }
+          const outputs = Array.isArray(conditions.required_outputs)
+            ? conditions.required_outputs.filter(value => String(value || '').trim())
+            : [];
+          if (outputs.length) lines.push(`   - 필수 산출: ${outputs.join(', ')}`);
+          if (conditions.standardization) {
+            lines.push(`   - 표준화: ${String(conditions.standardization)}`);
+          }
+        }
+
+        const guide = q.assessment_guide && typeof q.assessment_guide === 'object'
+          ? q.assessment_guide
+          : null;
+        if (guide) {
+          const dimensions = Array.isArray(guide.dimensions)
+            ? guide.dimensions.filter(value => String(value || '').trim())
+            : [];
+          if (dimensions.length) lines.push(`   - 평정 차원: ${dimensions.join(' · ')}`);
+          const ratingLevels = Array.isArray(guide.rating_levels)
+            ? guide.rating_levels.filter(level => level && level.anchor)
+            : [];
+          ratingLevels.forEach((level) => {
+            const score = Number(level.score || 0);
+            const label = String(level.label || '').trim();
+            lines.push(`   - ${score || '-'}점${label ? ` ${label}` : ''}: ${String(level.anchor)}`);
+          });
+          const dimensionRubrics = Array.isArray(guide.dimension_rubrics)
+            ? guide.dimension_rubrics.filter(row => row && typeof row === 'object')
+            : [];
+          dimensionRubrics.forEach((rubric) => {
+            const rubricAnchors = rubric.anchors && typeof rubric.anchors === 'object'
+              ? rubric.anchors
+              : {};
+            lines.push(`   - 차원별 기준 ${String(rubric.dimension || '-')} (${Number(rubric.weight || 0)}%): 관찰 ${String(rubric.observable_evidence || '-')}`);
+            lines.push(`     · 5점 ${String(rubricAnchors['5'] || '-')} / 3점 ${String(rubricAnchors['3'] || '-')} / 1점 ${String(rubricAnchors['1'] || '-')}`);
+          });
+          if (guide.critical_floor && guide.critical_floor.rule) {
+            lines.push(`   - 임계점: ${String(guide.critical_floor.rule)}`);
+          }
+          if (guide.no_answer_rule && guide.no_answer_rule.rule) {
+            lines.push(`   - 무응답: ${String(guide.no_answer_rule.rule)}`);
+          }
+          if (!ratingLevels.length && guide.anchors && typeof guide.anchors === 'object') {
+            [['high', '상'], ['medium', '중'], ['low', '하']].forEach(([key, label]) => {
+              if (guide.anchors[key]) lines.push(`   - ${label}: ${String(guide.anchors[key])}`);
+            });
+          }
+          if (guide.interviewer_instruction) {
+            lines.push(`   - 면접위원 지침: ${String(guide.interviewer_instruction)}`);
+          }
+        }
+
+        const ncsTrace = q.ncs_traceability && typeof q.ncs_traceability === 'object'
+          ? q.ncs_traceability
+          : null;
+        if (ncsTrace) {
+          lines.push(`   - NCS 근거: 세분류 [${String(ncsTrace.detail_code || '-')}] ${String(ncsTrace.detail_name || '-')}`);
+          lines.push(`   - NCS 능력단위: [${String(ncsTrace.ability_unit_base_code || ncsTrace.ncs_code || code)}] ${String(ncsTrace.ability_unit_name || competency)} / 요소 ${String(ncsTrace.element_name || '-')}`);
+          const criteria = Array.isArray(ncsTrace.performance_criteria)
+            ? ncsTrace.performance_criteria.filter(value => String(value || '').trim())
+            : [];
+          if (criteria.length) lines.push(`   - 수행준거: ${criteria.join(' · ')}`);
+        }
+        const evidenceRows = Array.isArray(q.ksa_evidence) ? q.ksa_evidence : [];
+        const ksaRefs = Array.isArray(q.ksa_refs)
+          ? q.ksa_refs.filter(value => String(value || '').trim())
+          : [];
+        if (evidenceRows.length) {
+          lines.push(`   - KSA 근거: ${evidenceRows.map(row => `[${String(row.evidence_id || '-')}] ${String(row.factorName || '-')}`).join(' · ')}`);
+        } else if (ksaRefs.length) {
+          lines.push(`   - KSA 근거: ${ksaRefs.join(' · ')}`);
         }
         lines.push('');
       }

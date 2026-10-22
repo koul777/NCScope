@@ -14,10 +14,12 @@ OPENAI_PROVIDER = "openai_api"
 OPENROUTER_PROVIDER = "openrouter_api"
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_DEFAULT_MODEL = "stealth/ox-alpha"
+OPENROUTER_DEFAULT_MODEL = str(
+    os.getenv("OPENROUTER_DEFAULT_MODEL") or "openai/gpt-5.4-mini"
+).strip()
 OPENROUTER_FREE_RECOVERY_MODEL = "openai/gpt-oss-20b"
 _OPENROUTER_REASONING_EFFORTS = frozenset(
-    {"low", "medium", "high", "xhigh", "max"}
+    {"none", "low", "medium", "high", "xhigh", "max"}
 )
 _OPENROUTER_HIGH_REASONING_METHODS = frozenset(
     {
@@ -54,7 +56,7 @@ _PROVIDER_CONFIGS: dict[str, dict[str, Any]] = {
     },
     OPENROUTER_PROVIDER: {
         "provider": OPENROUTER_PROVIDER,
-        "provider_label": "OpenRouter · Ox Alpha",
+        "provider_label": "OpenRouter · GPT-5.4 mini",
         "key_label": "OpenRouter API 키",
         "request_message": "OpenRouter API 키를 입력해 주세요. 키는 생성 요청에만 사용됩니다.",
         "base_url": OPENROUTER_DEFAULT_BASE_URL,
@@ -272,8 +274,8 @@ def openrouter_recovery_model() -> str:
     """Return an administrator-controlled OpenRouter failover model.
 
     The value never comes from a browser request. Keeping it server-owned
-    preserves the Ox Alpha product contract while allowing a bounded recovery
-    when that free preview model times out or emits unusable JSON.
+    preserves the configured authoring contract while allowing a bounded
+    recovery when the primary model times out or emits unusable JSON.
     """
 
     model = str(os.getenv("OPENROUTER_RECOVERY_MODEL") or "").strip()
@@ -440,7 +442,7 @@ def prepare_chat_payload(payload: dict[str, Any], provider: Any) -> dict[str, An
         # parameter support. Let it use each model's native default.
         prepared.pop("reasoning_effort", None)
     else:
-        prepared["reasoning_effort"] = (
+        resolved_effort = (
             recovery_effort
             if recovery_effort in {"low", "medium", "high", "xhigh"}
             else internal_reasoning_effort
@@ -449,6 +451,10 @@ def prepare_chat_payload(payload: dict[str, Any], provider: Any) -> dict[str, An
             if configured_effort in _OPENROUTER_REASONING_EFFORTS
             else "max"
         )
+        # OpenRouter defines ``none`` as the explicit no-reasoning shorthand.
+        # Do not omit it: omission can re-enable a pinned model's native
+        # reasoning default and consume the full structured-output budget.
+        prepared["reasoning_effort"] = resolved_effort
     for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
         prepared.pop(key, None)
     if "max_completion_tokens" in prepared:
@@ -464,7 +470,18 @@ def prepare_chat_payload(payload: dict[str, Any], provider: Any) -> dict[str, An
         isinstance(response_format, dict)
         and str(response_format.get("type") or "").casefold() == "json_schema"
     ):
-        prepared["response_format"] = {"type": "json_object"}
+        # OpenRouter supports the OpenAI-compatible JSON Schema envelope.
+        # Keep the caller's strict schema intact and require an endpoint that
+        # advertises support for every supplied parameter; otherwise routing
+        # can reduce this exact count/shape contract to plain JSON mode.
+        provider_preferences = prepared.get("provider")
+        provider_preferences = (
+            dict(provider_preferences)
+            if isinstance(provider_preferences, dict)
+            else {}
+        )
+        provider_preferences["require_parameters"] = True
+        prepared["provider"] = provider_preferences
     return prepared
 
 

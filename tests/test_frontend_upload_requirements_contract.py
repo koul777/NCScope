@@ -910,7 +910,10 @@ def test_required_upload_ux_uses_openai_byok_contract() -> None:
     assert "OpenAI · NCS MCP 확정·로컬 정렬 → Terra 작성 → Sol 검수·재생성" in html
     assert "OpenRouter · Ox Alpha" not in html
     assert "serverEnvApiStatusValid" not in script
-    assert "openrouter_api" not in script
+    provider_config_block = script.split(
+        "const GENERATION_PROVIDER_CONFIGS = Object.freeze({", 1
+    )[1].split("});", 1)[0]
+    assert "openrouter_api" not in provider_config_block
     assert "if (key.startsWith('sk-')) return 'openai_api'" in script
 
 

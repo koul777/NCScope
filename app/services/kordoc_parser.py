@@ -1222,7 +1222,7 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
     split_text = re.sub(r"(?<=[A-Za-z])/(?=[A-Za-z])", protected_slash, text)
     separated = [
         _clean_detail_candidate_text(part.replace(protected_slash, "/"))
-        for part in re.split(r"\s*(?:[,，、;/|]+)\s*", split_text)
+        for part in re.split(r"\s*(?:[,，、;/|¡]+)\s*", split_text)
         if _clean_detail_candidate_text(part.replace(protected_slash, "/"))
     ]
     if len(separated) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
@@ -3328,6 +3328,92 @@ def _plain_classification_detail_candidates(markdown: str) -> list[str]:
     return output
 
 
+def _flattened_plain_classification_detail_candidates(markdown: str) -> list[str]:
+    """Recover official details from a one-line fallback NCS hierarchy.
+
+    Local HWP/PDF fallback parsers can flatten a four-column hierarchy into a
+    single long line.  The ordinary plain-text reader intentionally relies on
+    line boundaries, so it cannot see those cells.  This recovery path is
+    deliberately narrow: it ignores HTML tables, requires an ordered
+    대/중/소/세분류 header in explicit NCS/classification context, stops before
+    the first non-classification section, and only accepts exact names from
+    the shipped current official detail catalog.
+    """
+
+    raw = str(markdown or "")
+    if not raw or re.search(r"<table\b", raw, flags=re.IGNORECASE):
+        return []
+
+    text = _clean_text(raw, normalize_nfkc=False)
+    header_pattern = re.compile(
+        r"대\s*분류\s*중\s*분류\s*소\s*분류\s*세\s*분류"
+        r"(?:\s*[\(（][^)）]{0,40}[\)）])?",
+        flags=re.IGNORECASE,
+    )
+    stop_pattern = re.compile(
+        r"(?:기관|공단|연구원|공사)?\s*주요\s*(?:사업|업무)|"
+        r"(?:기관|공단|연구원|공사)\s*소개|"
+        r"능력\s*단위|직무\s*수행|전형\s*방법|자격\s*요건|"
+        r"자체\s*개발|[○◦□■]",
+        flags=re.IGNORECASE,
+    )
+    official_keys = _official_ncs_detail_name_keys()
+    if not official_keys:
+        return []
+
+    output: list[str] = []
+    seen: set[str] = set()
+    for header in header_pattern.finditer(text):
+        context_key = _norm(text[max(0, header.start() - 240) : header.start()])
+        if "ncs" not in context_key and _norm("분류체계") not in context_key:
+            continue
+        fragment = text[header.end() : header.end() + 1_600]
+        stop = stop_pattern.search(fragment)
+        if stop:
+            fragment = fragment[: stop.start()]
+        if _row_declares_no_ncs_mapping([fragment]):
+            continue
+        numbered = list(
+            re.finditer(r"(?<!\d)\d{1,2}\s*(?:[.．]\s*)?", fragment)
+        )
+        # Four hierarchy columns are the minimum evidence that this is a
+        # flattened classification row rather than numbered prose.
+        if len(numbered) < 4:
+            continue
+        for index, match in enumerate(numbered):
+            end = numbered[index + 1].start() if index + 1 < len(numbered) else len(fragment)
+            raw_candidate = fragment[match.end() : end]
+            candidate = _clean_detail_candidate_text(raw_candidate)
+            first_line = next(
+                (
+                    _clean_detail_candidate_text(line)
+                    for line in raw_candidate.splitlines()
+                    if line.strip()
+                ),
+                "",
+            )
+            variants = (
+                candidate,
+                _legacy_strip_trailing_parenthetical_qualifier(candidate),
+                first_line,
+                _legacy_strip_trailing_parenthetical_qualifier(first_line),
+            )
+            selected = next(
+                (
+                    value
+                    for value in variants
+                    if value and _norm(value) in official_keys
+                ),
+                "",
+            )
+            key = _norm(selected)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            output.append(selected)
+    return output
+
+
 def _flattened_numbered_ability_records(
     markdown: str,
     detail_candidates: list[str],
@@ -4301,6 +4387,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         [
             *_extract_ncs_detail_candidates(markdown),
             *_plain_classification_detail_candidates(markdown),
+            *_flattened_plain_classification_detail_candidates(markdown),
             *(item["text"] for item in sections["ncs_detail"] if not item.get("line")),
         ]
     )

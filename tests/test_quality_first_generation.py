@@ -199,8 +199,9 @@ def test_planned_sequence_assigns_all_five_diversity_dimensions() -> None:
     assert {row["required_job_context"] for row in sequence} == {"Budget review"}
     assert all("required_scenario_frame" not in row for row in sequence)
     assert all("required_difficulty" not in row for row in sequence)
-    assert all("required_task_statement" not in row for row in sequence)
-    assert all("required_observable_behavior" not in row for row in sequence)
+    assert all(row["required_surface_focus"] for row in sequence)
+    assert all(row["required_task_statement"] for row in sequence)
+    assert all(row["required_observable_behavior"] for row in sequence)
     assert {row["required_ksa_type"] for row in sequence} == {
         "Knowledge",
         "Skill",

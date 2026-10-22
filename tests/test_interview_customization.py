@@ -1744,6 +1744,7 @@ def test_adjust_questions_refreshes_repeat_metadata_after_quality_field_repair()
         "assessment_guide",
         "evaluation_points",
         "follow_ups",
+        "structured_follow_ups",
     ]
     assert question["question_intent"] == report_item["question_intent"]
     assert question["question_repeat_signature"] == report_item["question_repeat_signature"]

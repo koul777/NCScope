@@ -99,6 +99,16 @@ def test_max_reasoning_budget_leaves_room_for_reasoning_and_structured_output() 
     assert quality_completion_budget(50, reasoning_effort="max") <= 128_000
 
 
+def test_none_reasoning_budget_reserves_only_visible_structured_output() -> None:
+    none_budget = quality_completion_budget(5, reasoning_effort="none")
+
+    assert none_budget == 7_500
+    assert none_budget < quality_completion_budget(
+        5,
+        reasoning_effort="medium",
+    )
+
+
 def test_gpt_54_mini_uses_high_reasoning_without_unsupported_max(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_REASONING_EFFORT", "max")
     payload = {"temperature": 0.25}

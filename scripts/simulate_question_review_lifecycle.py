@@ -119,7 +119,17 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
                     control = result.get("quality_control") or {}
                     run_id = str(control.get("run_id") or "")
                     review_token = str(control.get("review_token") or "")
-                    question_hash = str(question.get("question_hash") or "")
+                    # New quality runs are addressed by the full interviewer-
+                    # facing artifact hash; the legacy text hash remains only
+                    # the immutable text-integrity check inside the payload.
+                    question_hash = str(
+                        question.get("question_artifact_hash")
+                        or question.get("question_hash")
+                        or ""
+                    )
+                    question_artifact_hash = str(
+                        question.get("question_artifact_hash") or ""
+                    )
                     if not run_id or not review_token or not question_hash:
                         cycle_issues.append("quality_evidence_registration")
                     if (
@@ -137,6 +147,7 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
                     response_errors: list[dict[str, Any]] = []
                     invalid_payload_base = {
                         "review_token": review_token,
+                        "question_artifact_hash": question_artifact_hash,
                         "question_text": question_text,
                         "verdict": "needs_edit",
                         "issue_codes": ["missing_ksa_evidence"],
@@ -180,6 +191,7 @@ def run_simulation(*, cycles: int = 30, reconnect_every: int = 5) -> dict[str, A
                         valid_review_payload = {
                             "review_token": review_token,
                             "question_hash": question_hash,
+                            "question_artifact_hash": question_artifact_hash,
                             "question_text": question_text,
                             "verdict": verdict,
                             "issue_codes": [issue_code] if issue_code else [],

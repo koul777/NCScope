@@ -18,6 +18,17 @@ from app.services.request_budget import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _use_legacy_direct_ncs_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Low-level call fakes in this module expect direct tool arguments."""
+
+    monkeypatch.setattr(
+        ncs_mcp_client,
+        "_tool_names",
+        lambda **_kwargs: {"ncs_search", "ncs_unit_detail"},
+    )
+
+
 def test_document_parses_run_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     barrier = threading.Barrier(2)
 

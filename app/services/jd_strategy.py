@@ -67,6 +67,7 @@ from app.services.question_intent import (
 )
 from app.services.question_surface import (
     build_question_task_frame,
+    official_ksa_surface_aliases,
     stable_ksa_evidence_id,
 )
 from app.services.ncs_mcp_client import (
@@ -5149,6 +5150,88 @@ _PLANNED_CONSTRAINT_AXES = (
 )
 
 
+def _candidate_safe_source_task(
+    evidence_row: dict[str, Any] | None,
+    official_factor: str,
+) -> str:
+    """Choose an alias-free source task from locked performance criteria.
+
+    Performance-criteria payloads vary between MCP versions.  Preserve the
+    first concise criterion that does not repeat either the official KSA label
+    or its mechanically shortened alias.  Returning an empty string is safer
+    than giving the authoring model a taxonomy phrase that it can copy into a
+    candidate-facing question.
+    """
+
+    row = evidence_row if isinstance(evidence_row, dict) else {}
+    raw: Any = (
+        row.get("performanceCriteria")
+        or row.get("performance_criteria")
+        or row.get("performanceCriteriaTexts")
+        or row.get("criteria")
+        or []
+    )
+    if isinstance(raw, dict):
+        raw = (
+            raw.get("items")
+            or raw.get("criteria")
+            or raw.get("performance_criteria")
+            or [raw]
+        )
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return ""
+
+    compact_aliases = {
+        re.sub(r"[\s·ㆍ․]+", "", alias).casefold()
+        for alias in official_ksa_surface_aliases(official_factor)
+        if str(alias or "").strip()
+    }
+    for value in raw:
+        if isinstance(value, dict):
+            value = (
+                value.get("text")
+                or value.get("description")
+                or value.get("criterion")
+                or value.get("criteria")
+                or value.get("performance_criteria")
+                or value.get("performanceCriteria")
+            )
+        if isinstance(value, (dict, list, tuple)):
+            continue
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        text = re.sub(r"^(?:[-*•·ㆍ]|\(?\d+[.)])\s*", "", text).strip()
+        if not text:
+            continue
+        compact_text = re.sub(r"[\s·ㆍ․]+", "", text).casefold()
+        if any(alias and alias in compact_text for alias in compact_aliases):
+            continue
+        return text[:240]
+    return ""
+
+
+def _candidate_safe_planned_surface(task_frame: dict[str, str]) -> tuple[str, str]:
+    """Return a public task focus and a matching task statement.
+
+    ``build_question_task_frame`` deliberately preserves traceable wording in
+    its task object.  For the model-facing slot, trim the same generic suffix
+    used by the deterministic renderer so it receives a concrete work focus
+    instead of a mechanical ``관련 실무 적용·검증 절차`` phrase.
+    """
+
+    raw_surface = str(task_frame.get("task_object") or "").strip()
+    safe_surface = re.sub(
+        r"\s*(?:관련\s*)?(?:실무\s*)?(?:적용|활용)(?:·|ㆍ|/)?\s*검증\s*(?:절차|기준)\s*$",
+        "",
+        raw_surface,
+    ).strip(" ·ㆍ/") or "해당 업무 수행 기준"
+    task_statement = str(task_frame.get("task_statement") or "").strip()
+    if raw_surface and safe_surface != raw_surface:
+        task_statement = task_statement.replace(raw_surface, safe_surface)
+    return safe_surface, task_statement
+
+
 def _planned_question_sequence_for_prompt(
     question_plan: dict[str, Any] | None,
     method_names: list[str],
@@ -5208,6 +5291,21 @@ def _planned_question_sequence_for_prompt(
             "type": method,
             "follow_up_count": max(1, min(5, int(row.get("follow_up_count", 3) or 0))),
         }
+        # These are server-only lineage fields.  A targeted retry renumbers its
+        # local sequence from one, so retain the original slot identity across
+        # prompt-plan reconstruction for batching, diagnostics, and future
+        # evidence-lock checks.  They are not exposed in the authoring SLOT
+        # payload built below.
+        for original_index_key in (
+            "generation_original_index",
+            "retry_original_index",
+        ):
+            try:
+                original_index_value = int(row.get(original_index_key) or 0)
+            except (TypeError, ValueError):
+                original_index_value = 0
+            if original_index_value > 0:
+                planned_item[original_index_key] = original_index_value
         if unit:
             ncs_code = str(unit.get("ncsClCd", "")).strip()
             compe_unit_name = str(unit.get("compeUnitName", "")).strip()
@@ -5233,6 +5331,22 @@ def _planned_question_sequence_for_prompt(
                 or factor_row.get("ksa_type")
                 or ""
             ).strip()
+            task_frame = build_question_task_frame(
+                evidence_row=factor_row,
+                factor_name=required_factor,
+                ksa_type=ksa_type,
+                element_name=str(
+                    factor_row.get("elementName")
+                    or factor_row.get("element_name")
+                    or ""
+                ).strip(),
+                competency_name=compe_unit_name,
+                competency_definition=str(unit.get("compeUnitDef") or "").strip(),
+            )
+            required_surface_focus, required_task_statement = (
+                _candidate_safe_planned_surface(task_frame)
+            )
+            source_task = _candidate_safe_source_task(factor_row, required_factor)
             planned_item.update(
                 {
                     "ncsClCd": ncs_code,
@@ -5248,6 +5362,12 @@ def _planned_question_sequence_for_prompt(
                     ).strip(),
                     "required_factorName": required_factor,
                     "required_ksa_type": ksa_type,
+                    "required_surface_focus": required_surface_focus,
+                    "required_task_statement": required_task_statement,
+                    "required_observable_behavior": str(
+                        task_frame.get("observable_behavior") or ""
+                    ).strip(),
+                    "source_task": source_task,
                 }
             )
         else:
@@ -5325,26 +5445,54 @@ def _ai_authored_generation_prompt(
     extra_context: str,
     diversity_cycle: int = 0,
 ) -> str:
-    """Build a compact KSA-semantic prompt with model-owned wording."""
+    """Build a compact prompt with model-owned semantics and safe connectors."""
 
     slots: list[dict[str, Any]] = []
     for fallback_index, raw in enumerate(planned_sequence[:target_count], start=1):
         if not isinstance(raw, dict):
             continue
+        try:
+            original_index = int(
+                raw.get("generation_original_index")
+                or raw.get("retry_original_index")
+                or raw.get("index")
+                or fallback_index
+            )
+        except (TypeError, ValueError):
+            original_index = fallback_index
+        scene_offset = max(0, int(diversity_cycle or 0)) + max(1, original_index) - 1
         slots.append(
             {
                 "index": int(raw.get("index") or fallback_index),
                 "type": _canonical_interview_method_for_prompt(
                     str(raw.get("type") or "경험면접")
                 ),
-                "detail": str(raw.get("detail") or "").strip(),
-                "ncsClCd": str(raw.get("ncsClCd") or "").strip(),
-                "competency": str(raw.get("compeUnitName") or "").strip(),
+                # Give the authoring model only the semantic bridge it needs.
+                # The server owns and re-attaches every taxonomy/evidence
+                # identity by slot order after parsing.  Sending those labels
+                # here made smaller models copy them into candidate-visible
+                # prose even when the prompt explicitly prohibited it.
                 "competency_definition": str(raw.get("compeUnitDef") or "").strip(),
-                "work_element": str(raw.get("required_element_name") or "").strip(),
-                "evidence_id": str(raw.get("evidence_id") or "").strip(),
                 "ksa_type": str(raw.get("required_ksa_type") or "").strip(),
-                "official_ksa": str(raw.get("required_factorName") or "").strip(),
+                "work_object_phrase": str(
+                    raw.get("required_surface_focus") or ""
+                ).strip(),
+                "task_action": str(
+                    raw.get("required_task_statement") or ""
+                ).strip(),
+                "answer_evidence": str(
+                    raw.get("required_observable_behavior") or ""
+                ).strip(),
+                "source_task": str(raw.get("source_task") or "").strip(),
+                "scene_difficulty": _PLANNED_DIFFICULTY_AXES[
+                    scene_offset % len(_PLANNED_DIFFICULTY_AXES)
+                ],
+                "scene_angle": _PLANNED_QUESTION_ANGLES[
+                    scene_offset % len(_PLANNED_QUESTION_ANGLES)
+                ],
+                "scene_constraint": _PLANNED_CONSTRAINT_AXES[
+                    scene_offset % len(_PLANNED_CONSTRAINT_AXES)
+                ],
             }
         )
 
@@ -5363,19 +5511,58 @@ def _ai_authored_generation_prompt(
     )
     method_guidance = _ai_authoring_method_guidance(selected_slot_methods)
     orchestration_context = sanitize_external_ai_source_text(extra_context, max_chars=2200)
+    follow_up_contract = (
+        "- follow_ups는 standard 문자열과 adaptive_basis, adaptive_result 구조 객체로 작성하세요. "
+        "standard만 모든 지원자에게 동일하게 묻는 완성 질문입니다.\n"
+        "- adaptive_basis에는 answer_reference(직전 답변에서 선택·적용한 구체 대상), change_condition(반대 자료·누락·충돌 조건), "
+        "revision_action(그 조건에서 할 수정·재판단 행동)을 각각 60자 이내의 완성문이 아닌 무조사 명사구/행동구로 쓰세요. "
+        "예: '방금 집행표와 회계 원장의 차이에 적용한 판단 기준과 다른 자료가 확인된다면, 반대 증빙 추가 조건을 반영해 선택한 조치를 어떤 근거로 수정하고 수정안을 재검토하시겠습니까?'\n"
+        "- adaptive_result에는 answer_reference(직전 답변의 조치·기록·산출물이며 '결과'로 끝내지 않음), change_condition(목표 미달·기록 부재·결과 변경 조건), "
+        "verification_action(변경 전후를 대조할 검증·정정 행동)을 각각 60자 이내의 완성문이 아닌 무조사 명사구/행동구로 쓰세요. "
+        "예: '앞서 제시하신 결산표 수정 이력 결과가 승인 기록 누락 조건에 해당한다면, 결과 수치와 승인 기록을 어떻게 대조·검증하고 승인 이력을 재작성하시겠습니까?'\n"
+        if follow_up_count == 3
+        else (
+            f"- follow_ups는 지원자의 같은 답변을 서로 다른 근거로 심화하는 문자열 배열 {follow_up_count}개로 작성하세요.\n"
+        )
+    )
+    follow_up_alignment = (
+        "adaptive_basis와 evaluation_points[1], adaptive_result와 evaluation_points[3]"
+        if follow_up_count == 3
+        else "각 follow_up과 대응 evaluation_point"
+    )
     return (
         "JSON만 출력하세요. 공공기관 NCS 기반 구조화면접 질문을 작성합니다.\n"
         f"interview_questions를 정확히 {target_count}개, 입력 slot 순서대로 작성하고 "
-        f"각 문항에는 follow_ups {follow_up_count}개를 정확히 넣고, 답변에서 실제로 관찰할 핵심 근거만 담은 evaluation_points 1~5개를 넣으세요.\n"
+        f"각 문항에는 follow_ups {follow_up_count}개를 정확히 넣고, 답변에서 실제로 관찰할 서로 다른 핵심 근거만 담은 evaluation_points 4개를 정확히 넣으세요.\n"
         "[자유작성 계약]\n"
-        "- 각 slot에는 공식 KSA 원문·KSA 유형, 능력단위·정의·요소, 선택 면접형태, "
-        "직무 맥락과 잠긴 evidence_id만 제공됩니다. 이 근거를 해석해 question, follow_ups, "
-        "evaluation_points의 지원자용 문장을 모두 직접 작성하세요.\n"
+        "- 각 slot에는 선택 면접형태, KSA 유형과 후보자용 업무 의미 힌트만 제공됩니다. 이 근거와 채용 문맥을 해석해 question의 scene/task/evidence, follow_ups의 역할별 구절, "
+        "evaluation_points의 지원자용 문장을 직접 작성하세요.\n"
+        "- 공식 KSA명·능력단위명·세분류명·NCS 코드·evidence_id는 의도적으로 제공되지 않습니다. "
+        "이를 추측하거나 새로 만들지 마세요. 서버가 slot 순서에 따라 검증된 내부 메타데이터를 결합합니다.\n"
+        "- work_object_phrase, task_action, answer_evidence, source_task는 후보자가 이해할 수 있는 업무 대상·과업·관찰 행동·수행준거 힌트입니다. "
+        "work_object_phrase가 비어 있지 않으면 question, follow_ups, evaluation_points 전체에서 완전한 문구 그대로 정확히 1회만 일반 업무 대상어로 사용하세요. "
+        "앞부분만 떼어 역량명처럼 쓰거나 두 번 이상 반복하지 마세요. 나머지 힌트는 실제 문서·자료·행동·산출물로 자연스럽게 풀어 쓰세요.\n"
+        "- scene_difficulty, scene_angle, scene_constraint는 같은 문항 골격의 반복을 막는 장면 설계 조건입니다. 같은 세트의 문항끼리는 사건 촉발점·업무 산출물·판단 충돌 중 최소 2개를 다르게 구성하세요.\n"
         "- KSA가 실제로 드러나는 사건·쟁점·판단·행동은 AI가 직무 맥락과 면접형태에 맞게 "
         "선택합니다. 서버가 만든 상황이나 질문 템플릿은 없으며 공통 골격을 만들 필요도 없습니다.\n"
         "- 최근 질문이 제공되면 실질적으로 같은 질문만 피하고, 새로운 장면·행동·표현은 공식 KSA와 선택 면접기법에 맞춰 자유롭게 정하세요.\n"
         "- 주질문은 자연스러운 한국어로 KSA를 측정하고, 꼬리질문은 같은 답변을 심화하며, "
         "평가포인트는 답변에서 관찰 가능한 서로 다른 증거여야 합니다. 같은 세트의 문항은 의미가 중복되지 않아야 합니다.\n"
+        "- question은 scene, task, evidence 세 후보자용 문자열을 가진 객체로 작성하세요. scene에는 80자 이내의 구체 사건·제약, task에는 80자 이내로 그 장면에서 맡은 업무대상·과업, "
+        "evidence에는 70자 이내로 해당 문항만의 산출물·기록·수치·피드백을 넣으세요. 서버가 세 내용을 모두 보존해 하나의 자연스러운 질문으로 결합합니다.\n"
+        "[현장 사용 품질 게이트]\n"
+        "- 경험면접 주질문은 공백을 뺀 길이가 40자 이상이어야 하며, 주질문만 읽어도 ① 구체 사건·과제 ② 본인이 직접 한 판단 또는 행동 "
+        "③ 문서·수치·기록·피드백으로 확인한 결과가 드러나야 합니다. 다른 일반 행정 역량으로도 그대로 답할 수 있는 추상 경험 질문은 다시 쓰세요.\n"
+        "- 지식 KSA는 확인한 자료·규정·문서와 그 근거로 내린 판단을, 기술 KSA는 직접 수행한 행동과 산출물 또는 결과를, "
+        "태도 KSA는 마감·위험·이해충돌 같은 압박 조건에서 택한 행동과 확인 결과를 질문해야 합니다.\n"
+        "- 내부 메타 이름을 질문하지 말고, 지원자가 실제로 다룬 대상·자료·행동·판단 근거로 번역하세요. '의미가 무엇입니까', "
+        "'관련 업무 경험을 말해 주세요'처럼 라벨 설명이나 범용 경험만 요구하는 문장은 금지합니다.\n"
+        f"{follow_up_contract}"
+        "- '그 판단 기준은 무엇입니까?', '결과를 어떻게 확인했습니까?'처럼 답변 소유 대상과 분기 조건이 모두 없는 독립 질문만 나열하지 마세요.\n"
+        "- evaluation_points 4개는 상황·제약, 판단근거, 직접행동, 결과증거를 각각 관찰 가능하게 적으세요. "
+        f"{follow_up_alignment}은 같은 구체 대상·행동·기록 표현을 공유해 면접관이 질문과 채점근거를 바로 연결할 수 있어야 합니다.\n"
+        "- 공식 라벨이나 질문하지 않은 성향을 평가기준으로 넣지 마세요.\n"
+        "- 출력 직전 각 문항별로 ① 공식 라벨 비노출 ② KSA 고유 과업 ③ 답변 연동 꼬리질문 2개 이상 ④ 관찰 가능한 평가근거 4개를 자체검사하고 하나라도 아니면 해당 문항을 다시 작성하세요.\n"
         "[STAR 작성 가이드 — 검증 규칙 아님]\n"
         "- 경험면접 slot은 주질문과 꼬리질문 전체를 통해 구체 상황(S), 당시 과제·역할(T), 본인이 실제로 한 행동(A), 결과·확인·학습(R)이 자연스럽게 드러나게 설계하세요.\n"
         "- 네 요소를 주질문 하나에 나열하거나 S/T/A/R 라벨, 고정 순서, 같은 시작 문구를 노출하지 마세요. 지원자의 첫 답변에서 이미 나온 요소는 반복하지 말고 빠진 증거를 꼬리질문으로 이어서 확인하세요.\n"
@@ -5385,7 +5572,7 @@ def _ai_authored_generation_prompt(
         "연령·가족관계 등 블라인드 채용 위반 내용을 묻지 마세요.\n"
         "- NCS 코드, evidence_id, 공식 KSA 라벨과 내부 메타 용어를 지원자용 문장에 노출하지 마세요.\n"
         "[출력 계약]\n"
-        "- slot 순서대로 question, follow_ups, evaluation_points만 작성하세요. "
+        "- slot 순서대로 question(scene/task/evidence 객체), follow_ups, evaluation_points만 작성하세요. "
         "type, NCS 코드, evidence_id, KSA 라벨 같은 내부 메타데이터는 출력하지 마세요. "
         "서버가 확정 slot에 따라 별도로 결합합니다.\n"
         f"[질문 SLOT JSON]{json.dumps(slots, ensure_ascii=False, separators=(',', ':'))}\n"
@@ -5515,6 +5702,308 @@ def _safe_openai_generation_failure_reason(
     return default
 
 
+_AUTHORED_FOLLOW_UP_FIELDS = (
+    "standard",
+    "adaptive_basis",
+    "adaptive_result",
+)
+_AUTHORED_QUESTION_FIELDS = ("scene", "task", "evidence")
+_AUTHORED_ADAPTIVE_BASIS_FIELDS = (
+    "answer_reference",
+    "change_condition",
+    "revision_action",
+)
+_AUTHORED_ADAPTIVE_RESULT_FIELDS = (
+    "answer_reference",
+    "change_condition",
+    "verification_action",
+)
+
+
+def _authored_surface_fragment(value: Any, *, max_chars: int = 180) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+([,;:，；：])", r"\1", text)
+    text = re.sub(r"([,;:，；：])(?=\S)", r"\1 ", text)
+    text = re.sub(r"[.!?。！？]+$", "", text).strip()
+    return text[:max_chars].rstrip(" \t\r\n,;:，；：.!?。！？")
+
+
+def _authored_action_fragment(value: Any, *, max_chars: int = 60) -> str:
+    """Return an uninflected action phrase safe for a server-owned ending."""
+
+    text = _authored_surface_fragment(value, max_chars=max_chars)
+    previous = None
+    while text and text != previous:
+        previous = text
+        text = re.sub(
+            r"(?:해\s*주세요|하여\s*주세요|하시겠습니까|하겠습니까|합니까|합니다|하기)$",
+            "",
+            text,
+        ).rstrip()
+        text = text.rstrip(" \t\r\n,;:，；：.!?。！？")
+    return text
+
+
+def _without_terminal_result(value: str) -> str:
+    text = re.sub(r"결과$", "", str(value or "")).strip()
+    return text
+
+
+def _with_korean_particle(value: str, *, consonant: str, vowel: str) -> str:
+    """Attach a simple Korean particle without trusting the model to inflect it."""
+
+    text = str(value or "").strip()
+    if not text:
+        return text
+    last = text[-1]
+    if "가" <= last <= "힣":
+        return f"{text}{consonant if (ord(last) - ord('가')) % 28 else vowel}"
+    return f"{text}{consonant}"
+
+
+def _normalize_ai_authored_question(
+    value: Any,
+    *,
+    method: str = "경험면접",
+    slot_index: int = 0,
+    planned_original_index: int | None = None,
+) -> str | None:
+    """Flatten the v13 bounded fields into a rotated candidate question."""
+
+    if isinstance(value, str):
+        return value.strip() or None
+    if not isinstance(value, dict) or set(value) != set(_AUTHORED_QUESTION_FIELDS):
+        return None
+    field_limits = {"scene": 80, "task": 80, "evidence": 70}
+    parts = {
+        key: _authored_surface_fragment(value.get(key), max_chars=field_limits[key])
+        for key in _AUTHORED_QUESTION_FIELDS
+    }
+    if any(not parts[key] for key in _AUTHORED_QUESTION_FIELDS):
+        return None
+    task_without_ending = _authored_action_fragment(parts["task"], max_chars=80)
+    if task_without_ending:
+        parts["task"] = task_without_ending
+    scene = parts["scene"]
+    if scene.endswith(("상황", "환경", "조건")):
+        scene_clause = f"{scene}에서 주어진 제약을 고려해"
+    else:
+        scene_clause = (
+            f"{_with_korean_particle(scene, consonant='이라는', vowel='라는')} "
+            "제약 상황에서"
+        )
+    task_clause = _with_korean_particle(parts["task"], consonant="을", vowel="를")
+    canonical_method = _canonical_interview_method_for_prompt(method)
+    try:
+        original_index = int(planned_original_index or 0)
+    except (TypeError, ValueError):
+        original_index = 0
+    rotation_identity = original_index if original_index > 0 else int(slot_index or 0) + 1
+    variant_index = (rotation_identity - 1) % 5
+    if canonical_method != "경험면접":
+        prospective_variants = (
+            (
+                f"{scene_clause} {task_clause} 수행해야 하며, 확인할 자료와 기준을 "
+                "바탕으로 본인이 내릴 판단이나 직접 할 행동, 그리고 "
+                f"{parts['evidence']} 등 문서·기록·수치로 결과와 예외를 어떻게 "
+                "확인할지 설명해 주세요."
+            ),
+            (
+                f"{task_clause} 수행해야 한다면, {scene_clause} 확인할 자료와 판단 기준, "
+                f"본인이 직접 취할 행동, {parts['evidence']} 등 기록·수치로 결과와 "
+                "예외를 검증할 방법을 설명해 주세요."
+            ),
+            (
+                f"{parts['evidence']} 등 문서·기록·수치로 결과와 예외를 확인하는 "
+                f"과제입니다. {scene_clause} 본인이 {task_clause} 수행할 때 어떤 자료와 "
+                "기준으로 판단하고 직접 행동할지 설명해 주세요."
+            ),
+            (
+                f"본인이 {scene_clause} {task_clause} 수행한다고 할 때, 먼저 확인할 자료와 "
+                f"기준, 직접 내릴 판단과 행동, {parts['evidence']}에 남길 결과·예외를 "
+                "차례로 설명해 주세요."
+            ),
+            (
+                f"{scene_clause} 본인의 과제인 {task_clause} 수행하는 방안을, 확인할 "
+                f"자료·기준과 판단, 직접 실행할 행동, {parts['evidence']}로 입증할 "
+                "결과·예외를 중심으로 설명해 주세요."
+            ),
+        )
+        return prospective_variants[variant_index]
+    variants = (
+        (
+            f"{scene_clause} {task_clause} 맡았으며, 확인한 자료와 기준을 바탕으로 "
+            "본인이 내린 판단이나 직접 한 행동, 그리고 "
+            f"{parts['evidence']} 등 문서·기록·수치로 결과와 예외를 어떻게 "
+            "확인했는지 설명해 주세요."
+        ),
+        (
+            f"{task_clause} 맡았던 당시, {scene_clause} 본인이 확인한 자료와 판단 기준, "
+            f"직접 취한 행동, {parts['evidence']} 등 기록·수치로 검증한 결과와 "
+            "예외를 설명해 주세요."
+        ),
+        (
+            f"{parts['evidence']} 등 문서·기록·수치로 결과와 예외를 확인했던 경험을 "
+            f"떠올려 주세요. {scene_clause} 본인이 {task_clause} 맡아 어떤 자료와 "
+            "기준으로 판단하고 직접 행동했는지 설명해 주세요."
+        ),
+        (
+            f"본인이 {scene_clause} {task_clause} 맡았던 사례에서, 먼저 확인한 자료와 "
+            f"기준, 직접 내린 판단과 행동, {parts['evidence']}에 남은 결과·예외를 "
+            "차례로 설명해 주세요."
+        ),
+        (
+            f"당시 {scene_clause} {task_clause} 맡은 본인의 경험을, 확인한 자료·기준과 "
+            f"판단, 직접 실행한 행동, {parts['evidence']}로 입증되는 결과·예외를 "
+            "중심으로 설명해 주세요."
+        ),
+    )
+    return variants[variant_index]
+
+
+def _normalized_ai_authored_adaptive_parts(
+    value: Any,
+    *,
+    fields: tuple[str, ...],
+    action_field: str,
+    drop_terminal_result: bool = False,
+) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) != set(fields):
+        return None
+    parts = {
+        key: (
+            _authored_action_fragment(value.get(key), max_chars=60)
+            if key == action_field
+            else _authored_surface_fragment(value.get(key), max_chars=60)
+        )
+        for key in fields
+    }
+    if drop_terminal_result:
+        parts["answer_reference"] = _without_terminal_result(
+            parts["answer_reference"]
+        )
+    if any(not parts[key] for key in fields):
+        return None
+    return parts
+
+
+def _flatten_ai_authored_adaptive_basis(value: Any) -> str | None:
+    parts = _normalized_ai_authored_adaptive_parts(
+        value,
+        fields=_AUTHORED_ADAPTIVE_BASIS_FIELDS,
+        action_field="revision_action",
+    )
+    if parts is None:
+        return None
+    change_condition = _with_korean_particle(
+        parts["change_condition"],
+        consonant="을",
+        vowel="를",
+    )
+    return (
+        f"방금 {parts['answer_reference']}에 적용한 판단 기준과 다른 자료가 확인된다면, "
+        f"{change_condition} 반영해 선택한 조치를 어떤 근거로 수정하고 "
+        f"{parts['revision_action']}하시겠습니까?"
+    )
+
+
+def _flatten_ai_authored_adaptive_result(value: Any) -> str | None:
+    parts = _normalized_ai_authored_adaptive_parts(
+        value,
+        fields=_AUTHORED_ADAPTIVE_RESULT_FIELDS,
+        action_field="verification_action",
+        drop_terminal_result=True,
+    )
+    if parts is None:
+        return None
+    return (
+        f"앞서 제시하신 {parts['answer_reference']} 결과가 "
+        f"{parts['change_condition']}에 해당한다면, "
+        "결과 수치와 승인 기록을 어떻게 대조·검증하고 "
+        f"{parts['verification_action']}하시겠습니까?"
+    )
+
+
+def _normalize_ai_authored_follow_ups(
+    value: Any,
+    *,
+    expected_count: int,
+) -> list[str] | None:
+    """Flatten v13 adaptive probes while accepting legacy string arrays."""
+
+    if expected_count == 3 and isinstance(value, dict):
+        if set(value) != set(_AUTHORED_FOLLOW_UP_FIELDS):
+            return None
+        standard = value.get("standard")
+        if not isinstance(standard, str) or not standard.strip():
+            return None
+        adaptive_basis = value.get("adaptive_basis")
+        adaptive_result = value.get("adaptive_result")
+        # Retain compatibility with v11 role objects while the provider-facing
+        # strict schema requires the structured v12 branch contracts below.
+        if isinstance(adaptive_basis, str) and isinstance(adaptive_result, str):
+            if not adaptive_basis.strip() or not adaptive_result.strip():
+                return None
+            return [standard.strip(), adaptive_basis.strip(), adaptive_result.strip()]
+        flattened_basis = _flatten_ai_authored_adaptive_basis(adaptive_basis)
+        flattened_result = _flatten_ai_authored_adaptive_result(adaptive_result)
+        if not flattened_basis or not flattened_result:
+            return None
+        return [standard.strip(), flattened_basis, flattened_result]
+    if not isinstance(value, list) or len(value) != expected_count:
+        return None
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        return None
+    return [item.strip() for item in value]
+
+
+def _normalize_ai_authored_evaluation_points(
+    value: Any,
+    *,
+    raw_follow_ups: Any,
+) -> list[str] | None:
+    """Lock EP1/EP3 to the exact structured phrases used by their probes."""
+
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        return None
+    # EP0/EP2 remain byte-for-byte model-authored. Only the two dimensions
+    # governed by structured adaptive probes are replaced below.
+    points = list(value)
+    if not isinstance(raw_follow_ups, dict):
+        return points
+    basis = _normalized_ai_authored_adaptive_parts(
+        raw_follow_ups.get("adaptive_basis"),
+        fields=_AUTHORED_ADAPTIVE_BASIS_FIELDS,
+        action_field="revision_action",
+    )
+    result = _normalized_ai_authored_adaptive_parts(
+        raw_follow_ups.get("adaptive_result"),
+        fields=_AUTHORED_ADAPTIVE_RESULT_FIELDS,
+        action_field="verification_action",
+        drop_terminal_result=True,
+    )
+    if basis is None or result is None:
+        return points
+    basis_condition = _with_korean_particle(
+        basis["change_condition"],
+        consonant="을",
+        vowel="를",
+    )
+    points[1] = (
+        f"{basis['answer_reference']}에 적용한 판단 기준과 "
+        f"{basis_condition} 반영해 수정한 조치, "
+        f"{basis['revision_action']}"
+    )
+    points[3] = (
+        f"{result['answer_reference']} 결과의 {result['change_condition']} 여부와 "
+        "결과 수치·승인 기록의 대조·검증, "
+        f"{result['verification_action']}"
+    )
+    return points
+
+
 def _openai_interview_response_format(
     *,
     expected_count: int,
@@ -5532,21 +6021,130 @@ def _openai_interview_response_format(
 
     selected_methods = _selected_prompt_methods(interview_methods)
     if authored_surface_only:
+        if follow_up_count == 3:
+            adaptive_basis_schema: dict[str, Any] = {
+                "type": "object",
+                "description": "직전 답변의 판단 근거를 새 조건에서 수정하게 하는 분기",
+                "properties": {
+                    "answer_reference": {
+                        "type": "string",
+                        "description": "지원자가 직전 답변에서 선택하거나 적용한 구체 대상·근거인, 60자 이내의 완성문 아닌 무조사 명사구",
+                    },
+                    "change_condition": {
+                        "type": "string",
+                        "description": "기존 판단을 바꿔야 하는 반대 자료·누락·충돌 조건인, 60자 이내의 완성문 아닌 무조사 명사구",
+                    },
+                    "revision_action": {
+                        "type": "string",
+                        "description": "조건 변화 뒤 지원자가 수행할 수정·재판단 행동인, 60자 이내의 완성문 아닌 무조사 행동구",
+                    },
+                },
+                "required": [
+                    "answer_reference",
+                    "change_condition",
+                    "revision_action",
+                ],
+                "additionalProperties": False,
+            }
+            adaptive_result_schema: dict[str, Any] = {
+                "type": "object",
+                "description": "직전 답변의 기록·결과를 새 조건에서 검증하게 하는 분기",
+                "properties": {
+                    "answer_reference": {
+                        "type": "string",
+                        "description": "지원자가 직전 답변에서 제시한 조치·기록·산출물이며 '결과'로 끝내지 않는, 60자 이내의 완성문 아닌 무조사 명사구",
+                    },
+                    "change_condition": {
+                        "type": "string",
+                        "description": "목표 미달·기록 부재·결과 변경 등 재검증 조건인, 60자 이내의 완성문 아닌 무조사 명사구",
+                    },
+                    "verification_action": {
+                        "type": "string",
+                        "description": "변경 전후를 대조하고 확인할 구체 검증·정정 행동인, 60자 이내의 완성문 아닌 무조사 행동구",
+                    },
+                },
+                "required": [
+                    "answer_reference",
+                    "change_condition",
+                    "verification_action",
+                ],
+                "additionalProperties": False,
+            }
+            follow_up_schema: dict[str, Any] = {
+                "type": "object",
+                "description": (
+                    "표준 확인 1개와 직전 답변에 분기하는 근거·결과 질문 2개. "
+                    "각 필드는 서로 다른 관찰 근거를 묻는다."
+                ),
+                "properties": {
+                    "standard": {
+                        "type": "string",
+                        "description": "모든 지원자에게 동일하게 묻는 표준 확인 질문",
+                    },
+                    "adaptive_basis": {
+                        **adaptive_basis_schema,
+                    },
+                    "adaptive_result": {
+                        **adaptive_result_schema,
+                    },
+                },
+                "required": ["standard", "adaptive_basis", "adaptive_result"],
+                "additionalProperties": False,
+            }
+        else:
+            follow_up_schema = {
+                "type": "array",
+                "description": "같은 답변을 서로 다른 관찰 근거로 심화하는 한국어 질문",
+                "items": {"type": "string"},
+                "minItems": follow_up_count,
+                "maxItems": follow_up_count,
+            }
         question_schema: dict[str, Any] = {
             "type": "object",
             "properties": {
-                "question": {"type": "string"},
-                "follow_ups": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": follow_up_count,
-                    "maxItems": follow_up_count,
+                "question": {
+                    "type": "object",
+                    "description": (
+                        "서버가 한 개의 지원자용 주질문으로 결합할 서로 다른 장면·과업·결과증거"
+                    ),
+                    "properties": {
+                        "scene": {
+                            "type": "string",
+                            "description": (
+                                "80자 이내로 직무에서 벌어진 구체 사건과 제약을 담은 후보자용 장면 구절. "
+                                "공식 NCS/KSA 라벨을 쓰지 않는다."
+                            ),
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": (
+                                "80자 이내로 그 장면에서 지원자가 맡아 해결할 구체 업무대상·과업 구절"
+                            ),
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": (
+                                "70자 이내로 문항별로 고유한 산출물·기록·수치·피드백 등 결과증거 구절"
+                            ),
+                        },
+                    },
+                    "required": ["scene", "task", "evidence"],
+                    "additionalProperties": False,
                 },
+                "follow_ups": follow_up_schema,
                 "evaluation_points": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                    "maxItems": 5,
+                    "description": (
+                        "질문에서 직접 끌어내는 상황·제약, 판단근거, 직접행동, 결과증거의 서로 "
+                        "다른 관찰 근거 4개. 둘째와 넷째 항목은 적응형 꼬리질문과 같은 구체 "
+                        "대상·행동·기록 표현을 공유한다. 공식 KSA 라벨은 쓰지 않는다."
+                    ),
+                    "items": {
+                        "type": "string",
+                        "description": "면접관이 답변에서 직접 확인할 수 있는 행동·근거·산출물",
+                    },
+                    "minItems": 4,
+                    "maxItems": 4,
                 },
             },
             "required": ["question", "follow_ups", "evaluation_points"],
@@ -6178,11 +6776,57 @@ def build_strategy_with_openai(
                 "question_focus",
                 "ksa_refs",
             }
-            for question in generated_questions:
+            for slot_index, question in enumerate(generated_questions):
                 if not isinstance(question, dict):
                     continue
                 if not ksa_free_planned_generation and set(question) - allowed_question_keys:
                     continue
+                question = dict(question)
+                if ksa_free_planned_generation:
+                    planned_row = (
+                        planned_sequence[slot_index]
+                        if slot_index < len(planned_sequence)
+                        and isinstance(planned_sequence[slot_index], dict)
+                        else {}
+                    )
+                    planned_method = (
+                        planned_row.get("type") or "경험면접"
+                    )
+                    try:
+                        planned_original_index = int(
+                            planned_row.get("generation_original_index")
+                            or planned_row.get("retry_original_index")
+                            or planned_row.get("index")
+                            or slot_index + 1
+                        )
+                    except (TypeError, ValueError):
+                        planned_original_index = slot_index + 1
+                    normalized_question = _normalize_ai_authored_question(
+                        question.get("question"),
+                        method=str(planned_method or "경험면접"),
+                        slot_index=slot_index,
+                        planned_original_index=planned_original_index,
+                    )
+                    if normalized_question is None:
+                        continue
+                    question["question"] = normalized_question
+                    raw_follow_ups = question.get("follow_ups")
+                    normalized_follow_ups = _normalize_ai_authored_follow_ups(
+                        raw_follow_ups,
+                        expected_count=follow_up_count,
+                    )
+                    if normalized_follow_ups is None:
+                        continue
+                    question["follow_ups"] = normalized_follow_ups
+                    normalized_evaluation_points = (
+                        _normalize_ai_authored_evaluation_points(
+                            question.get("evaluation_points"),
+                            raw_follow_ups=raw_follow_ups,
+                        )
+                    )
+                    if normalized_evaluation_points is None:
+                        continue
+                    question["evaluation_points"] = normalized_evaluation_points
                 required_string_keys = (
                         "type",
                         "competency",
@@ -6210,11 +6854,8 @@ def build_strategy_with_openai(
                 ):
                     continue
                 if ksa_free_planned_generation and (
-                    not isinstance(question.get("follow_ups"), list)
-                    or not 1 <= len(question["follow_ups"]) <= 5
-                    or not isinstance(question.get("evaluation_points"), list)
-                    or not 1 <= len(question["evaluation_points"]) <= 5
-                    or any(not value.strip() for value in question["follow_ups"])
+                    not isinstance(question.get("evaluation_points"), list)
+                    or len(question["evaluation_points"]) != 4
                     or any(not value.strip() for value in question["evaluation_points"])
                 ):
                     continue

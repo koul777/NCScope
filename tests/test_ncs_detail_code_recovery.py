@@ -7,6 +7,17 @@ import pytest
 from app.services import ncs_mcp_client as client
 
 
+@pytest.fixture(autouse=True)
+def _use_legacy_direct_ncs_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module's low-level fakes implement the direct MCP tool contract."""
+
+    monkeypatch.setattr(
+        client,
+        "_tool_names",
+        lambda **_kwargs: {"ncs_search", "ncs_unit_detail"},
+    )
+
+
 DETAIL = {"code": "12345678", "name": "detailalpha"}
 
 
@@ -295,6 +306,18 @@ def test_client_splitter_preserves_official_slash_span_before_next_term() -> Non
     assert client._split_detail_terms(["QM/QC관리/총무"]) == [
         "QM/QC관리",
         "총무",
+    ]
+
+
+def test_client_splitter_treats_alio_inverted_exclamation_as_detail_separator() -> None:
+    assert client._split_detail_terms(
+        ["경영기획 ¡ 자금", "IT시스템관리 ¡ IT기술교육 ¡ IT기술지원"]
+    ) == [
+        "경영기획",
+        "자금",
+        "IT시스템관리",
+        "IT기술교육",
+        "IT기술지원",
     ]
 
 
@@ -627,6 +650,8 @@ def test_recovery_query_tool_error_is_not_treated_as_an_empty_result(
     calls: list[str] = []
 
     def fake_rpc(_method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if _method == "tools/list":
+            return {"tools": []}
         query = str((params or {}).get("arguments", {}).get("query") or "")
         calls.append(query)
         if query == DETAIL["name"]:

@@ -363,6 +363,105 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+_STRUCTURED_DATA_TOOL_NAMES = frozenset({"ncs_search", "ncs_unit_detail"})
+
+
+def _call_data_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    available_tools: set[str] | None = None,
+) -> dict[str, Any]:
+    """Call an NCS tool and recover its authoritative structured payload.
+
+    Current NCS MCP releases intentionally render the public ``ncs_search``
+    and ``ncs_unit_detail`` calls as compact Markdown. NCScope cannot derive
+    trusted unit ownership or KSA identities from that presentation surface.
+    The same MCP exposes ``ncs_execute_tool`` as its read-only structured-data
+    route. Prefer that route when advertised so a search or detail lookup is
+    not executed twice merely to discover the compact public representation.
+
+    Older compatible MCP deployments still return structured data directly;
+    keeping that response avoids an unnecessary second call. No Markdown is
+    parsed or promoted to evidence here.
+    """
+
+    if name not in _STRUCTURED_DATA_TOOL_NAMES:
+        return _call_tool(name, arguments)
+
+    if available_tools is None:
+        try:
+            available_tools = _tool_names()
+        except NcsMcpError:
+            # Capability discovery is an optimization boundary, not a reason
+            # to discard a compatible direct structured response from older
+            # MCP deployments or isolated tests. The direct call below still
+            # fails closed if the server returns only compact presentation
+            # content.
+            available_tools = set()
+
+    if "ncs_execute_tool" in available_tools:
+        structured = _call_tool(
+            "ncs_execute_tool",
+            {
+                "tool_name": name,
+                "params": dict(arguments),
+            },
+        )
+        structured_error = (
+            structured.get("error")
+            if isinstance(structured.get("error"), dict)
+            else {}
+        )
+        if (
+            name == "ncs_search"
+            and structured.get("ok") is False
+            and str(structured_error.get("code") or "").strip() == "NOT_FOUND"
+        ):
+            # A proven no-match is valid search data, not provider
+            # unavailability. Preserve diagnostics while supplying the empty
+            # collection expected by the search validators.
+            return {**structured, "results": []}
+        structured_data = (
+            structured.get("data")
+            if isinstance(structured.get("data"), dict)
+            else {}
+        )
+        if name == "ncs_search" and not (
+            "results" in structured
+            or "units" in structured
+            or "results" in structured_data
+            or "units" in structured_data
+        ):
+            global _last_error
+            _last_error = "ncs_mcp_search_schema_error"
+            raise NcsMcpError("NCS MCP search returned an invalid response")
+        if name == "ncs_unit_detail" and not (
+            "unit" in structured or "unit" in structured_data
+        ):
+            _last_error = "ncs_mcp_detail_schema_error"
+            raise NcsMcpError("NCS MCP unit detail returned an invalid response")
+        return structured
+
+    result = _call_tool(name, arguments)
+    if "results" in result or "units" in result or "unit" in result:
+        return result
+
+    content = result.get("content")
+    compact_markdown = isinstance(content, list) and any(
+        isinstance(item, dict)
+        and item.get("type") == "text"
+        and str(item.get("text") or "").strip()
+        for item in content
+    )
+    if compact_markdown:
+        _last_error = "ncs_mcp_structured_data_tool_unavailable"
+        raise NcsMcpError(
+            "NCS MCP returned compact output without a structured data route"
+        )
+    return result
+
+
 def _path_value(path: Any, *keys: str) -> str:
     if not isinstance(path, dict):
         return ""
@@ -1160,7 +1259,10 @@ def _split_detail_terms(values: list[str]) -> list[str]:
         parts: list[str] = []
         for coarse_part in _split_unbracketed_detail_surface(
             raw_value,
-            frozenset("\n,，、;|"),
+            # U+00A1 is emitted as a bullet by several ALIO PDF converters.
+            # In NCS table cells it separates sibling detail labels just like
+            # a comma or pipe (for example ``경영기획 ¡ 자금``).
+            frozenset("\n,，、;|¡"),
         ):
             coarse_matches = _official_details_by_name_key().get(
                 _norm(coarse_part),
@@ -1671,7 +1773,7 @@ def _search_units_by_detail_result(
         )
         verified_detail_identities: set[str] = set()
         for query_name in query_names:
-            result = _call_tool(
+            result = _call_data_tool(
                 "ncs_search",
                 {
                     "query": query_name,
@@ -1808,7 +1910,7 @@ def _search_units_by_detail_result(
         # called for a complete response or when this detail already fills the
         # caller's output budget.
         if missing_base_codes and len(group) < limit:
-            recovery_result = _call_tool(
+            recovery_result = _call_data_tool(
                 "ncs_search",
                 {
                     "query": expected_detail["code"],
@@ -1931,7 +2033,7 @@ def suggest_units_by_text(terms: list[str], max_units: int = 20) -> list[dict[st
         query = str(term or "").strip()
         if not query:
             continue
-        result = _call_tool(
+        result = _call_data_tool(
             "ncs_search",
             {
                 "query": query,
@@ -2320,6 +2422,7 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
     parallel_stop = threading.Event()
     retry_budget_lock = threading.Lock()
     parallel_retry_budget = 1
+    data_tool_names: set[str] | None = None
 
     def fetch_unit(unit: dict[str, Any]) -> list[dict[str, Any]]:
         nonlocal parallel_retry_budget
@@ -2329,13 +2432,14 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
             if concurrency > 1 and parallel_stop.is_set():
                 raise NcsMcpError("NCS MCP KSA batch cancelled after peer failure")
             try:
-                result = _call_tool(
+                result = _call_data_tool(
                     "ncs_unit_detail",
                     {
                         "unit_code": code,
                         "include": ["elements", "criteria", "ksa"],
                         "text_version": "raw",
                     },
+                    available_tools=data_tool_names,
                 )
                 break
             except NcsMcpError:
@@ -2465,6 +2569,14 @@ def get_ksa_by_units(units: list[dict[str, Any]], max_factors_per_unit: int = 12
         configured_concurrency = 1
     concurrency = max(1, min(8, configured_concurrency, len(selected_units) or 1))
     with use_ncs_mcp_request_session() as request_session:
+        # Capability discovery shares the same initialized MCP transport. Do
+        # it once before opening the worker pool: otherwise simultaneous KSA
+        # workers can serialize behind transport initialization and defeat the
+        # fail-fast batch behavior.
+        try:
+            data_tool_names = _tool_names()
+        except NcsMcpError:
+            data_tool_names = set()
         if concurrency == 1:
             per_unit_rows = [fetch_unit(unit) for unit in selected_units]
         else:

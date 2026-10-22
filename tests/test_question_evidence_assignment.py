@@ -7,6 +7,7 @@ import pytest
 from app.main import (
     _adjust_generated_questions,
     _attach_ksa_evidence_to_strategy,
+    _enrich_ai_authored_question_metadata,
     _planned_question_evidence_assignments,
     _raw_model_evidence_assignment_report,
 )
@@ -73,6 +74,126 @@ def test_server_manifest_owns_the_index_evidence_assignment() -> None:
     )
     assert report["passed"] is False
     assert report["mismatched_indexes"] == [1]
+
+
+def test_surface_only_rows_are_bound_to_planned_evidence_by_server_order() -> None:
+    first = _evidence("예산 집행 자료 분석 능력", "1")
+    runtime_plan, locks = _planned_question_evidence_assignments(
+        question_plan=_plan(),
+        interview_methods=["상황면접"],
+        ncs_matches=[_unit()],
+        ncs_ksa=[first],
+    )
+    raw = {
+        "interview_questions": [
+            {
+                "question": "실제 예산 자료를 검토한 경험을 설명해 주세요.",
+                "follow_ups": ["어떤 근거를 먼저 확인했습니까?"],
+                "evaluation_points": ["검토 근거", "수행 행동", "결과", "검증"],
+            }
+        ]
+    }
+
+    legacy_report = _raw_model_evidence_assignment_report(raw, locks)
+    server_report = _raw_model_evidence_assignment_report(
+        raw,
+        locks,
+        server_locked_by_order=True,
+    )
+    enriched = _enrich_ai_authored_question_metadata(
+        raw,
+        question_plan=runtime_plan,
+        interview_methods=["상황면접"],
+        ncs_matches=[_unit()],
+        ncs_ksa=[first],
+        server_locked_by_order=True,
+    )
+    question = enriched["interview_questions"][0]
+
+    assert legacy_report["passed"] is False
+    assert server_report == {
+        "policy": "planned-question-evidence-assignment-v1",
+        "applicable": True,
+        "passed": True,
+        "expected_count": 1,
+        "matched_count": 1,
+        "mismatch_count": 0,
+        "mismatched_indexes": [],
+    }
+    assert question["question_evidence_assignment_valid"] is True
+    assert question["question_evidence_id"] == stable_ksa_evidence_id(first)
+    assert question["question_focus"] == first["factorName"]
+
+
+@pytest.mark.parametrize(
+    ("rows", "locks", "expected_indexes"),
+    [
+        ([], [(1, "ksa_000000000000000000000000")], [1]),
+        (
+            [{"question": "one"}, {"question": "extra"}],
+            [(1, "ksa_000000000000000000000000")],
+            [2],
+        ),
+        ([{"question": "one"}], [], [1]),
+        ([{"question": "one"}], [(2, "ksa_000000000000000000000000")], [1, 2]),
+    ],
+)
+def test_server_order_lock_fails_closed_for_incomplete_manifest_or_row_count(
+    rows: list[dict[str, Any]],
+    locks: list[tuple[int, str]],
+    expected_indexes: list[int],
+) -> None:
+    report = _raw_model_evidence_assignment_report(
+        {"interview_questions": rows},
+        locks,
+        server_locked_by_order=True,
+    )
+
+    assert report["applicable"] is True
+    assert report["passed"] is False
+    assert report["mismatched_indexes"] == expected_indexes
+
+
+def test_server_order_lock_rejects_conflicting_provider_id_but_keeps_server_id() -> None:
+    first = _evidence("예산 집행 자료 분석 능력", "1")
+    second = _evidence("비용 효과 분석 능력", "2")
+    runtime_plan, locks = _planned_question_evidence_assignments(
+        question_plan=_plan(),
+        interview_methods=["상황면접"],
+        ncs_matches=[_unit()],
+        ncs_ksa=[first, second],
+    )
+    raw = {
+        "interview_questions": [
+            {
+                "question": "예산 검토 경험을 설명해 주세요.",
+                "follow_ups": ["근거는 무엇입니까?"],
+                "evaluation_points": ["근거", "행동", "결과", "검증"],
+                "question_evidence_id": stable_ksa_evidence_id(second),
+            }
+        ]
+    }
+
+    report = _raw_model_evidence_assignment_report(
+        raw,
+        locks,
+        server_locked_by_order=True,
+    )
+    enriched = _enrich_ai_authored_question_metadata(
+        raw,
+        question_plan=runtime_plan,
+        interview_methods=["상황면접"],
+        ncs_matches=[_unit()],
+        ncs_ksa=[first, second],
+        server_locked_by_order=True,
+    )
+    question = enriched["interview_questions"][0]
+
+    assert report["passed"] is False
+    assert report["mismatched_indexes"] == [1]
+    assert question["question_evidence_assignment_valid"] is False
+    assert question["question_evidence_id"] == stable_ksa_evidence_id(first)
+    assert question["question_focus"] == first["factorName"]
 
 
 @pytest.mark.parametrize(

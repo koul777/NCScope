@@ -150,7 +150,10 @@ def quality_completion_budget(target_count: int, *, reasoning_effort: str = "") 
     count = max(1, int(target_count or 1))
     # Leave enough room for the reasoning pass plus the visible structured
     # portfolio while retaining the provider's 128k hard ceiling.
-    reasoning_reserve = 24_000 if reasoning_effort == "max" else 6_000 if reasoning_effort else 0
+    reasoning_enabled = reasoning_effort not in {"", "none"}
+    reasoning_reserve = (
+        24_000 if reasoning_effort == "max" else 6_000 if reasoning_enabled else 0
+    )
     # Serverless deployments can keep Max reasoning enabled while choosing a
     # smaller bounded reserve so a single request fits the platform proxy
     # deadline. The default remains the quality-first 24k reserve; this is an
@@ -164,5 +167,15 @@ def quality_completion_budget(target_count: int, *, reasoning_effort: str = "") 
             configured_reserve = 0
         if configured_reserve > 0:
             reasoning_reserve = max(6_000, min(24_000, configured_reserve))
-    visible_reserve = 1_200 if reasoning_effort == "max" else 1_050
+    # A non-reasoning endpoint needs no hidden reserve, but the visible JSON
+    # must still fit five field-ready questions with probes and four scored
+    # dimensions.  The 1,500-token per-slot allowance is intentionally below
+    # the prior medium total while avoiding observed 5,250-token truncation.
+    visible_reserve = (
+        1_200
+        if reasoning_effort == "max"
+        else 1_500
+        if reasoning_effort == "none"
+        else 1_050
+    )
     return max(4_200, min(128_000, count * visible_reserve + reasoning_reserve))
