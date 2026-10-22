@@ -341,8 +341,10 @@ def test_late_worker_failure_leaves_only_the_remaining_budget_for_one_shot(
     observed: dict[str, float] = {}
 
     def late_failing_worker(node, script, payload, *, timeout, deadline):
+        observed["deadline"] = deadline
         observed["deadline_budget"] = deadline - time.monotonic()
         time.sleep(0.6)
+        observed["worker_returned_at"] = time.monotonic()
         return None
 
     def one_shot(command, **kwargs):
@@ -359,8 +361,11 @@ def test_late_worker_failure_leaves_only_the_remaining_budget_for_one_shot(
 
     assert result["markdown"] == "| NCS 세분류 | 사무행정 |"
     assert 1.9 < observed["deadline_budget"] <= 2.0
-    # The retry gets what is left of the 2 s budget, not a fresh 2 s.
-    assert 0 < observed["one_shot_timeout"] <= 2.0 - 0.6
+    # The retry gets what is left of the 2 s budget, not a fresh 2 s. Compare
+    # with the measured worker return time: Windows sleep can end a few
+    # milliseconds early, so a fixed 2.0 - 0.6 bound was flaky.
+    assert 0 < observed["one_shot_timeout"] <= observed["deadline"] - observed["worker_returned_at"]
+    assert observed["one_shot_timeout"] < 2.0 - 0.5
     assert time.monotonic() - started + observed["one_shot_timeout"] <= 2.05
 
 
