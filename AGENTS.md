@@ -26,7 +26,9 @@ diff 검사 결과로 판정함.
    (평가 기준표·홀드아웃·블라인드 픽스처, 측정 스크립트, 팀 규칙 문서, CI·배포 설정,
    의존성 파일).
 5. 홀드아웃 문서로 규칙을 맞추지 않음. 문서별 분석은 리드가 넘겨준
-   `stored_jd_dev_rows.csv`(홀드아웃 36건 제외)만 사용함.
+   `stored_jd_dev_rows.csv`와 `C:/workspace/NCScope/tmp/stored_jd_dev_corpus`
+   (홀드아웃을 뺀 168건)만 사용함. 전체 206건 코퍼스 `tmp/alio_jd_200_mcp`로
+   벤치마크를 돌리지 않음.
    `tests/fixtures/stored_jd_final_blind_*`, `tmp/stored_jd_final_blind/`,
    `guardian_only/` 아래 내용을 열어 오류 사례를 찾지 않음.
 6. 제품 불변 조건 유지
