@@ -134,6 +134,29 @@ def test_quality_gate_changes_require_guardian_review_without_blocking():
     assert gate[0]["touched"] == ["app/services/question_realism.py", "_natural_question_wording_ok"]
 
 
+def test_production_code_may_not_key_on_benchmark_only_tags():
+    production_diff = "\n".join(
+        [
+            "+++ b/app/main.py",
+            "@@ -10944,0 +10957,3 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:",
+            '+        if method == "경험면접" and source in {"matrix_template", "template_fallback"}:',
+            "+++ b/scripts/benchmark_question_method_matrix.py",
+            "@@ -196,0 +196,1 @@ def build_template_question(row, method):",
+            '+        "question_source": "matrix_template",',
+        ]
+    )
+    result = evaluate_diff_policy(
+        changed_paths=["app/main.py", "scripts/benchmark_question_method_matrix.py"],
+        numstat=[(1, 0, "app/main.py")],
+        test_diff="",
+        production_diff=production_diff,
+    )
+    markers = [v for v in result["violations"] if v["code"] == "benchmark_marker_in_production"]
+    assert [(v["path"], v["marker"]) for v in markers] == [("app/main.py", "matrix_template")]
+    gate = [item for item in result["review_required"] if item["code"] == "quality_gate_touched"]
+    assert gate[0]["touched"] == ["_attach_question_quality_report"]
+
+
 def test_template_only_change_does_not_ask_for_gate_review():
     result = evaluate_diff_policy(
         changed_paths=["app/main.py"],

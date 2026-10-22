@@ -123,7 +123,12 @@ python scripts/perf_kpi.py diff-policy --base <기준 커밋>
 | `pytest.mark.skip`·`skipif`·`xfail`, `pytest.skip()` 추가 | 불합격 |
 | 운영 코드 변경 800줄 초과 | 불합격 |
 | 기존 단언 삭제 | 리드 검토 (같거나 더 엄격한 단언으로 바뀌었는지 확인) |
-| 품질 게이트 모듈이나 `_..._ok` 검사 함수 변경 | 리드 검토 (같은 입력에서 검사가 느슨해지지 않았는지 확인) |
+| 운영 코드(`app/`)에 벤치마크 전용 태그·평가 코퍼스 경로 추가 (`BENCHMARK_ONLY_MARKERS`: `matrix_template`, `stored_jd_final_blind` 등) | 불합격 |
+| 품질 게이트 모듈, `_..._ok` 검사 함수, `_attach_question_quality_report`, `_run_runtime_question_quality_orchestration` 변경 | 리드 검토 (같은 입력에서 검사가 느슨해지지 않았는지 확인) |
+
+벤치마크 전용 태그 규칙은 2026-10-23 1라운드에서 추가함. 한 구현자가 품질 검사 보고 함수 안에서
+`question_source == "matrix_template"`(면접유형 매트릭스 벤치마크만 붙이는 태그)인 문항의 표면
+문구를 바꿔 매트릭스 통과율을 올리려 했고, 리드 검토에서 거부함.
 
 동결 파일: 평가 기준표·홀드아웃·블라인드 픽스처, `reports/`, 측정 스크립트
 (`perf_kpi.py`, `benchmark_stored_jd_corpus.py`, `benchmark_question_method_matrix.py`,

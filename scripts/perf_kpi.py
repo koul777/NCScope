@@ -179,7 +179,19 @@ GATE_MODULES: tuple[str, ...] = (
     "app/services/ncs_match_gate.py",
 )
 _GATE_FUNCTION = re.compile(
-    r"def\s+(_\w+_ok|_contains_blind_hiring_cue|_quality_check_statuses|_question_quality_report\w*|evaluate_\w+)\s*\("
+    r"def\s+(_\w+_ok|_contains_blind_hiring_cue|_quality_check_statuses|_question_quality_report\w*"
+    r"|_attach_question_quality_report|_run_runtime_question_quality_orchestration|evaluate_\w+)\s*\("
+)
+# Tags and paths that only evaluation tooling uses. Production code that keys
+# on them would score the benchmark instead of improving the product (seen on
+# 2026-10-23: a gate special-cased question_source == "matrix_template").
+BENCHMARK_ONLY_MARKERS: tuple[str, ...] = (
+    "matrix_template",
+    "alio_jd_200_mcp",
+    "stored_jd_dev_corpus",
+    "stored_jd_final_blind",
+    "final_blind_manifest",
+    "guardian_only",
 )
 
 _TEST_DEF = re.compile(r"^[-+]\s*(?:async\s+)?def\s+(test_\w+)\s*\(")
@@ -818,7 +830,22 @@ def evaluate_diff_policy(
 
     normalized_paths = {path.replace("\\", "/") for path in changed_paths}
     gate_touches = sorted(normalized_paths & set(GATE_MODULES))
+    current_file = ""
     for line in production_diff.splitlines():
+        if line.startswith("+++ "):
+            current_file = line[4:].strip().removeprefix("b/")
+            continue
+        if line.startswith("+") and current_file.startswith("app/"):
+            for marker in BENCHMARK_ONLY_MARKERS:
+                if marker in line:
+                    violations.append(
+                        {
+                            "code": "benchmark_marker_in_production",
+                            "path": current_file,
+                            "marker": marker,
+                            "line": line[1:].strip()[:160],
+                        }
+                    )
         if line.startswith("@@"):
             match = _GATE_FUNCTION.search(line.rsplit("@@", 1)[-1])
             if match and match.group(1) not in gate_touches:
