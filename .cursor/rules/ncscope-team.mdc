@@ -1,0 +1,8 @@
+---
+description: NCScope 에이전트 팀 작업 규칙
+alwaysApply: true
+---
+
+이 저장소에서 작업할 때는 루트 `AGENTS.md`의 규칙을 먼저 읽고 따름.
+성능 KPI 정의와 가드레일 판정 기준은 `docs/PERFORMANCE_KPI_GUARDRAILS.md`에 있음.
+동결 파일 목록은 `scripts/perf_kpi.py`의 `PROTECTED_PATTERNS`이며, 이 파일들은 수정하지 않음.
