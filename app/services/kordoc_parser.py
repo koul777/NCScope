@@ -7,6 +7,7 @@ the original block/page evidence before NCS lookup is started.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import csv
 import hashlib
@@ -15,9 +16,11 @@ import html
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
+import threading
 import time
 import unicodedata
 from collections import defaultdict
@@ -191,11 +194,19 @@ _INLINE_SECTION_TRANSITION_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+# Characters ``_norm`` deletes: whitespace and separators, middle-dot
+# variants, and every private-use code point (Unicode category ``Co``, which is
+# exactly these three ranges).  Deleting the union in one pass yields the same
+# text as deleting each set in turn.
+_NORM_DROP_RE = re.compile(
+    "[\\s:：·•\\-_/\\\\()\\[\\]{}ᆞ․‧∙⋅・ㆍ"
+    "\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]+"
+)
+
+
 def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
-    text = "".join(char for char in text if unicodedata.category(char) != "Co")
-    text = re.sub(r"[·ᆞ․‧•∙⋅・ㆍ]", "", text)
-    return re.sub(r"[\s:：·•\-_/\\()\[\]{}]+", "", text).lower()
+    return _NORM_DROP_RE.sub("", text).lower()
 
 
 _SECTION_ALIAS_KEYS = {
@@ -257,17 +268,26 @@ def _exact_detail_hint_matches(
     return [], ""
 
 
+_CLEAN_TEXT_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_CLEAN_TEXT_LINK_RE = re.compile(r"\[(.*?)\]\([^)]*\)")
+_CLEAN_TEXT_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_CLEAN_TEXT_TAG_RE = re.compile(r"<[^>]+>")
+_CLEAN_TEXT_EMPHASIS_RE = re.compile(r"[*_`~]+")
+_CLEAN_TEXT_SPACE_RE = re.compile(r"[ \t\r\f\v]+")
+_CLEAN_TEXT_NEWLINES_RE = re.compile(r"\n{2,}")
+
+
 def _clean_text(value: Any, *, normalize_nfkc: bool = True) -> str:
     text = str(value or "")
     if normalize_nfkc:
         text = unicodedata.normalize("NFKC", text)
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
-    text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", text)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[*_`~]+", "", text)
-    text = re.sub(r"[ \t\r\f\v]+", " ", text)
-    text = re.sub(r"\n{2,}", "\n", text).strip(" |\t\r\n:：-•")
+    text = _CLEAN_TEXT_IMAGE_RE.sub("", text)
+    text = _CLEAN_TEXT_LINK_RE.sub(r"\1", text)
+    text = _CLEAN_TEXT_BR_RE.sub("\n", text)
+    text = _CLEAN_TEXT_TAG_RE.sub(" ", text)
+    text = _CLEAN_TEXT_EMPHASIS_RE.sub("", text)
+    text = _CLEAN_TEXT_SPACE_RE.sub(" ", text)
+    text = _CLEAN_TEXT_NEWLINES_RE.sub("\n", text).strip(" |\t\r\n:：-•")
     return text.strip()
 
 
@@ -1221,9 +1241,9 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
     protected_slash = "\ufff0"
     split_text = re.sub(r"(?<=[A-Za-z])/(?=[A-Za-z])", protected_slash, text)
     separated = [
-        _clean_detail_candidate_text(part.replace(protected_slash, "/"))
+        cleaned
         for part in re.split(r"\s*(?:[,，、;/|¡]+)\s*", split_text)
-        if _clean_detail_candidate_text(part.replace(protected_slash, "/"))
+        if (cleaned := _clean_detail_candidate_text(part.replace(protected_slash, "/")))
     ]
     if len(separated) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
         raise KordocStructureLimitError(
@@ -1233,9 +1253,9 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
         return separated
 
     numbered = [
-        _clean_detail_candidate_text(part)
+        cleaned
         for part in re.split(r"\s+(?=\d{1,2}\s*[,.)：:\-])", text)
-        if _clean_detail_candidate_text(part)
+        if (cleaned := _clean_detail_candidate_text(part))
     ]
     if len(numbered) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
         raise KordocStructureLimitError(
@@ -4035,6 +4055,217 @@ def _parse_with_remote_kordoc(
     )
 
 
+_KORDOC_WORKER_MARKER = b"\x1eNCSCOPE_KORDOC_WORKER "
+_KORDOC_WORKER_MAX_REQUESTS = 100
+_KORDOC_WORKER_IDLE_SEC = 540.0
+_KORDOC_WORKER_START_TIMEOUT_SEC = 30.0
+_KORDOC_WORKER_RETRY_AFTER_SEC = 300.0
+
+
+class _KordocWorkerFailure(RuntimeError):
+    """The persistent worker could not answer; the one-shot process is used."""
+
+
+class _KordocWorkerTimeout(RuntimeError):
+    """The persistent worker did not answer within the parse timeout."""
+
+
+class _KordocWorker:
+    """One long-lived ``kordoc_parse.mjs --serve`` process.
+
+    Spawning Node and importing Kordoc costs about 250-400 ms per document on
+    Windows, more than parsing a typical HWP file.  The worker runs the same
+    ``parseRequest`` code as the one-shot runner and returns the same JSON
+    text, so only the process start-up is shared between documents.
+    """
+
+    def __init__(self, node: str, script: Path, *, start_timeout: float) -> None:
+        self.node = node
+        self.script = script
+        self.requests = 0
+        self.last_used = time.monotonic()
+        self._next_id = 0
+        self._lines: queue.Queue[bytes | None] = queue.Queue()
+        self._process = subprocess.Popen(
+            [node, str(script), "--serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            cwd=str(script.parents[1]),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        threading.Thread(
+            target=self._read_stdout,
+            name="kordoc-worker-stdout",
+            daemon=True,
+        ).start()
+        try:
+            status, _payload = self._read_response(0, start_timeout)
+        except (_KordocWorkerFailure, _KordocWorkerTimeout) as exc:
+            self.close()
+            raise _KordocWorkerFailure("Kordoc worker did not start") from exc
+        if status != b"ready":
+            self.close()
+            raise _KordocWorkerFailure("Kordoc worker did not start")
+
+    def _read_stdout(self) -> None:
+        stream = self._process.stdout
+        try:
+            if stream is not None:
+                for line in iter(stream.readline, b""):
+                    if line.startswith(_KORDOC_WORKER_MARKER):
+                        self._lines.put(
+                            line[len(_KORDOC_WORKER_MARKER) :].rstrip(b"\r\n")
+                        )
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._lines.put(None)
+
+    def _read_response(self, request_id: int, timeout: float) -> tuple[bytes, bytes]:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        expected_id = str(request_id).encode("ascii")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _KordocWorkerTimeout("Kordoc worker timed out")
+            try:
+                line = self._lines.get(timeout=remaining)
+            except queue.Empty:
+                raise _KordocWorkerTimeout("Kordoc worker timed out") from None
+            if line is None:
+                raise _KordocWorkerFailure("Kordoc worker exited")
+            header_id, _sep, rest = line.partition(b" ")
+            status, _sep, payload = rest.partition(b" ")
+            if header_id == expected_id:
+                return status, payload
+
+    def usable(self, node: str, script: Path) -> bool:
+        return (
+            self._process.poll() is None
+            and self.node == node
+            and self.script == script
+            and self.requests < _KORDOC_WORKER_MAX_REQUESTS
+            and time.monotonic() - self.last_used < _KORDOC_WORKER_IDLE_SEC
+        )
+
+    def parse(self, payload: dict[str, Any], *, timeout: float) -> bytes:
+        self._next_id += 1
+        self.requests += 1
+        request_id = self._next_id
+        line = json.dumps({**payload, "id": request_id}).encode("utf-8") + b"\n"
+        stdin = self._process.stdin
+        try:
+            if stdin is None:
+                raise _KordocWorkerFailure("Kordoc worker stdin is closed")
+            stdin.write(line)
+            stdin.flush()
+        except (OSError, ValueError) as exc:
+            raise _KordocWorkerFailure("Kordoc worker stdin is closed") from exc
+        status, body = self._read_response(request_id, timeout)
+        self.last_used = time.monotonic()
+        if status != b"ok":
+            raise _KordocWorkerFailure("Kordoc worker could not parse the document")
+        return body
+
+    def close(self) -> None:
+        process = self._process
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+        except OSError:
+            pass
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+_KORDOC_WORKER_LOCK = threading.Lock()
+_KORDOC_WORKER: _KordocWorker | None = None
+_KORDOC_WORKER_RETRY_AT = 0.0
+
+
+def _kordoc_worker_enabled() -> bool:
+    flag = os.getenv("KORDOC_PERSISTENT_WORKER", "1").strip().casefold()
+    return flag not in {"0", "false", "no", "off"}
+
+
+def _close_kordoc_worker() -> None:
+    global _KORDOC_WORKER
+    with _KORDOC_WORKER_LOCK:
+        worker, _KORDOC_WORKER = _KORDOC_WORKER, None
+    if worker is not None:
+        worker.close()
+
+
+atexit.register(_close_kordoc_worker)
+
+
+def _parse_with_kordoc_worker(
+    node: str,
+    script: Path,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    deadline: float | None = None,
+) -> bytes | None:
+    """Return the worker's stdout JSON, or ``None`` to use a one-shot process.
+
+    A busy worker is never waited for: concurrent requests keep their own
+    one-shot process as before.  Any worker failure other than a timeout also
+    falls back, so error classification stays with the one-shot runner.
+    Worker start-up and parsing only use the time left before ``deadline``
+    (``time.monotonic()``), the single budget shared with the one-shot retry.
+    """
+
+    global _KORDOC_WORKER, _KORDOC_WORKER_RETRY_AT
+    if deadline is None:
+        deadline = time.monotonic() + float(timeout)
+    if not _kordoc_worker_enabled():
+        return None
+    if not _KORDOC_WORKER_LOCK.acquire(blocking=False):
+        return None
+    try:
+        worker = _KORDOC_WORKER
+        if worker is not None and not worker.usable(node, script):
+            _KORDOC_WORKER = None
+            worker.close()
+            worker = None
+        if worker is None:
+            if time.monotonic() < _KORDOC_WORKER_RETRY_AT:
+                return None
+            start_budget = min(
+                deadline - time.monotonic(),
+                _KORDOC_WORKER_START_TIMEOUT_SEC,
+            )
+            if start_budget <= 0:
+                return None
+            try:
+                worker = _KordocWorker(node, script, start_timeout=start_budget)
+            except (_KordocWorkerFailure, OSError):
+                _KORDOC_WORKER_RETRY_AT = time.monotonic() + _KORDOC_WORKER_RETRY_AFTER_SEC
+                return None
+            _KORDOC_WORKER = worker
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            return worker.parse(payload, timeout=remaining)
+        except _KordocWorkerTimeout:
+            _KORDOC_WORKER = None
+            worker.close()
+            raise KordocParseError(f"Kordoc parsing timed out after {timeout}s") from None
+        except _KordocWorkerFailure:
+            _KORDOC_WORKER = None
+            worker.close()
+            return None
+    finally:
+        _KORDOC_WORKER_LOCK.release()
+
+
 def _parse_with_local_kordoc(
     data: bytes,
     *,
@@ -4054,32 +4285,47 @@ def _parse_with_local_kordoc(
         "dataBase64": base64.b64encode(data).decode("ascii"),
         "ocr": bool(ocr),
     }
-    try:
-        completed = subprocess.run(
-            [node, str(script)],
-            input=json.dumps(payload).encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(script.parents[1]),
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise KordocParseError(f"Kordoc parsing timed out after {timeout}s") from exc
-    except OSError as exc:
-        raise _LocalKordocUnavailable("local Kordoc process could not start") from exc
-    if completed.returncode != 0:
-        detail = completed.stderr.decode("utf-8", errors="replace").strip()[-1200:]
-        unavailable_markers = (
-            "err_module_not_found",
-            "cannot find package",
-            "cannot find module",
-            "module not found",
-        )
-        if any(marker in detail.casefold() for marker in unavailable_markers):
-            raise _LocalKordocUnavailable("local Kordoc module is unavailable")
-        raise KordocParseError("Kordoc could not parse the document")
-    raw = completed.stdout.decode("utf-8", errors="replace").strip()
+    # One budget covers the whole local parse: worker start-up, worker parsing
+    # and the one-shot fallback each get only the time that is left.
+    deadline = time.monotonic() + float(timeout)
+    stdout = _parse_with_kordoc_worker(
+        node,
+        script,
+        payload,
+        timeout=timeout,
+        deadline=deadline,
+    )
+    if stdout is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise KordocParseError(f"Kordoc parsing timed out after {timeout}s")
+        try:
+            completed = subprocess.run(
+                [node, str(script)],
+                input=json.dumps(payload).encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(script.parents[1]),
+                timeout=remaining,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise KordocParseError(f"Kordoc parsing timed out after {timeout}s") from exc
+        except OSError as exc:
+            raise _LocalKordocUnavailable("local Kordoc process could not start") from exc
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", errors="replace").strip()[-1200:]
+            unavailable_markers = (
+                "err_module_not_found",
+                "cannot find package",
+                "cannot find module",
+                "module not found",
+            )
+            if any(marker in detail.casefold() for marker in unavailable_markers):
+                raise _LocalKordocUnavailable("local Kordoc module is unavailable")
+            raise KordocParseError("Kordoc could not parse the document")
+        stdout = completed.stdout
+    raw = stdout.decode("utf-8", errors="replace").strip()
     try:
         result = _loads_kordoc_json(raw)
     except json.JSONDecodeError as exc:
