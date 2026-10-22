@@ -1288,6 +1288,16 @@ def _norm_detail_coverage_key(value: Any) -> str:
     return re.sub(r"[\s\-\_/|(),.·・]+", "", str(value or "")).strip().lower()
 
 
+def _norm_ability_coverage_key(value: Any) -> str:
+    """Treat Korean list-dot glyph variants alike for exact unit-name locks.
+
+    Source JDs and official MCP labels use middle dot, hyphenation point,
+    halfwidth middle dot, and araea interchangeably. Keep every word and the
+    existing unique detail/base-code checks; no substring matching is added.
+    """
+    return _norm_detail_coverage_key(re.sub(r"[‧･ㆍᆞ]", "·", str(value or "")))
+
+
 def _reviewed_ability_unit_names(values: Any) -> list[str]:
     """Normalize human-reviewed ability-unit cells for exact MCP matching.
 
@@ -1365,7 +1375,7 @@ def _lock_units_to_reviewed_ability_units(
         if not isinstance(unit, dict):
             continue
         unit_name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
-        key = _norm_detail_coverage_key(unit_name)
+        key = _norm_ability_coverage_key(unit_name)
         if key:
             rows_by_name.setdefault(key, []).append(unit)
 
@@ -1373,7 +1383,7 @@ def _lock_units_to_reviewed_ability_units(
     missing: list[str] = []
     seen_codes: set[str] = set()
     for reviewed_name in reviewed_names:
-        matches = rows_by_name.get(_norm_detail_coverage_key(reviewed_name), [])
+        matches = rows_by_name.get(_norm_ability_coverage_key(reviewed_name), [])
         if not matches:
             missing.append(reviewed_name)
             continue
@@ -1446,7 +1456,7 @@ def _scope_reviewed_ability_units_by_exact_detail_membership(
             unit_name = str(
                 unit.get("compeUnitName") or unit.get("unit_name") or ""
             ).strip()
-            unit_key = _norm_detail_coverage_key(unit_name)
+            unit_key = _norm_ability_coverage_key(unit_name)
             if unit_key:
                 details_by_unit_name.setdefault(unit_key, set()).add(detail)
 
@@ -1454,7 +1464,7 @@ def _scope_reviewed_ability_units_by_exact_detail_membership(
     unresolved: list[str] = []
     for reviewed_name in reviewed_names or []:
         matches = details_by_unit_name.get(
-            _norm_detail_coverage_key(reviewed_name), set()
+            _norm_ability_coverage_key(reviewed_name), set()
         )
         if len(matches) != 1:
             unresolved.append(reviewed_name)
