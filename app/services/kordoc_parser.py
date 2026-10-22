@@ -4210,15 +4210,20 @@ def _parse_with_kordoc_worker(
     payload: dict[str, Any],
     *,
     timeout: float,
+    deadline: float | None = None,
 ) -> bytes | None:
     """Return the worker's stdout JSON, or ``None`` to use a one-shot process.
 
     A busy worker is never waited for: concurrent requests keep their own
     one-shot process as before.  Any worker failure other than a timeout also
     falls back, so error classification stays with the one-shot runner.
+    Worker start-up and parsing only use the time left before ``deadline``
+    (``time.monotonic()``), the single budget shared with the one-shot retry.
     """
 
     global _KORDOC_WORKER, _KORDOC_WORKER_RETRY_AT
+    if deadline is None:
+        deadline = time.monotonic() + float(timeout)
     if not _kordoc_worker_enabled():
         return None
     if not _KORDOC_WORKER_LOCK.acquire(blocking=False):
@@ -4232,18 +4237,23 @@ def _parse_with_kordoc_worker(
         if worker is None:
             if time.monotonic() < _KORDOC_WORKER_RETRY_AT:
                 return None
+            start_budget = min(
+                deadline - time.monotonic(),
+                _KORDOC_WORKER_START_TIMEOUT_SEC,
+            )
+            if start_budget <= 0:
+                return None
             try:
-                worker = _KordocWorker(
-                    node,
-                    script,
-                    start_timeout=min(float(timeout), _KORDOC_WORKER_START_TIMEOUT_SEC),
-                )
+                worker = _KordocWorker(node, script, start_timeout=start_budget)
             except (_KordocWorkerFailure, OSError):
                 _KORDOC_WORKER_RETRY_AT = time.monotonic() + _KORDOC_WORKER_RETRY_AFTER_SEC
                 return None
             _KORDOC_WORKER = worker
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
         try:
-            return worker.parse(payload, timeout=timeout)
+            return worker.parse(payload, timeout=remaining)
         except _KordocWorkerTimeout:
             _KORDOC_WORKER = None
             worker.close()
@@ -4275,8 +4285,20 @@ def _parse_with_local_kordoc(
         "dataBase64": base64.b64encode(data).decode("ascii"),
         "ocr": bool(ocr),
     }
-    stdout = _parse_with_kordoc_worker(node, script, payload, timeout=timeout)
+    # One budget covers the whole local parse: worker start-up, worker parsing
+    # and the one-shot fallback each get only the time that is left.
+    deadline = time.monotonic() + float(timeout)
+    stdout = _parse_with_kordoc_worker(
+        node,
+        script,
+        payload,
+        timeout=timeout,
+        deadline=deadline,
+    )
     if stdout is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise KordocParseError(f"Kordoc parsing timed out after {timeout}s")
         try:
             completed = subprocess.run(
                 [node, str(script)],
@@ -4284,7 +4306,7 @@ def _parse_with_local_kordoc(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(script.parents[1]),
-                timeout=timeout,
+                timeout=remaining,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:

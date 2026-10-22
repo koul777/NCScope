@@ -53,7 +53,10 @@ const parseRequest = async (request) => {
     qualitySummary: parsed?.qualitySummary || null,
     pageQuality: parsed?.pageQuality || [],
   };
-  return JSON.stringify(clean(response));
+  // ``fileType`` is Kordoc's own format detection. It is not part of the JSON
+  // returned to Python; the persistent worker uses it only to decide whether
+  // the pdf.js font-id restoration below applies.
+  return { fileType: parsed?.fileType, json: JSON.stringify(clean(response)) };
 };
 
 // Persistent mode: the Python service keeps one process alive so each document
@@ -80,6 +83,9 @@ const serve = async () => {
   // pdf.js numbers every loaded document per process (font ids "g_d<N>_f<M>").
   // A one-shot process always starts at d0, so shift the ids back by the first
   // document number this request used to keep the output byte-identical.
+  // Only Kordoc's PDF parser emits pdf.js font ids. HWP/HWPX/DOCX results carry
+  // the document's real font faces, which must pass through unchanged even if
+  // a face happens to look like "g_d3_f1"; an unknown format is not touched.
   const fontIdPattern = /"fontName":"g_d(\d+)_f(\d+)"/g;
   const restoreFreshProcessFontIds = (json) => {
     let offset = Infinity;
@@ -102,7 +108,8 @@ const serve = async () => {
     try {
       const request = JSON.parse(line);
       id = Number(request.id) || 0;
-      await emit(id, "ok", restoreFreshProcessFontIds(await parseRequest(request)));
+      const { fileType, json } = await parseRequest(request);
+      await emit(id, "ok", fileType === "pdf" ? restoreFreshProcessFontIds(json) : json);
     } catch (error) {
       const detail = String(error?.stack || error?.message || error).slice(-1200);
       await emit(id, "error", JSON.stringify({ detail, code: String(error?.code || "") }));
@@ -123,5 +130,5 @@ if (process.argv.includes("--serve")) {
   });
 
   const request = JSON.parse(input || "{}");
-  process.stdout.write(await parseRequest(request));
+  process.stdout.write((await parseRequest(request)).json);
 }
