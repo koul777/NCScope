@@ -4516,7 +4516,8 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             if label_index >= 0:
                 current = _section_for_label(cells[label_index])
                 if current and len(cells) > label_index + 1:
-                    add(current, " ".join(cells[label_index + 1 :]), line=line_no)
+                    separator = "; " if current == "ability_units" else " "
+                    add(current, separator.join(cells[label_index + 1 :]), line=line_no)
                 continue
         heading_text = re.sub(r"^#{1,6}\s*", "", line)
         heading_text = re.sub(
@@ -4614,6 +4615,11 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                                     if _is_detail_value_stop_label(value):
                                         break
                                     add(section, re.sub(r"\s+", " ", value), block=block)
+                            elif section == "ability_units":
+                                # Each source cell is a separate list. A space
+                                # would concatenate its last name with the
+                                # next cell's first name in fallback evidence.
+                                add(section, "; ".join(values[label_index + 1 :]), block=block)
                             else:
                                 add(section, " ".join(values[label_index + 1 :]), block=block)
         for child_key in ("children", "blocks", "rows", "cells"):
@@ -4910,7 +4916,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     }
 
 
-_BULLET_CHARS = "•○●□■▪▫◦ㅇ⚪"
+_BULLET_CHARS = "•○●□■▪▫◦ㅇ⚪¡\uf0fa"
 _FINAL_UNIT_ROWS_BY_CODE: dict[str, dict[str, Any]] | None = None
 _ORIGINAL_EXTRACT_POSITIONED_TABLE_EVIDENCE = _base_extract_positioned_table_evidence
 
@@ -4948,8 +4954,8 @@ def _final_unit_rows_by_code() -> dict[str, dict[str, Any]]:
 
 def _final_clean_ability_text(value: str) -> str:
     text = str(value or "").strip()
-    text = re.sub(r"^[\s\-*•○●□■▪▫◦ㅇ⚪]+", "", text)
-    text = re.sub(r"[\s\-*•○●□■▪▫◦ㅇ⚪]+$", "", text)
+    text = re.sub(r"^[\s\-*•○●□■▪▫◦ㅇ⚪¡\uf0fa]+", "", text)
+    text = re.sub(r"[\s\-*•○●□■▪▫◦ㅇ⚪¡\uf0fa]+$", "", text)
     text = re.sub(r"(?<=[가-힣A-Za-z])[ㆍᆞ](?=[가-힣A-Za-z])", "", text)
     text = re.sub(r"\s+[·ㆍᆞ]$", "", text)
     text = re.sub(r"\s+등$", "", text)
@@ -4985,7 +4991,8 @@ def _split_numbered_ability_units(value: str) -> list[dict[str, str]]:
     if not text:
         return []
     marker = re.compile(
-        r"(?<!\d)(?P<number>\d{1,2})\s*(?:[.)]\s*|\s+(?=[A-Za-z가-힣]))"
+        r"(?<!\d)(?:(?i:NCS)\s*)?(?:\d{10}(?:_?\d{2}v\d+)?\s*[.)]\s*|"
+        r"(?P<number>\d{1,2})\s*(?:[.)]\s*|\s+(?=[A-Za-z가-힣])))"
     )
     matches = list(marker.finditer(text))
     if not matches:
@@ -5008,7 +5015,8 @@ def _split_numbered_ability_units(value: str) -> list[dict[str, str]]:
         item = _final_clean_ability_text(text[match.end() : end].strip(" ,;"))
         if not item:
             continue
-        ordinal = str(match.group("number") or "").zfill(2)
+        number = match.group("number")
+        ordinal = number.zfill(2) if number else ""
         output.extend(_split_numbered_item_by_safe_commas(item, ordinal=ordinal))
     return output
 
@@ -5355,6 +5363,30 @@ def _extract_positioned_table_evidence(
     return positioned, table_scopes
 
 
+def _join_wrapped_comma_delimited_ability_names(text: str) -> str:
+    """Repair whitespace only inside an exact, comma-delimited source name.
+
+    Use the existing official-name index solely to distinguish layout wraps
+    from item boundaries. This does not assign a code/scope: downstream MCP
+    validation is still required. Independently valid names stay separate.
+    """
+    if "\n" not in text or "," not in text:
+        return text
+    official_keys = _official_ncs_unit_name_keys()
+    parts = _split_top_level_commas(text)
+    changed = False
+    for index, part in enumerate(parts):
+        lines = [line.strip() for line in part.splitlines() if line.strip()]
+        if (
+            len(lines) > 1
+            and _norm(part) in official_keys
+            and all(_norm(line) not in official_keys for line in lines)
+        ):
+            parts[index] = " ".join(lines)
+            changed = True
+    return ", ".join(parts) if changed else text
+
+
 def _split_ability_unit_entries(
     value: str,
     *,
@@ -5371,6 +5403,7 @@ def _split_ability_unit_entries(
     text = _clean_text(value, normalize_nfkc=False)
     if not text:
         return []
+    text = _join_wrapped_comma_delimited_ability_names(text)
     text = re.sub(
         r"(?<!\d)(\d{10}(?:_[0-9A-Za-z]+)?\s*[.)])\s*\n+\s*(?=[A-Za-z가-힣])",
         r"\1 ",
