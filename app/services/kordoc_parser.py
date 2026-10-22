@@ -484,6 +484,29 @@ def _normalized_literal_keys(labels: tuple[str, ...]) -> frozenset[str]:
     return frozenset(_norm(label) for label in labels)
 
 
+_DETAIL_SENTENCE_FRAGMENT_RE = re.compile(
+    r"^(?:의|로|으로|를|을|은|는|이|가|에|에서|에게|와|과|도|만|및)\s"
+    r"|(?:니다|[가-힣][다함]\.)\s*$"
+)
+
+
+def _is_detail_sentence_fragment(value: str) -> bool:
+    """Return whether one split candidate is prose rather than a detail label.
+
+    A detail name is a noun label.  A split item that starts with a detached
+    postposition or ends like a sentence is the rest of a sentence in which
+    ``세분류`` was only a word, e.g. ``…(세분류)의 하위 요소를 참고하여
+    제시하였습니다`` or ``NCS 미개발 직무(세분류)로 별도 분석을 통해 내용 도출``.
+    Apply it to split items only: a whole cell may hold real details followed
+    by a prose line.  Current official names are never fragments.
+    """
+
+    text = _clean_text(value)
+    if not text or _norm(text) in _official_ncs_detail_name_keys():
+        return False
+    return bool(_DETAIL_SENTENCE_FRAGMENT_RE.search(text))
+
+
 def _looks_like_detail_candidate(value: str) -> bool:
     text = _clean_text(value)
     if not text:
@@ -3293,7 +3316,7 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     clean_candidates = []
     for item in candidates:
         for text in _expand_composite_detail_candidate(item):
-            if not _looks_like_detail_candidate(text):
+            if not _looks_like_detail_candidate(text) or _is_detail_sentence_fragment(text):
                 continue
             key = _norm(text)
             if key in seen:
@@ -3526,7 +3549,7 @@ def _dedup_detail_candidates(values: list[str]) -> list[str]:
     output: list[str] = []
     for item in values:
         for text in _expand_composite_detail_candidate(item):
-            if not _looks_like_detail_candidate(text):
+            if not _looks_like_detail_candidate(text) or _is_detail_sentence_fragment(text):
                 continue
             key = _norm(text)
             if key in seen:
