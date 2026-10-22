@@ -48,7 +48,48 @@ python scripts/perf_kpi.py diff-policy --base <기준 커밋>
 
 기준선은 통합 브랜치 `f391db4`에서 다른 작업 없이 측정한 `baseline-r0` 값임.
 
-<!-- BASELINE_TABLE -->
+| 구분 | KPI | 키 | 기준선 | 방향 | 하한·허용 |
+|---|---|---|---:|---|---|
+| guard | 테스트 실패 | `tests.failed` | 0 | 낮을수록 좋음 | 상한 0 |
+| guard | 테스트 오류 | `tests.errors` | 0 | 낮을수록 좋음 | 상한 0 |
+| guard | 테스트 통과 수 | `tests.passed` | 5650 | 높을수록 좋음 | 하락 금지 |
+| guard | ruff F821 위반 | `lint.f821_violations` | 0 | 낮을수록 좋음 | 상한 0 |
+| guard | 세분류-능력단위 연결 감사 | `audit.detail_connections_passed` | 1 | 높을수록 좋음 | 하한 1 |
+| guard | 저장 JD 파싱 성공률 | `stored_jd.parse_success_pct` | 100 | 높을수록 좋음 | 하한 100 |
+| guard | 현행 공식 세분류 인식률 | `stored_jd.current_official_detail_recognition_pct` | 100 | 높을수록 좋음 | 하한 90 |
+| guard | 세분류 매핑 상태 커버리지 | `stored_jd.detail_mapping_state_coverage_pct` | 100 | 높을수록 좋음 | 하한 100 |
+| guard | 현행 공식 세분류 문서 완전일치율 | `stored_jd.documents_all_current_official_details_exact_pct` | 100 | 높을수록 좋음 | 하한 80 |
+| guard | 능력단위 매핑 상태 커버리지 | `stored_jd.ability_mapping_state_coverage_pct` | 100 | 높을수록 좋음 | 하락 금지 |
+| guard | KSA 조회 가능률 | `stored_jd.ksa_available_pct` | 100 | 높을수록 좋음 | 하락 금지 |
+| guard | 저장 JD 품질 게이트 | `holdout.gate_passed` | 1 | 높을수록 좋음 | 하한 1 |
+| guard | 홀드아웃 세분류 코드 정밀도 | `holdout.detail_codes_precision_pct` | 96.2 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 세분류 코드 재현율 | `holdout.detail_codes_recall_pct` | 100 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 세분류 코드 문서 완전일치 | `holdout.detail_codes_document_exact_pct` | 90.48 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 세분류명 정밀도 | `holdout.detail_labels_precision_pct` | 98.97 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 세분류명 재현율 | `holdout.detail_labels_recall_pct` | 98.97 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 능력단위 범위 정밀도 | `holdout.ability_pairs_precision_pct` | 97.04 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 능력단위 범위 재현율 | `holdout.ability_pairs_recall_pct` | 97.62 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 능력단위 코드 정밀도 | `holdout.ability_codes_precision_pct` | 91.67 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 능력단위 코드 재현율 | `holdout.ability_codes_recall_pct` | 99.59 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 KSA 재현율 | `holdout.ksa_codes_recall_pct` | 100 | 높을수록 좋음 | 하락 금지 |
+| guard | 홀드아웃 문서 상태 정확도 | `holdout.document_state_accuracy_pct` | 97.22 | 높을수록 좋음 | 하락 금지 |
+| guard | 면접유형 매트릭스 평균 점수 | `method_matrix.average_quality_score` | 0.997063 | 높을수록 좋음 | 하락 금지 |
+| guard | 재검수 멱등성 실패 | `method_matrix.idempotence_failure_count` | 0 | 낮을수록 좋음 | 상한 0 |
+| guard | 문항 표면 중복 | `method_matrix.exact_surface_duplicate_count` | 0 | 낮을수록 좋음 | 상한 0 |
+| target | 세분류 후보 공식 일치율 | `stored_jd.detail_exact_pct` | 77.63 | 높을수록 좋음 | 하락 금지 |
+| target | 공식 검증 대상 세분류 일치율 | `stored_jd.official_validation_detail_exact_pct` | 80.19 | 높을수록 좋음 | 하락 금지 |
+| target | 공식 검증 대상 문서 완전일치율 | `stored_jd.documents_all_official_details_exact_pct` | 62.2 | 높을수록 좋음 | 하락 금지 |
+| target | 범위 내 능력단위 정확 일치율 | `stored_jd.ability_exact_of_scoped_pct` | 66.17 | 높을수록 좋음 | 하락 금지 |
+| target | 능력단위 종단 일치율 | `stored_jd.ability_end_to_end_pct` | 49.15 | 높을수록 좋음 | 하락 금지 |
+| target | 세분류부터 KSA까지 한 번에 끝난 문서 비율 | `stored_jd.strict_pipeline_ready_of_detail_docs_pct` | 27.56 | 높을수록 좋음 | 하락 금지 |
+| target | 공식 능력단위 범위 후보율 | `stored_jd.ability_official_scope_candidate_pct` | 99.01 | 높을수록 좋음 | 하락 금지 |
+| target | 공식 능력단위 코드 후보율 | `stored_jd.ability_official_code_candidate_pct` | 94.62 | 높을수록 좋음 | 하락 금지 |
+| target | 면접유형 매트릭스 통과율 | `method_matrix.ready_rate` | 0.926587 | 높을수록 좋음 | 하락 금지 |
+| latency | 문서 파싱 p50(ms) | `stored_jd.parse_ms_p50` | 788 | 낮을수록 좋음 | +25% |
+| latency | 문서 파싱 p95(ms) | `stored_jd.parse_ms_p95` | 6579 | 낮을수록 좋음 | +25% |
+| latency | 저장 JD 벤치마크 전체 시간(s) | `stored_jd.wall_seconds` | 576.944 | 낮을수록 좋음 | +25% |
+| latency | 템플릿 문항 생성·검수(ms/문항) | `method_matrix.ms_per_question` | 120.349 | 낮을수록 좋음 | +25% |
+| latency | 전체 테스트 시간(s) | `tests.seconds` | 211.919 | 낮을수록 좋음 | +25% |
 
 판정 규칙
 
@@ -58,6 +99,7 @@ python scripts/perf_kpi.py diff-policy --base <기준 커밋>
 | target | 개선 목표. 기준선보다 나빠지면 불합격 |
 | latency | 기준선 대비 25%까지는 허용(같은 PC에서 다른 작업과 겹칠 때 생기는 흔들림), 넘으면 불합격 |
 | 공통 | 기준선에 있던 KPI가 후보에서 측정되지 않으면 불합격 |
+| 재측정 | 파싱 성공률만 하한 미달이고 실패 문서가 단독 실행에서 파싱되면 같은 후보를 한 번 다시 측정함. 2026-10-23 사전 측정에서 테스트와 동시에 돌릴 때 Kordoc 일시 실패 1건이 있었음 |
 
 하한은 기존 릴리스 기준과 같음: 현행 공식 세분류 인식률 90, 세분류 매핑 상태 100,
 현행 공식 세분류 문서 완전일치 80, 테스트 실패·오류 0, ruff F821 0, 품질 게이트 통과.
