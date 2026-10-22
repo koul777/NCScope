@@ -277,7 +277,7 @@ _CLEAN_TEXT_SPACE_RE = re.compile(r"[ \t\r\f\v]+")
 _CLEAN_TEXT_NEWLINES_RE = re.compile(r"\n{2,}")
 
 
-def _clean_text(value: Any, *, normalize_nfkc: bool = True) -> str:
+def _clean_text(value: Any, *, normalize_nfkc: bool = True, preserve_blank_lines: bool = False) -> str:
     text = str(value or "")
     if normalize_nfkc:
         text = unicodedata.normalize("NFKC", text)
@@ -287,7 +287,9 @@ def _clean_text(value: Any, *, normalize_nfkc: bool = True) -> str:
     text = _CLEAN_TEXT_TAG_RE.sub(" ", text)
     text = _CLEAN_TEXT_EMPHASIS_RE.sub("", text)
     text = _CLEAN_TEXT_SPACE_RE.sub(" ", text)
-    text = _CLEAN_TEXT_NEWLINES_RE.sub("\n", text).strip(" |\t\r\n:：-•")
+    if not preserve_blank_lines:
+        text = _CLEAN_TEXT_NEWLINES_RE.sub("\n", text)
+    text = text.strip(" |\t\r\n:：-•")
     return text.strip()
 
 
@@ -4987,14 +4989,36 @@ def _split_numbered_item_by_safe_commas(
 
 
 def _split_numbered_ability_units(value: str) -> list[dict[str, str]]:
-    text = _final_clean_ability_text(str(value or "").strip(" ,;"))
+    # Keep line starts until markers have been checked; flattening whitespace
+    # first makes an embedded customer number indistinguishable from a code.
+    text = "\n".join(
+        _final_clean_ability_text(line)
+        for line in str(value or "").strip(" ,;").splitlines()
+    )
     if not text:
         return []
     marker = re.compile(
-        r"(?<!\d)(?:(?i:NCS)\s*)?(?:\d{10}(?:_?\d{2}v\d+)?\s*[.)]\s*|"
+        r"(?<!\d)(?:(?i:NCS)\s*)?(?:(?P<code>\d{10}(?:_?\d{2}v\d+)?)\s*[.)]\s*|"
         r"(?P<number>\d{1,2})\s*(?:[.)]\s*|\s+(?=[A-Za-z가-힣])))"
     )
-    matches = list(marker.finditer(text))
+    matches: list[re.Match[str]] = []
+    for match in marker.finditer(text):
+        if match.group("code"):
+            prefix = text[:match.start()]
+            explicit_start = not prefix.strip() or bool(re.search(r"[\n,;；|]\s*$", prefix))
+            # Flat PDF code lists can lose their separators. An exact complete
+            # preceding label and another code in the same detail establish
+            # the next item start; an embedded number alone never does.
+            coded_list_continuation = bool(
+                matches and matches[0].group("code")
+                and not text[:matches[0].start()].strip()
+                and prefix and prefix[-1].isspace()
+                and match.group("code")[:8] == matches[0].group("code")[:8]
+                and _norm(text[matches[-1].end():match.start()]) in _official_ncs_unit_name_keys()
+            )
+            if not explicit_start and not coded_list_continuation:
+                continue
+        matches.append(match)
     if not matches:
         comma_parts = [_final_clean_ability_text(part) for part in _split_top_level_commas(text)]
         comma_parts = [part for part in comma_parts if part]
@@ -5363,26 +5387,52 @@ def _extract_positioned_table_evidence(
     return positioned, table_scopes
 
 
-def _join_wrapped_comma_delimited_ability_names(text: str) -> str:
-    """Repair whitespace only inside an exact, comma-delimited source name.
+@lru_cache(maxsize=1)
+def _official_ability_word_boundaries() -> dict[str, frozenset[int]]:
+    """Index spelling boundaries as layout evidence, never as code authority."""
+    boundaries: dict[str, set[int]] = {}
+    for row in _final_unit_rows_by_code().values():
+        name = str(row.get("name") or "")
+        key = _norm(name)
+        if key:
+            offsets = boundaries.setdefault(key, set())
+            offsets.update(len(_norm(name[:match.start()])) for match in re.finditer(r"\s+", name))
+    return {key: frozenset(offsets) for key, offsets in boundaries.items()}
 
-    Use the existing official-name index solely to distinguish layout wraps
-    from item boundaries. This does not assign a code/scope: downstream MCP
-    validation is still required. Independently valid names stay separate.
-    """
+
+def _join_wrapped_comma_delimited_ability_names(text: str) -> str:
+    """Join only exact names with independent comma-list/word-wrap evidence."""
     if "\n" not in text or "," not in text:
         return text
     official_keys = _official_ncs_unit_name_keys()
     parts = _split_top_level_commas(text)
+    lines_by_part = [[line.strip() for line in part.splitlines() if line.strip()] for part in parts]
+    candidates = {
+        index for index, (part, lines) in enumerate(zip(parts, lines_by_part))
+        if len(lines) == 2 and not re.search(r"\n\s*\n", part)
+        and not re.search(rf"(?m)^\s*[-{re.escape(_BULLET_CHARS)}(]", part)
+        and _norm(part) in official_keys
+        and all(_norm(line) not in official_keys for line in lines)
+    }
+    word_boundaries = _official_ability_word_boundaries()
+    midword_wraps = {
+        index for index in candidates
+        if _norm(parts[index]) in word_boundaries
+        and len(_norm(lines_by_part[index][0])) not in word_boundaries[_norm(parts[index])]
+    }
+    # A single wrap inside an otherwise comma-only list, or another proven
+    # mid-word wrap in that list, is layout evidence. A bare leading pair such
+    # as "경영평가활동\n수행, ..." supplies no such evidence.
+    complete_comma_list = all(_norm(part) in official_keys for part in parts)
+    word_boundary_wraps = candidates - midword_wraps
     changed = False
-    for index, part in enumerate(parts):
-        lines = [line.strip() for line in part.splitlines() if line.strip()]
-        if (
-            len(lines) > 1
-            and _norm(part) in official_keys
-            and all(_norm(line) not in official_keys for line in lines)
-        ):
-            parts[index] = " ".join(lines)
+    for index in candidates:
+        comma_layout = complete_comma_list and (
+            bool(midword_wraps)
+            or (len(word_boundary_wraps) == 1 and 0 < index < len(parts) - 1)
+        )
+        if index in midword_wraps or comma_layout:
+            parts[index] = " ".join(lines_by_part[index])
             changed = True
     return ", ".join(parts) if changed else text
 
@@ -5400,7 +5450,7 @@ def _split_ability_unit_entries(
     source heading from descriptive metadata, so only its left side is emitted.
     """
 
-    text = _clean_text(value, normalize_nfkc=False)
+    text = _clean_text(value, normalize_nfkc=False, preserve_blank_lines=True)
     if not text:
         return []
     text = _join_wrapped_comma_delimited_ability_names(text)
@@ -5420,7 +5470,7 @@ def _split_ability_unit_entries(
     # A lone internal bullet in prose is not an item boundary. Explicit
     # leading bullets and parenthetical detail switches remain structural.
     bullet_matches = list(re.finditer(rf"[{bullet_class}]", text))
-    leading_bullet = bool(re.match(rf"^\s*[{bullet_class}]", text))
+    leading_bullet = bool(re.search(rf"(?m)^\s*[{bullet_class}]", text))
     explicit_switch = bool(
         re.search(rf"[{bullet_class}]\s*\([^\n()]{{1,80}}\)", text)
     )

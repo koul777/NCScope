@@ -1328,7 +1328,7 @@ def _reviewed_ability_unit_names(values: Any) -> list[str]:
             text = re.sub(r"^\d{1,3}\s*[.)：:\-]\s*", "", text).strip()
             if not text or text in {"-", "해당없음", "없음", "미개발"}:
                 continue
-            key = _norm_detail_coverage_key(text)
+            key = _norm_ability_coverage_key(text)
             if len(key) < 2 or key in seen:
                 continue
             seen.add(key)
@@ -1346,7 +1346,7 @@ def _reviewed_ability_unit_ordinals(fields: dict[str, Any]) -> dict[str, list[st
             continue
         name = str(item.get("text") or "").strip()
         ordinal_raw = str(item.get("ability_unit_ordinal") or "").strip()
-        key = _norm_detail_coverage_key(name)
+        key = _norm_ability_coverage_key(name)
         if not key or not re.fullmatch(r"\d{1,2}", ordinal_raw):
             continue
         ordinal = ordinal_raw.zfill(2)
@@ -1354,6 +1354,20 @@ def _reviewed_ability_unit_ordinals(fields: dict[str, Any]) -> dict[str, list[st
         if ordinal not in bucket:
             bucket.append(ordinal)
     return output
+
+
+def _ambiguous_ability_name_keys(units: list[dict[str, Any]]) -> set[str]:
+    """Find exact-normalized names that identify different official base codes."""
+    bases_by_name: dict[str, set[str]] = {}
+    for unit in units or []:
+        if not isinstance(unit, dict):
+            continue
+        key = _norm_ability_coverage_key(unit.get("compeUnitName") or unit.get("unit_name"))
+        code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+        match = re.match(r"^(\d{10})(?:_|$)", code)
+        if key and match:
+            bases_by_name.setdefault(key, set()).add(match.group(1))
+    return {key for key, bases in bases_by_name.items() if len(bases) > 1}
 
 
 def _lock_units_to_reviewed_ability_units(
@@ -1460,13 +1474,16 @@ def _scope_reviewed_ability_units_by_exact_detail_membership(
             if unit_key:
                 details_by_unit_name.setdefault(unit_key, set()).add(detail)
 
+    ambiguous_keys = _ambiguous_ability_name_keys([
+        unit for units in (detail_units_by_name or {}).values() for unit in (units or [])
+    ])
     scoped: dict[str, list[str]] = {}
     unresolved: list[str] = []
     for reviewed_name in reviewed_names or []:
         matches = details_by_unit_name.get(
             _norm_ability_coverage_key(reviewed_name), set()
         )
-        if len(matches) != 1:
+        if len(matches) != 1 or _norm_ability_coverage_key(reviewed_name) in ambiguous_keys:
             unresolved.append(reviewed_name)
             continue
         detail = next(iter(matches))
@@ -1510,10 +1527,14 @@ def _recover_ordinal_scoped_reviewed_ability_units(
         for unit in (already_locked or [])
         if isinstance(unit, dict)
     }
+    ambiguous_keys = _ambiguous_ability_name_keys(detail_units)
     recovered: list[dict[str, Any]] = []
     remaining: list[str] = []
     for required_name in missing_names or []:
-        required_key = _norm_detail_coverage_key(required_name)
+        required_key = _norm_ability_coverage_key(required_name)
+        if required_key in ambiguous_keys:
+            remaining.append(required_name)
+            continue
         ordinals = set(ordinals_by_name.get(required_key) or [])
         candidates: list[dict[str, Any]] = []
         for unit in detail_units or []:
@@ -1523,8 +1544,8 @@ def _recover_ordinal_scoped_reviewed_ability_units(
             if not base_code or ordinal not in ordinals:
                 continue
             current_name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
-            current_key = _norm_detail_coverage_key(current_name)
-            if not current_key:
+            current_key = _norm_ability_coverage_key(current_name)
+            if not current_key or current_key in ambiguous_keys:
                 continue
             shorter, longer = sorted((required_key, current_key), key=len)
             if shorter not in longer or len(longer) - len(shorter) > 6:
@@ -1624,12 +1645,19 @@ def _recover_code_scoped_reviewed_ability_units(
         if len(names) == 1
     }
 
+    # A later search may return only one side of a collision already observed
+    # in the detail bundle. Never let that narrower result bypass the lock.
+    known_units = [
+        unit for unit in [*(detail_units or []), *(candidate_units or []), *(already_locked or [])]
+        if isinstance(unit, dict) and detail_code(unit) in allowed_detail_codes
+    ]
+    ambiguous_keys = _ambiguous_ability_name_keys(known_units)
     rows_by_name: dict[str, list[dict[str, Any]]] = {}
     for unit in candidate_units or []:
         if not isinstance(unit, dict) or detail_code(unit) not in allowed_detail_codes:
             continue
         name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
-        key = _norm_detail_coverage_key(name)
+        key = _norm_ability_coverage_key(name)
         if key:
             rows_by_name.setdefault(key, []).append(unit)
 
@@ -1641,11 +1669,12 @@ def _recover_code_scoped_reviewed_ability_units(
     recovered: list[dict[str, Any]] = []
     remaining: list[str] = []
     for required_name in missing_names or []:
-        matches = rows_by_name.get(_norm_detail_coverage_key(required_name), [])
+        required_key = _norm_ability_coverage_key(required_name)
+        matches = rows_by_name.get(required_key, [])
         match_detail_codes = {
             detail_code(match) for match in matches if detail_code(match)
         }
-        if len(match_detail_codes) != 1:
+        if len(match_detail_codes) != 1 or required_key in ambiguous_keys:
             remaining.append(required_name)
             continue
         accepted = False
@@ -17651,12 +17680,14 @@ async def jd_strategy_upload(
                     )
                 )
                 locked_units.extend(ordinal_recovered)
+            catalog_candidates: list[dict[str, Any]] = []
             if missing_ability_units:
+                catalog_candidates = exact_official_units_by_name(missing_ability_units)
                 catalog_recovered, missing_ability_units = (
                     _recover_code_scoped_reviewed_ability_units(
                         ncs_items,
                         missing_ability_units,
-                        exact_official_units_by_name(missing_ability_units),
+                        catalog_candidates,
                         already_locked=locked_units,
                     )
                 )
@@ -17684,7 +17715,7 @@ async def jd_strategy_upload(
                     _recover_code_scoped_reviewed_ability_units(
                         ncs_items,
                         missing_ability_units,
-                        recovery_candidates,
+                        [*catalog_candidates, *recovery_candidates],
                         already_locked=locked_units,
                     )
                 )

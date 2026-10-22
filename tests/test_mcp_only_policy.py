@@ -1720,6 +1720,52 @@ def test_mcp_only_rejects_reviewed_ability_name_with_ambiguous_base_codes(
     fetch_ksa.assert_not_called()
 
 
+@pytest.mark.parametrize("route", [
+    "ordinal", "catalog", "suggestion", "catalog_then_suggestion", "detail_then_suggestion",
+])
+def test_upload_recovery_cannot_bypass_normalized_ability_code_collision(monkeypatch, mocker, route):
+    monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    _patch_mcp_upload_common(mocker)
+    source = "승객 승ㆍ하차지원"
+    units = [
+        {"compeUnitName": source, "ncsClCd": "0901010103_15v1", "ncsSubdCdnm": "철도운전운영"},
+        {"compeUnitName": "승객 승·하차지원", "ncsClCd": "0901010104_15v1", "ncsSubdCdnm": "철도운전운영"},
+    ]
+    seed = {"compeUnitName": "범위 확인용 공식 능력단위", "ncsClCd": "0901010101_15v1", "ncsSubdCdnm": "철도운전운영"}
+    search_rows = units if route in {"ordinal", "detail_then_suggestion"} else [seed]
+    catalog_rows = units if route in {"catalog", "catalog_then_suggestion"} else []
+    suggestion_rows = units if route == "suggestion" else units[:1]
+    mocker.patch("app.main.search_units_by_detail", return_value=search_rows)
+    catalog = mocker.patch("app.main.exact_official_units_by_name", return_value=catalog_rows)
+    suggest = mocker.patch("app.main.suggest_units_by_text", return_value=suggestion_rows)
+    rerank = mocker.patch("app.main.rerank_ncs_matches", return_value=([], "rule"))
+    fetch_ksa = mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[])
+    generate = mocker.patch("app.main.build_jd_strategy_with_openai")
+    review = _confirmed_review_payload({
+        "ncs_detail_candidates": ["철도운전운영"],
+        "ability_units": [source],
+        "positioned_items": [
+            {"section": "ability_units", "text": source, "ability_unit_ordinal": "03"},
+        ] if route == "ordinal" else [],
+    })
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/jd/strategy/upload", files=_upload_files(),
+            data={"jd_review_json": json.dumps(review, ensure_ascii=False),
+                  "openai_api_key": REQUEST_OPENAI_KEY},
+        )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "ncs_required_ability_unit_mismatch"
+    assert detail["matched_ability_units"] == []
+    assert detail["unmatched_ability_units"] == [source]
+    assert catalog.called
+    assert suggest.called
+    rerank.assert_not_called()
+    fetch_ksa.assert_not_called()
+    generate.assert_not_called()
+
+
 def test_mcp_only_upload_accepts_parenthetical_secretary_detail_without_manual_block(monkeypatch, mocker):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
