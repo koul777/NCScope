@@ -165,6 +165,36 @@ CASES += (
     ),
 )
 
+# Two-syllable nouns ending in ``의`` (``협의``, ``주의``) are not a dangling
+# genitive: stripping ``의`` left ``협 관련``/``주 관련``.  ``주의`` also
+# gained an ``안전`` the KSA never names.  A verbal clause before ``노력``
+# is kept like one before ``태도``.
+CASES += (
+    (
+        "원활한 소통과 객관적 협의 태도",
+        "원활한 소통과 객관적 협의 행동",
+        "협 관련",
+    ),
+    (
+        "제조 설비와 부속 기기의 일탈 사례 주의 자세",
+        "제조 설비와 부속 기기의 일탈 사례 주의 행동",
+        "주 관련",
+    ),
+    (
+        "트렌드에 따른 실루엣, 디테일, 스타일 구성, 아이템 코디네이션의 경향을 주의 깊게 "
+        "관찰하고 그 변화를 예측하려는 노력",
+        "실루엣, 디테일, 스타일 구성, 아이템 코디네이션의 경향을 주의 깊게 관찰하고 그 변화를 "
+        "예측하려는 행동",
+        "변화를 행동",
+    ),
+)
+TRAIT_NOUN_EXTRA = (
+    (
+        "교육효과를 높이고자 하는 열의",
+        "교육효과를 높이고자 하는 열의 있는 행동",
+    ),
+)
+
 # Wording that only exists because the surface rewrote the official clause.
 INVENTED_OR_BROKEN = (
     "실행하는",
@@ -243,7 +273,7 @@ TRAIT_NOUN_CASES = (
 
 
 @pytest.mark.parametrize("method", SUPPORTED_INTERVIEW_METHODS)
-@pytest.mark.parametrize(("factor", "expected"), TRAIT_NOUN_CASES)
+@pytest.mark.parametrize(("factor", "expected"), (*TRAIT_NOUN_CASES, *TRAIT_NOUN_EXTRA))
 def test_trait_noun_attitude_reads_as_behaviour(method: str, factor: str, expected: str) -> None:
     surface, source = public_task_object(factor_name=factor, ksa_type="태도")
     assert source == "factor_repair"

@@ -196,6 +196,8 @@ _ATTITUDE_TRAIT_NOUNS = (
     "융통성",
     "일관성",
     "자부심",
+    "열의",
+    "성의",
 )
 
 
@@ -214,7 +216,11 @@ def _compact_clause_tail(value: str, *, max_chars: int = 62) -> str:
     # Do not start inside a parenthesis or on a bare connector.
     while kept and (")" in kept[0] and "(" not in " ".join(kept)):
         kept.pop(0)
-    while kept and re.fullmatch(r"(?:및|또는|혹은|그리고|등|,)", kept[0]):
+    # Nor on a modifier whose complement was cut (``따른 실루엣`` after
+    # dropping ``트렌드에``).
+    while kept and re.search(
+        r"(?:^(?:및|또는|혹은|그리고|등|,)$|(?:따른|대한|관한|위한|통한|의한|관련된)$)", kept[0]
+    ):
         kept.pop(0)
     return " ".join(kept).strip(" ,.;:·ㆍ/-") if len(kept) >= 2 else ""
 
@@ -310,11 +316,12 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # modifier of the observable behaviour; stripping its ending left
         # broken stems such as ``정확도 기`` or ``협 관련``.
         verbal_clause = re.search(
-            r"(?:려는|고자\s*하는|고자\s*한|하는|수\s*있는|(?:을|를)\s*위한)"
-            r"\s*(?:태도|자세|의지|의식)\s*$",
+            r"(?:려는|고자\s*하는|고자\s*한|하는|수\s*있는|(?:을|를|기)\s*위한)"
+            r"\s*(?:태도|자세|의지|의식|노력)\s*$",
             candidate,
         )
-        candidate = re.sub(r"\s*(?:태도|자세|의지|의식)\s*$", "", candidate).strip()
+        head_nouns = r"태도|자세|의지|의식|노력" if verbal_clause else r"태도|자세|의지|의식"
+        candidate = re.sub(rf"\s*(?:{head_nouns})\s*$", "", candidate).strip()
         # Some extracted rows already contain the public suffix. Remove it
         # before rebuilding the surface so ``행동 기준 행동 기준`` cannot be
         # produced.
@@ -338,7 +345,8 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             clause = _compact_clause_tail(candidate)
             if re.search(r"(?:려는|하는|위한|있는)$", clause):
                 return f"{clause} 행동"
-        if _DANGLING_END_RE.search(candidate):
+        # ``협의``, ``주의``, ``열의`` are nouns, not a dangling genitive ``의``.
+        if _DANGLING_END_RE.search(candidate) and not re.search(r"(?:^|\s)[가-힣]의$", candidate):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
         candidate = re.sub(
             r"(?P<object>.+?(?:을|를))\s*위해\s*(?:적극적으로\s*)?노력(?:하는|하려는)?\s*$",
@@ -363,7 +371,8 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             priority_base = re.sub(r"(?:을|를)$", "", candidate[:-2].strip()).strip()
             return f"{_compact_task_base(priority_base)} 우선 행동"
         if candidate.endswith("주의"):
-            return f"{_compact_task_base(candidate[:-2])} 안전·주의 행동"
+            # Keep the official ``주의``; ``안전`` is not in the KSA.
+            return f"{_compact_task_base(candidate[:-2])} 주의 행동"
         def _attitude_object_action(match: re.Match[str]) -> str:
             object_text = str(match.group("object") or "").strip()
             particle = str(match.group("particle") or "").strip()
