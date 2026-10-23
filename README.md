@@ -114,7 +114,7 @@ NCScope는 공공기관 채용공고문과 NCS 직무기술서를 바탕으로 �
 
 두 영상의 목적과 편집 문법을 분리했습니다. 홍보 영상은 NCScope가 해결하는 문제와 핵심 가치를 실제 제품 하이라이트로 짧게 전달하는 브랜드 트레일러입니다. 상세 설명 영상은 공고문과 NCS 직무기술서를 [Kordoc](https://github.com/chrisryugj/kordoc) 4.9.1로 구조화하고, 사람이 `프로젝트관리` 세분류를 확정한 뒤, 면접기법별 작성 지침과 NCS KSA 기반 결과를 확인하는 실제 조작 흐름입니다.
 
-- [30초 3D 광고](./docs/media/ncscope-3d-ad.mp4): 빈 면접 질문서, 근거 없는 질문, NCS 세분류 1,094개 지형과 세분류 확정, KSA 원문, 면접 형태, 질문·꼬리질문·행동척도, AI 품질검수, 근거 추적 순서입니다. 질문·평가기준 문구는 발표용 시연 데이터 예시이고, NCS 원문은 2026-10-23 HRMCP 조회 결과입니다. 음악은 HoliznaCC0 "Uranus"([CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)), 내레이션은 Fish Audio 음성 합성입니다.
+- [30초 3D 광고](./docs/media/ncscope-3d-ad.mp4): 빈 면접 질문서, 근거 없는 질문, NCS 세분류 1,094개 등고선 지형과 세분류 확정, KSA 원문, 면접 형태, 질문·꼬리질문·행동척도, AI 품질검수, 근거 추적 순서입니다. 질문·평가기준 문구는 발표용 시연 데이터 예시이고, NCS 원문은 2026-10-23 HRMCP 조회 결과입니다. 음악은 HoliznaCC0 "Uranus"([CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)), 내레이션은 Fish Audio 음성 합성입니다.
 - [32초 브랜드 홍보 영상](./docs/media/ncscope-promo.mp4): 문제 제기 → 핵심 차별점 → 실제 제품 하이라이트 → 서비스 실행 안내
 - [2분 3초 상세 설명 영상](./docs/media/ncscope-explainer.mp4): 네 단계의 실제 조작과 근거 추적 화면 전체
 - 결과 장면은 비식별화한 안전한 예시 응답을 재생했으며 화면에도 `예시 결과 재생 · API 키 미사용`을 명시했습니다. 영상 제작 과정에서 API 키를 입력하거나 노출하지 않았습니다.
