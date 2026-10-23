@@ -6244,6 +6244,10 @@ def _followups_for_method(
     focus_type: str = "",
     task_frame: dict[str, str] | None = None,
 ) -> list[str]:
+    # The experience main question leaves the situation and the candidate's
+    # role to the fixed first follow-up, so an experience item keeps it.
+    if method == "경험면접":
+        count = max(1, count)
     if count <= 0:
         return []
     label = subject or "해당 업무"
@@ -6291,7 +6295,7 @@ def _followups_for_method(
     else:
         experience_focus_probe = (
             f"{_with_josa(prompt_focus, '을', '를')} {_skill_focus_action(prompt_focus, 'past')} 과정에서 "
-            "예상대로 되지 않은 단계는 무엇이었고, 어떤 조치로 산출물을 바로잡았습니까?"
+            "예상대로 되지 않은 단계가 있었다면 무엇이었고, 어떻게 바로잡았습니까?"
         )
         situation_focus_probe = (
             f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'future')} 순서·조치·산출물과 예상 위험은 무엇입니까?"
@@ -7058,6 +7062,9 @@ def _adjust_generated_questions(
             else methods[idx % len(methods)]
         )
         item["method"] = method
+        if method == "경험면접":
+            # Keep the fixed role/problem follow-up even for a zero plan.
+            row_follow_count = max(1, row_follow_count)
         item["type"] = method
 
         ncs_code = str(item.get("ncsClCd", "")).strip()
