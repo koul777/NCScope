@@ -10,8 +10,12 @@ import re
 
 import pytest
 
+import json
+
 from app.main import (
     _QUESTION_VARIATION_CONSTRAINTS,
+    _adjust_generated_questions,
+    _parse_question_plan_json,
     _experience_scenario_condition,
     _followups_for_method,
     _question_for_method,
@@ -132,7 +136,7 @@ def test_knowledge_question_and_probe_do_not_ask_the_same_thing() -> None:
 
 @pytest.mark.parametrize(("focus_type", "focus"), CASES)
 def test_role_and_problem_follow_up_is_the_fixed_first_slot(focus_type: str, focus: str) -> None:
-    for count in range(1, 6):
+    for count in range(0, 6):
         for variant_index in range(0, 13):
             follow_ups = _followups_for_method(
                 "경험면접",
@@ -172,3 +176,59 @@ def test_source_anchored_experience_question_stays_within_the_length_limit() -> 
             assert SUBSTITUTE_NOTICE in question
             assert question.endswith("결과를 설명해 주세요.")
             assert question.count("한 가지") == 1
+
+
+def test_skill_probe_does_not_presume_something_went_wrong() -> None:
+    for focus in ("프로젝트 관리 영역들 간의 관계를 조율하는 능력", "수요예측 기법"):
+        follow_ups = _followups_for_method("경험면접", SUBJECT, focus, 3, focus_type="기술")
+
+        assert follow_ups[1].endswith("예상대로 되지 않은 단계가 있었다면 무엇이었고, 어떻게 바로잡았습니까?")
+        assert "산출물을 바로잡" not in follow_ups[1]
+        assert "단계는 무엇이었고" not in follow_ups[1]
+
+
+@pytest.mark.parametrize(
+    ("method", "expected"),
+    [
+        ("경험면접", [ROLE_PROBLEM_FOLLOW_UP]),
+        ("상황면접", []),
+        ("발표면접", []),
+    ],
+)
+def test_zero_follow_up_plan_still_keeps_the_experience_role_slot(
+    method: str,
+    expected: list[str],
+) -> None:
+    # API callers can pass a plan whose follow-up count is already 0.
+    plan = _parse_question_plan_json(
+        json.dumps({"items": [{"detail": "사무행정", "enabled": True, "main_count": 1}]}),
+        ["사무행정"],
+    )
+    plan["follow_up_count"] = 0
+    for planned in [*plan["items"], *plan["selected_items"], *plan["question_sequence"]]:
+        planned["follow_up_count"] = 0
+    out = _adjust_generated_questions(
+        {"interview_questions": [{"question": "모델 원문 질문"}]},
+        plan,
+        [method],
+        ncs_matches=[
+            {
+                "ncsClCd": "0202030201_25v3",
+                "compeUnitName": "문서작성",
+                "ncsSclasCdnm": "사무행정",
+                "ncsSubdCdnm": "총무·인사",
+                "compeUnitDef": "요구사항을 파악하여 문서를 작성하는 능력이다.",
+            }
+        ],
+        ncs_ksa=[{"ncsClCd": "0202030201_25v3", "factorName": "문서 요구사항 파악"}],
+    )
+
+    assert out["interview_questions"][0]["follow_ups"] == expected
+
+
+def test_direct_zero_count_call_keeps_only_the_experience_role_slot() -> None:
+    focus = "수요예측 기법"
+    assert _followups_for_method("경험면접", SUBJECT, focus, 0, focus_type="기술") == [
+        ROLE_PROBLEM_FOLLOW_UP
+    ]
+    assert _followups_for_method("상황면접", SUBJECT, focus, 0, focus_type="기술") == []

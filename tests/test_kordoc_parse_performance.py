@@ -515,3 +515,79 @@ def test_runner_restores_pdfjs_font_ids_only_for_pdf_results(
     pdf_blocks = json.loads(from_worker["pdf"])["blocks"]
     assert [block["style"]["fontName"] for block in pdf_blocks] == ["g_d0_f2", "g_d1_f1"]
     assert json.loads(one_shot("pdf"))["blocks"][0]["style"]["fontName"] == "g_d7_f2"
+
+
+_SLOW_READER_WORKER = r'''
+import json
+import sys
+import time
+
+MARK = "\x1eNCSCOPE_KORDOC_WORKER "
+sys.stdout.write("\n" + MARK + "0 ready {}\n")
+sys.stdout.flush()
+# Do not read the request for a while: the parent's pipe write blocks.
+time.sleep(2.0)
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    request = json.loads(line)
+    sys.stdout.write("\n" + MARK + str(request["id"]) + ' ok {"late": true}\n')
+    sys.stdout.flush()
+'''
+
+
+def test_request_upload_is_bounded_by_the_same_deadline(
+    tmp_path: Path,
+    fake_worker_script: Path,
+) -> None:
+    script = tmp_path / "scripts" / "slow_reader_worker.py"
+    script.write_text(_SLOW_READER_WORKER, encoding="utf-8")
+    payload = {
+        "filename": "large.pdf",
+        "dataBase64": base64.b64encode(b"x" * (1024 * 1024)).decode("ascii"),
+        "ocr": False,
+    }
+
+    # Start the worker outside the measured call so interpreter start-up time
+    # cannot decide the outcome; the request itself has a 0.1 s budget.
+    worker = kordoc_parser._KordocWorker(sys.executable, script, start_timeout=20)
+    kordoc_parser._KORDOC_WORKER = worker
+
+    started = time.monotonic()
+    with pytest.raises(
+        kordoc_parser.KordocParseError,
+        match=r"^Kordoc parsing timed out after 0\.1s$",
+    ):
+        kordoc_parser._parse_with_kordoc_worker(
+            sys.executable, script, payload, timeout=0.1
+        )
+    elapsed = time.monotonic() - started
+
+    # Never wait for the worker's 2 s read delay.
+    assert elapsed < 1.0, elapsed
+    assert kordoc_parser._KORDOC_WORKER is None
+    assert worker._process.poll() is not None
+
+
+def test_slow_request_upload_after_startup_times_out_and_stops_the_worker(
+    tmp_path: Path,
+    fake_worker_script: Path,
+) -> None:
+    script = tmp_path / "scripts" / "slow_reader_worker.py"
+    script.write_text(_SLOW_READER_WORKER, encoding="utf-8")
+    worker = kordoc_parser._KordocWorker(sys.executable, script, start_timeout=20)
+    payload = {
+        "filename": "large.pdf",
+        "dataBase64": base64.b64encode(b"x" * (1024 * 1024)).decode("ascii"),
+        "ocr": False,
+    }
+    try:
+        started = time.monotonic()
+        with pytest.raises(kordoc_parser._KordocWorkerTimeout):
+            worker.parse(payload, timeout=0.1)
+        assert time.monotonic() - started < 1.0
+    finally:
+        closed_at = time.monotonic()
+        worker.close()
+        assert time.monotonic() - closed_at < 5.0
+    assert worker._process.poll() is not None
