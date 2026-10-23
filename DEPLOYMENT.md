@@ -143,10 +143,16 @@ AI_QUALITY_REVIEW_TIMEOUT_SEC=70
 `api/index.py`의 Vercel `maxDuration`은 300초이고 애플리케이션 요청 예산은 285초입니다. 외부 서비스가 느리더라도 서버 템플릿으로 문항을 복원하지 않습니다.
 
 Vercel에서는 Python 함수가 같은 배포의 `/api/kordoc-parse` Node 함수에 원문
-바이트를 전달해 Kordoc 4.9.1을 자체 실행합니다. 외부 문서 변환 API는 사용하지
+바이트를 전달해 Kordoc 4.24.1을 자체 실행합니다. 외부 문서 변환 API는 사용하지
 않고 `KORDOC_OFFLINE=1`로 외부 OCR·모델 다운로드를 차단합니다. 두 함수 사이의
 호출은 Python 함수만 보유한 Ed25519 개인키로 본문 해시·파일명·OCR 플래그·시각을
 서명하고, Node 함수가 저장소에 고정한 공개키로 120초 안에 검증합니다.
+
+Kordoc 4.24.1은 `ocr`을 지정하지 않으면 모델 캐시가 있을 때 OCR을 자동으로 돌리고,
+`ocr: true`면 글자가 있는 쪽의 그림까지 모두 읽습니다. 로컬 실행
+(`scripts/kordoc_parse.mjs`)과 Vercel 함수(`api/kordoc-parse.js`)는 둘 다 먼저
+`ocr: false`로 글자층을 읽고, OCR 요청이 있으면서 Kordoc이 `NEEDS_OCR` 경고를 내거나
+글자층 파싱이 실패할 때만 `ocr: true`로 다시 읽습니다.
 
 ```powershell
 vercel env add KORDOC_BRIDGE_ED25519_PRIVATE_KEY production
@@ -169,7 +175,7 @@ Production·Preview는 `KORDOC_BRIDGE_URL=https://ncscope.vercel.app/api/kordoc-
 호출 주소로 사용하지 않습니다. 로컬에서 명시값이 없을 때만 `VERCEL_URL` 구성을
 호환 fallback으로 사용합니다.
 요청·응답은 Vercel 4.5MB 제한보다 작은 4MiB에서 먼저 차단하고, 실제 Kordoc 성공만
-`parser=kordoc`, `parser_version=4.9.1`로 기록합니다. Kordoc이 불가능해 PDF/HWP
+`parser=kordoc`, `parser_version=4.24.1`로 기록합니다. Kordoc이 불가능해 PDF/HWP
 텍스트 복구를 사용하면 실제 대체 파서명을 응답과 화면에 표시합니다. ZIP은 구성원별
 파서·버전을 기록하며, 평면화된 NCS 분류표는 NCS MCP exact 세분류만 후보로 공개합니다.
 
