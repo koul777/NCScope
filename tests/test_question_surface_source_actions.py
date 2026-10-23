@@ -15,7 +15,7 @@ from scripts.benchmark_question_method_matrix import build_template_question, ev
 CASES = (
     ("기술", "자료 분류", "자료 분석하기", "자료를 분류하는 작업", "factor_repair"),
     ("기술", "정보 수집", "자료 분석하기", "정보를 수집하는 작업", "factor_repair"),
-    ("기술", "계획 수립", "자료 분석하기", "계획을 수립하는 작업", "factor_repair"),
+    ("기술", "계획 수립", "자료 분석하기", "계획 수립 작업", "factor_repair"),
     ("기술", "목표 목적의 수립", "자료 분석하기", "목표 목적의 수립 작업", "factor_repair"),
     ("기술", "회의 계획", "자료 분석하기", "회의 계획 작업", "factor_repair"),
     ("기술", "비용편익분석", "자료 분석하기", "비용편익분석 작업", "factor_repair"),
@@ -29,10 +29,10 @@ CASES = (
     ("기술", "분석 능력", "자료 분석하기", "자료 분석", "element_name"),
     ("기술", "설정 능력", "조건 설정하기", "조건 설정", "element_name"),
     ("기술", "선택 능력", "재료 선택하기", "재료 선택", "element_name"),
-    ("지식", "문서 분류 기준", "자료 분석하기", "문서 분류에 적용할 기준", "factor_repair"),
-    ("지식", "OECD DAC 평가기준 및 품질관리 기준", "자료 분석하기", "업무에 적용할 OECD DAC 평가기준 및 품질관리 기준", "factor_repair"),
-    ("지식", "문서 보안 지식", "자료 분석하기", "문서 보안 적용 기준", "factor_repair"),
-    ("지식", "지식", "자료 분석하기", "자료 분석에 적용할 기준", "element_name"),
+    ("지식", "문서 분류 기준", "자료 분석하기", "문서 분류 기준에 관한 내용", "factor_repair"),
+    ("지식", "OECD DAC 평가기준 및 품질관리 기준", "자료 분석하기", "OECD DAC 평가기준 및 품질관리 기준에 관한 내용", "factor_repair"),
+    ("지식", "문서 보안 지식", "자료 분석하기", "문서 보안에 관한 내용", "factor_repair"),
+    ("지식", "지식", "자료 분석하기", "자료 분석에 관한 내용", "element_name"),
     ("기술", "실시간 처리", "자료 분석하기", "실시간 처리 작업", "factor_repair"),
     ("기술", "고객 불만내용 유형별 분류", "자료 분석하기", "고객 불만내용 유형별 분류 작업", "factor_repair"),
     ("기술", "환경변화에 대한 예측", "자료 분석하기", "환경변화에 대한 예측 작업", "factor_repair"),
@@ -85,7 +85,7 @@ def test_long_knowledge_preserves_explicit_source_check(clause: str) -> None:
     scope = f"사용자 요구규격(URS, User Requirment Specification)에 맞게 {clause}"
     factor = f"{scope} 확인할 수 있는 장비/시스템에 대한 지식"
     surface, source = public_task_object(factor_name=factor, ksa_type="지식")
-    assert surface == f"{scope}를 확인하는 기준"
+    assert surface == f"{scope}를 확인하는 내용"
     assert source == "factor_repair"
     assert len(surface) <= 80
     assert "검증" not in surface and "절차" not in surface
@@ -132,7 +132,7 @@ def test_source_action_all_methods_preserve_surface_evidence_and_quality(
          {"발표면접", "인바스켓면접", "창의적 문제해결력면접"}),
         ("기술", "선택 능력", "재료 선택하기", "재료 선택",
          {"경험면접", "인바스켓면접", "창의적 문제해결력면접"}),
-        ("지식", "문서 보안 지식", "자료 분석하기", "문서 보안 적용 기준",
+        ("지식", "문서 보안 지식", "자료 분석하기", "문서 보안에 관한 내용",
          {"발표면접", "창의적 문제해결력면접"}),
     ),
 )

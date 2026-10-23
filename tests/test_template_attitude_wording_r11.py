@@ -183,7 +183,7 @@ def test_inbasket_skill_stem_uses_the_skill_to_sort_documents() -> None:
     # tied to the skill itself; "not needed" is no longer an answer.
     assert "처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 초기 행동을 제시하세요." in question
     assert (
-        f"직접 처리하는 문서 1건을 골라 {surface}을 어떤 단계로 수행하고, "
+        f"직접 처리하는 문서 1건을 골라 {surface}을 어떤 단계로 하고, "
         "어떤 산출물을 만들어 무엇으로 품질을 확인할지 밝혀 주세요."
     ) in question
     assert "필요한지" not in question

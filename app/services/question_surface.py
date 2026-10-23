@@ -501,7 +501,7 @@ def _nominalize_capability_clause(value: Any) -> str:
         return f"{object_text} {verb}".strip()
 
     text = re.sub(
-        r"(?P<object>.+?)(?:을|를)\s*(?P<verb>[가-힣·ㆍ]+)\s*수\s*있는\s*$",
+        r"(?P<object>.+?)(?:을|를)\s*(?P<verb>[가-힣·ㆍ]+할)\s*수\s*있는\s*$",
         _nominalize_trailing_capability,
         text,
     )
@@ -544,6 +544,18 @@ def _source_action_work(action: str, *, verbal: bool = False) -> str:
             "개발", "유지", "조작", "계산", "정리", "제작", "설계", "구현",
         }
         manner = {"실시간", "수시", "상시", "정기", "즉시", "사전", "사후", "우선", "동시", "자동", "수동", "일괄"}
+        # These words qualify the action; they are not its direct object.
+        # In particular 작성·운영 / 작성 운영 must retain both source acts.
+        dependent = {"관련", "전", "후", "시", "중", "간", "내", "외", "등"}
+        action_nouns = transitive | {
+            "수행", "검토", "평가", "판단", "확인", "예측", "측정", "조치",
+            "식별", "설명", "조정", "조율", "대응", "이해", "사용",
+            "기획", "실행", "할당", "배치", "결정", "판별", "도출", "운반",
+            "처치", "치료", "문서화", "가공", "조절", "교체", "해결", "반영",
+            "갱신", "계획", "구성", "비교", "통제", "보고", "분할", "추정",
+            "방지", "추출", "운전", "보수", "응용", "진단", "제시", "개선",
+            "확보", "지원", "교육", "제어", "정비", "의사소통",
+        }
         if (
             not verbal
             and verb in transitive
@@ -551,6 +563,8 @@ def _source_action_work(action: str, *, verbal: bool = False) -> str:
             and not _ends_with_modifier(obj)
             and not obj.endswith("별")
             and obj.split()[-1] not in manner
+            and obj.split()[-1] not in dependent
+            and not obj.endswith((*action_nouns, "관련"))
             and not re.search(r"(?:대한|관한|통한|따른|위한|하고|하며|하여|함께|따라|통해|위해|대해)$", obj)
         ):
             particle = _object_particle(obj)
@@ -574,12 +588,12 @@ def _element_task_object(element_name: Any, kind: str) -> str:
             clause = re.sub(r"시키기$", "시키는", element)
             clause = re.sub(r"해내기$", "해내는", clause)
             clause = _compact_task_base(clause, max_chars=70)
-            return f"{clause} 작업" if kind == "기술" else f"{clause} 데 필요한 기준"
+            return f"{clause} 작업" if kind == "기술" else f"{clause} 데 필요한 내용"
         action = _compact_task_base(re.sub(r"\s*하기\s*$", "", element).strip())
         if not action:
             return ""
         if kind == "지식":
-            return f"{action}에 적용할 기준"
+            return f"{action}에 관한 내용"
         return action if _useful_object(action) else _source_action_work(action)
     element = re.sub(r"\s*(?:하기|시키기|해내기)\s*$", "", element).strip()
     element = _compact_task_base(element)
@@ -706,19 +720,16 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
 
     if kind == "지식":
         if _DANGLING_END_RE.search(candidate):
-            candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
+            candidate = _DANGLING_END_RE.sub('', candidate).strip()
         knowledge_base = _nominalize_capability_clause(candidate)
+        if re.search(r"수\s*있는", knowledge_base):
+            return ""
         knowledge_base = re.sub(r"전략적인", "전략적", knowledge_base).strip()
         knowledge_base = re.sub(r"\s+관련\s+", " ", knowledge_base).strip()
-        knowledge_base = re.sub(r"\s*(?:개념|원리|이론)\s*$", "", knowledge_base).strip()
-        knowledge_base = re.sub(r"\s*종류\s*$", " 유형 구분", knowledge_base).strip()
-        knowledge_base = re.sub(r"\s*특성\s*$", " 특성 분석", knowledge_base).strip()
-        if re.search(r"(?:법규|법령)$", knowledge_base):
-            knowledge_base = re.sub(r"(?:법규|법령)$", "규정", knowledge_base).strip()
-        elif knowledge_base.endswith("동향"):
-            knowledge_base = f"{knowledge_base[:-2].strip()} 환경 변화 분석"
-        elif knowledge_base == "세법":
-            knowledge_base = "세무 규정"
+        knowledge_base = re.sub(r"\s*관련$", "", knowledge_base).strip()
+        # A trend, concept or law is knowledge content, not a new standard
+        # or analysis task. Keep those source nouns and let the template ask
+        # how the candidate uses that knowledge in a decision.
         knowledge_base = _compact_task_base(knowledge_base)
         # A long source can lose its explicit check predicate at the length
         # boundary ("...되었는지 확인할 수 있는 장비"). Preserve that clause
@@ -728,34 +739,19 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             candidate,
         )
         if source_check and source_check.group("action") not in knowledge_base:
-            check_surface = f"{source_check.group('scope')}를 {source_check.group('action')}하는 기준"
+            check_surface = f"{source_check.group('scope')}를 {source_check.group('action')}하는 내용"
             if _useful_object(check_surface, official_factor=label):
                 return check_surface
         if not knowledge_base:
             return ""
-        action_suffixes = (
-            "평가", "검토", "이해", "분석", "판단", "확인", "파악", "해석",
-            "예측", "계산", "측정", "조치", "적용", "식별", "설명", "수행",
-        )
-        # Knowledge surfaces name what is checked, not a "판단 기준" noun
-        # pile: prompts already ask for the "판단 근거", and "확인·판단 기준
-        # … 판단 근거" repeated the same word.
-        if knowledge_base.endswith(action_suffixes):
-            return f"{knowledge_base} 기준"
-        decision_suffixes = ("선정", "설정", "추천", "할당", "구성", "확정", "결정")
-        if knowledge_base.endswith(decision_suffixes):
-            return f"{knowledge_base} 기준"
-        if knowledge_base.endswith("기준"):
-            scope = knowledge_base[:-2].strip()
-            if "기준" in scope:
-                return f"업무에 적용할 {knowledge_base}"
-            return f"{scope}에 적용할 기준" if scope else "업무에 적용할 기준"
-        if knowledge_base.endswith("규정"):
-            return f"{knowledge_base} 적용 기준"
-        return f"{knowledge_base} 적용 기준"
+        return f"{knowledge_base}에 관한 내용"
 
     if kind == "기술":
         candidate = _nominalize_capability_clause(candidate)
+        # Irregular verbs (옮길/도울/다룰 …) cannot be nominalized by
+        # deleting 할. Use the official element instead of a capability task.
+        if re.search(r"수\s*있는", candidate):
+            return ""
         candidate = re.sub(
             r"(?P<object>.+?)(?:을|를)\s*위한\s+(?:관련\s+)?(?P<action>.+)$",
             r"\g<object> \g<action>",

@@ -1369,10 +1369,10 @@ def test_adjust_questions_replaces_shallow_focus_restatement_in_experience_quest
     assert question["model_question_preserved"] is False
     assert question["model_followups_raw"] == raw_followups
     assert "ksa_measurement_task" in question["model_replacement_reasons"]
-    assert "적용 기준에 비춰 무엇을 판단 근거로 삼았고" in question["question"]
+    assert "강점관점 개념에 관한 내용에 비춰 무엇을 판단 근거로 삼았고" in question["question"]
     assert "적용 범위" not in question["question"]
     assert "결과를 설명해 주세요" in question["question"]
-    assert any("강점관점 적용 기준" in follow_up for follow_up in question["follow_ups"])
+    assert any("강점관점 개념에 관한 내용" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is False
     assert quality["issues"] == ["field_realism"]
 
@@ -1836,7 +1836,7 @@ def test_method_templates_use_domain_specific_field_scenarios() -> None:
     assert "관련 문서·요청이 동시에" in question["question"]
     assert "문서이 동시에" not in question["question"]
     assert question["question_focus_surface"] == "식재료 선별"
-    assert "직접 처리하는 문서 1건을 골라 식재료 선별을 어떤 단계로 수행하고" in question["question"]
+    assert "직접 처리하는 문서 1건을 골라 식재료 선별을 어떤 단계로 하고" in question["question"]
     assert "필요한지 판단해" not in question["question"]
     assert "식재료 선별을 실제로 하며" not in question["question"]
     assert "식재료 선정·확인 절차" not in question["question"]
@@ -1891,7 +1891,7 @@ def test_situational_template_uses_domain_specific_risk_event() -> None:
     [
         ("기술", "소비자 패턴분석 능력", "소비자 패턴분석", "소비자 패턴 분석"),
         ("기술", "문서 오류 검증 기술", "문서 오류 검증", "문서 오류 검증"),
-        ("지식", "문서 보안 법규 지식", "문서 보안 법규", "문서 보안 규정 적용 기준"),
+        ("지식", "문서 보안 법규 지식", "문서 보안 법규", "문서 보안 법규에 관한 내용"),
         ("태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 행동"),
     ],
 )
@@ -3898,8 +3898,8 @@ def test_adjust_questions_keeps_planning_ksa_focuses_distinct() -> None:
     questions = out["interview_questions"]
     assert [q["question_focus"] for q in questions] == [focus_1, focus_2]
     assert [q["question_focus_surface"] for q in questions] == [
-        "일정 계획을 수립하는 작업",
-        "예산 계획을 수립하는 작업",
+        "일정 계획 수립 작업",
+        "예산 계획 수립 작업",
     ]
     assert [q["question_intent"] for q in questions] == ["experience_behavior", "experience_behavior"]
     assert questions[0]["question_repeat_signature"] != questions[1]["question_repeat_signature"]
@@ -4459,7 +4459,7 @@ def test_creative_template_avoids_related_law_repetition() -> None:
         "지식",
     )
 
-    assert "도로교통 규정 적용 기준을 적용해야 하는 복합 문제" in question
+    assert "도로교통 법규에 관한 내용을 적용해야 하는 복합 문제" in question
     assert "도로교통 관련 법규" not in question
     assert "관련 법규'와 관련된" not in question
 
@@ -4474,7 +4474,7 @@ def test_presentation_template_asks_knowledge_scope_once_without_related_repetit
         "지식",
     )
 
-    assert "도로교통 규정 적용 기준을 적용해 현황을 진단하는 데 필요한" in question
+    assert "도로교통 법규에 관한 내용을 적용해 현황을 진단하는 데 필요한" in question
     assert "도로교통 관련 법규" not in question
     assert question.count("적용 범위·예외") == 1
     assert "관련 법규'와 관련된" not in question

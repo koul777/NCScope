@@ -3003,7 +3003,13 @@ def _skill_focus_action(focus: Any, form: str = "connective") -> str:
     """Choose a natural observable-action verb for a skill factor object."""
 
     compact = re.sub(r"\s+", "", str(focus or "")).lower()
-    if re.search(r"(?:적용|활용|수행|확인|검토|작성|검증|조정|선정)절차$", compact):
+    while re.search(r"\([^()]*\)$", compact):
+        compact = re.sub(r"\([^()]*\)$", "", compact)
+    if "수행" in compact and compact.endswith("작업"):
+        verb = "진행"
+    elif re.search(r"(?:증대|향상|증가|감소|확대|축소)$", compact):
+        verb = "이루다"
+    elif re.search(r"(?:적용|활용|수행|확인|검토|작성|검증|조정|선정)절차$", compact):
         verb = "수행"
     elif re.search(r"(?:기법|방법|절차|기준|규정|모형|모델)$", compact):
         verb = "적용"
@@ -3017,10 +3023,11 @@ def _skill_focus_action(focus: Any, form: str = "connective") -> str:
     else:
         verb = "수행"
     forms = {
-        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행하며", "하다": "하며"},
-        "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할", "하다": "할"},
-        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야", "하다": "해야"},
-        "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한", "하다": "한"},
+        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행하며", "하다": "하며", "진행": "진행하며", "이루다": "이뤄"},
+        "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할", "하다": "할", "진행": "진행할", "이루다": "이룰"},
+        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야", "하다": "해야", "진행": "진행해야", "이루다": "이뤄야"},
+        "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한", "하다": "한", "진행": "진행한", "이루다": "이룬"},
+        "and": {"적용": "적용하고", "활용": "활용하고", "수행": "수행하고", "하다": "하고", "진행": "진행하고", "이루다": "이루고"},
     }
     return forms.get(form, forms["connective"])[verb]
 
@@ -3030,7 +3037,8 @@ _SKILL_ACTION_NOUN_END_RE = re.compile(
     r"(?:작성|적용|활용|예측|분석|해석|산정|계산|개발|설계|조율|조정|검토|검증|평가|진단|"
     r"정리|조작|구현|제작|기획|실행|관리|운영|처리|수집|분류|점검|조사|선정|설정|파악|"
     r"확인|수립|도출|개선|대응|해결|반영|구성|비교|통제|배치|결정|판별|식별|추정|방지|"
-    r"추출|운전|보수|응용|제시|의사결정|포착|수정·보완|유지|선택|선별|배양|정보검색|수행)$"
+    r"추출|운전|보수|응용|제시|의사결정|포착|수정·보완|유지|선택|선별|배양|정보검색|수행|"
+    r"이해|의사소통|소통|의견발표|발표|치료|처치)$"
 )
 _SKILL_TOOL_SURFACE_RE = re.compile(r"(?:도구|장비|시스템|프로그램|소프트웨어|양식)")
 
@@ -5712,6 +5720,11 @@ def _attach_presentation_material_packet(strategy: dict[str, Any], packet: dict[
 
 
 def _has_korean_final_consonant(text: str) -> bool:
+    # A trailing gloss does not change the particle of the source noun:
+    # 상처 치료(드레싱)를, 공정(프로세스)을.
+    text = str(text or "").strip()
+    while re.search(r"\s*\([^()]*\)$", text):
+        text = re.sub(r"\s*\([^()]*\)$", "", text).strip()
     cleaned = re.sub(r"[\s\]\)\}\"'.,!?…:;]+$", "", str(text or ""))
     for ch in reversed(cleaned):
         code = ord(ch)
@@ -6234,7 +6247,7 @@ def _question_for_method(
                 f"[인바스켓과제] {label} 관련 문서·요청이 동시에 들어왔습니다. 제공 항목은 {prompt_inbasket}입니다. "
                 f"{variation_sentence}"
                 "처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 초기 행동을 제시하세요. "
-                f"직접 처리하는 문서 1건을 골라 {_quoted_with_josa(prompt_focus, '을', '를')} 어떤 단계로 수행하고, "
+                f"직접 처리하는 문서 1건을 골라 {_quoted_with_josa(prompt_focus, '을', '를')} 어떤 단계로 {_skill_focus_action(prompt_focus, 'and')}, "
                 "어떤 산출물을 만들어 무엇으로 품질을 확인할지 밝혀 주세요."
             )
     if method == "상황면접":

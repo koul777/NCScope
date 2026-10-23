@@ -25,7 +25,7 @@ from app.services.question_surface import (
 
 FACTOR = "승인된 변경에 대한 지식"
 TRUNCATED_FACTOR = "승인된 변경에 대한"
-PUBLIC_FOCUS = "승인된 변경 관련 적용 기준"
+PUBLIC_FOCUS = "승인된 변경에 관한 내용"
 NCS_CODE = "0101010205_17v2"
 
 
@@ -171,7 +171,7 @@ def test_knowledge_task_frame_keeps_change_history_semantics_for_experience_prom
         competency_definition=competency_definition,
     )
 
-    assert frame["task_object"].endswith("적용 기준")
+    assert frame["task_object"].endswith("에 관한 내용")
     assert "확인" not in frame["task_object"]
     assert task_marker in frame["task_statement"]
     assert "맡은 역할·목표" in frame["observable_behavior"]
@@ -197,8 +197,8 @@ def test_distinct_planning_skills_keep_distinct_observable_surfaces() -> None:
         competency_name="사례관리 실행계획 수립",
     )
 
-    assert schedule == "일정 계획을 수립하는 작업"
-    assert budget == "예산 계획을 수립하는 작업"
+    assert schedule == "일정 계획 수립 작업"
+    assert budget == "예산 계획 수립 작업"
     assert all("절차" not in surface for surface in (schedule, budget))
     assert collection == "정보 수집"
     assert "수집·확인 절차" not in collection

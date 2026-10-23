@@ -45,7 +45,7 @@ def test_surface_audit_accepts_repaired_dangling_knowledge_factor() -> None:
 
 def test_surface_audit_counts_unique_factor_collisions_not_repeated_rows() -> None:
     first = _row("위원회 운영 관련 법령", "지식")
-    second = _row("위원회 운영 규정", "지식")
+    second = _row("위원회 운영 법령", "지식")
     report = audit_rows([first, second, first, second])
 
     assert report["summary"]["collision_count"] == 1
@@ -116,7 +116,7 @@ def test_strategic_hr_knowledge_surface_is_nominalized() -> None:
         competency_name="인사기획",
     )
 
-    assert surface == "전략적 인적자원관리 적용 기준"
+    assert surface == "전략적 인적자원관리에 관한 내용"
     assert source == "factor_repair"
 
 
@@ -153,7 +153,7 @@ def test_capability_knowledge_becomes_a_decision_object() -> None:
         element_name="설계조건 확인하기",
     )
 
-    assert surface == "설계도면과 현장여건 검토 기준"
+    assert surface == "설계도면과 현장여건 검토에 관한 내용"
     assert source == "factor_repair"
     assert "할 수 있는" not in surface
 
@@ -283,7 +283,7 @@ def test_audit_summary_separates_strict_defects_from_semantic_collisions() -> No
     report = audit_rows(
         [
             _row("위원회 운영 관련 법령", "지식"),
-            _row("위원회 운영 규정", "지식"),
+            _row("위원회 운영 법령", "지식"),
         ]
     )
 
