@@ -3106,6 +3106,58 @@ def _inline_ncs_detail_value(value: Any) -> str | None:
     return None
 
 
+def _merged_numbered_detail_row_candidates(
+    cells: list[str], fresh_columns: set[int]
+) -> list[str]:
+    """Read an explicit detail label merged with numbered official values.
+
+    The caller must establish classification context first. Only fresh
+    physical cells count: a carried rowspan or a repeated colspan slot is
+    not another source value. Every recovered label must be an exact current
+    detail name, including values in the adjacent cells of the same row.
+    """
+
+    fresh_cells = [
+        cells[index]
+        for index in sorted(fresh_columns)
+        if index < len(cells) and cells[index]
+    ]
+    if not fresh_cells:
+        return []
+    match = re.fullmatch(
+        r"세\s*분류\s*[:：]?\s*(\d{1,2}\s*[.．]\s*.+)",
+        fresh_cells[0],
+    )
+    if not match:
+        return []
+    official_keys = _official_ncs_detail_name_keys()
+    candidates: list[str] = []
+    for value in [match.group(1), *fresh_cells[1:]]:
+        if _is_detail_value_stop_label(value):
+            break
+        if not re.match(r"^\d{1,2}\s*[.．]\s*", value):
+            return []
+        if len(value) > _DETAIL_CANDIDATE_CELL_MAX_CHARS:
+            raise KordocStructureLimitError(
+                "NCS detail candidate cell exceeds the safe limit"
+            )
+        # Strip numbering and list delimiters only. The ordinary detail
+        # cleaner also expands abbreviations and trims explanatory suffixes;
+        # those transformations cannot establish this recovery's exact scope.
+        segments = [
+            part.strip(" \t\r\n,，;；")
+            for part in re.split(r"(?:^|(?<=[\s,，;；]))\d{1,2}\s*[.．]\s*", value)[1:]
+        ]
+        if len(segments) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
+            raise KordocStructureLimitError(
+                "NCS detail candidate group exceeds the safe limit"
+            )
+        if not segments or not all(_norm(item) in official_keys for item in segments):
+            return []
+        candidates.extend(segments)
+    return candidates
+
+
 def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     candidates: list[str] = []
 
@@ -3214,6 +3266,17 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
                     for index in known_detail_indexes
                 )
                 if not preserves_explicit_custom_label:
+                    continue
+            if classification_context:
+                merged_details = _merged_numbered_detail_row_candidates(
+                    cells, fresh_columns
+                )
+                if merged_details:
+                    candidates.extend(merged_details)
+                    # This is a complete label/value row, not a column header
+                    # whose coordinates should leak into later ability rows.
+                    detail_index = None
+                    header_sections = {}
                     continue
             row_sections: dict[int, str] = {}
             combined_hierarchy_indexes: list[int] = []
