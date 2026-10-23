@@ -231,7 +231,7 @@ def test_python_upload_and_pdf_runtime_uses_audited_security_pins() -> None:
     assert {
         "fastapi==0.141.1",
         "starlette==1.6.0",
-        "pypdf==6.16.1",
+        "pypdf==6.21.2",
         "python-multipart==0.0.32",
     }.issubset(requirements)
 
