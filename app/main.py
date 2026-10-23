@@ -5665,6 +5665,9 @@ def _scenario_condition_text(value: Any) -> str:
     return f"{_with_josa(scenario, '이', '가')} 동시에 발생한 상황"
 
 
+# A coordination-skill surface such as ``관계 조율`` names the act itself.
+_COORDINATION_SURFACE_RE = re.compile(r"^(?P<object>.+\S)\s+(?P<action>조율|조정)$")
+
 # Same limit as the experience entry in ``_natural_question_wording_ok``.
 _EXPERIENCE_MAIN_QUESTION_MAX_CHARS = 360
 
@@ -5899,7 +5902,7 @@ def _freeform_ksa_anchor(
             continue
         anchor = re.sub(
             r"\s*(?:관련\s*)?(?:실무\s*)?(?:적용·검증\s*절차|수행·검증\s*절차|"
-            r"확인·판단\s*기준|행동\s*기준|확인\s*절차|검증\s*절차)\s*$",
+            r"확인(?:·판단)?\s*기준|행동\s*기준|확인\s*절차|검증\s*절차)\s*$",
             "",
             anchor,
         ).strip(" ·ㆍ/")
@@ -6084,7 +6087,7 @@ def _question_for_method(
         if focus_type == "태도":
             debate_focus_context = (
                 f"압박과 이해 충돌 속에서도 "
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 지켜야 하는 가운데"
+                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실천해야 하는 가운데"
             )
             decision_requirement = "제시안에는 공동 행동·점검·실행 책임을 명시하세요."
         elif focus_type == "지식":
@@ -6094,7 +6097,11 @@ def _question_for_method(
             decision_requirement = "제시안에는 적용 범위·예외·검증·실행 책임을 명시하세요."
         else:
             debate_focus_context = (
-                f"{prompt_focus}에 따라 실제 수행 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                (
+                    f"{_with_josa(prompt_focus, '을', '를')} 실제로 수행할 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                    if _COORDINATION_SURFACE_RE.match(prompt_focus)
+                    else f"{prompt_focus}에 따라 실제 수행 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                )
             )
             decision_requirement = "제시안에는 수행 단계·산출물·품질 검증·실행 책임을 명시하세요."
         return (
@@ -6132,7 +6139,7 @@ def _question_for_method(
         situation_text = _scenario_condition_text(context.get("situation_prompt") or context["situation"])
         if focus_type == "태도":
             situation_focus_context = (
-                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 지키기 어려운 조건"
+                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 실천하기 어려운 조건"
             )
         elif focus_type == "지식":
             situation_focus_context = (
@@ -6203,18 +6210,26 @@ def _question_for_method(
     if focus_type == "태도":
         evidence_task = (
             "그 경험에서 상충하는 요구나 압박을 받았던 장면을 골라, "
-            f"{_with_josa(prompt_focus, '이', '가')} 드러난 본인의 실제 행동과 그 결과"
+            f"본인이 실제로 보인 {_with_josa(prompt_focus, '과', '와')} 그 결과"
         )
     elif focus_type == "지식":
         evidence_task = (
-            f"그 경험에서 {_with_josa(prompt_focus, '과', '와')} 관련해 무엇을 판단 근거로 삼았고, "
+            f"그 경험에서 {prompt_focus}에 비춰 무엇을 판단 근거로 삼았고, "
             "그 근거로 무엇을 결정해 어떻게 행동했는지와 그 결과"
         )
     else:
         tool_phrase = "자료나 방법" if _INTERPERSONAL_SKILL_RE.search(prompt_focus) else "도구"
+        if _COORDINATION_SURFACE_RE.match(prompt_focus):
+            # A coordination skill is asked as the coordinating act the
+            # candidate took on, not as a procedure that was "performed".
+            skill_act = f"직접 맡은 {prompt_focus}에서 한"
+        else:
+            skill_act = (
+                f"{_with_josa(prompt_focus, '을', '를')} 직접 "
+                f"{_skill_focus_action(prompt_focus, 'past')}"
+            )
         evidence_task = (
-            f"그 경험에서 본인이 {_with_josa(prompt_focus, '을', '를')} 직접 "
-            f"{_skill_focus_action(prompt_focus, 'past')} 행동의 순서와 그때 쓴 {tool_phrase}, "
+            f"그 경험에서 본인이 {skill_act} 행동의 순서와 그때 쓴 {tool_phrase}, "
             "만든 결과물과 확인한 결과"
         )
     task_sentence = f" {_with_josa(evidence_task, '을', '를')} 설명해 주세요."
@@ -6275,17 +6290,19 @@ def _followups_for_method(
     context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
     if focus_type == "태도":
         experience_focus_probe = (
-            f"{_with_josa(prompt_focus, '이', '가')} 드러난 그 행동을 하느라 포기하거나 감수한 것은 "
+            f"{_with_josa(prompt_focus, '을', '를')} 하느라 포기하거나 감수한 것은 "
             "무엇이었고, 상대는 어떻게 반응했습니까?"
         )
         situation_focus_probe = (
-            f"그 선택에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러난 구체적 행동과 예상 위험은 무엇입니까?"
+            f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 실천하겠으며, "
+            "예상되는 위험은 무엇입니까?"
         )
         inbasket_focus_probe = (
             f"압박 속에서도 {_quoted_with_josa(prompt_focus, '이', '가')} 드러나게 문서와 요청을 어떻게 분류하겠습니까?"
         )
         creative_focus_probe = (
-            f"대안 선택 과정에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러날 행동과 상충비용은 무엇입니까?"
+            f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 실천하겠으며, "
+            "그 때문에 감수할 비용은 무엇입니까?"
         )
     elif focus_type == "지식":
         # The main question asks for the judgment basis and the decision; the
