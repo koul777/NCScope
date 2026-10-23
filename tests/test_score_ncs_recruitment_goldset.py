@@ -915,7 +915,7 @@ def test_runtime_attestation_v2_seals_parser_build_closure(tmp_path: Path) -> No
         "package_lock",
         "vercel_config",
     }
-    assert attestation["parser_contract"]["package_version"] == "4.9.1"
+    assert attestation["parser_contract"]["package_version"] == "4.24.1"
     declared_bundle_digest = attestation.pop("runtime_bundle_sha256")
     assert declared_bundle_digest == mod.sha256_bytes(
         mod.canonical_json_bytes(attestation)
@@ -977,7 +977,7 @@ def test_private_scorer_rejects_remote_bridge_execution(tmp_path: Path) -> None:
                             "role": "selected",
                             "parser": "kordoc",
                             "mode": "authenticated_serverless_bridge",
-                            "parser_version": "4.9.1",
+                            "parser_version": "4.24.1",
                             "node_version": "24.0.0",
                             "build_identity": {"kind": "vercel_deployment"},
                             "runtime_bundle_sha256": (

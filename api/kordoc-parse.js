@@ -8,7 +8,7 @@ const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 // Vercel rejects function responses above 4.5 MB. Keep a safety margin so the
 // platform never replaces our controlled error with a generic 500 response.
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-const KORDOC_VERSION = "4.9.1";
+const KORDOC_VERSION = "4.24.1";
 const SIGNATURE_TTL_SECONDS = 120;
 const ED25519_PUBLIC_KEY_RAW = "VBlGEy_kzpdThiEEmtrGj7hU6bfUkNtw0SjIrXwK8vA";
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -151,6 +151,28 @@ const getKordocModule = async () => {
   return parserModulePromise;
 };
 
+// Same OCR policy as scripts/kordoc_parse.mjs. Kordoc 4.24.1 runs OCR when
+// ``ocr`` is unset and a model is cached, and ``ocr: true`` also reads every
+// picture on pages that already have text. Parse the text layer first and run
+// the OCR pass only when Kordoc reports a page without text (NEEDS_OCR) or the
+// text-layer parse fails.
+const needsOcrPass = (parsed) =>
+  !parsed ||
+  parsed.success === false ||
+  (parsed.warnings || []).some((warning) => warning?.code === "NEEDS_OCR");
+
+const parseWithOcrPolicy = async (parse, bytes, ocrRequested) => {
+  if (!ocrRequested) return parse(bytes, { ocr: false });
+  let textLayer;
+  try {
+    textLayer = await parse(new Uint8Array(bytes), { ocr: false });
+  } catch {
+    textLayer = null;
+  }
+  if (!needsOcrPass(textLayer)) return textLayer;
+  return parse(bytes, { ocr: true });
+};
+
 const buildIdentity = () => {
   const identity = { kind: "vercel_deployment" };
   const deploymentUrl = String(process.env.VERCEL_URL || "").trim().toLowerCase();
@@ -226,8 +248,7 @@ export default async function handler(req, res) {
     if (typeof parse !== "function" || actualVersion !== KORDOC_VERSION) {
       return sendJson(res, 503, { success: false, code: "parser_unavailable" });
     }
-    const options = req.headers["x-ncscope-ocr"] === "1" ? { ocr: true } : {};
-    const parsed = await parse(bytes, options);
+    const parsed = await parseWithOcrPolicy(parse, bytes, req.headers["x-ncscope-ocr"] === "1");
     const response = clean({
       success: parsed?.success !== false,
       parser: "kordoc",
