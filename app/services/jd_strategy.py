@@ -2711,14 +2711,14 @@ def _build_ncs_code_template_fallback_question(
                 "그 절차와 판단 기준, 남길 산출물을 설명해 주세요."
             )
             follow_ups = [
-                f"{surface_focus}를 지키면 지연이나 품질 손해가 생길 때, 예외상황으로 인정할 기준은 무엇입니까?",
+                f"{_with_korean_particle(surface_focus, consonant='을', vowel='를')} 지키면 지연이나 품질 손해가 생길 때, 예외상황으로 인정할 기준은 무엇입니까?",
                 "그 선택을 보고할 때 남길 사실과 판단 기준은 무엇입니까?",
                 "같은 충돌 뒤 산출물과 오류 예방 기록을 어떻게 남기겠습니까?",
             ]
             evaluation_points = ["상충 요구의 사실", "선택과 감수한 비용", "판단 기준", "산출물·오류 예방"]
         elif ksa_kind == "기술":
             question = (
-                f"{candidate_context}에서 {variation_axis} {surface_focus}를 수행할 때의 절차와 기준, "
+                f"{candidate_context}에서 {variation_axis} {_with_korean_particle(surface_focus, consonant='을', vowel='를')} 수행할 때의 절차와 기준, "
                 "산출물 확인, 예외상황에서의 재작업을 설명해 주세요."
             )
             follow_ups = [
@@ -2733,7 +2733,7 @@ def _build_ncs_code_template_fallback_question(
                 "어떤 범위에 적용하고, 예외상황에서는 산출물을 어떻게 조정하는지 설명해 주세요."
             )
             follow_ups = [
-                f"{candidate_context}에서 {surface_focus}가 적용되는 경우와 적용하면 안 되는 경우를 가르는 기준은 무엇입니까?",
+                f"{candidate_context}에서 {_with_korean_particle(surface_focus, consonant='이', vowel='가')} 적용되는 경우와 적용하면 안 되는 경우를 가르는 기준은 무엇입니까?",
                 "그 기준을 잘못 적용하면 산출물이나 다음 업무에 어떤 영향이 있습니까?",
                 "예외상황에서 확인에 사용할 문서나 기록은 무엇입니까?",
             ]
@@ -2800,7 +2800,7 @@ def _build_ncs_code_template_fallback_question(
             )
         else:
             question = (
-                f"[발표과제] {candidate_context}에서 {surface_focus}를 기준으로 {presentation_focus}합니다."
+                f"[발표과제] {candidate_context}에서 {_with_korean_particle(surface_focus, consonant='을', vowel='를')} 기준으로 {presentation_focus}합니다."
                 f"{material_hint} 자료를 바탕으로 현황을 진단하고 대안 2가지, 실행계획과 성과지표를 발표한 뒤 "
                 "질의응답에 답변해 주세요."
             )
@@ -2862,7 +2862,7 @@ def _build_ncs_code_template_fallback_question(
             "합의가 어렵다면 미합의 쟁점과 결정권자 이송 기준을 제시해 주세요."
         )
         follow_ups = [
-            f"{candidate_context}의 {surface_focus}에 관한 초기 입장을 정하기 전에 어떤 문서와 사실을 확인하겠습니까?",
+            f"{candidate_context}의 {_with_korean_particle(surface_focus, consonant='을', vowel='를')} 두고 초기 입장을 정하기 전에 어떤 문서와 사실을 확인하겠습니까?",
             "상대 입장에서 수용할 부분과 수용하기 어려운 부분을 어떤 기준으로 구분하겠습니까?",
             "공통안의 적용 범위·예외·검증·실행 책임 또는 미합의 이송 기준을 어떻게 정하겠습니까?",
         ]

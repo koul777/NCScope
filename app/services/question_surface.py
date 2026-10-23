@@ -14,6 +14,11 @@ from typing import Any
 
 
 _KSA_TYPE_SUFFIX_RE = re.compile(r"\s*(?:관련\s*)?(?:능력|기술|스킬|지식)\s*$")
+_KNOWLEDGE_HEADS = (
+    "방법", "개념", "원리", "종류", "법령", "법규", "규정", "제도",
+    "현황", "동향", "이해", "특성", "구조",
+)
+_KNOWLEDGE_HEAD_RE = re.compile("|".join(_KNOWLEDGE_HEADS))
 _DANGLING_END_RE = re.compile(
     r"(?:에\s*대한|에\s*관한|을\s*위한|를\s*위한|에\s*따른|을\s*통한|를\s*통한|"
     r"하고|하며|하여|해서|따른|통한|관련된|하는|되는|대한|위한|의)\s*$"
@@ -205,6 +210,52 @@ def _compact_task_base(value: Any, *, max_chars: int = 62) -> str:
         clipped,
     ).strip(" ,.;:·ㆍ/-")
     return clipped or text[:max_chars].strip(" ,.;:·ㆍ/-")
+
+
+def _compact_knowledge_base(value: str, *, max_chars: int = 62) -> str:
+    """Keep the knowledge head; shorten glosses and leading modifiers only."""
+    text = str(value or "").strip(" ,.;:·ㆍ/-")
+    if len(text) >= max_chars and re.search(r"에\s*(?:대한|관한)\s+\S+적$", text):
+        return ""
+    if len(text) <= max_chars:
+        return text
+    # Parenthetical expansions can consume the entire budget before the
+    # actual subject (e.g. GIS ... 인구통계 분석 방법) is reached.
+    def remove_gloss(match: re.Match[str]) -> str:
+        particle = match.group("particle")
+        noun_particle = _object_particle(text[:match.start()])
+        if noun_particle == "을":
+            return particle.translate(str.maketrans("를가는와", "을이은과"))
+        if noun_particle == "를":
+            return particle.translate(str.maketrans("을이은과", "를가는와"))
+        return particle
+
+    while re.search(r"\([^()]*\)", text):
+        text = re.sub(r"\([^()]*\)(?P<particle>[을를이가은는과와]?)", remove_gloss, text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if _ends_with_modifier(text) or _DANGLING_END_RE.search(text):
+        return ""
+    if len(text) <= max_chars:
+        return text
+    # A labelled list has its head before the details. Cutting its front
+    # would turn one enumerated item into the whole knowledge topic.
+    if re.search(r"\s[-:：]\s|:\s", text):
+        return ""
+    heads = set(_KNOWLEDGE_HEAD_RE.findall(text))
+    words = text.split()
+    for start in range(1, len(words) - 1):
+        tail = " ".join(words[start:])
+        if len(tail) > max_chars or words[start - 1].endswith("의"):
+            continue
+        if re.search(r"^(?:및|또는|혹은|그리고|등)$|(?:따른|대한|관한|위한|통한|의한|관련된)$", words[start]):
+            continue
+        if words[start].endswith((",", "·", "ㆍ")) or tail.count("(") != tail.count(")"):
+            continue
+        if heads - set(_KNOWLEDGE_HEAD_RE.findall(tail)):
+            continue
+        return tail
+    # Never fall back to a prefix cut: the caller can use the official element.
+    return ""
 
 
 def _object_particle(word: str) -> str:
@@ -466,8 +517,8 @@ def _ends_with_modifier(text: str) -> bool:
     return bool(re.search(r"(?:한|는|은|된|인|던|운|른|적)$", last[0]))
 
 
-def _nominalize_capability_clause(value: Any) -> str:
-    text = _clean(value, max_chars=180)
+def _nominalize_capability_clause(value: Any, *, max_chars: int = 180) -> str:
+    text = _clean(value, max_chars=max_chars)
     action_nouns = (
         "포착|분석|검토|평가|판단|확인|파악|해석|예측|계산|측정|조치|적용|"
         "식별|설명|수행|작성|수립|설정|선택|선정|조정|수집|분류|처리|운영|"
@@ -547,6 +598,13 @@ def _source_action_work(action: str, *, verbal: bool = False) -> str:
         # These words qualify the action; they are not its direct object.
         # In particular 작성·운영 / 작성 운영 must retain both source acts.
         dependent = {"관련", "전", "후", "시", "중", "간", "내", "외", "등"}
+        noun_endings = (
+            "안전", "비중", "하중", "지시", "제시", "표시", "표시등", "전등",
+            "경고등", "조명등", "신호등", "회전", "발전", "충전", "방전",
+            "정전", "보전", "도시", "게시", "전시", "투시", "감시", "실시",
+            "기후", "징후",
+        )
+        attached_dependent = obj.endswith(("관련", "전", "후", "시", "중", "등")) and not obj.endswith(noun_endings)
         action_nouns = transitive | {
             "수행", "검토", "평가", "판단", "확인", "예측", "측정", "조치",
             "식별", "설명", "조정", "조율", "대응", "이해", "사용",
@@ -564,6 +622,7 @@ def _source_action_work(action: str, *, verbal: bool = False) -> str:
             and not obj.endswith("별")
             and obj.split()[-1] not in manner
             and obj.split()[-1] not in dependent
+            and not attached_dependent
             and not obj.endswith((*action_nouns, "관련"))
             and not re.search(r"(?:대한|관한|통한|따른|위한|하고|하며|하여|함께|따라|통해|위해|대해)$", obj)
         ):
@@ -606,7 +665,7 @@ def _element_task_object(element_name: Any, kind: str) -> str:
 
 
 def _repair_factor_object(factor_name: Any, kind: str) -> str:
-    label = _clean(factor_name, max_chars=100)
+    label = _clean(factor_name, max_chars=len(str(factor_name or "")) if kind == "지식" else 100)
     candidate = _KSA_TYPE_SUFFIX_RE.sub("", label).strip()
     if not candidate:
         return ""
@@ -721,29 +780,38 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
     if kind == "지식":
         if _DANGLING_END_RE.search(candidate):
             candidate = _DANGLING_END_RE.sub('', candidate).strip()
-        knowledge_base = _nominalize_capability_clause(candidate)
+        knowledge_base = _nominalize_capability_clause(candidate, max_chars=len(candidate))
         if re.search(r"수\s*있는", knowledge_base):
             return ""
         knowledge_base = re.sub(r"전략적인", "전략적", knowledge_base).strip()
         knowledge_base = re.sub(r"\s+관련\s+", " ", knowledge_base).strip()
         knowledge_base = re.sub(r"\s*관련$", "", knowledge_base).strip()
+        # Some sources already name content. Remove the relation before
+        # rebuilding it so 내용에 관한 내용 cannot be stacked.
+        knowledge_base = re.sub(r"에\s*(?:대한|관한)\s*내용$", " 내용", knowledge_base).strip()
         # A trend, concept or law is knowledge content, not a new standard
         # or analysis task. Keep those source nouns and let the template ask
         # how the candidate uses that knowledge in a decision.
-        knowledge_base = _compact_task_base(knowledge_base)
-        # A long source can lose its explicit check predicate at the length
-        # boundary ("...되었는지 확인할 수 있는 장비"). Preserve that clause
-        # when it fits, rather than attaching 적용 to a dangling question.
+        knowledge_base = _compact_knowledge_base(knowledge_base)
+        # Removing a long gloss can expose a trailing "...에 관한 지식".
+        if knowledge_base.endswith("지식"):
+            knowledge_base = _DANGLING_END_RE.sub(
+                "", re.sub(r"\s*지식$", "", knowledge_base)
+            ).strip()
+        # Preserve a complete source check clause when it fits, including
+        # its parenthetical terms, before considering a shortened noun phrase.
         source_check = re.match(
             r"(?P<scope>.+(?:는지|여부))\s*(?P<action>확인|검증)\s*(?:할\s*수\s*있는|하는)",
             candidate,
         )
-        if source_check and source_check.group("action") not in knowledge_base:
+        if source_check and not candidate.endswith(_KNOWLEDGE_HEADS):
             check_surface = f"{source_check.group('scope')}를 {source_check.group('action')}하는 내용"
             if _useful_object(check_surface, official_factor=label):
                 return check_surface
         if not knowledge_base:
             return ""
+        if knowledge_base.endswith("내용") and _key(knowledge_base) != _key(label):
+            return knowledge_base
         return f"{knowledge_base}에 관한 내용"
 
     if kind == "기술":
@@ -899,8 +967,8 @@ def public_task_object(
 ) -> tuple[str, str]:
     """Choose a grammatical public task object without exposing the KSA label."""
 
-    official = _clean(factor_name, max_chars=120)
-    kind = normalize_ksa_type(ksa_type, official)
+    kind = normalize_ksa_type(ksa_type, factor_name)
+    official = _clean(factor_name, max_chars=len(str(factor_name or "")) if kind == "지식" else 120)
 
     # Prefer the factor-specific task.  Element labels are shared by many KSA
     # rows and choosing them first collapses distinct knowledge, skill, and
