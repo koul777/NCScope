@@ -3,13 +3,35 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import ntpath
+import os
 import sqlite3
 import subprocess
+import types
 from typing import Any
 
 import pytest
 
 from app.services import alio_live_adapters as adapters
+
+
+class _WindowsOs(types.ModuleType):
+    """``os`` as the adapter sees it on Windows.
+
+    Setting the real ``os.name`` to ``"nt"`` on Linux CI makes pathlib build
+    ``WindowsPath`` objects and breaks pytest itself, so only the adapter's
+    module reference is replaced.
+    """
+
+    name = "nt"
+    path = ntpath
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(os, item)
+
+
+def _pretend_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(adapters, "os", _WindowsOs("os"))
 
 
 DETAIL_CODE = "02020301"
@@ -1749,7 +1771,7 @@ def test_review_with_claude_wraps_windows_cmd_shim_without_shell_true(
             stderr="",
         )
 
-    monkeypatch.setattr(adapters.os, "name", "nt")
+    _pretend_windows(monkeypatch)
     monkeypatch.setenv("ComSpec", r"C:\Windows\System32\cmd.exe")
     _enable_fake_read_only_mcp(monkeypatch)
     monkeypatch.setattr(adapters.os.path, "isfile", lambda _path: False)
@@ -1782,7 +1804,7 @@ def test_claude_windows_npm_shim_prefers_native_companion(
         r"C:\Users\tester\AppData\Roaming\npm\node_modules"
         r"\@anthropic-ai\claude-code\bin\claude.exe"
     )
-    monkeypatch.setattr(adapters.os, "name", "nt")
+    _pretend_windows(monkeypatch)
     monkeypatch.setattr(
         adapters.os.path,
         "isfile",
