@@ -1825,7 +1825,9 @@ def _html_table_position_grid(raw_table: str) -> list[list[dict[str, Any]]]:
     return rows
 
 
-def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, Any]]]]:
+def _markdown_table_position_grids(
+    markdown: str, *, min_rows: int = 2,
+) -> list[list[list[dict[str, Any]]]]:
     """Return simple pipe tables with physical row/column coordinates."""
 
     tables: list[list[list[dict[str, Any]]]] = []
@@ -1835,7 +1837,7 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
 
     def flush() -> None:
         nonlocal current_rows, current_ability_rows
-        if len(current_rows) >= 2:
+        if len(current_rows) >= min_rows:
             if len(tables) >= _HTML_TABLE_MAX_TABLES:
                 raise KordocStructureLimitError(
                     "Markdown table count exceeds the safe limit"
@@ -4217,6 +4219,7 @@ def _contextual_evidence_snippet(markdown: str) -> str:
 
 _NCS_UNDEVELOPED_DECLARATION = re.compile(r"NCS\s*미개발", re.IGNORECASE)
 _NUMBERED_NCS_LABEL = re.compile(r"^\s*\d{1,2}(?:\s*[.．]|\s+(?=\D))")
+_SELF_DEVELOPED_DETAIL_MARKERS = ("자체개발", "기관자체개발", "NCS 미개발")
 
 
 def _ncs_undeveloped_detail_cells(grid: list[list[dict[str, Any]]]) -> set[tuple[int, int]]:
@@ -4271,7 +4274,11 @@ def _mark_ncs_undeveloped_span_details(
 ) -> None:
     """Aggregate cell-local declarations without tainting an official occurrence."""
     blocks = _iter_kordoc_table_blocks(parsed or {})
-    if "미개발" not in markdown and not any("미개발" in str(block) for block in blocks):
+    if (
+        not any(row.get("mapping_state") == "source_declared_self_developed" for row in evidence_rows)
+        and not _has_any_norm(markdown, _SELF_DEVELOPED_DETAIL_MARKERS)
+        and not any(_has_any_norm(str(block), _SELF_DEVELOPED_DETAIL_MARKERS) for block in blocks)
+    ):
         return
     html_grids = [_html_table_position_grid(table) for table in re.findall(
         r"<table[^>]*>.*?</table>", markdown, re.I | re.S,
@@ -4285,9 +4292,10 @@ def _mark_ncs_undeveloped_span_details(
         if _table_grid_signature(grid) not in html_signatures:
             grids.append(("kordoc_table", index, grid))
     grids.extend(("kordoc_html_table", index, grid) for index, grid in enumerate(html_grids))
+    # Even a single explicit detail row has distinct cells for this check.
     grids.extend(
         ("kordoc_markdown_table", index, grid)
-        for index, grid in enumerate(_markdown_table_position_grids(markdown))
+        for index, grid in enumerate(_markdown_table_position_grids(markdown, min_rows=1))
     )
     observations: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for source, table_index, grid in grids:
@@ -4297,14 +4305,39 @@ def _mark_ncs_undeveloped_span_details(
             for label in _origin_cells(cells):
                 if _section_for_label(str(label.get("text") or "")) != "ncs_detail":
                     continue
-                values, _ = _table_value_cells_for_label(grid, label, section="ncs_detail")
+                values, layout = _table_value_cells_for_label(grid, label, section="ncs_detail")
+                parent_columns = []
+                if layout == "column_header_value":
+                    # A horizontal hierarchy declares a detail through its
+                    # own row's parent columns, including merged parents.
+                    header_row = int(label.get("origin_row") or 0)
+                    detail_column = int(label.get("origin_column") or 0)
+                    parent_headers = [
+                        cell for cell in _origin_cells(grid[header_row])
+                        if int(cell.get("origin_column") or 0) < detail_column
+                        and _norm(cell.get("text")) in {"대분류", "중분류", "소분류"}
+                    ][-3:]
+                    if [_norm(cell.get("text")) for cell in parent_headers] == ["대분류", "중분류", "소분류"]:
+                        parent_columns = [int(cell.get("origin_column") or 0) for cell in parent_headers]
                 for cell in values:
                     coordinate = (int(cell.get("origin_row") or 0), int(cell.get("origin_column") or 0))
                     detail_cells[coordinate] = cell
+                    row = grid[coordinate[0]]
+                    if any(
+                        column < len(row) and _has_any_norm(
+                            str(row[column].get("text") or ""), _SELF_DEVELOPED_DETAIL_MARKERS,
+                        )
+                        for column in parent_columns
+                    ):
+                        undeveloped.add(coordinate)
         for row_index, column in undeveloped:
             detail_cells[(row_index, column)] = grid[row_index][column]
         for (row_index, column), cell in detail_cells.items():
-            for detail in _expand_composite_detail_candidate(str(cell.get("text") or "")):
+            cell_text = str(cell.get("text") or "")
+            self_developed = (row_index, column) in undeveloped or _has_any_norm(
+                cell_text, _SELF_DEVELOPED_DETAIL_MARKERS,
+            )
+            for detail in _expand_composite_detail_candidate(cell_text):
                 if not _looks_like_detail_candidate(detail):
                     continue
                 observations[_norm(detail)].append({
@@ -4314,20 +4347,28 @@ def _mark_ncs_undeveloped_span_details(
                         "row_span": max(1, int(cell.get("row_span") or 1)),
                         "column_span": max(1, int(cell.get("column_span") or 1)),
                     },
-                    "raw_cell_text": str(cell.get("text") or ""),
+                    "raw_cell_text": cell_text,
                     "mapping_state": "source_declared_self_developed"
-                    if (row_index, column) in undeveloped else "requires_official_validation",
+                    if self_developed else "requires_official_validation",
                 })
-    # A separate explicit text declaration also keeps the candidate eligible
-    # for official validation, regardless of which table occurred first.
+    # A separate explicit text occurrence also keeps the candidate eligible
+    # for official validation unless it carries its own development marker.
     for line in markdown.splitlines():
         value = _inline_ncs_detail_value(line)
         if value:
             for detail in _expand_composite_detail_candidate(value):
-                observations[_norm(detail)].append({"source": "markdown", "mapping_state": "requires_official_validation"})
+                observations[_norm(detail)].append({
+                    "source": "markdown",
+                    "mapping_state": "source_declared_self_developed"
+                    if _has_any_norm(detail, _SELF_DEVELOPED_DETAIL_MARKERS)
+                    else "requires_official_validation",
+                })
     for row in evidence_rows:
         occurrences = observations.get(_norm(row.get("detail")), [])
-        if any(item["mapping_state"] == "source_declared_self_developed" for item in occurrences):
+        # A located detail cell outranks a snippet spanning adjacent columns,
+        # even when there are no undeveloped cells. Unlocated/plain-text
+        # candidates keep their original declaration evidence.
+        if any("value_cell" in item for item in occurrences):
             row["occurrences"] = occurrences
             row["mapping_state"] = (
                 "source_declared_self_developed"
@@ -4377,7 +4418,7 @@ def _detail_candidate_evidence(
                 "source_declared_self_developed"
                 if any(
                     _norm(marker) in key
-                    for marker in ("자체개발", "기관자체개발", "NCS 미개발")
+                    for marker in _SELF_DEVELOPED_DETAIL_MARKERS
                 )
                 else "requires_official_validation"
             ),
@@ -4445,7 +4486,7 @@ def _detail_candidate_evidence(
                 evidence["snippet"] = text
         if any(
             _norm(marker) in _norm(evidence.get("snippet"))
-            for marker in ("자체개발", "기관자체개발", "NCS 미개발")
+            for marker in _SELF_DEVELOPED_DETAIL_MARKERS
         ):
             evidence["mapping_state"] = "source_declared_self_developed"
         evidence_rows.append(evidence)
