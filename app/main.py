@@ -6203,7 +6203,7 @@ def _question_for_method(
         )
     elif focus_type == "지식":
         evidence_task = (
-            f"그 경험에서 {_with_josa(prompt_focus, '과', '와')} 관련해 무엇을 판단 근거로 삼았고, "
+            f"그 경험에서 {prompt_focus}에 비춰 무엇을 판단 근거로 삼았고, "
             "그 근거로 무엇을 결정해 어떻게 행동했는지와 그 결과"
         )
     else:
@@ -6279,17 +6279,19 @@ def _followups_for_method(
     context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
     if focus_type == "태도":
         experience_focus_probe = (
-            f"{_with_josa(prompt_focus, '을', '를')} 보이느라 포기하거나 감수한 것은 "
+            f"{_with_josa(prompt_focus, '을', '를')} 하느라 포기하거나 감수한 것은 "
             "무엇이었고, 상대는 어떻게 반응했습니까?"
         )
         situation_focus_probe = (
-            f"그 선택에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러난 구체적 행동과 예상 위험은 무엇입니까?"
+            f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 실천하겠으며, "
+            "예상되는 위험은 무엇입니까?"
         )
         inbasket_focus_probe = (
             f"압박 속에서도 {_quoted_with_josa(prompt_focus, '이', '가')} 드러나게 문서와 요청을 어떻게 분류하겠습니까?"
         )
         creative_focus_probe = (
-            f"대안 선택 과정에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러날 행동과 상충비용은 무엇입니까?"
+            f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 실천하겠으며, "
+            "그 때문에 감수할 비용은 무엇입니까?"
         )
     elif focus_type == "지식":
         # The main question asks for the judgment basis and the decision; the

@@ -1354,7 +1354,7 @@ def test_adjust_questions_replaces_shallow_focus_restatement_in_experience_quest
     assert question["model_question_preserved"] is False
     assert question["model_followups_raw"] == raw_followups
     assert "ksa_measurement_task" in question["model_replacement_reasons"]
-    assert "확인 기준과 관련해 무엇을 판단 근거로 삼았고" in question["question"]
+    assert "확인 기준에 비춰 무엇을 판단 근거로 삼았고" in question["question"]
     assert "적용 범위" not in question["question"]
     assert "결과를 설명해 주세요" in question["question"]
     assert any("강점관점 확인 기준" in follow_up for follow_up in question["follow_ups"])
@@ -4366,7 +4366,7 @@ def test_experience_template_expresses_attitude_as_observable_behavior() -> None
     assert "실제 경험 한 가지를 선택" in question
     assert "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례" in question
     assert "도면 숙지 의지를 적용" not in "\n".join([question, *follow_ups])
-    assert "도면 숙지 행동을 보이느라 포기하거나 감수한 것" in follow_ups[1]
+    assert "도면 숙지 행동을 하느라 포기하거나 감수한 것" in follow_ups[1]
 
 
 def test_discussion_template_expresses_attitude_as_joint_behavior_not_an_applied_noun() -> None:
@@ -4485,9 +4485,9 @@ def test_attitude_tasks_do_not_repeat_situation_interview_instruction() -> None:
         ("인바스켓면접", "기술", "문서 오류 검증 기술", "분류할 절차와 산출물"),
         ("창의적 문제해결력면접", "기술", "문서 오류 검증 기술", "분석 절차·산출물과 검증 방법"),
         ("경험면접", "태도", "정확성 유지", "포기하거나 감수한 것"),
-        ("상황면접", "태도", "정확성 유지", "드러난 구체적 행동과 예상 위험"),
+        ("상황면접", "태도", "정확성 유지", "구체적으로 어떻게 실천하겠으며, 예상되는 위험"),
         ("인바스켓면접", "태도", "정확성 유지", "드러나게 문서와 요청을 어떻게 분류"),
-        ("창의적 문제해결력면접", "태도", "정확성 유지", "드러날 행동과 상충비용"),
+        ("창의적 문제해결력면접", "태도", "정확성 유지", "어떻게 실천하겠으며, 그 때문에 감수할 비용"),
     ],
 )
 def test_method_followups_operationalize_each_ksa_type(

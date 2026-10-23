@@ -128,7 +128,7 @@ def test_attitude_probe_asks_what_was_given_up_and_how_others_reacted() -> None:
         focus_type="태도",
     )
 
-    assert "행동을 보이느라 포기하거나 감수한 것은 무엇이었고, 상대는 어떻게 반응했습니까?" in follow_ups[1]
+    assert "행동을 하느라 포기하거나 감수한 것은 무엇이었고, 상대는 어떻게 반응했습니까?" in follow_ups[1]
     assert "행동 기준" not in follow_ups[1]
 
 

@@ -6,6 +6,8 @@ surface and the templates that render it are pinned here.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from app.main import (
@@ -16,6 +18,8 @@ from app.main import (
 )
 from app.services.question_surface import public_task_object, stable_ksa_evidence_id
 from scripts.benchmark_question_method_matrix import build_template_question, evidence_row
+
+_REPEATED_BEHAVIOUR_RE = re.compile(r"행동(?:이|을)\s*드러(?:난|날|나는)\s*(?:구체적\s*)?행동")
 
 ATTITUDE_FACTORS = (
     "원활한 커뮤니케이션을 하고자 하는 적극적인 태도",
@@ -101,6 +105,8 @@ def test_every_method_renders_behaviour_and_check_surfaces_and_keeps_evidence(
         assert question["question_evidence_id"] == stable_ksa_evidence_id(evidence_row(row))
         assert quality["ready"] is True, (method, ksa_type, quality.get("issues"))
         if ksa_type == "태도":
+            # No "…행동이 드러난 (구체적) 행동" repetition anywhere visible.
+            assert not _REPEATED_BEHAVIOUR_RE.search(visible), visible
             assert "행동 기준" not in visible
             assert "행동 기준을 지키" not in visible
             assert "행동이 드러난 본인의 실제 행동" not in visible
@@ -139,7 +145,7 @@ def test_attitude_templates_ask_to_practise_the_behaviour() -> None:
 
     assert "정확성 준수 행동을 실천해야 하는 가운데" in debate
     assert "정확성 준수 행동을 실천하기 어려운 조건" in situation
-    assert "정확성 준수 행동을 보이느라 포기하거나 감수한 것" in experience_follow_ups[1]
+    assert "정확성 준수 행동을 하느라 포기하거나 감수한 것" in experience_follow_ups[1]
     for text in (debate, situation, *experience_follow_ups):
         assert "행동 기준" not in text
         assert "행동을 지키" not in text
