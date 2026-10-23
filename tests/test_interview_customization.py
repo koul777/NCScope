@@ -1876,7 +1876,7 @@ def test_situational_template_uses_domain_specific_risk_event() -> None:
         ("기술", "소비자 패턴분석 능력", "소비자 패턴분석", "소비자 패턴 분석"),
         ("기술", "문서 오류 검증 기술", "문서 오류 검증", "문서 오류 검증"),
         ("지식", "문서 보안 법규 지식", "문서 보안 법규", "문서 보안 규정 적용 기준"),
-        ("태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 태도", "정확성 우선 행동"),
+        ("태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 행동"),
     ],
 )
 def test_official_ksa_suffix_is_removed_only_from_prompt_wording(
@@ -4392,7 +4392,8 @@ def test_discussion_template_expresses_attitude_as_joint_behavior_not_an_applied
         focus_type="태도",
     )
 
-    assert "정확성 준수 행동을 실천해야 하는 가운데" in question
+    assert "정확성을 유지하는 행동을 실천해야 하는 가운데" in question
+    assert "정확성 준수 행동" not in question
     assert "합의할 수 있다면 공통 실행안" in question
     assert "합의가 어렵다면 미합의 쟁점과 결정권자 이송 기준" in question
     assert "정확성 유지" not in question
@@ -4479,10 +4480,11 @@ def test_attitude_tasks_do_not_repeat_situation_interview_instruction() -> None:
     )
 
     assert discussion.count("상충하는 요구와 압박 속에서") == 0
-    assert "정확성 준수 행동을 실천해야 하는 가운데" in discussion
+    assert "정확성을 유지하는 행동을 실천해야 하는 가운데" in discussion
     assert "정확성 유지" not in discussion
     assert inbasket.count("상충하는 요구와 압박 속에서도") == 1
-    assert inbasket.count("정확성 준수 행동이 드러나는") == 1
+    assert inbasket.count("정확성을 유지하는 행동이 드러나는") == 1
+    assert "준수 행동" not in discussion and "준수 행동" not in inbasket
     assert "상충비용 또는 불이익" in inbasket
 
 

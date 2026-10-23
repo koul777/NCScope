@@ -118,7 +118,9 @@ def test_attitude_question_requires_pressure_and_asks_for_actual_behavior() -> N
         question = _question("태도", focus, index)
 
         assert "상충하는 요구나 압박을 받았던 장면을 골라" in question
-        assert "본인이 실제로 보인 원활한 커뮤니케이션을 실행하는 적극적인 행동과 그 결과를 설명해 주세요" in question
+        assert "본인이 실제로 보인 원활한 커뮤니케이션을 하려는 적극적인 행동과 그 결과를 설명해 주세요" in question
+        # The KSA names no "실행" verb; the surface keeps the official "하다".
+        assert "실행하는" not in question
         # The surface is the behaviour itself: no "행동 기준" and no
         # "…행동이 드러난 … 행동" repetition.
         assert "행동 기준" not in question
