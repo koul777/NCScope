@@ -1067,17 +1067,25 @@ def test_adjust_questions_preserves_ready_model_questions_for_all_methods(
     quality = out["question_quality_report"]["items"][0]
 
     assert preserved["question_focus"] == "문서 요구사항 파악"
-    assert preserved["question_focus_surface"] == "문서 요구사항 확인 절차"
+    assert preserved["question_focus_surface"] == "문서 요구사항을 파악하는 작업"
     assert preserved["question_evidence_id"]
     expected_public_question, _ = replace_official_ksa_surface(
         question,
         "문서 요구사항 파악",
-        "문서 요구사항 확인 절차",
+        "문서 요구사항을 파악하는 작업",
     )
     assert preserved["question"] == expected_public_question
-    assert preserved["question_source"] == "model_main_quality_repaired_fields"
+    assert preserved["question_source"] == (
+        "model_main_repaired_followups"
+        if method in {"경험면접", "직무지식면접", "창의적 문제해결력면접"}
+        else "model_main_quality_repaired_fields"
+    )
     assert preserved["model_question_preserved"] is True
-    assert preserved["model_replacement_reasons"] == []
+    assert preserved["model_replacement_reasons"] == (
+        ["follow_up_focus_injected"]
+        if method in {"경험면접", "직무지식면접", "창의적 문제해결력면접"}
+        else []
+    )
     assert "question" in preserved["candidate_surface_repairs"]
     if method in {"발표면접", "토론면접", "인바스켓면접", "창의적 문제해결력면접"}:
         assert preserved["task_conditions"]["time_plan"]
@@ -1130,14 +1138,14 @@ def test_adjust_questions_replaces_model_question_when_followups_are_generic() -
 
     question = out["interview_questions"][0]
 
-    assert question["question_source"] == "model_main_repaired_followups"
+    assert question["question_source"] == "model_main_template_followups"
     assert question["question"] == model_question.replace(
         "문서 요구사항 파악",
-        "문서 요구사항 확인 절차",
+        "문서 요구사항을 파악하는 작업",
     )
     assert question["model_question_preserved"] is True
-    assert question["model_replacement_reasons"] == ["follow_up_focus_injected"]
-    assert "문서 요구사항 확인 절차" in " | ".join(question["follow_ups"])
+    assert question["model_replacement_reasons"] == ["follow_up_quality"]
+    assert "문서 요구사항을 파악하는 작업" in " | ".join(question["follow_ups"])
 
 
 def test_adjust_questions_repairs_model_followups_by_injecting_focus() -> None:
@@ -1192,13 +1200,13 @@ def test_adjust_questions_repairs_model_followups_by_injecting_focus() -> None:
     assert question["question_source"] == "model_main_repaired_followups"
     assert question["question"] == model_question.replace(
         "문서 요구사항 파악",
-        "문서 요구사항 확인 절차",
+        "문서 요구사항을 파악하는 작업",
     )
     assert question["model_question_preserved"] is True
     assert question["model_followups_raw"] == raw_followups
     assert question["model_replacement_reasons"] == ["follow_up_focus_injected"]
     assert question["follow_ups"][0] == raw_followups[0]
-    assert "문서 요구사항 확인 절차와 관련해" in question["follow_ups"][1]
+    assert "문서 요구사항을 파악하는 작업과 관련해" in question["follow_ups"][1]
     assert "문서작성 상황에서" in question["follow_ups"][1]
     assert raw_followups[1] in question["follow_ups"][1]
     assert question["follow_ups"][2] == raw_followups[2]
@@ -1360,10 +1368,10 @@ def test_adjust_questions_replaces_shallow_focus_restatement_in_experience_quest
     assert question["model_question_preserved"] is False
     assert question["model_followups_raw"] == raw_followups
     assert "ksa_measurement_task" in question["model_replacement_reasons"]
-    assert "확인 기준에 비춰 무엇을 판단 근거로 삼았고" in question["question"]
+    assert "적용 기준에 비춰 무엇을 판단 근거로 삼았고" in question["question"]
     assert "적용 범위" not in question["question"]
     assert "결과를 설명해 주세요" in question["question"]
-    assert any("강점관점 확인 기준" in follow_up for follow_up in question["follow_ups"])
+    assert any("강점관점 적용 기준" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is False
     assert quality["issues"] == ["field_realism"]
 
@@ -2580,7 +2588,7 @@ def test_adjust_questions_repairs_missing_task_marker_when_model_shape_is_valid(
     assert question["question_source"] == "model_main_quality_repaired_fields"
     assert question["model_question_raw"] == model_question
     assert question["question"].startswith("[발표과제] ")
-    assert "문서 요구사항 확인 절차" in question["question"]
+    assert "문서 요구사항을 파악하는 작업" in question["question"]
     assert "문서 요구사항 파악" not in question["question"]
     assert question["model_replacement_reasons"] == []
 
@@ -3887,8 +3895,8 @@ def test_adjust_questions_keeps_planning_ksa_focuses_distinct() -> None:
     questions = out["interview_questions"]
     assert [q["question_focus"] for q in questions] == [focus_1, focus_2]
     assert [q["question_focus_surface"] for q in questions] == [
-        "일정 계획 작성·검토 절차",
-        "예산 계획 작성·검토 절차",
+        "일정 계획을 수립하는 작업",
+        "예산 계획을 수립하는 작업",
     ]
     assert [q["question_intent"] for q in questions] == ["experience_behavior", "experience_behavior"]
     assert questions[0]["question_repeat_signature"] != questions[1]["question_repeat_signature"]

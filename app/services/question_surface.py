@@ -363,24 +363,70 @@ def _nominalize_capability_clause(value: Any) -> str:
     return text.strip()
 
 
+def _source_action_work(action: str, *, verbal: bool = False) -> str:
+    """Nominalize an existing action without adding a second obligation.
+
+    A bare official action label cannot be returned unchanged. A transitive
+    action can take its source noun as an object; modifiers and uncertain
+    arguments retain the noun phrase with 작업. Never turn a manner such as
+    "자동 및 수동" into the object, or attach 을 to "비정상 대응".
+    """
+    action = _clean(action, max_chars=180)
+    if not action:
+        return ""
+    parts = action.rsplit(" ", 1)
+    if len(parts) == 2:
+        obj, verb = parts
+        verbal = verbal or bool(re.search(r"(?:을|를)$|(?:을|를)\s+.+(?:게|히|으로|로)$", obj))
+        transitive = {
+            "수립", "수집", "정보검색", "분류", "처리", "운영", "관리", "파악",
+            "분석", "검증", "점검", "작성", "산정", "설정", "선택", "선정",
+            "선별", "활용", "적용", "해석", "조사", "포착", "수정·보완", "배양",
+            "개발", "유지", "조작", "계산", "정리", "제작", "설계", "구현",
+        }
+        manner = {"실시간", "수시", "상시", "정기", "즉시", "사전", "사후", "우선", "동시", "자동", "수동", "일괄"}
+        if (
+            not verbal
+            and verb in transitive
+            and not _PERFORMANCE_NON_NOUN_END_RE.search(obj)
+            and not _ends_with_modifier(obj)
+            and not obj.endswith("별")
+            and obj.split()[-1] not in manner
+            and not re.search(r"(?:대한|관한|통한|따른|위한|하고|하며|하여|함께|따라|통해|위해|대해)$", obj)
+        ):
+            particle = _object_particle(obj)
+            if particle:
+                action = f"{obj}{particle} {verb}"
+                verbal = True
+    surface = f"{action}하는 작업" if verbal else f"{action} 작업"
+    # Preserve named methods in full; an overlong phrase uses the element
+    # fallback rather than dropping the task's object from its front.
+    return surface if len(surface) <= 80 else ""
+
+
 def _element_task_object(element_name: Any, kind: str) -> str:
     element = _KSA_TYPE_SUFFIX_RE.sub("", _clean(element_name, max_chars=100)).strip()
     if not element:
         return ""
+    if kind in {"지식", "기술"}:
+        # Keep the element's own action; 시키기/해내기 must not lose their
+        # causative/completion verb when used as the fallback task.
+        if element.endswith(("시키기", "해내기")):
+            clause = re.sub(r"시키기$", "시키는", element)
+            clause = re.sub(r"해내기$", "해내는", clause)
+            clause = _compact_task_base(clause, max_chars=70)
+            return f"{clause} 작업" if kind == "기술" else f"{clause} 데 필요한 기준"
+        action = _compact_task_base(re.sub(r"\s*하기\s*$", "", element).strip())
+        if not action:
+            return ""
+        if kind == "지식":
+            return f"{action}에 적용할 기준"
+        return action if _useful_object(action) else _source_action_work(action)
     element = re.sub(r"\s*(?:하기|시키기|해내기)\s*$", "", element).strip()
     element = _compact_task_base(element)
     if not element:
         return ""
-    if kind == "기술":
-        if element.endswith("설정"):
-            return f"{element}·확인 절차"
-        if element.endswith(("조정", "조율")):
-            return element
-        if element.endswith(("선정", "선택", "활용", "의사결정")):
-            return f"{element}·검증 절차"
     suffix = {
-        "지식": " 관련 정보 확인 기준",
-        "기술": " 수행·검증 절차",
         "태도": " 수행 시 행동",
     }.get(kind, " 업무 판단·수행 기준")
     return f"{element}{suffix}"
@@ -509,6 +555,17 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         elif knowledge_base == "세법":
             knowledge_base = "세무 규정"
         knowledge_base = _compact_task_base(knowledge_base)
+        # A long source can lose its explicit check predicate at the length
+        # boundary ("...되었는지 확인할 수 있는 장비"). Preserve that clause
+        # when it fits, rather than attaching 적용 to a dangling question.
+        source_check = re.match(
+            r"(?P<scope>.+(?:는지|여부))\s*(?P<action>확인|검증)\s*(?:할\s*수\s*있는|하는)",
+            candidate,
+        )
+        if source_check and source_check.group("action") not in knowledge_base:
+            check_surface = f"{source_check.group('scope')}를 {source_check.group('action')}하는 기준"
+            if _useful_object(check_surface, official_factor=label):
+                return check_surface
         if not knowledge_base:
             return ""
         action_suffixes = (
@@ -524,10 +581,13 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         if knowledge_base.endswith(decision_suffixes):
             return f"{knowledge_base} 기준"
         if knowledge_base.endswith("기준"):
-            return f"{knowledge_base} 적용·검증 절차"
+            scope = knowledge_base[:-2].strip()
+            if "기준" in scope:
+                return f"업무에 적용할 {knowledge_base}"
+            return f"{scope}에 적용할 기준" if scope else "업무에 적용할 기준"
         if knowledge_base.endswith("규정"):
             return f"{knowledge_base} 적용 기준"
-        return f"{knowledge_base} 확인 기준"
+        return f"{knowledge_base} 적용 기준"
 
     if kind == "기술":
         candidate = _nominalize_capability_clause(candidate)
@@ -558,7 +618,7 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             re.search(r"(?:을|를).{0,100}\s수행$", candidate)
             or re.search(r"(?:게|히|적으로|동시에|바탕으로)\s+수행$", candidate)
         ):
-            return f"{_compact_task_base(candidate)}하는 절차와 결과 검증 기준"
+            return _source_action_work(candidate, verbal=True)
         if candidate.endswith("수행"):
             task = re.sub(r"\s*수행$", "", candidate).strip()
             if (
@@ -588,9 +648,8 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
                 )
         # A skill names the act, not an extra verification procedure. Keep
         # the factor-specific object when removing its type/capability label.
-        # If the result would be the complete official label verbatim, retain
-        # the existing rendering below rather than falling back to a broader
-        # element (public_task_object deliberately rejects identical labels).
+        # If the result is the complete label, turn its own action into a
+        # clause instead of adding a verification procedure.
         skill_actions = (
             (r"\s*예측\s*기법$", " 예측"),
             (r"\s*기법$", " 방법 적용"),
@@ -632,50 +691,13 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
                 # ``검토 절차`` for ``분석 능력``.
                 if _key(action) != _key(label):
                     return action
-                break
-        skill_replacements = (
-            (r"\s*예측\s*기법$", " 예측·검증 절차"),
-            (r"\s*기법$", " 방법 적용·검증 절차"),
-            (r"\s*시스템$", " 도구 활용 절차"),
-            (r"\s*수립$", " 작성·검토 절차"),
-            (r"\s*수집$", " 수집·확인 절차"),
-            (r"\s*정보검색$", " 정보 검색·확인 절차"),
-            (r"\s*분류$", " 분류·확인 절차"),
-            (r"\s*처리$", " 처리·확인 절차"),
-            (r"\s*운영$", " 운영·점검 절차"),
-            (r"\s*관리$", " 관리·점검 절차"),
-            (r"\s*파악$", " 확인 절차"),
-            (r"\s*분석$", " 검토 절차"),
-            (r"\s*검증$", " 확인·검증 절차"),
-            (r"\s*점검$", " 확인 절차"),
-            (r"\s*작성$", " 산출물 작성 절차"),
-            (r"\s*산정$", " 계산·검증 절차"),
-            (r"\s*설정$", " 설정·확인 절차"),
-            (r"\s*선택$", " 선정·확인 절차"),
-            (r"\s*선정$", " 선정·확인 절차"),
-            (r"\s*선별$", " 선정·확인 절차"),
-            (r"\s*활용$", " 활용·검증 절차"),
-            (r"\s*적용$", " 적용·검증 절차"),
-            (r"\s*해석$", " 해석·검증 절차"),
-            (r"\s*조사$", " 조사·확인 절차"),
-            (r"\s*의사결정$", " 의사결정·검증 절차"),
-            (r"\s*포착$", " 포착·검증 절차"),
-            (r"\s*수정·보완$", " 수정·보완·검증 절차"),
-            (r"\s*배양$", " 배양·확인 절차"),
-            (r"\s*개발$", " 개발·검증 절차"),
-            (r"\s*수행$", " 수행·검증 절차"),
-            (r"\s*유지$", " 유지·점검 절차"),
-        )
-        for pattern, replacement in skill_replacements:
-            repaired = re.sub(pattern, replacement, candidate).strip()
-            if repaired != candidate:
-                return repaired
+                return _source_action_work(candidate)
         candidate = re.sub(r"\s*(?:하는|되는)\s*$", "", candidate).strip()
         candidate = _compact_task_base(candidate)
         if not candidate:
             return ""
         if candidate.endswith("절차"):
-            return f"{candidate} 적용·검증 기준"
+            return f"{candidate} 적용"
         if candidate.endswith(("방법", "기법")):
             return f"{candidate} 적용"
         if candidate.endswith(("도구", "장비", "시스템", "프로그램", "소프트웨어")):
@@ -688,14 +710,21 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             "추출", "운전", "보수", "응용", "조작", "평가", "진단", "제시", "개선",
         )
         if candidate.endswith(action_suffixes):
-            return candidate if _key(candidate) != _key(label) else f"{candidate}·검증 절차"
+            return candidate if _key(candidate) != _key(label) else _source_action_work(candidate)
+        original_clause = _KSA_TYPE_SUFFIX_RE.sub("", label).strip()
+        if re.search(r"(?:하는|되는|수\s*있는)$", original_clause):
+            clause = re.sub(r"할\s*수\s*있는$", "하는", original_clause)
+            clause = _compact_clause_tail(clause, max_chars=77)
+            return f"{clause} 작업" if clause else ""
         if re.search(r"[가-힣](?:는|은)$", candidate):
-            return f"{candidate} 절차와 결과 검증 기준"
-        if candidate.endswith("게"):
-            return f"{candidate} 처리하는 절차와 결과 검증 기준"
-        if candidate.endswith("으로"):
-            return f"{candidate} 판단·수행하는 절차와 결과 검증 기준"
-        return f"{candidate} 관련 실무 적용·검증 절차"
+            return f"{candidate} 작업"
+        if candidate.endswith(("게", "으로")):
+            return ""
+        if _key(candidate) != _key(label):
+            return candidate
+        if candidate.endswith(("요령", "기준", "규칙")):
+            return f"{candidate} 적용"
+        return f"{candidate} 관련 작업"
     return ""
 
 

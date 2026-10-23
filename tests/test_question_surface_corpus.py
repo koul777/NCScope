@@ -116,7 +116,7 @@ def test_strategic_hr_knowledge_surface_is_nominalized() -> None:
         competency_name="인사기획",
     )
 
-    assert surface == "전략적 인적자원관리 확인 기준"
+    assert surface == "전략적 인적자원관리 적용 기준"
     assert source == "factor_repair"
 
 
@@ -193,7 +193,7 @@ def test_skill_capability_clauses_become_natural_action_nouns() -> None:
         "프로젝트 관리 영역들 간의 관계를 조율하는 능력": "프로젝트 관리 영역들 간의 관계 조율",
         "직접계측 조사를 기획하고 실행하는 능력": "직접계측 조사 기획·실행",
         "관리 대상 리스크를 선정할 수 있는 능력": "관리 대상 리스크 선정",
-        "관련 장비를 다루는 능력": "관련 장비를 다루는 절차와 결과 검증 기준",
+        "관련 장비를 다루는 능력": "관련 장비를 다루는 작업",
         "평가지표에 맞게 수행하는 기술": "평가지표에 맞게 실행",
         "자재소요량계획 활용 수행 능력": "자재소요량계획 활용",
         "보안 점검 및 설정 수행 능력": "보안 점검 및 설정",
