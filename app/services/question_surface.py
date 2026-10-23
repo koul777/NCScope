@@ -144,19 +144,16 @@ def _nominalize_attitude_clause(value: Any) -> str:
     text = _clean(value, max_chars=160)
     text = re.sub(r"위해\s*(?:적극적으로\s*)?노력하려는", "위한 적극적", text)
     text = re.sub(r"위해\s*(?:적극적으로\s*)?노력하는", "위한 적극적", text)
+    # ``커뮤니케이션을 하고자 하는`` keeps the official verb ``하다``.
+    # Rewriting it as ``실행하는`` named an action the KSA never states.
     text = re.sub(
         r"(?P<object>.+?(?:을|를))\s*하고자\s*하는",
-        r"\g<object> 실행하는",
+        r"\g<object> 하려는",
         text,
     )
     text = re.sub(
         r"(?P<object>.+?(?:을|를))\s*하고자\s*한",
-        r"\g<object> 실행한",
-        text,
-    )
-    text = re.sub(
-        r"(?P<object>.+?(?:을|를))\s*하려는",
-        r"\g<object> 실행하는",
+        r"\g<object> 하려 했던",
         text,
     )
     # When "하고자" follows a verb stem ("달성하고자") it expresses
@@ -255,11 +252,15 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         return ""
 
     if kind == "태도":
-        candidate = re.sub(
-            r"\s*(?:(?:하려는|하고자\s*하는)\s*)?(?:태도|자세|의지|의식)\s*$",
-            "",
+        # Replace only the attitude head noun.  The official clause before
+        # it (``정확도를 기하려는``, ``고객과 협의하려는``) is already a
+        # modifier of the observable behaviour; stripping its ending left
+        # broken stems such as ``정확도 기`` or ``협 관련``.
+        verbal_clause = re.search(
+            r"(?:려는|고자\s*하는|[가-힣]하는|도록\s*하는)\s*(?:태도|자세|의지|의식)\s*$",
             candidate,
-        ).strip()
+        )
+        candidate = re.sub(r"\s*(?:태도|자세|의지|의식)\s*$", "", candidate).strip()
         # Some extracted rows already contain the public suffix. Remove it
         # before rebuilding the surface so ``행동 기준 행동 기준`` cannot be
         # produced.
@@ -279,6 +280,10 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # NCS element or competency name instead of exposing it verbatim.
         if re.search(r"선택\s*가능|결정적\s*$|결정적\s+행동", candidate):
             return ""
+        if verbal_clause and re.search(r"(?:려는|하는)$", candidate):
+            clause = _compact_task_base(candidate)
+            if re.search(r"(?:려는|하는)$", clause):
+                return f"{clause} 행동"
         if _DANGLING_END_RE.search(candidate):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
         candidate = re.sub(

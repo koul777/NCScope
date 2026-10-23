@@ -1874,7 +1874,7 @@ def test_situational_template_uses_domain_specific_risk_event() -> None:
         ("기술", "소비자 패턴분석 능력", "소비자 패턴분석", "소비자 패턴 분석"),
         ("기술", "문서 오류 검증 기술", "문서 오류 검증", "문서 오류 검증"),
         ("지식", "문서 보안 법규 지식", "문서 보안 법규", "문서 보안 규정 적용 기준"),
-        ("태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 태도", "정확성 우선 행동"),
+        ("태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 행동"),
     ],
 )
 def test_official_ksa_suffix_is_removed_only_from_prompt_wording(
