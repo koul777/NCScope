@@ -50,6 +50,7 @@ _AWKWARD_NOUN_ENDINGS = (
         ("합리적 계획수립을 위한 논리적 사고", "합리적 계획수립을 위해 논리적으로 사고하는 행동"),
         ("문화에 대한 긍정적인 사고", "문화에 대해 긍정적으로 사고하는 행동"),
         ("목표 지향적 사고", "목표 지향적으로 사고하는 행동"),
+        ("제어대상의 회로를 숙지", "제어대상의 회로를 숙지하는 행동"),
         ("점검 목적에 따른 분석적 사고", "점검 목적에 따라 분석적으로 사고하는 행동"),
         ("위기상황에 대한 신속하고 정확한 판단력", "위기상황을 신속하고 정확하게 판단하는 행동"),
         ("어린이놀이시설에 대한 주의깊은 관찰력", "어린이놀이시설을 주의깊게 관찰하는 행동"),
@@ -119,12 +120,49 @@ def test_attitude_stem_does_not_stack_practice_on_an_intention(method: str) -> N
 
 @pytest.mark.parametrize("method", ("상황면접", "창의적 문제해결력면접"))
 def test_attitude_probe_does_not_stack_practice_on_an_intention(method: str) -> None:
-    follow_ups = _followups_for_method(method, "고객 상담", ATTITUDE_INTENT_FACTOR, 3, focus_type="태도")
+    # R11-C2: a verb-final surface (``숙지하려는 행동``) is asked as the
+    # concrete acts it takes, not as how it would look (``보이겠으며``).
+    follow_ups = _followups_for_method(method, "구조물해체 도면파악", "도면 숙지 의지", 3, focus_type="태도")
     merged = "\n".join(follow_ups)
 
-    assert "원활한 커뮤니케이션을 하려는 적극적인 행동을" in merged
-    assert "어떻게 보이겠으며" in merged
+    assert "도면을 숙지하기 위해 구체적으로 누구에게 무엇을 언제 하겠으며" in merged
+    assert "보이겠" not in merged
     assert "실천" not in merged
+
+
+@pytest.mark.parametrize(
+    ("factor", "purpose"),
+    [
+        ("거래 유형에 대한 정확한 판단력", "거래 유형을 정확하게 판단하기 위해"),
+        ("정확성 유지", "정확성을 유지하기 위해"),
+        # The surface already says ``위해``; ``하려면`` avoids a second one.
+        ("시설관리시 상태파악을 위한 관찰력", "시설관리시 상태파악을 위해 관찰하려면"),
+    ],
+)
+def test_attitude_probe_asks_for_concrete_acts_of_a_verb_surface(factor: str, purpose: str) -> None:
+    situation = "\n".join(_followups_for_method("상황면접", "적격증빙관리", factor, 3, focus_type="태도"))
+    creative = "\n".join(_followups_for_method("창의적 문제해결력면접", "적격증빙관리", factor, 3, focus_type="태도"))
+    experience = "\n".join(_followups_for_method("경험면접", "적격증빙관리", factor, 3, focus_type="태도"))
+
+    assert f"그 선택에서 {purpose} 구체적으로 누구에게 무엇을 언제 하겠으며, 그 행동에서 예상되는 위험" in situation
+    assert f"대안을 고를 때 {purpose} 구체적으로 누구에게 무엇을 언제 하겠으며, 그 행동 때문에 감수할 비용" in creative
+    merged = "\n".join([situation, creative, experience])
+    assert "보이겠" not in merged
+    assert "위해 관찰하기 위해" not in merged
+    # ``판단하는 행동을 하느라`` said ``하다`` twice.
+    assert "행동을 하느라" not in merged
+    assert "느라 포기하거나 감수한 것" in experience
+
+
+def test_attitude_probe_without_a_verb_surface_keeps_practice() -> None:
+    situation = "\n".join(_followups_for_method("상황면접", "고객 상담", ATTITUDE_INTENT_FACTOR, 3, focus_type="태도"))
+    creative = "\n".join(
+        _followups_for_method("창의적 문제해결력면접", "고객 상담", ATTITUDE_INTENT_FACTOR, 3, focus_type="태도")
+    )
+
+    assert "원활한 커뮤니케이션을 하려는 적극적인 행동을 구체적으로 어떻게 실천하겠으며" in situation
+    assert "원활한 커뮤니케이션을 하려는 적극적인 행동을 어떻게 실천하겠으며" in creative
+    assert "보이겠" not in situation + creative
 
 
 SKILL_FACTOR = "통계자료를 분석할 수 있는 능력"
@@ -141,13 +179,18 @@ def test_inbasket_skill_stem_uses_the_skill_to_sort_documents() -> None:
         "기술",
     )
 
-    assert f"문서마다 {surface}" in question
-    assert "필요한지 판단해 처리 우선순위와 상급자 보고" in question
+    # R11-C2: priorities stay, and the steps, output and quality check are
+    # tied to the skill itself; "not needed" is no longer an answer.
+    assert "처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 초기 행동을 제시하세요." in question
+    assert (
+        f"직접 처리하는 문서 1건을 골라 {surface}을 어떤 단계로 수행하고, "
+        "어떤 산출물을 만들어 무엇으로 품질을 확인할지 밝혀 주세요."
+    ) in question
+    assert "필요한지" not in question
     # Sorting documents is not doing the skill at the same time.
     assert "실제로" not in question
     assert "하며 처리 우선순위" not in question
-    assert "해 처리 우선순위" not in question.replace("판단해 처리 우선순위", "")
-    assert "수행 단계·조치·산출물·품질 확인 방법" in question
+    assert "해 처리 우선순위" not in question
 
 
 def test_creative_skill_stem_names_the_problem_not_a_simultaneous_act() -> None:
@@ -215,5 +258,98 @@ def test_office_or_production_function_does_not_get_a_site_scenario(
 )
 def test_site_scenario_stays_for_site_jobs(detail: str, subject: str, definition: str, expected: str) -> None:
     context = _domain_context_pack(detail=detail, subject=subject, focus="", comp_def=definition)
+
+    assert expected in context["situation"], context["situation"]
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [
+        # ``필요한``·``중요한``·``기초한`` describe the noun, not a manner;
+        # ``필요하게 판단하는`` would be broken Korean.
+        "의사결정에 필요한 판단력",
+        "업무에 중요한 판단력",
+        "인과관계 및 합리적 추론에 기초한 사고",
+    ],
+)
+def test_modifier_that_is_not_a_manner_is_not_turned_into_an_adverb(factor: str) -> None:
+    surface, _ = public_task_object(factor_name=factor, ksa_type="태도")
+
+    for broken in ("필요하게", "중요하게", "가능하게", "기초하게"):
+        assert broken not in surface, surface
+    assert surface == f"{factor} 행동", surface
+
+
+def test_presentation_attitude_does_not_say_judge_twice() -> None:
+    judged = _question_for_method(
+        "발표면접",
+        "적격증빙관리",
+        "거래 유형에 대한 정확한 판단력",
+        "회계·감사",
+        "거래 증빙을 확인한다.",
+        "태도",
+    )
+    kept = _question_for_method("발표면접", "문서관리", "정확성 유지", "사무행정", "문서 품질을 확인한다.", "태도")
+
+    assert "거래 유형을 정확하게 판단하는 행동이 드러나는 선택을 검토하기 위한" in judged
+    assert "선택을 판단하기 위한" not in judged
+    assert "정확성을 유지하는 행동이 드러나는 선택을 판단하기 위한" in kept
+
+
+def test_follow_up_scenario_uses_the_same_job_detail_as_the_main_question() -> None:
+    # ``업무지원`` alone matches no job pack; with its 세분류 ``총무`` the
+    # main question uses the office pack, so the follow-ups must too.
+    with_detail = "\n".join(
+        _followups_for_method("상황면접", "업무지원", "보안의식 준수", 3, focus_type="태도", detail="총무")
+    )
+
+    assert "결재권자" in with_detail
+    assert "민원인" not in with_detail
+
+
+@pytest.mark.parametrize(
+    ("factor", "expected"),
+    [
+        # Not a manner adverb: ``필수적으로 판단하는`` changes the meaning.
+        ("업무 수행에 필수적인 판단력", "업무 수행에 필수적인 판단력 행동"),
+        # ``이해한`` is a past verb clause, not ``이해하게``.
+        ("객관적으로 이해한 판단력", "객관적으로 이해한 판단력 행동"),
+        ("선정가능한 판단력", "선정가능한 판단력 행동"),
+        # Space-separated nouns are a list, not an object.
+        ("판단력 관찰력", "판단력 관찰력 행동"),
+        ("장애 처리능력 숙지로 신속한 대처", "장애 처리능력 숙지로 신속한 대처 행동"),
+        # The modifier belongs to ``문제 대처``; ``적극적인 문제에`` breaks it.
+        ("적극적인 문제 대처 자세", "적극적인 문제 대처 행동"),
+        ("침착한 응급 대처 자세", "침착한 응급 대처 행동"),
+        ("안전사고에 예방하는 적극적인 사전 대처 자세", "안전사고에 예방하는 적극적인 사전 대처 행동"),
+    ],
+)
+def test_ambiguous_verbal_noun_stays_as_written(factor: str, expected: str) -> None:
+    surface, _ = public_task_object(factor_name=factor, ksa_type="태도")
+
+    assert surface == expected
+    for broken in ("필수적으로", "이해하게", "가능하게", "판단력을", "숙지로에", "문제에", "응급에", "사전에"):
+        assert broken not in surface
+
+
+def test_attitude_probe_does_not_repeat_the_official_label_verbatim() -> None:
+    factor = "조리과정 중 조리대 정리 정돈 및 위생관리 준수"
+    for method in ("경험면접", "상황면접", "창의적 문제해결력면접"):
+        merged = "\n".join(_followups_for_method(method, "조리대 관리", factor, 3, focus_type="태도"))
+        assert f"{factor}하기" not in merged
+        assert f"{factor}하느라" not in merged
+        assert "보이겠" not in merged
+
+
+@pytest.mark.parametrize(
+    ("detail", "subject", "expected"),
+    [
+        # ``생산성`` is not ``생산``; ``허가용 품질평가`` is not ``용품``.
+        ("스포츠시설운영관리", "스포츠시설 생산성 관리", "이용객"),
+        ("스포츠시설운영관리", "허가용 품질평가", "이용객"),
+    ],
+)
+def test_site_exclusion_uses_whole_function_words(detail: str, subject: str, expected: str) -> None:
+    context = _domain_context_pack(detail=detail, subject=subject, focus="", comp_def="")
 
     assert expected in context["situation"], context["situation"]

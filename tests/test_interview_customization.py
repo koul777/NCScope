@@ -1828,7 +1828,8 @@ def test_method_templates_use_domain_specific_field_scenarios() -> None:
     assert "관련 문서·요청이 동시에" in question["question"]
     assert "문서이 동시에" not in question["question"]
     assert question["question_focus_surface"] == "식재료 선별"
-    assert "문서마다 식재료 선별이 필요한지 판단해" in question["question"]
+    assert "직접 처리하는 문서 1건을 골라 식재료 선별을 어떤 단계로 수행하고" in question["question"]
+    assert "필요한지 판단해" not in question["question"]
     assert "식재료 선별을 실제로 하며" not in question["question"]
     assert "식재료 선정·확인 절차" not in question["question"]
     assert "선별능력을 실제로 수행" not in question["question"]
@@ -4387,7 +4388,8 @@ def test_experience_template_expresses_attitude_as_observable_behavior() -> None
     assert "실제 경험 한 가지를 선택" in question
     assert "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례" in question
     assert "도면 숙지 의지를 적용" not in "\n".join([question, *follow_ups])
-    assert "도면을 숙지하려는 행동을 하느라 포기하거나 감수한 것" in follow_ups[1]
+    assert "도면을 숙지하느라 포기하거나 감수한 것" in follow_ups[1]
+    assert "행동을 하느라" not in follow_ups[1]
 
 
 def test_discussion_template_expresses_attitude_as_joint_behavior_not_an_applied_noun() -> None:
@@ -4510,9 +4512,9 @@ def test_attitude_tasks_do_not_repeat_situation_interview_instruction() -> None:
         ("인바스켓면접", "기술", "문서 오류 검증 기술", "분류할 절차와 산출물"),
         ("창의적 문제해결력면접", "기술", "문서 오류 검증 기술", "분석 절차·산출물과 검증 방법"),
         ("경험면접", "태도", "정확성 유지", "포기하거나 감수한 것"),
-        ("상황면접", "태도", "정확성 유지", "구체적으로 어떻게 보이겠으며, 예상되는 위험"),
+        ("상황면접", "태도", "정확성 유지", "정확성을 유지하기 위해 구체적으로 누구에게 무엇을 언제 하겠으며"),
         ("인바스켓면접", "태도", "정확성 유지", "드러나게 문서와 요청을 어떻게 분류"),
-        ("창의적 문제해결력면접", "태도", "정확성 유지", "어떻게 보이겠으며, 그 때문에 감수할 비용"),
+        ("창의적 문제해결력면접", "태도", "정확성 유지", "언제 하겠으며, 그 행동 때문에 감수할 비용"),
     ],
 )
 def test_method_followups_operationalize_each_ksa_type(

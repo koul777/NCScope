@@ -5247,9 +5247,10 @@ def _domain_context_pack(detail: str, subject: str, focus: str, comp_def: str) -
     site_pack_exclusions = {
         "병원": r"구매",
         "설비": office_function,
-        "객실": rf"{office_function}|용품|생산|제조|제작",
+        "객실": rf"{office_function}|용품|생산(?!성)|제조|제작",
     }
-    identity_names = [re.sub(r"\s+", "", str(x or "")).lower() for x in (detail, subject)]
+    # Whole words only: ``허가용 품질평가`` must not read as ``용품``.
+    identity_names = [word.lower() for x in (detail, subject) for word in str(x or "").split()]
     packs = [
         (keywords, pack)
         for keywords, pack in packs
@@ -5730,6 +5731,13 @@ def _quoted_with_josa(text: str, final_consonant_josa: str, no_final_consonant_j
     return value + (final_consonant_josa if _has_korean_final_consonant(value) else no_final_consonant_josa)
 
 
+def _attitude_behaviour_verb_stem(surface: str) -> str:
+    """``정확하게 판단하는 행동`` gives ``정확하게 판단하``; else ""."""
+
+    match = re.match(r"^(?P<stem>.+하)(?:는|려는) 행동$", str(surface or "").strip())
+    return match.group("stem") if match else ""
+
+
 def _scenario_condition_text(value: Any) -> str:
     """Render either a full scenario clause or a comma-list as one condition."""
     scenario = re.sub(r"\s+", " ", str(value or "")).strip(" ,.;")
@@ -6152,8 +6160,10 @@ def _question_for_method(
                 f"{_quoted_with_josa(prompt_focus, '을', '를')} 적용해 현황을 진단하는 데 필요한"
             )
         elif focus_type == "태도":
+            # ``판단하는 행동이 드러나는 선택을 판단하기`` said 판단 twice.
+            choice_verb = "검토하기" if "판단" in prompt_focus else "판단하기"
             presentation_material_context = (
-                f"{_quoted_with_josa(prompt_focus, '이', '가')} 드러나는 선택을 판단하기 위한"
+                f"{_quoted_with_josa(prompt_focus, '이', '가')} 드러나는 선택을 {choice_verb} 위한"
             )
         else:
             presentation_material_context = (
@@ -6217,13 +6227,15 @@ def _question_for_method(
                 "위임, 직접처리 판단 및 초기 행동을 제시하고, 그 판단 근거와 적용 범위·예외를 밝혀 주세요."
             )
         else:
-            # An in-basket is document triage: the skill decides which items
-            # need it, the candidate is not performing it while sorting.
+            # Priorities are set first; the skill is then performed on one
+            # document the candidate handles directly, so its steps, output
+            # and quality check all have the skill as their object.
             return (
                 f"[인바스켓과제] {label} 관련 문서·요청이 동시에 들어왔습니다. 제공 항목은 {prompt_inbasket}입니다. "
                 f"{variation_sentence}"
-                f"문서마다 {_quoted_with_josa(prompt_focus, '이', '가')} 필요한지 판단해 처리 우선순위와 상급자 보고, "
-                "위임, 직접처리 판단 및 초기 행동을 제시하고, 수행 단계·조치·산출물·품질 확인 방법을 밝혀 주세요."
+                "처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 초기 행동을 제시하세요. "
+                f"직접 처리하는 문서 1건을 골라 {_quoted_with_josa(prompt_focus, '을', '를')} 어떤 단계로 수행하고, "
+                "어떤 산출물을 만들어 무엇으로 품질을 확인할지 밝혀 주세요."
             )
     if method == "상황면접":
         situation_text = _scenario_condition_text(context.get("situation_prompt") or context["situation"])
@@ -6372,6 +6384,8 @@ def _followups_for_method(
     variant_index: int = 0,
     focus_type: str = "",
     task_frame: dict[str, str] | None = None,
+    detail: str = "",
+    comp_def: str = "",
 ) -> list[str]:
     # The experience main question leaves the situation and the candidate's
     # role to the fixed first follow-up, so an experience item keeps it.
@@ -6390,22 +6404,47 @@ def _followups_for_method(
         comp_def="",
     ))
     prompt_focus = str(frame.get("task_object") or _operational_focus_label(focus, focus_type)).strip()
-    context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
+    # Same job context as the main question, so a follow-up does not fall
+    # back to the default ``민원인`` when the 세분류 names an office job.
+    context = _domain_context_pack(detail=detail, subject=subject, focus=focus, comp_def=comp_def)
     if focus_type == "태도":
-        experience_focus_probe = (
-            f"{_with_josa(prompt_focus, '을', '를')} 하느라 포기하거나 감수한 것은 "
-            "무엇이었고, 상대는 어떻게 반응했습니까?"
-        )
-        situation_focus_probe = (
-            f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 보이겠으며, "
-            "예상되는 위험은 무엇입니까?"
-        )
+        # A verb-final surface (``판단하는 행동``) is asked as the concrete
+        # acts it takes: who, what and when.  Other surfaces keep ``실천``.
+        behaviour_stem = _attitude_behaviour_verb_stem(prompt_focus)
+        # ``…위생관리 준수하기`` would show the official label verbatim.
+        if behaviour_stem and re.sub(r"\s+", "", focus) in re.sub(r"\s+", "", behaviour_stem):
+            behaviour_stem = ""
+        if behaviour_stem:
+            purpose = (
+                f"{behaviour_stem}려면" if "위해" in behaviour_stem else f"{behaviour_stem}기 위해"
+            )
+            experience_focus_probe = (
+                f"{behaviour_stem}느라 포기하거나 감수한 것은 무엇이었고, "
+                "그 행동에 상대는 어떻게 반응했습니까?"
+            )
+            situation_focus_probe = (
+                f"그 선택에서 {purpose} 구체적으로 누구에게 무엇을 언제 하겠으며, "
+                "그 행동에서 예상되는 위험은 무엇입니까?"
+            )
+            creative_focus_probe = (
+                f"대안을 고를 때 {purpose} 구체적으로 누구에게 무엇을 언제 하겠으며, "
+                "그 행동 때문에 감수할 비용은 무엇입니까?"
+            )
+        else:
+            experience_focus_probe = (
+                f"{_with_josa(prompt_focus, '을', '를')} 하느라 포기하거나 감수한 것은 "
+                "무엇이었고, 상대는 어떻게 반응했습니까?"
+            )
+            situation_focus_probe = (
+                f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 실천하겠으며, "
+                "예상되는 위험은 무엇입니까?"
+            )
+            creative_focus_probe = (
+                f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 실천하겠으며, "
+                "그 때문에 감수할 비용은 무엇입니까?"
+            )
         inbasket_focus_probe = (
             f"압박 속에서도 {_quoted_with_josa(prompt_focus, '이', '가')} 드러나게 문서와 요청을 어떻게 분류하겠습니까?"
-        )
-        creative_focus_probe = (
-            f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 보이겠으며, "
-            "그 때문에 감수할 비용은 무엇입니까?"
         )
     elif focus_type == "지식":
         # The main question asks for the judgment basis and the decision; the
@@ -7495,6 +7534,8 @@ def _adjust_generated_questions(
             variant_index=idx,
             focus_type=focus_type,
             task_frame=task_frame,
+            detail=target_detail,
+            comp_def=str(item.get("compeUnitDef", "")).strip(),
         )
         focus_first_ksa_terms = [focus, *[term for term in ksa_terms if _ksa_key(term) != _ksa_key(focus)]]
         method_eval_points = _method_evaluation_points(
@@ -7685,6 +7726,8 @@ def _adjust_generated_questions(
                     variant_index=idx,
                     focus_type=focus_type,
                     task_frame=task_frame,
+                    detail=target_detail,
+                    comp_def=str(item.get("compeUnitDef", "")).strip(),
                 )
                 method_eval_points = _method_evaluation_points(
                     method,
@@ -11829,6 +11872,8 @@ def _run_runtime_question_quality_orchestration(
             variant_index=variation_index,
             focus_type=focus_type,
             task_frame=task_frame,
+            detail=detail,
+            comp_def=str(item.get("compeUnitDef") or "").strip(),
         )
 
         item.update(

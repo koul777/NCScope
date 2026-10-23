@@ -118,7 +118,7 @@ def test_performance_task_uses_matching_concurrent_connective(method: str) -> No
         # R11: the in-basket sorts documents by the skill and the creative
         # task names what the problem needs; neither does the skill "while".
         expected = {
-            "인바스켓면접": "문서마다 피교육생의 수준에 맞는 교육이 필요한지 판단해",
+            "인바스켓면접": "직접 처리하는 문서 1건을 골라 피교육생의 수준에 맞는 교육을 어떤 단계로 수행하고",
             "창의적 문제해결력면접": "피교육생의 수준에 맞는 교육 없이는 해결하기 어려운 복합 문제",
         }[method]
         assert expected in question["question"]
