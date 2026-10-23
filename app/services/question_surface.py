@@ -201,28 +201,43 @@ _ATTITUDE_TRAIT_NOUNS = (
 )
 
 
-def _compact_clause_tail(value: str, *, max_chars: int = 62) -> str:
-    """Shorten a verbal attitude clause from the front so its verb survives."""
+def _compact_clause_tail(value: str, *, max_chars: int = 77) -> str:
+    """Shorten a verbal attitude clause from the front so its verb survives.
+
+    Up to ``max_chars`` the whole official clause is kept (the surface stays
+    within the 80-character limit with `` 행동``).  Beyond it, the cut never
+    drops the owner of the next word (``협력대상국의``), never starts on an
+    enumerated item (``지역적,``), a cut-off modifier or inside parentheses.
+    Without such a cut "" lets the caller fall back to the element.
+    """
 
     text = _clean(value, max_chars=180)
     if len(text) <= max_chars:
         return text
     words = text.split()
-    kept: list[str] = []
-    for word in reversed(words):
-        if len(" ".join([word, *kept])) > max_chars:
-            break
-        kept.insert(0, word)
-    # Do not start inside a parenthesis or on a bare connector.
-    while kept and (")" in kept[0] and "(" not in " ".join(kept)):
-        kept.pop(0)
-    # Nor on a modifier whose complement was cut (``따른 실루엣`` after
-    # dropping ``트렌드에``).
-    while kept and re.search(
-        r"(?:^(?:및|또는|혹은|그리고|등|,)$|(?:따른|대한|관한|위한|통한|의한|관련된)$)", kept[0]
-    ):
-        kept.pop(0)
-    return " ".join(kept).strip(" ,.;:·ㆍ/-") if len(kept) >= 2 else ""
+    for start in range(1, len(words) - 1):
+        kept = words[start:]
+        if len(" ".join(kept)) > max_chars:
+            continue
+        first = kept[0]
+        if words[start - 1].endswith("의") or first.endswith(","):
+            continue
+        if ")" in first and "(" not in first:
+            continue
+        if re.search(r"(?:^(?:및|또는|혹은|그리고|등)$|(?:따른|대한|관한|위한|통한|의한|관련된)$)", first):
+            continue
+        clause = " ".join(kept)
+        if clause.count("(") != clause.count(")"):
+            continue
+        return clause.strip(" ,.;:·ㆍ/-")
+    return ""
+
+
+def _ends_with_modifier(text: str) -> bool:
+    """True when the last word modifies a noun (``세심한``, ``충분한``)."""
+
+    last = str(text or "").split()[-1:] or [""]
+    return bool(re.search(r"(?:한|는|은|된|인|던|운|른|적)$", last[0]))
 
 
 def _nominalize_capability_clause(value: Any) -> str:
@@ -346,7 +361,9 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             if re.search(r"(?:려는|하는|위한|있는)$", clause):
                 return f"{clause} 행동"
         # ``협의``, ``주의``, ``열의`` are nouns, not a dangling genitive ``의``.
-        if _DANGLING_END_RE.search(candidate) and not re.search(r"(?:^|\s)[가-힣]의$", candidate):
+        if _DANGLING_END_RE.search(candidate) and not re.search(
+            r"(?:(?:^|\s)[가-힣]|주|협|합|회|논|창|건|토|결|문|심)의$", candidate
+        ):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
         candidate = re.sub(
             r"(?P<object>.+?(?:을|를))\s*위해\s*(?:적극적으로\s*)?노력(?:하는|하려는)?\s*$",
@@ -370,9 +387,12 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         if candidate.endswith("우선"):
             priority_base = re.sub(r"(?:을|를)$", "", candidate[:-2].strip()).strip()
             return f"{_compact_task_base(priority_base)} 우선 행동"
-        if candidate.endswith("주의"):
+        if candidate.endswith("주의") and not re.search(r"[가-힣]주의$", candidate):
             # Keep the official ``주의``; ``안전`` is not in the KSA.
-            return f"{_compact_task_base(candidate[:-2])} 주의 행동"
+            caution_base = _compact_task_base(candidate[:-2])
+            if caution_base and not _ends_with_modifier(caution_base):
+                return f"{caution_base}에 주의하는 행동"
+            return f"{caution_base} 주의 행동".strip()
         def _attitude_object_action(match: re.Match[str]) -> str:
             object_text = str(match.group("object") or "").strip()
             particle = str(match.group("particle") or "").strip()
@@ -398,7 +418,10 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         if candidate.endswith(("의사소통", "소통", "협업", "조율", "준수")):
             return f"{candidate}하는 행동"
         if candidate.endswith("이해"):
-            return f"{candidate}하고 공유하는 행동"
+            # ``공유`` is not in the KSA; keep ``이해`` as the act.
+            if _ends_with_modifier(candidate[:-2]):
+                return f"{candidate} 행동"
+            return f"{candidate}하는 행동"
         if candidate.endswith(_ATTITUDE_TRAIT_NOUNS):
             return f"{candidate} 있는 행동"
         return f"{candidate} 행동" if candidate else ""

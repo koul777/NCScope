@@ -139,8 +139,8 @@ CASES += (
     (
         "협력대상국의 지역적, 정치적, 문화적 및 경제적 특성에 기반한 공적개발원조 사업의 "
         "독특한 특성과 제약사항을 이해하고자 하는 태도",
-        "지역적, 정치적, 문화적 및 경제적 특성에 기반한 공적개발원조 사업의 독특한 특성과 "
-        "제약사항을 이해하려는 행동",
+        "협력대상국의 지역적, 정치적, 문화적 및 경제적 특성에 기반한 공적개발원조 사업의 "
+        "독특한 특성과 제약사항을 이해하려는 행동",
         "제약사항을 행동",
     ),
 )
@@ -177,14 +177,14 @@ CASES += (
     ),
     (
         "제조 설비와 부속 기기의 일탈 사례 주의 자세",
-        "제조 설비와 부속 기기의 일탈 사례 주의 행동",
+        "제조 설비와 부속 기기의 일탈 사례에 주의하는 행동",
         "주 관련",
     ),
     (
         "트렌드에 따른 실루엣, 디테일, 스타일 구성, 아이템 코디네이션의 경향을 주의 깊게 "
         "관찰하고 그 변화를 예측하려는 노력",
-        "실루엣, 디테일, 스타일 구성, 아이템 코디네이션의 경향을 주의 깊게 관찰하고 그 변화를 "
-        "예측하려는 행동",
+        "트렌드에 따른 실루엣, 디테일, 스타일 구성, 아이템 코디네이션의 경향을 주의 깊게 "
+        "관찰하고 그 변화를 예측하려는 행동",
         "변화를 행동",
     ),
 )
@@ -193,6 +193,15 @@ TRAIT_NOUN_EXTRA = (
         "교육효과를 높이고자 하는 열의",
         "교육효과를 높이고자 하는 열의 있는 행동",
     ),
+)
+
+# Compound nouns ending in ``주의``/``협의`` lost their ``의`` as well, and
+# ``이해`` gained a ``공유`` the KSA never names.
+CASES += (
+    ("고객 우선주의 태도", "고객 우선주의 행동", "우선주 관련"),
+    ("여신 신청점과 충분한 사전협의 자세", "여신 신청점과 충분한 사전협의 행동", "사전협 관련"),
+    ("프로파일의 효율적 관리를 위한 세심한 주의 노력", "프로파일의 효율적 관리를 위한 세심한 주의 행동", "안전·주의"),
+    ("고객 요구사항 이해 자세", "고객 요구사항 이해하는 행동", "공유하는"),
 )
 
 # Wording that only exists because the surface rewrote the official clause.
@@ -436,3 +445,39 @@ def test_object_particle_follows_korean_word_or_keeps_official_particle(factor: 
     assert surface == expected
     assert "의 준수하는" not in surface
     assert ")를" not in surface.replace("(Regulation)를", "")
+
+
+# Over the surface budget the clause is shortened from the front, but never
+# by cutting the owner of the next word (``협력대상국의``) or starting on an
+# enumerated item (``지역적,``).  If no clean cut exists the caller falls back
+# to the competency element.
+OVERLONG_ATTITUDE_LABELS = (
+    "협력대상국의 지역적, 정치적, 문화적, 사회적, 역사적 및 경제적 특성에 기반한 "
+    "공적개발원조 사업의 독특한 특성과 다양한 제약사항을 충분히 이해하고자 하는 태도",
+    "기초적인 대형(V, W, 숫자 등)을 표현할 수 있는 프로그램(Mission Planer, GPS, RTK-GPS 등의 "
+    "세팅 값을 자유롭게 설정 / 변경 등)을 습득하려는 태도",
+    *LONG_ATTITUDE_LABELS,
+)
+
+
+def test_long_label_within_budget_keeps_its_owner() -> None:
+    surface, _ = public_task_object(factor_name=LONG_ATTITUDE_LABELS[0], ksa_type="태도")
+    assert "협력대상국" in surface
+    assert "이해하려는" in surface
+
+
+@pytest.mark.parametrize("factor", OVERLONG_ATTITUDE_LABELS)
+def test_front_clipping_never_orphans_an_owner_or_enumeration(factor: str) -> None:
+    surface, source = public_task_object(factor_name=factor, ksa_type="태도", element_name="사업 특성 분석하기")
+    assert len(surface) <= 80, surface
+    if source != "factor_repair":
+        return
+    clause = surface[: -len(" 행동")]
+    words = clause.split()
+    assert not words[0].endswith(","), surface
+    official_words = factor.replace("하고자 하는", "하려는").split()
+    for start in range(len(official_words)):
+        if official_words[start:start + len(words)] == words:
+            if start:
+                assert not official_words[start - 1].endswith("의"), surface
+            break
