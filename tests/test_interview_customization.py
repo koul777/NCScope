@@ -1067,17 +1067,25 @@ def test_adjust_questions_preserves_ready_model_questions_for_all_methods(
     quality = out["question_quality_report"]["items"][0]
 
     assert preserved["question_focus"] == "문서 요구사항 파악"
-    assert preserved["question_focus_surface"] == "문서 요구사항 확인 절차"
+    assert preserved["question_focus_surface"] == "문서 요구사항을 파악하는 작업"
     assert preserved["question_evidence_id"]
     expected_public_question, _ = replace_official_ksa_surface(
         question,
         "문서 요구사항 파악",
-        "문서 요구사항 확인 절차",
+        "문서 요구사항을 파악하는 작업",
     )
     assert preserved["question"] == expected_public_question
-    assert preserved["question_source"] == "model_main_quality_repaired_fields"
+    assert preserved["question_source"] == (
+        "model_main_repaired_followups"
+        if method in {"경험면접", "직무지식면접", "창의적 문제해결력면접"}
+        else "model_main_quality_repaired_fields"
+    )
     assert preserved["model_question_preserved"] is True
-    assert preserved["model_replacement_reasons"] == []
+    assert preserved["model_replacement_reasons"] == (
+        ["follow_up_focus_injected"]
+        if method in {"경험면접", "직무지식면접", "창의적 문제해결력면접"}
+        else []
+    )
     assert "question" in preserved["candidate_surface_repairs"]
     if method in {"발표면접", "토론면접", "인바스켓면접", "창의적 문제해결력면접"}:
         assert preserved["task_conditions"]["time_plan"]
@@ -1130,14 +1138,14 @@ def test_adjust_questions_replaces_model_question_when_followups_are_generic() -
 
     question = out["interview_questions"][0]
 
-    assert question["question_source"] == "model_main_repaired_followups"
+    assert question["question_source"] == "model_main_template_followups"
     assert question["question"] == model_question.replace(
         "문서 요구사항 파악",
-        "문서 요구사항 확인 절차",
+        "문서 요구사항을 파악하는 작업",
     )
     assert question["model_question_preserved"] is True
-    assert question["model_replacement_reasons"] == ["follow_up_focus_injected"]
-    assert "문서 요구사항 확인 절차" in " | ".join(question["follow_ups"])
+    assert question["model_replacement_reasons"] == ["follow_up_quality"]
+    assert "문서 요구사항을 파악하는 작업" in " | ".join(question["follow_ups"])
 
 
 def test_adjust_questions_repairs_model_followups_by_injecting_focus() -> None:
@@ -1192,13 +1200,13 @@ def test_adjust_questions_repairs_model_followups_by_injecting_focus() -> None:
     assert question["question_source"] == "model_main_repaired_followups"
     assert question["question"] == model_question.replace(
         "문서 요구사항 파악",
-        "문서 요구사항 확인 절차",
+        "문서 요구사항을 파악하는 작업",
     )
     assert question["model_question_preserved"] is True
     assert question["model_followups_raw"] == raw_followups
     assert question["model_replacement_reasons"] == ["follow_up_focus_injected"]
     assert question["follow_ups"][0] == raw_followups[0]
-    assert "문서 요구사항 확인 절차와 관련해" in question["follow_ups"][1]
+    assert "문서 요구사항을 파악하는 작업과 관련해" in question["follow_ups"][1]
     assert "문서작성 상황에서" in question["follow_ups"][1]
     assert raw_followups[1] in question["follow_ups"][1]
     assert question["follow_ups"][2] == raw_followups[2]
@@ -1250,10 +1258,11 @@ def test_adjust_questions_repairs_presentation_followups_in_method_focus_slot() 
     assert question["question_source"] == "template_fallback"
     assert question["model_question_preserved"] is False
     assert "ksa_measurement_task" in question["model_replacement_reasons"]
-    assert "도면 숙지 행동이 드러나는 선택을 판단하기 위한" in question["question"]
+    assert "도면을 숙지하려는 행동이 드러나는 선택을 판단하기 위한" in question["question"]
+    assert "도면 숙지 행동" not in question["question"]
     assert "상충하는 요구와 압박 속에서 선택한 행동" in question["question"]
     assert "감수할 상충비용 또는 불이익" in question["question"]
-    assert any("도면 숙지 행동" in follow_up for follow_up in question["follow_ups"])
+    assert any("도면을 숙지하려는 행동" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is False
     assert quality["issues"] == ["field_realism"]
     assert quality["checks"]["ksa_measurement_task"] is True
@@ -1360,10 +1369,10 @@ def test_adjust_questions_replaces_shallow_focus_restatement_in_experience_quest
     assert question["model_question_preserved"] is False
     assert question["model_followups_raw"] == raw_followups
     assert "ksa_measurement_task" in question["model_replacement_reasons"]
-    assert "확인 기준에 비춰 무엇을 판단 근거로 삼았고" in question["question"]
+    assert "강점관점 개념에 관한 내용에 비춰 무엇을 판단 근거로 삼았고" in question["question"]
     assert "적용 범위" not in question["question"]
     assert "결과를 설명해 주세요" in question["question"]
-    assert any("강점관점 확인 기준" in follow_up for follow_up in question["follow_ups"])
+    assert any("강점관점 개념에 관한 내용" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is False
     assert quality["issues"] == ["field_realism"]
 
@@ -1827,7 +1836,9 @@ def test_method_templates_use_domain_specific_field_scenarios() -> None:
     assert "관련 문서·요청이 동시에" in question["question"]
     assert "문서이 동시에" not in question["question"]
     assert question["question_focus_surface"] == "식재료 선별"
-    assert "식재료 선별을 실제로 하며" in question["question"]
+    assert "직접 처리하는 문서 1건을 골라 식재료 선별을 어떤 단계로 하고" in question["question"]
+    assert "필요한지 판단해" not in question["question"]
+    assert "식재료 선별을 실제로 하며" not in question["question"]
     assert "식재료 선정·확인 절차" not in question["question"]
     assert "선별능력을 실제로 수행" not in question["question"]
     assert "'식재료 선별능력'를" not in merged
@@ -1880,7 +1891,7 @@ def test_situational_template_uses_domain_specific_risk_event() -> None:
     [
         ("기술", "소비자 패턴분석 능력", "소비자 패턴분석", "소비자 패턴 분석"),
         ("기술", "문서 오류 검증 기술", "문서 오류 검증", "문서 오류 검증"),
-        ("지식", "문서 보안 법규 지식", "문서 보안 법규", "문서 보안 규정 적용 기준"),
+        ("지식", "문서 보안 법규 지식", "문서 보안 법규", "문서 보안 법규에 관한 내용"),
         ("태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 행동"),
     ],
 )
@@ -2580,7 +2591,7 @@ def test_adjust_questions_repairs_missing_task_marker_when_model_shape_is_valid(
     assert question["question_source"] == "model_main_quality_repaired_fields"
     assert question["model_question_raw"] == model_question
     assert question["question"].startswith("[발표과제] ")
-    assert "문서 요구사항 확인 절차" in question["question"]
+    assert "문서 요구사항을 파악하는 작업" in question["question"]
     assert "문서 요구사항 파악" not in question["question"]
     assert question["model_replacement_reasons"] == []
 
@@ -3887,8 +3898,8 @@ def test_adjust_questions_keeps_planning_ksa_focuses_distinct() -> None:
     questions = out["interview_questions"]
     assert [q["question_focus"] for q in questions] == [focus_1, focus_2]
     assert [q["question_focus_surface"] for q in questions] == [
-        "일정 계획 작성·검토 절차",
-        "예산 계획 작성·검토 절차",
+        "일정 계획 수립 작업",
+        "예산 계획 수립 작업",
     ]
     assert [q["question_intent"] for q in questions] == ["experience_behavior", "experience_behavior"]
     assert questions[0]["question_repeat_signature"] != questions[1]["question_repeat_signature"]
@@ -4378,13 +4389,15 @@ def test_experience_template_expresses_attitude_as_observable_behavior() -> None
     )
 
     assert "상충하는 요구나 압박을 받았던 장면을 골라" in question
-    assert "본인이 실제로 보인 도면 숙지 행동과 그 결과" in question
+    assert "본인이 실제로 보인 도면을 숙지하려는 행동과 그 결과" in question
+    assert "도면 숙지 행동" not in question
     assert "행동 기준을 지키" not in question
     assert "도 있었던" not in question
     assert "실제 경험 한 가지를 선택" in question
     assert "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례" in question
     assert "도면 숙지 의지를 적용" not in "\n".join([question, *follow_ups])
-    assert "도면 숙지 행동을 하느라 포기하거나 감수한 것" in follow_ups[1]
+    assert "도면을 숙지하느라 포기하거나 감수한 것" in follow_ups[1]
+    assert "행동을 하느라" not in follow_ups[1]
 
 
 def test_discussion_template_expresses_attitude_as_joint_behavior_not_an_applied_noun() -> None:
@@ -4397,7 +4410,8 @@ def test_discussion_template_expresses_attitude_as_joint_behavior_not_an_applied
         focus_type="태도",
     )
 
-    assert "정확성을 유지하는 행동을 실천해야 하는 가운데" in question
+    assert "정확성을 유지하는 행동을 보여야 하는 가운데" in question
+    assert "행동을 실천" not in question
     assert "정확성 준수 행동" not in question
     assert "합의할 수 있다면 공통 실행안" in question
     assert "합의가 어렵다면 미합의 쟁점과 결정권자 이송 기준" in question
@@ -4445,7 +4459,7 @@ def test_creative_template_avoids_related_law_repetition() -> None:
         "지식",
     )
 
-    assert "도로교통 규정 적용 기준을 적용해야 하는 복합 문제" in question
+    assert "도로교통 법규에 관한 내용을 적용해야 하는 복합 문제" in question
     assert "도로교통 관련 법규" not in question
     assert "관련 법규'와 관련된" not in question
 
@@ -4460,7 +4474,7 @@ def test_presentation_template_asks_knowledge_scope_once_without_related_repetit
         "지식",
     )
 
-    assert "도로교통 규정 적용 기준을 적용해 현황을 진단하는 데 필요한" in question
+    assert "도로교통 법규에 관한 내용을 적용해 현황을 진단하는 데 필요한" in question
     assert "도로교통 관련 법규" not in question
     assert question.count("적용 범위·예외") == 1
     assert "관련 법규'와 관련된" not in question
@@ -4485,7 +4499,8 @@ def test_attitude_tasks_do_not_repeat_situation_interview_instruction() -> None:
     )
 
     assert discussion.count("상충하는 요구와 압박 속에서") == 0
-    assert "정확성을 유지하는 행동을 실천해야 하는 가운데" in discussion
+    assert "정확성을 유지하는 행동을 보여야 하는 가운데" in discussion
+    assert "행동을 실천" not in discussion
     assert "정확성 유지" not in discussion
     assert inbasket.count("상충하는 요구와 압박 속에서도") == 1
     assert inbasket.count("정확성을 유지하는 행동이 드러나는") == 1
@@ -4505,9 +4520,9 @@ def test_attitude_tasks_do_not_repeat_situation_interview_instruction() -> None:
         ("인바스켓면접", "기술", "문서 오류 검증 기술", "분류할 절차와 산출물"),
         ("창의적 문제해결력면접", "기술", "문서 오류 검증 기술", "분석 절차·산출물과 검증 방법"),
         ("경험면접", "태도", "정확성 유지", "포기하거나 감수한 것"),
-        ("상황면접", "태도", "정확성 유지", "구체적으로 어떻게 실천하겠으며, 예상되는 위험"),
+        ("상황면접", "태도", "정확성 유지", "정확성을 유지하기 위해 구체적으로 누구에게 무엇을 언제 하겠으며"),
         ("인바스켓면접", "태도", "정확성 유지", "드러나게 문서와 요청을 어떻게 분류"),
-        ("창의적 문제해결력면접", "태도", "정확성 유지", "어떻게 실천하겠으며, 그 때문에 감수할 비용"),
+        ("창의적 문제해결력면접", "태도", "정확성 유지", "언제 하겠으며, 그 행동 때문에 감수할 비용"),
     ],
 )
 def test_method_followups_operationalize_each_ksa_type(

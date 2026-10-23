@@ -45,7 +45,7 @@ def test_surface_audit_accepts_repaired_dangling_knowledge_factor() -> None:
 
 def test_surface_audit_counts_unique_factor_collisions_not_repeated_rows() -> None:
     first = _row("위원회 운영 관련 법령", "지식")
-    second = _row("위원회 운영 규정", "지식")
+    second = _row("위원회 운영 법령", "지식")
     report = audit_rows([first, second, first, second])
 
     assert report["summary"]["collision_count"] == 1
@@ -116,7 +116,7 @@ def test_strategic_hr_knowledge_surface_is_nominalized() -> None:
         competency_name="인사기획",
     )
 
-    assert surface == "전략적 인적자원관리 확인 기준"
+    assert surface == "전략적 인적자원관리에 관한 내용"
     assert source == "factor_repair"
 
 
@@ -153,7 +153,7 @@ def test_capability_knowledge_becomes_a_decision_object() -> None:
         element_name="설계조건 확인하기",
     )
 
-    assert surface == "설계도면과 현장여건 검토 기준"
+    assert surface == "설계도면과 현장여건 검토에 관한 내용"
     assert source == "factor_repair"
     assert "할 수 있는" not in surface
 
@@ -193,7 +193,7 @@ def test_skill_capability_clauses_become_natural_action_nouns() -> None:
         "프로젝트 관리 영역들 간의 관계를 조율하는 능력": "프로젝트 관리 영역들 간의 관계 조율",
         "직접계측 조사를 기획하고 실행하는 능력": "직접계측 조사 기획·실행",
         "관리 대상 리스크를 선정할 수 있는 능력": "관리 대상 리스크 선정",
-        "관련 장비를 다루는 능력": "관련 장비를 다루는 절차와 결과 검증 기준",
+        "관련 장비를 다루는 능력": "관련 장비를 다루는 작업",
         "평가지표에 맞게 수행하는 기술": "평가지표에 맞게 실행",
         "자재소요량계획 활용 수행 능력": "자재소요량계획 활용",
         "보안 점검 및 설정 수행 능력": "보안 점검 및 설정",
@@ -283,7 +283,7 @@ def test_audit_summary_separates_strict_defects_from_semantic_collisions() -> No
     report = audit_rows(
         [
             _row("위원회 운영 관련 법령", "지식"),
-            _row("위원회 운영 규정", "지식"),
+            _row("위원회 운영 법령", "지식"),
         ]
     )
 

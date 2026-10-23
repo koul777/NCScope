@@ -3003,7 +3003,13 @@ def _skill_focus_action(focus: Any, form: str = "connective") -> str:
     """Choose a natural observable-action verb for a skill factor object."""
 
     compact = re.sub(r"\s+", "", str(focus or "")).lower()
-    if re.search(r"(?:적용|활용|수행|확인|검토|작성|검증|조정|선정)절차$", compact):
+    while re.search(r"\([^()]*\)$", compact):
+        compact = re.sub(r"\([^()]*\)$", "", compact)
+    if "수행" in compact and compact.endswith("작업"):
+        verb = "진행"
+    elif re.search(r"(?:증대|향상|증가|감소|확대|축소)$", compact):
+        verb = "이루다"
+    elif re.search(r"(?:적용|활용|수행|확인|검토|작성|검증|조정|선정)절차$", compact):
         verb = "수행"
     elif re.search(r"(?:기법|방법|절차|기준|규정|모형|모델)$", compact):
         verb = "적용"
@@ -3017,10 +3023,11 @@ def _skill_focus_action(focus: Any, form: str = "connective") -> str:
     else:
         verb = "수행"
     forms = {
-        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행하며", "하다": "하며"},
-        "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할", "하다": "할"},
-        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야", "하다": "해야"},
-        "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한", "하다": "한"},
+        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행하며", "하다": "하며", "진행": "진행하며", "이루다": "이뤄"},
+        "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할", "하다": "할", "진행": "진행할", "이루다": "이룰"},
+        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야", "하다": "해야", "진행": "진행해야", "이루다": "이뤄야"},
+        "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한", "하다": "한", "진행": "진행한", "이루다": "이룬"},
+        "and": {"적용": "적용하고", "활용": "활용하고", "수행": "수행하고", "하다": "하고", "진행": "진행하고", "이루다": "이루고"},
     }
     return forms.get(form, forms["connective"])[verb]
 
@@ -3030,7 +3037,8 @@ _SKILL_ACTION_NOUN_END_RE = re.compile(
     r"(?:작성|적용|활용|예측|분석|해석|산정|계산|개발|설계|조율|조정|검토|검증|평가|진단|"
     r"정리|조작|구현|제작|기획|실행|관리|운영|처리|수집|분류|점검|조사|선정|설정|파악|"
     r"확인|수립|도출|개선|대응|해결|반영|구성|비교|통제|배치|결정|판별|식별|추정|방지|"
-    r"추출|운전|보수|응용|제시|의사결정|포착|수정·보완|유지|선택|선별|배양|정보검색|수행)$"
+    r"추출|운전|보수|응용|제시|의사결정|포착|수정·보완|유지|선택|선별|배양|정보검색|수행|"
+    r"이해|의사소통|소통|의견발표|발표|치료|처치)$"
 )
 _SKILL_TOOL_SURFACE_RE = re.compile(r"(?:도구|장비|시스템|프로그램|소프트웨어|양식)")
 
@@ -5236,6 +5244,29 @@ def _domain_context_pack(detail: str, subject: str, focus: str, comp_def: str) -
             },
         ),
     ]
+    # A site scenario (patients, plant equipment, visitors) does not fit an
+    # office or production function inside that industry: 병원구매관리 buys
+    # supplies, 총무 업무지원 handles certificates and 스포츠용품 생산관리
+    # runs production.  When the 세분류 or unit name itself states such a
+    # function, that site pack is skipped and the next match applies.  Each
+    # name is checked on its own so ``내선공사`` + ``무정전…`` cannot form
+    # ``사무``; ``항행정보``·``비행정보`` are not ``행정``.
+    office_function = r"총무|사무|행정(?!보)"
+    site_pack_exclusions = {
+        "병원": r"구매",
+        "설비": office_function,
+        "객실": rf"{office_function}|용품|생산(?!성)|제조|제작",
+    }
+    # Whole words only: ``허가용 품질평가`` must not read as ``용품``.
+    identity_names = [word.lower() for x in (detail, subject) for word in str(x or "").split()]
+    packs = [
+        (keywords, pack)
+        for keywords, pack in packs
+        if not (
+            keywords[0] in site_pack_exclusions
+            and any(re.search(site_pack_exclusions[keywords[0]], name) for name in identity_names)
+        )
+    ]
     specific_packs = packs[:-1]
     generic_packs = packs[-1:]
 
@@ -5689,6 +5720,11 @@ def _attach_presentation_material_packet(strategy: dict[str, Any], packet: dict[
 
 
 def _has_korean_final_consonant(text: str) -> bool:
+    # A trailing gloss does not change the particle of the source noun:
+    # 상처 치료(드레싱)를, 공정(프로세스)을.
+    text = str(text or "").strip()
+    while re.search(r"\s*\([^()]*\)$", text):
+        text = re.sub(r"\s*\([^()]*\)$", "", text).strip()
     cleaned = re.sub(r"[\s\]\)\}\"'.,!?…:;]+$", "", str(text or ""))
     for ch in reversed(cleaned):
         code = ord(ch)
@@ -5706,6 +5742,13 @@ def _quoted_with_josa(text: str, final_consonant_josa: str, no_final_consonant_j
     """Legacy alias kept for callers; candidate-facing labels are no longer quoted."""
     value = str(text or "").strip()
     return value + (final_consonant_josa if _has_korean_final_consonant(value) else no_final_consonant_josa)
+
+
+def _attitude_behaviour_verb_stem(surface: str) -> str:
+    """``정확하게 판단하는 행동`` gives ``정확하게 판단하``; else ""."""
+
+    match = re.match(r"^(?P<stem>.+하)(?:는|려는) 행동$", str(surface or "").strip())
+    return match.group("stem") if match else ""
 
 
 def _scenario_condition_text(value: Any) -> str:
@@ -6130,8 +6173,10 @@ def _question_for_method(
                 f"{_quoted_with_josa(prompt_focus, '을', '를')} 적용해 현황을 진단하는 데 필요한"
             )
         elif focus_type == "태도":
+            # ``판단하는 행동이 드러나는 선택을 판단하기`` said 판단 twice.
+            choice_verb = "검토하기" if "판단" in prompt_focus else "판단하기"
             presentation_material_context = (
-                f"{_quoted_with_josa(prompt_focus, '이', '가')} 드러나는 선택을 판단하기 위한"
+                f"{_quoted_with_josa(prompt_focus, '이', '가')} 드러나는 선택을 {choice_verb} 위한"
             )
         else:
             presentation_material_context = (
@@ -6149,9 +6194,11 @@ def _question_for_method(
         situation = _scenario_condition_text(context["situation"])
         debate_variation = variation_sentence if len(situation) < 90 else ""
         if focus_type == "태도":
+            # The surface already names the behaviour (``…하려는 행동``);
+            # ``실천`` stacked a second act on that intention.
             debate_focus_context = (
                 f"압박과 이해 충돌 속에서도 "
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실천해야 하는 가운데"
+                f"{_quoted_with_josa(prompt_focus, '을', '를')} 보여야 하는 가운데"
             )
             decision_requirement = "제시안에는 공동 행동·점검·실행 책임을 명시하세요."
         elif focus_type == "지식":
@@ -6193,17 +6240,21 @@ def _question_for_method(
                 "위임, 직접처리 판단 및 초기 행동을 제시하고, 그 판단 근거와 적용 범위·예외를 밝혀 주세요."
             )
         else:
+            # Priorities are set first; the skill is then performed on one
+            # document the candidate handles directly, so its steps, output
+            # and quality check all have the skill as their object.
             return (
                 f"[인바스켓과제] {label} 관련 문서·요청이 동시에 들어왔습니다. 제공 항목은 {prompt_inbasket}입니다. "
                 f"{variation_sentence}"
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus)} 처리 우선순위와 상급자 보고, "
-                "위임, 직접처리 판단 및 초기 행동을 제시하고, 수행 단계·조치·산출물·품질 확인 방법을 밝혀 주세요."
+                "처리 우선순위와 상급자 보고, 위임, 직접처리 판단 및 초기 행동을 제시하세요. "
+                f"직접 처리하는 문서 1건을 골라 {_quoted_with_josa(prompt_focus, '을', '를')} 어떤 단계로 {_skill_focus_action(prompt_focus, 'and')}, "
+                "어떤 산출물을 만들어 무엇으로 품질을 확인할지 밝혀 주세요."
             )
     if method == "상황면접":
         situation_text = _scenario_condition_text(context.get("situation_prompt") or context["situation"])
         if focus_type == "태도":
             situation_focus_context = (
-                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 실천하기 어려운 조건"
+                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 보이기 어려운 조건"
             )
         elif focus_type == "지식":
             situation_focus_context = (
@@ -6256,9 +6307,9 @@ def _question_for_method(
                 f"압박 속에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러나는 선택을 요구하는 복합 문제"
             )
         else:
-            creative_focus_context = (
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus)} 해결해야 하는 복합 문제"
-            )
+            # The skill is what the problem needs, not an act performed
+            # while solving it (``…을 실제로 하며 해결해야``).
+            creative_focus_context = f"{prompt_focus} 없이는 해결하기 어려운 복합 문제"
         return (
             f"[창의적 문제해결력과제] {label} 업무에서 {creative_focus_context}가 발생했습니다. "
             f"{variation_sentence}"
@@ -6346,6 +6397,8 @@ def _followups_for_method(
     variant_index: int = 0,
     focus_type: str = "",
     task_frame: dict[str, str] | None = None,
+    detail: str = "",
+    comp_def: str = "",
 ) -> list[str]:
     # The experience main question leaves the situation and the candidate's
     # role to the fixed first follow-up, so an experience item keeps it.
@@ -6364,22 +6417,47 @@ def _followups_for_method(
         comp_def="",
     ))
     prompt_focus = str(frame.get("task_object") or _operational_focus_label(focus, focus_type)).strip()
-    context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
+    # Same job context as the main question, so a follow-up does not fall
+    # back to the default ``민원인`` when the 세분류 names an office job.
+    context = _domain_context_pack(detail=detail, subject=subject, focus=focus, comp_def=comp_def)
     if focus_type == "태도":
-        experience_focus_probe = (
-            f"{_with_josa(prompt_focus, '을', '를')} 하느라 포기하거나 감수한 것은 "
-            "무엇이었고, 상대는 어떻게 반응했습니까?"
-        )
-        situation_focus_probe = (
-            f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 실천하겠으며, "
-            "예상되는 위험은 무엇입니까?"
-        )
+        # A verb-final surface (``판단하는 행동``) is asked as the concrete
+        # acts it takes: who, what and when.  Other surfaces keep ``실천``.
+        behaviour_stem = _attitude_behaviour_verb_stem(prompt_focus)
+        # ``…위생관리 준수하기`` would show the official label verbatim.
+        if behaviour_stem and re.sub(r"\s+", "", focus) in re.sub(r"\s+", "", behaviour_stem):
+            behaviour_stem = ""
+        if behaviour_stem:
+            purpose = (
+                f"{behaviour_stem}려면" if "위해" in behaviour_stem else f"{behaviour_stem}기 위해"
+            )
+            experience_focus_probe = (
+                f"{behaviour_stem}느라 포기하거나 감수한 것은 무엇이었고, "
+                "그 행동에 상대는 어떻게 반응했습니까?"
+            )
+            situation_focus_probe = (
+                f"그 선택에서 {purpose} 구체적으로 누구에게 무엇을 언제 하겠으며, "
+                "그 행동에서 예상되는 위험은 무엇입니까?"
+            )
+            creative_focus_probe = (
+                f"대안을 고를 때 {purpose} 구체적으로 누구에게 무엇을 언제 하겠으며, "
+                "그 행동 때문에 감수할 비용은 무엇입니까?"
+            )
+        else:
+            experience_focus_probe = (
+                f"{_with_josa(prompt_focus, '을', '를')} 하느라 포기하거나 감수한 것은 "
+                "무엇이었고, 상대는 어떻게 반응했습니까?"
+            )
+            situation_focus_probe = (
+                f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 실천하겠으며, "
+                "예상되는 위험은 무엇입니까?"
+            )
+            creative_focus_probe = (
+                f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 실천하겠으며, "
+                "그 때문에 감수할 비용은 무엇입니까?"
+            )
         inbasket_focus_probe = (
             f"압박 속에서도 {_quoted_with_josa(prompt_focus, '이', '가')} 드러나게 문서와 요청을 어떻게 분류하겠습니까?"
-        )
-        creative_focus_probe = (
-            f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 실천하겠으며, "
-            "그 때문에 감수할 비용은 무엇입니까?"
         )
     elif focus_type == "지식":
         # The main question asks for the judgment basis and the decision; the
@@ -6434,7 +6512,7 @@ def _followups_for_method(
             f"{label} 현장에 적용할 때 가장 큰 리스크와 보완책은 무엇입니까?",
         ],
         "토론면접": [
-            f"{label}의 {prompt_focus}에 관한 초기 입장을 정하기 전에 어떤 문서와 사실을 확인하겠습니까?",
+            f"{label}의 {_with_josa(prompt_focus, '을', '를')} 두고 초기 입장을 정하기 전에 어떤 문서와 사실을 확인하겠습니까?",
             "반대 입장에서 수용할 부분과 수용하지 않을 부분을 어떤 기준으로 구분하겠습니까?",
             "두 입장의 근거가 충돌할 때 쟁점을 어떻게 조정하시겠습니까?",
             "공통 실행안의 적용 범위·예외·검증 기준은 무엇이며, 합의가 어렵다면 어떤 쟁점을 이송하겠습니까?",
@@ -7469,6 +7547,8 @@ def _adjust_generated_questions(
             variant_index=idx,
             focus_type=focus_type,
             task_frame=task_frame,
+            detail=target_detail,
+            comp_def=str(item.get("compeUnitDef", "")).strip(),
         )
         focus_first_ksa_terms = [focus, *[term for term in ksa_terms if _ksa_key(term) != _ksa_key(focus)]]
         method_eval_points = _method_evaluation_points(
@@ -7659,6 +7739,8 @@ def _adjust_generated_questions(
                     variant_index=idx,
                     focus_type=focus_type,
                     task_frame=task_frame,
+                    detail=target_detail,
+                    comp_def=str(item.get("compeUnitDef", "")).strip(),
                 )
                 method_eval_points = _method_evaluation_points(
                     method,
@@ -11803,6 +11885,8 @@ def _run_runtime_question_quality_orchestration(
             variant_index=variation_index,
             focus_type=focus_type,
             task_frame=task_frame,
+            detail=detail,
+            comp_def=str(item.get("compeUnitDef") or "").strip(),
         )
 
         item.update(
