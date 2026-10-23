@@ -321,7 +321,9 @@ def test_nouns_that_do_not_take_iss_are_left_as_written() -> None:
     surface, _ = public_task_object(
         factor_name="최적의 시스템과 용량 산정에 대한 합리적인 사고", ksa_type="태도"
     )
-    assert surface == "최적의 시스템과 용량 산정에 대한 합리적인 사고 행동"
+    # R11: the verbal noun reads as its own verb; it still never takes 있는.
+    assert surface == "최적의 시스템과 용량 산정에 대해 합리적으로 사고하는 행동"
+    assert "사고 행동" not in surface
     assert "사고 있는" not in surface
 
 

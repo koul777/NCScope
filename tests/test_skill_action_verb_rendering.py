@@ -115,7 +115,14 @@ def test_performance_task_uses_matching_concurrent_connective(method: str) -> No
         )
         question = evaluated["interview_questions"][0]
 
-        assert "피교육생의 수준에 맞는 교육을 실제로 수행하며" in question["question"]
+        # R11: the in-basket sorts documents by the skill and the creative
+        # task names what the problem needs; neither does the skill "while".
+        expected = {
+            "인바스켓면접": "문서마다 피교육생의 수준에 맞는 교육이 필요한지 판단해",
+            "창의적 문제해결력면접": "피교육생의 수준에 맞는 교육 없이는 해결하기 어려운 복합 문제",
+        }[method]
+        assert expected in question["question"]
+        assert "실제로 수행하며" not in question["question"]
         assert "실제로 수행해" not in question["question"]
         assert question["question_focus"] == row["factor_name"]
         assert question["ksa_evidence"][0]["factorName"] == row["factor_name"]

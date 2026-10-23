@@ -5236,6 +5236,28 @@ def _domain_context_pack(detail: str, subject: str, focus: str, comp_def: str) -
             },
         ),
     ]
+    # A site scenario (patients, plant equipment, visitors) does not fit an
+    # office or production function inside that industry: 병원구매관리 buys
+    # supplies, 총무 업무지원 handles certificates and 스포츠용품 생산관리
+    # runs production.  When the 세분류 or unit name itself states such a
+    # function, that site pack is skipped and the next match applies.  Each
+    # name is checked on its own so ``내선공사`` + ``무정전…`` cannot form
+    # ``사무``; ``항행정보``·``비행정보`` are not ``행정``.
+    office_function = r"총무|사무|행정(?!보)"
+    site_pack_exclusions = {
+        "병원": r"구매",
+        "설비": office_function,
+        "객실": rf"{office_function}|용품|생산|제조|제작",
+    }
+    identity_names = [re.sub(r"\s+", "", str(x or "")).lower() for x in (detail, subject)]
+    packs = [
+        (keywords, pack)
+        for keywords, pack in packs
+        if not (
+            keywords[0] in site_pack_exclusions
+            and any(re.search(site_pack_exclusions[keywords[0]], name) for name in identity_names)
+        )
+    ]
     specific_packs = packs[:-1]
     generic_packs = packs[-1:]
 
@@ -6149,9 +6171,11 @@ def _question_for_method(
         situation = _scenario_condition_text(context["situation"])
         debate_variation = variation_sentence if len(situation) < 90 else ""
         if focus_type == "태도":
+            # The surface already names the behaviour (``…하려는 행동``);
+            # ``실천`` stacked a second act on that intention.
             debate_focus_context = (
                 f"압박과 이해 충돌 속에서도 "
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실천해야 하는 가운데"
+                f"{_quoted_with_josa(prompt_focus, '을', '를')} 보여야 하는 가운데"
             )
             decision_requirement = "제시안에는 공동 행동·점검·실행 책임을 명시하세요."
         elif focus_type == "지식":
@@ -6193,17 +6217,19 @@ def _question_for_method(
                 "위임, 직접처리 판단 및 초기 행동을 제시하고, 그 판단 근거와 적용 범위·예외를 밝혀 주세요."
             )
         else:
+            # An in-basket is document triage: the skill decides which items
+            # need it, the candidate is not performing it while sorting.
             return (
                 f"[인바스켓과제] {label} 관련 문서·요청이 동시에 들어왔습니다. 제공 항목은 {prompt_inbasket}입니다. "
                 f"{variation_sentence}"
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus)} 처리 우선순위와 상급자 보고, "
+                f"문서마다 {_quoted_with_josa(prompt_focus, '이', '가')} 필요한지 판단해 처리 우선순위와 상급자 보고, "
                 "위임, 직접처리 판단 및 초기 행동을 제시하고, 수행 단계·조치·산출물·품질 확인 방법을 밝혀 주세요."
             )
     if method == "상황면접":
         situation_text = _scenario_condition_text(context.get("situation_prompt") or context["situation"])
         if focus_type == "태도":
             situation_focus_context = (
-                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 실천하기 어려운 조건"
+                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 보이기 어려운 조건"
             )
         elif focus_type == "지식":
             situation_focus_context = (
@@ -6256,9 +6282,9 @@ def _question_for_method(
                 f"압박 속에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러나는 선택을 요구하는 복합 문제"
             )
         else:
-            creative_focus_context = (
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus)} 해결해야 하는 복합 문제"
-            )
+            # The skill is what the problem needs, not an act performed
+            # while solving it (``…을 실제로 하며 해결해야``).
+            creative_focus_context = f"{prompt_focus} 없이는 해결하기 어려운 복합 문제"
         return (
             f"[창의적 문제해결력과제] {label} 업무에서 {creative_focus_context}가 발생했습니다. "
             f"{variation_sentence}"
@@ -6371,14 +6397,14 @@ def _followups_for_method(
             "무엇이었고, 상대는 어떻게 반응했습니까?"
         )
         situation_focus_probe = (
-            f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 실천하겠으며, "
+            f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 보이겠으며, "
             "예상되는 위험은 무엇입니까?"
         )
         inbasket_focus_probe = (
             f"압박 속에서도 {_quoted_with_josa(prompt_focus, '이', '가')} 드러나게 문서와 요청을 어떻게 분류하겠습니까?"
         )
         creative_focus_probe = (
-            f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 실천하겠으며, "
+            f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 보이겠으며, "
             "그 때문에 감수할 비용은 무엇입니까?"
         )
     elif focus_type == "지식":
