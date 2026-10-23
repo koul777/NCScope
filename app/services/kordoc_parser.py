@@ -57,7 +57,7 @@ class _LocalKordocUnavailable(KordocParseError):
     """Raised only when the local Node/Kordoc runtime cannot be started."""
 
 
-_KORDOC_PARSER_VERSION = "4.9.1"
+_KORDOC_PARSER_VERSION = "4.24.1"
 _KORDOC_BRIDGE_MAX_BYTES = 4 * 1024 * 1024
 _KORDOC_BRIDGE_PATH = "/api/kordoc-parse"
 _KORDOC_BRIDGE_ED25519_PUBLIC_KEY_RAW = (

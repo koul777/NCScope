@@ -28,7 +28,7 @@ def _payload(*, markdown: str = "public parser output", detail: str = "Official 
     return {
         "filename": "must-not-affect-contract.pdf",
         "parser": "kordoc",
-        "parser_version": "4.9.1",
+        "parser_version": "4.24.1",
         "review_required": True,
         "review_session_id": "volatile-id",
         "review_session": {"id": "volatile-id", "signature": "secret"},
