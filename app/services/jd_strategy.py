@@ -2858,7 +2858,7 @@ def _build_ncs_code_template_fallback_question(
         question = (
             f"[토론과제] {candidate_context}에서 {surface_focus}에 따라 판단해야 하는 가운데 {scenario}. "
             f"{opposing_positions}이 충돌합니다. 각 입장의 근거와 위험, 타당성을 검토하세요. "
-            f"특히 {debate_angle}을 쟁점으로 삼아 합의할 수 있다면 공통 실행안을, "
+            f"특히 {_with_korean_particle(debate_angle, consonant='을', vowel='를')} 쟁점으로 삼아 합의할 수 있다면 공통 실행안을, "
             "합의가 어렵다면 미합의 쟁점과 결정권자 이송 기준을 제시해 주세요."
         )
         follow_ups = [
@@ -2881,7 +2881,7 @@ def _build_ncs_code_template_fallback_question(
             "실행 후 재발 신호를 조기에 탐지하고",
         )[index % 5]
         question = (
-            f"창의적 문제해결력과제에서 {candidate_context}의 {surface_focus}와 관련된 오류가 최근 3건 반복되고 "
+            f"창의적 문제해결력과제에서 {candidate_context}의 {_with_korean_particle(surface_focus, consonant='과', vowel='와')} 관련된 오류가 최근 3건 반복되고 "
             "필수 확인자료 1건이 누락된 채 마감까지 2시간 남았습니다. "
             f"전면 재작성과 우선 보완 중 선택해야 하는 압박 속에서 {creative_angle} "
             "미래예측 관점으로 문제를 정의하고 원인 가설, 창의적 대안 2가지, 검증 방법과 "
@@ -2933,17 +2933,17 @@ def _build_ncs_code_template_fallback_question(
             )
         elif ksa_kind == "태도":
             question = (
-                f"{candidate_context}에서 {variation_context} {natural_focus}가 중요했던 경험을 하나 들려 주세요. "
+                f"{candidate_context}에서 {variation_context} {_with_korean_particle(natural_focus, consonant='이', vowel='가')} 중요했던 경험을 하나 들려 주세요. "
                 "그때 어떤 행동을 선택했고 결과는 어땠나요?"
             )
         else:
             question = (
-                f"{candidate_context}에서 {variation_context} {natural_focus}와 관련해 판단했던 경험을 말씀해 주세요. "
+                f"{candidate_context}에서 {variation_context} {_with_korean_particle(natural_focus, consonant='과', vowel='와')} 관련해 판단했던 경험을 말씀해 주세요. "
                 "본인의 선택과 결과를 설명해 주세요."
             )
         follow_ups = [
             "그때 본인이 맡은 역할과 직접 내린 결정은 무엇이었나요?",
-            f"앞서 말씀하신 {natural_focus}와 관련해 다른 선택지도 검토했나요?",
+            f"앞서 말씀하신 {_with_korean_particle(natural_focus, consonant='과', vowel='와')} 관련해 다른 선택지도 검토했나요?",
             "결과를 어떻게 확인했고, 다시 한다면 무엇을 바꾸시겠습니까?",
         ]
         evaluation_points = ["KSA가 드러난 장면", "판단 근거", "본인의 선택과 행동", "확인된 결과"]
