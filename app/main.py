@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -4151,6 +4152,13 @@ def _behavior_anchored_evaluation(
     }
 
 
+@lru_cache(maxsize=2048)
+def _anchor_similarity_ratio(left: str, right: str) -> float:
+    # The same rubric anchors are compared on every quality pass; the ratio
+    # depends only on the two strings.
+    return SequenceMatcher(None, left, right).ratio()
+
+
 def _behavior_anchors_ok(guide: Any) -> bool:
     if not isinstance(guide, dict):
         return False
@@ -4174,7 +4182,7 @@ def _behavior_anchors_ok(guide: Any) -> bool:
     adjacent_similarity_ok = bool(
         len(actual_levels) == 5
         and all(
-            SequenceMatcher(None, actual_levels[index][2], actual_levels[index + 1][2]).ratio() < 0.82
+            _anchor_similarity_ratio(actual_levels[index][2], actual_levels[index + 1][2]) < 0.82
             for index in range(len(actual_levels) - 1)
         )
     )

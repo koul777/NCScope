@@ -15,6 +15,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 
@@ -1385,6 +1386,10 @@ def _specs_for(method: str) -> tuple[_FamilySpec, ...]:
     return (*_COMMON_SPECS, *_METHOD_SPECS.get(method, ()))
 
 
+# Every quality pass re-classifies the same question, criteria and guide
+# text.  The result depends only on (text, method) and the module-level
+# family specs, and a frozenset is immutable, so a bounded cache is exact.
+@lru_cache(maxsize=4096)
 def _detect_families(text: str, method: str) -> frozenset[str]:
     return frozenset(
         spec.code
@@ -1656,6 +1661,7 @@ def _atoms(points: Sequence[str], method: str) -> list[_Atom]:
     return atoms
 
 
+@lru_cache(maxsize=8192)
 def _stem_token(value: str) -> str:
     stem = value
     changed = True
