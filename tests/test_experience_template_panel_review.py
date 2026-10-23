@@ -78,8 +78,8 @@ def test_variation_only_guides_the_choice_of_one_case(focus_type: str, focus: st
     [
         ("프로젝트 관리 영역들 간의 관계를 조율하는 능력", "맡은", "자료나 방법"),
         ("갈등중재기술", "맡은", "자료나 방법"),
-        ("수요예측 기법", "수행한", "도구"),
-        ("문서관리 시스템", "수행한", "도구"),
+        ("수요예측 기법", "한", "도구"),
+        ("문서관리 시스템", "한", "도구"),
     ],
 )
 def test_skill_question_asks_for_the_past_action_not_procedure_following(
@@ -99,7 +99,13 @@ def test_skill_question_asks_for_the_past_action_not_procedure_following(
             assert "을 직접 수행한" not in question
         else:
             surface = {"수요예측 기법": "수요 예측", "문서관리 시스템": "문서관리 도구 활용"}[focus]
-            assert f"{surface}을 직접 {verb} 행동의 순서와 그때 쓴 {means}, " in question
+            if focus == "문서관리 시스템":
+                # The surface already names the tool.
+                assert f"{surface}을 직접 {verb} 행동의 순서와 만든 결과물, 결과를 확인한 방법" in question
+                assert "그때 쓴 도구" not in question
+            else:
+                assert f"{surface}을 직접 {verb} 행동의 순서와 그때 쓴 {means}, " in question
+            assert "을 직접 수행한" not in question
             assert "검증 절차" not in question
             assert "활용 절차" not in question
         if means == "자료나 방법":
