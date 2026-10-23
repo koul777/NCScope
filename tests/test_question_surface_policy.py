@@ -174,7 +174,8 @@ def test_distinct_planning_skills_keep_distinct_observable_surfaces() -> None:
 
     assert schedule == "일정 계획 작성·검토 절차"
     assert budget == "예산 계획 작성·검토 절차"
-    assert collection == "정보 수집·확인 절차"
+    assert collection == "정보 수집"
+    assert "수집·확인 절차" not in collection
     assert {schedule_source, budget_source, collection_source} == {"factor_repair"}
     assert len({schedule, budget, collection}) == 3
 

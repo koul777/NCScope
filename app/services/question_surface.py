@@ -369,8 +369,10 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         candidate = re.sub(r"\s*하려는\s*$", "", candidate).strip()
         candidate = re.sub(r"\s*에\s*(?:대한|관한)\s*(?=(?:활용|해석|분석|검토|판단|적용)\s*$)", " ", candidate)
         candidate = re.sub(r"(?P<action>활용|설정)\s+수행\s*$", r"\g<action>", candidate)
+        candidate = re.sub(r"관리\s+관리$", "관리", candidate)
         candidate = re.sub(
             r"(?P<object>.+?)(?:을|를)\s*(?P<action>정리|설정|선택|선정|선별|조정|조율|활용|적용|"
+            r"수집|정보검색|분류|처리|운영|관리|파악|점검|배양|유지|"
             r"해석|조사|의사결정|포착|수정·보완|기획|실행|할당|배치|결정|판별|식별|도출|구현|"
             r"설계|제작|사용|운반|처치|치료|문서화|가공|조절|교체|대응|해결|반영|갱신|계획|"
             r"구성|비교|통제|보고|분할|계산|추정|예측|방지|추출|운전|보수|응용|조작|평가|진단|제시|개선)$",
@@ -412,11 +414,32 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             (r"\s*포착$", " 포착"),
             (r"\s*수정·보완$", " 수정·보완"),
             (r"\s*개발$", " 개발"),
+            (r"\s*수집$", " 수집"),
+            (r"\s*정보검색$", " 정보 검색"),
+            (r"\s*분류$", " 분류"),
+            (r"\s*처리$", " 처리"),
+            (r"\s*운영$", " 운영"),
+            (r"\s*관리$", " 관리"),
+            (r"\s*파악$", " 파악"),
+            (r"\s*점검$", " 점검"),
+            (r"\s*설정$", " 설정"),
+            (r"\s*선택$", " 선택"),
+            (r"\s*선정$", " 선정"),
+            (r"\s*선별$", " 선별"),
+            (r"\s*조사$", " 조사"),
+            (r"\s*배양$", " 배양"),
+            # The renderer supplies the action verb for the named task:
+            # "교육 수행능력" -> "교육을 수행", not "수행을 수행".
+            (r"\s*수행$", ""),
+            (r"\s*유지$", " 유지"),
         )
         for pattern, replacement in skill_actions:
             if re.search(pattern, candidate):
                 action = re.sub(pattern, replacement, candidate).strip()
-                if _key(action) != _key(label):
+                # Keep the established factor surface if shortening would be
+                # rejected later (e.g. "면담 수행능력" -> the two-letter "면담").
+                # Otherwise public_task_object would choose a broader element.
+                if _useful_object(action, official_factor=label):
                     return action
                 break
         skill_replacements = (

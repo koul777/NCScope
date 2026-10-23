@@ -1821,8 +1821,9 @@ def test_method_templates_use_domain_specific_field_scenarios() -> None:
     assert "조리 일정 변경 문서" in question["question"]
     assert "관련 문서·요청이 동시에" in question["question"]
     assert "문서이 동시에" not in question["question"]
-    assert question["question_focus_surface"] == "식재료 선정·확인 절차"
-    assert "식재료 선정·확인 절차를 실제로 수행" in question["question"]
+    assert question["question_focus_surface"] == "식재료 선별"
+    assert "식재료 선별을 실제로 하며" in question["question"]
+    assert "식재료 선정·확인 절차" not in question["question"]
     assert "선별능력을 실제로 수행" not in question["question"]
     assert "'식재료 선별능력'를" not in merged
     assert "자료 오류 정정" not in question["question"]
@@ -1861,8 +1862,9 @@ def test_situational_template_uses_domain_specific_risk_event() -> None:
     assert "반복 민원" in question["question"]
     assert "안전사고 위험 구역 발견" in question["question"]
     assert "안전사고 위험 구역 발견이 동시에" in question["question"]
-    assert question["question_focus_surface"] == "청소범위 설정·확인 절차"
-    assert "청소범위 설정·확인 절차를 실제로 수행해야 하는 가운데" in question["question"]
+    assert question["question_focus_surface"] == "청소범위 설정"
+    assert "청소범위 설정을 실제로 실행해야 하는 가운데" in question["question"]
+    assert "청소범위 설정·확인 절차" not in question["question"]
     assert "설정능력을 실제로 수행" not in question["question"]
     assert "'청소범위 설정능력'와" not in "\n".join([question["question"], *question["follow_ups"]])
     assert "자료 오류" not in question["question"]
@@ -2629,7 +2631,8 @@ def test_adjust_questions_repairs_inbasket_marker_when_prefix_makes_shape_valid(
     assert question["model_question_raw"] == model_question
     assert question["question"].startswith("[인바스켓과제] ")
     assert "제한시간" not in question["question"]
-    assert "정보 수집·확인 절차" in question["question"]
+    assert "정보 수집" in question["question"]
+    assert "정보 수집·확인 절차" not in question["question"]
     assert "정보수집 기술" not in question["question"]
     assert question["model_replacement_reasons"] == []
 
