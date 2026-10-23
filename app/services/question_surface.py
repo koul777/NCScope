@@ -267,6 +267,165 @@ _ATTITUDE_TRAIT_NOUNS = (
     "성의",
 )
 
+# Verbal attitude nouns that read badly as ``… 사고 행동`` or ``… 대처
+# 행동``.  The official noun becomes its own verb (``사고하는``,
+# ``대처하는``); nothing else is added.  Value: (verb stem, object kind),
+# where "obj" takes 을/를, "에" takes 에 and "" takes no object.
+_ATTITUDE_VERBAL_NOUNS = {
+    "사고": ("사고", ""),
+    "숙지": ("숙지", "obj"),
+    "달성": ("달성", "obj"),
+    "판단력": ("판단", "obj"),
+    "관찰력": ("관찰", "obj"),
+    "대처": ("대처", "에"),
+}
+_NOUN_ENDING_IN_UI = (
+    "주의", "협의", "합의", "회의", "논의", "창의", "건의", "토의", "결의",
+    "문의", "심의", "정의", "동의", "강의", "의의",
+)
+_LINKING_MODIFIERS = ("대한", "관한", "위한", "통한", "의한", "따른")
+# ``필요한 판단력`` describes the noun, not a manner: ``필요하게 판단하는``
+# is broken Korean.  ``기초한``·``근거한`` are verbs, not manners.
+_NON_MANNER_MODIFIERS = (
+    "필요한", "중요한", "가능한", "관련한", "인한", "기초한", "기반한", "근거한", "해당한",
+    "필수적", "필수적인", "기본적", "기본적인", "핵심적", "핵심적인",
+)
+
+
+def _adverb_from_modifier(word: str) -> str:
+    """``정확한`` → ``정확하게``, ``논리적인`` → ``논리적으로``; else ""."""
+
+    if word in _LINKING_MODIFIERS or word in _NON_MANNER_MODIFIERS:
+        return ""
+    # ``선정가능한`` written as one word is still ``가능한``.
+    if word.endswith(("가능한", "필요한", "중요한")):
+        return ""
+    if word.endswith("적인") and len(word) > 2:
+        return f"{word[:-1]}으로"
+    if word.endswith("적") and len(word) > 1:
+        return f"{word}으로"
+    if word.endswith(("있는", "없는", "깊은", "높은", "넓은", "좋은")):
+        return f"{word[:-1]}게"
+    if word.endswith("빠른"):
+        return f"{word[:-1]}르게"
+    if word.endswith("한") and len(word) > 1:
+        return f"{word[:-1]}하게"
+    return ""
+
+
+def _verbalize_attitude_noun(candidate: str, *, intention: bool) -> str:
+    """Turn ``정확한 판단력`` into ``정확하게 판단하는 행동``.
+
+    Only the six verbal nouns above are changed, and only when the words
+    before them can be read as the object or adverb of that verb.  Anything
+    else (coordinated nouns, a verb clause modifying the noun, a bare
+    ``사고`` that may mean an accident) returns "" and stays as written.
+    """
+
+    words = str(candidate or "").split()
+    if not words or words[-1] not in _ATTITUDE_VERBAL_NOUNS:
+        return ""
+    verb, object_kind = _ATTITUDE_VERBAL_NOUNS[words[-1]]
+    rest = words[:-1]
+    adverb = ""
+    if rest:
+        modifier = rest[-1]
+        adverb = _adverb_from_modifier(modifier)
+        if adverb:
+            rest = rest[:-1]
+            # ``선별할 수 있는 판단력`` is a capability clause, not an adverb.
+            if modifier in ("있는", "없는") and rest[-1:] == ["수"]:
+                return ""
+            # ``객관적으로 이해한 판단력``: after an adverb or object, ``~한``
+            # is a past verb clause, not a manner (``이해하게``).
+            if modifier.endswith("한") and rest and rest[-1].endswith(("으로", "게", "히", "을", "를")):
+                return ""
+            # ``주의 깊은``, ``끈기 있는`` are one modifier with their noun.
+            if modifier in ("깊은", "있는", "없는") and rest and re.fullmatch(r"[가-힣]+", rest[-1]):
+                adverb = f"{rest[-1]} {adverb}"
+                rest = rest[:-1]
+            # So is ``목표 지향적`` before ``사고``.
+            elif (
+                verb == "사고"
+                and modifier.endswith(("적", "적인"))
+                and rest
+                and re.fullmatch(r"[가-힣]+", rest[-1])
+                and rest[-1] not in _LINKING_MODIFIERS
+                and not re.search(r"(?:의|에|을|를|로|와|과|은|는|이|가|한|된|인|할|던|적|른|운)$", rest[-1])
+            ):
+                adverb = f"{rest[-1]} {adverb}"
+                rest = rest[:-1]
+            # ``신속하고 정확한``: the whole adverb chain moves together.
+            while rest and rest[-1].endswith(("하고", "하며", "이며", "이고")):
+                adverb = f"{rest[-1]} {adverb}"
+                rest = rest[:-1]
+    if verb == "사고" and not adverb:
+        return ""
+    if rest:
+        previous = rest[-1]
+        if previous == "및" or previous.endswith((",", "와", "과", "/", "·")):
+            return ""
+        # ``판단력 관찰력`` is a space-separated list, not an object.
+        if previous in _ATTITUDE_VERBAL_NOUNS or previous.endswith("력"):
+            return ""
+        if previous in ("대한", "관한"):
+            owner = rest[-2] if len(rest) >= 2 else ""
+            if object_kind == "obj" and owner.endswith("에") and len(owner) > 1:
+                particle = _object_particle(owner[:-1])
+                if not particle:
+                    return ""
+                rest = [*rest[:-2], f"{owner[:-1]}{particle}"]
+            elif object_kind == "에" and owner.endswith("에"):
+                rest = rest[:-1]
+            else:
+                rest = [*rest[:-1], f"{previous[:-1]}해"]
+        elif previous == "위한":
+            rest = [*rest[:-1], "위해"]
+        elif previous == "따른":
+            rest = [*rest[:-1], "따라"]
+        elif previous.endswith("별"):
+            rest = [*rest[:-1], f"{previous}로"]
+        elif previous in ("시", "때") or previous.endswith(
+            ("에", "에서", "으로", "하고", "하며", "하게", "있게", "히")
+        ):
+            pass
+        elif previous.endswith(("을", "를")):
+            # ``요령을 숙지``: the object is already marked.
+            if object_kind != "obj":
+                return ""
+        elif re.search(r"(?:할|될)$", previous) or (
+            previous.endswith("로") and previous[:-1] in _ATTITUDE_VERBAL_NOUNS
+        ):
+            # ``숙지로`` is an instrumental phrase; ``회로`` stays a noun.
+            return ""
+        elif previous.endswith("의") and previous not in _NOUN_ENDING_IN_UI:
+            if not object_kind:
+                return ""
+            owner = previous[:-1]
+            particle = _object_particle(owner) if object_kind == "obj" else "에"
+            if not owner or not particle:
+                return ""
+            rest = [*rest[:-1], f"{owner}{particle}"]
+        elif previous in _LINKING_MODIFIERS or _ends_with_modifier(previous) or re.search(
+            r"(?:는|던|된|은|운|ㄴ)$", previous
+        ):
+            return ""
+        else:
+            if not object_kind:
+                return ""
+            # ``적극적인 문제 대처``: the modifier belongs to ``문제 대처``;
+            # ``적극적인 문제에 대처하는`` would break it.
+            if len(rest) >= 2 and rest[-2] not in _LINKING_MODIFIERS and (
+                _ends_with_modifier(rest[-2]) or re.search(r"(?:는|은|던|된)$", rest[-2])
+            ):
+                return ""
+            particle = _object_particle(previous) if object_kind == "obj" else "에"
+            if not particle:
+                return ""
+            rest = [*rest[:-1], f"{previous}{particle}"]
+    ending = "하려는" if intention else "하는"
+    return " ".join([*rest, *([adverb] if adverb else []), f"{verb}{ending}", "행동"])
+
 
 def _compact_clause_tail(value: str, *, max_chars: int = 77) -> str:
     """Shorten a verbal attitude clause from the front so its verb survives.
@@ -439,6 +598,9 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         return ""
 
     if kind == "태도":
+        # ``의지``·``의식``·``노력`` state an intention (``숙지하려는``);
+        # ``태도``·``자세``·``능력`` keep the plain ``숙지하는``.
+        intention_head = bool(re.search(r"(?:의지|의식|노력)$", candidate))
         # Replace only the attitude head noun.  The official clause before
         # it (``정확도를 기하려는``, ``고객과 협의하려는``) is already a
         # modifier of the observable behaviour; stripping its ending left
@@ -528,6 +690,9 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
                 # ``Code의 준수``: keep the official particle, do not guess.
                 return f"{candidate} 행동"
             candidate = f"{observance.group('object')}{particle} 준수"
+        verbalized = _verbalize_attitude_noun(candidate, intention=intention_head)
+        if verbalized:
+            return verbalized
         if candidate.endswith(("의사소통", "소통", "협업", "조율", "준수")):
             return f"{candidate}하는 행동"
         if candidate.endswith("이해"):
