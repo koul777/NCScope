@@ -1464,6 +1464,29 @@ def test_structure_job_description_filters_section_and_duty_sentence_noise() -> 
     assert result["fields"]["ncs_detail_candidates"] == ["스포츠시설운영관리"]
 
 
+def test_structure_job_description_splits_only_joined_official_details() -> None:
+    joined = structure_job_description(
+        {"markdown": "| 세분류 | 회계·감사·세무 | 회계 · 감사 및 세무 |"},
+        filename="jd.pdf",
+    )
+    preserved = structure_job_description(
+        {
+            "markdown": (
+                "| 세분류 | 총무·인사 | 세탁·수선 | "
+                "지능형교통체계(ITS) 기획 및 설계 |"
+            )
+        },
+        filename="jd.pdf",
+    )
+
+    assert joined["fields"]["ncs_detail_candidates"] == ["회계·감사", "세무"]
+    assert preserved["fields"]["ncs_detail_candidates"] == [
+        "총무·인사",
+        "세탁·수선",
+        "지능형교통체계(ITS) 기획 및 설계",
+    ]
+
+
 def test_structure_job_description_expands_composite_cooking_detail_candidate() -> None:
     markdown = """
 | 세분류 | 한식조리 | 일식· 복어・조리 |

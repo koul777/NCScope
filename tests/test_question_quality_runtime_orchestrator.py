@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.question_quality_orchestrator import (
+    _ksa_type,
     evaluate_ksa_measurement,
     is_history_duplicate,
     orchestrate_question_set,
@@ -34,6 +35,24 @@ def _valid_experience_question(text: str = "") -> dict:
             "말씀해 주세요. 당시 상황과 본인 역할, 선택한 행동, 결과와 학습을 설명해 주세요."
         ),
     }
+
+
+def test_transport_ksa_type_overrides_focus_word_heuristic() -> None:
+    assert _ksa_type(
+        {"question_focus_type": "K/Knowledge", "question_focus": "자료 분석"}
+    ) == "지식"
+    assert _ksa_type(
+        {"question_focus_type": "S/Skill", "question_focus": "법령 지식"}
+    ) == "기술"
+    assert _ksa_type(
+        {"question_focus_type": "A/Attitude", "question_focus": "분석 능력"}
+    ) == "태도"
+    assert _ksa_type(
+        {"question_focus_type": "Knowledge/Skill", "question_focus": "자료 분석"}
+    ) == "기술"
+    assert _ksa_type(
+        {"question_focus_type": "K-1", "question_focus": "자료 분석"}
+    ) == "기술"
 
 
 def test_rejects_ksa_name_restatement_without_observable_behavior() -> None:

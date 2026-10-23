@@ -4,7 +4,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from app.services.question_surface import public_task_object
+from app.services.question_surface import classify_explicit_ksa_type, public_task_object
 
 
 RUNTIME_QUESTION_ORCHESTRATION_POLICY = "ncs_ksa_runtime_orchestration_v21"
@@ -4796,15 +4796,9 @@ def _generic_focus_self_report(item: dict[str, Any], question: str) -> bool:
 
 
 def _ksa_type(item: dict[str, Any]) -> str:
-    raw = _compact((item or {}).get("question_focus_type"))
-    if raw in {"k", "knowledge", "지식"} or "지식" in raw:
-        return "지식"
-    if raw in {"s", "skill", "skills", "기술"} or any(
-        token in raw for token in ("기술", "스킬")
-    ):
-        return "기술"
-    if raw in {"a", "attitude", "태도"} or "태도" in raw:
-        return "태도"
+    explicit = classify_explicit_ksa_type((item or {}).get("question_focus_type"))
+    if explicit:
+        return explicit
     focus = _compact(_question_focus(item))
     if any(
         token in focus for token in ("태도", "자세", "의지", "의식", "성실", "책임감")

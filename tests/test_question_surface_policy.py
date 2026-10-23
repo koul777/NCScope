@@ -40,6 +40,30 @@ def _evidence_row() -> dict[str, str]:
     }
 
 
+def test_slash_ksa_type_selects_a_different_public_task_frame() -> None:
+    knowledge, knowledge_source = public_task_object(
+        factor_name="문서 분류 기준",
+        ksa_type="K/Knowledge",
+    )
+    skill, skill_source = public_task_object(
+        factor_name="문서 분류 기준",
+        ksa_type="S/Skill",
+    )
+    attitude, attitude_source = public_task_object(
+        factor_name="문서 분류 기준",
+        ksa_type="A/Attitude",
+    )
+
+    assert knowledge_source == skill_source == attitude_source == "factor_repair"
+    assert knowledge != skill
+    assert skill != attitude
+    # Attitude surfaces name the observable behaviour; the former
+    # ``행동 기준`` suffix was removed in the 2026-10-23 surface round (R6-C).
+    assert attitude.endswith("행동")
+    assert "행동 기준" not in attitude
+    assert "행동" not in knowledge
+
+
 def test_timed_assessment_templates_separate_task_from_operating_conditions() -> None:
     methods = (
         "발표면접",
@@ -426,3 +450,50 @@ def test_debate_main_task_operationalizes_the_final_agreement_by_ksa_type() -> N
     assert "적용 범위·예외·검증·실행 책임" in question
     assert "합의가 어렵다면 미합의 쟁점과 결정권자 이송 기준" in question
     assert "토론시간 20분" not in question
+
+
+def test_job_knowledge_conditions_lead_with_the_measured_ksa_action() -> None:
+    attitude = _task_conditions_for_method(
+        method="직무지식면접",
+        subject="문서작성",
+        focus="책임 있는 마감 태도",
+        detail="사무행정",
+        focus_type="A/Attitude",
+    )
+    skill = _task_conditions_for_method(
+        method="직무지식면접",
+        subject="문서작성",
+        focus="문서 작성 절차",
+        detail="사무행정",
+        focus_type="S/Skill",
+    )
+
+    assert attitude["required_outputs"][0] == "상충 요구와 선택한 행동"
+    assert "선택한 행동" in attitude["candidate_instruction"]
+    assert skill["required_outputs"][0] == "수행 순서와 사용 자료"
+    assert "산출물 품질" in skill["candidate_instruction"]
+
+
+def test_job_knowledge_fallback_asks_attitude_as_a_choice_under_conflict() -> None:
+    factor = "책임 있는 마감 태도"
+    question = _build_ncs_code_template_fallback_question(
+        unit={
+            "ncsClCd": "0202030201_25v3",
+            "compeUnitName": "문서작성",
+            "ncsSubdCdnm": "사무행정",
+        },
+        comp_name="문서작성",
+        ncs_code="0202030201_25v3",
+        ksa_terms=[factor],
+        evidence_terms=[factor],
+        evidence_rows=[{"factorName": factor, "ksaTypeName": "A/Attitude"}],
+        index=1,
+        method_override="직무지식면접",
+    )
+
+    visible = "\n".join([question["question"], *question["follow_ups"]])
+    assert "충돌하는 예외상황" in question["question"]
+    assert "어떤 행동을 선택" in question["question"]
+    for term in ("절차", "기준", "산출물", "예외상황"):
+        assert term in visible
+    assert question["task_conditions"]["required_outputs"][0] == "상충 요구와 선택한 행동"

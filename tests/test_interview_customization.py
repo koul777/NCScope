@@ -672,6 +672,11 @@ def test_specific_definition_domain_beats_generic_title_domain() -> None:
         ("", "시스템 활용 능력", "기술"),
         ("", "업무 적극성", "태도"),
         ("S", "종류 구분", "기술"),
+        ("K/Knowledge", "업무 적극성", "지식"),
+        ("S/Skill", "분류 종류 구분", "기술"),
+        ("A/Attitude", "시스템 활용 능력", "태도"),
+        ("K-1", "시스템 활용 능력", "기술"),
+        ("Knowledge/Skill", "업무 적극성", "태도"),
     ],
 )
 def test_main_and_surface_use_one_ksa_type_classifier(

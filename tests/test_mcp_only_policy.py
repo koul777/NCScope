@@ -3120,6 +3120,54 @@ def test_mcp_search_preserves_official_acronym_slash_detail(mocker):
     assert rows[0]["matchedDetailName"] == "QM/QC관리"
 
 
+def test_mcp_ksa_slash_type_aliases_balance_before_question_generation(mocker):
+    mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_unit_detail"})
+    mocker.patch(
+        "app.services.ncs_mcp_client._call_tool",
+        return_value={
+            "data": {
+                "unit": {
+                    "unit_code": "U1",
+                    "unit_name": "문서관리",
+                    "classification": {"sub": "사무행정"},
+                },
+                "elements": [
+                    {
+                        "element_id": "E1",
+                        "element_name": "문서 점검",
+                        "ksa": [
+                            {
+                                "factor_name": "책임 있는 보고 자세",
+                                "factorType": "A/Attitude",
+                                "number": "A-1",
+                            },
+                            {
+                                "ksa_text": "문서 분류 기준",
+                                "ksa_type": "K/Knowledge",
+                                "ksaNo": "K-1",
+                            },
+                            {
+                                "factorName": "오류 대조 점검",
+                                "ksaType": "S/Skill",
+                                "ksa_no": "S-1",
+                            },
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+
+    rows = ncs_mcp_client.get_ksa_by_units([{"ncsClCd": "U1"}], max_factors_per_unit=3)
+
+    assert [row["ksaTypeName"] for row in rows] == ["지식", "기술", "태도"]
+    assert [row["factorName"] for row in rows] == [
+        "문서 분류 기준",
+        "오류 대조 점검",
+        "책임 있는 보고 자세",
+    ]
+
+
 def test_mcp_ksa_alias_fields_preserve_and_balance_knowledge_skill_attitude(mocker):
     mocker.patch("app.services.ncs_mcp_client._tool_names", return_value={"ncs_unit_detail"})
     mocker.patch(

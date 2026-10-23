@@ -25,6 +25,7 @@ from typing import Any, Callable
 import httpx
 
 from app.settings import settings
+from app.services.question_surface import classify_explicit_ksa_type
 from app.services.request_budget import (
     RequestBudgetExceeded,
     clamp_timeout_to_request_budget,
@@ -1233,13 +1234,31 @@ def _split_slash_detail_surface(value: str) -> list[str]:
     return output
 
 
+def _expand_joined_detail_lookup_terms(value: str) -> list[str]:
+    """Split a lookup label into current official details when every span is one.
+
+    Parser review and direct MCP lookup share this rule. A 대·중·소분류 name
+    or a label that is only partly official stays intact.
+    """
+
+    from app.services.kordoc_parser import split_joined_official_detail_labels
+
+    text = str(value or "").strip()
+    if not text:
+        return []
+    spans = split_joined_official_detail_labels(text)
+    return spans if len(spans) > 1 else [text]
+
+
 def _split_detail_terms(values: list[str]) -> list[str]:
     """Flatten UI/parser multi-label values into distinct NCS detail terms."""
+
+    from app.services.kordoc_parser import unwrap_detail_line_breaks
 
     terms: list[str] = []
     seen: set[str] = set()
     for value in values or []:
-        raw_value = str(value or "").strip()
+        raw_value = unwrap_detail_line_breaks(str(value or "").strip())
         whole_matches = _official_details_by_name_key().get(_norm(raw_value), ())
         # Some official detail labels contain the same punctuation used by the
         # UI for multi-value transport (for example commas inside parentheses).
@@ -1272,7 +1291,10 @@ def _split_detail_terms(values: list[str]) -> list[str]:
                 parts.append(coarse_part)
             else:
                 parts.extend(_split_slash_detail_surface(coarse_part))
+        expanded_parts: list[str] = []
         for part in parts:
+            expanded_parts.extend(_expand_joined_detail_lookup_terms(part) or [part])
+        for part in expanded_parts:
             term = part.strip()
             key = _norm(term)
             if not term or not key or key in seen:
@@ -2268,14 +2290,7 @@ def _criteria_texts(value: Any) -> list[str]:
 
 def _canonical_ksa_type(row: dict[str, Any]) -> str:
     raw = _first_ksa_value(row, "ksa_type", "ksaType", "ksa_type_name", "ksaTypeName", "factorType")
-    compact = re.sub(r"\s+", "", raw).lower()
-    if compact in {"k", "knowledge", "지식"} or "지식" in compact:
-        return "지식"
-    if compact in {"s", "skill", "skills", "기술"} or any(token in compact for token in ("기술", "스킬")):
-        return "기술"
-    if compact in {"a", "attitude", "태도"} or "태도" in compact:
-        return "태도"
-    return raw
+    return classify_explicit_ksa_type(raw) or raw
 
 
 def _balanced_ksa(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
