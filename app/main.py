@@ -6087,8 +6087,8 @@ def _question_for_method(
         else:
             debate_focus_context = (
                 (
-                    f"{_with_josa(prompt_focus, '을', '를')} 실제로 수행할 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
-                    if _COORDINATION_SURFACE_RE.match(prompt_focus)
+                    f"{_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'future')} 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                    if not prompt_focus.endswith(("절차", "기준"))
                     else f"{prompt_focus}에 따라 실제 수행 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
                 )
             )

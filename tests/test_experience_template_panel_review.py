@@ -98,7 +98,10 @@ def test_skill_question_asks_for_the_past_action_not_procedure_following(
             assert "검증 절차" not in question
             assert "을 직접 수행한" not in question
         else:
-            assert re.search(rf"를 직접 {verb} 행동의 순서와 그때 쓴 {means}, ", question), question
+            surface = {"수요예측 기법": "수요 예측", "문서관리 시스템": "문서관리 도구 활용"}[focus]
+            assert f"{surface}을 직접 {verb} 행동의 순서와 그때 쓴 {means}, " in question
+            assert "검증 절차" not in question
+            assert "활용 절차" not in question
         if means == "자료나 방법":
             assert "그때 쓴 도구" not in question
 
