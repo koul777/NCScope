@@ -3003,15 +3003,30 @@ def _skill_focus_action(focus: Any, form: str = "connective") -> str:
         verb = "적용"
     elif re.search(r"(?:도구|장비|시스템|프로그램|소프트웨어|양식)$", compact):
         verb = "활용"
+    elif _SKILL_ACTION_NOUN_END_RE.search(compact):
+        # The surface already ends in the action ("보고서 작성", "통계 방법
+        # 적용").  "…작성을 수행" stacks a second action verb; "…작성을 한"
+        # keeps the surface intact for the KSA evidence checks.
+        verb = "하다"
     else:
         verb = "수행"
     forms = {
-        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행해"},
-        "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할"},
-        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야"},
-        "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한"},
+        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행해", "하다": "하며"},
+        "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할", "하다": "할"},
+        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야", "하다": "실행해야"},
+        "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한", "하다": "한"},
     }
     return forms.get(form, forms["connective"])[verb]
+
+
+# Skill surfaces that end in an action noun take "하다" instead of "수행".
+_SKILL_ACTION_NOUN_END_RE = re.compile(
+    r"(?:작성|적용|활용|예측|분석|해석|산정|계산|개발|설계|조율|조정|검토|검증|평가|진단|"
+    r"정리|조작|구현|제작|기획|실행|관리|운영|처리|수집|분류|점검|조사|선정|설정|파악|"
+    r"확인|수립|도출|개선|대응|해결|반영|구성|비교|통제|배치|결정|판별|식별|추정|방지|"
+    r"추출|운전|보수|응용|제시|의사결정|포착|수정·보완|유지|선택|선별|배양|정보검색)$"
+)
+_SKILL_TOOL_SURFACE_RE = re.compile(r"(?:도구|장비|시스템|프로그램|소프트웨어|양식)")
 
 
 def _ksa_type_for_focus(
@@ -6228,10 +6243,17 @@ def _question_for_method(
                 f"{_with_josa(prompt_focus, '을', '를')} 직접 "
                 f"{_skill_focus_action(prompt_focus, 'past')}"
             )
-        evidence_task = (
-            f"그 경험에서 본인이 {skill_act} 행동의 순서와 그때 쓴 {tool_phrase}, "
-            "만든 결과물과 확인한 결과"
-        )
+        if _SKILL_TOOL_SURFACE_RE.search(prompt_focus):
+            # The surface already names the tool; do not ask for it twice.
+            evidence_task = (
+                f"그 경험에서 본인이 {skill_act} 행동의 순서와 만든 결과물, "
+                "결과를 확인한 방법"
+            )
+        else:
+            evidence_task = (
+                f"그 경험에서 본인이 {skill_act} 행동의 순서와 그때 쓴 {tool_phrase}, "
+                "만든 결과물과 확인한 결과"
+            )
     task_sentence = f" {_with_josa(evidence_task, '을', '를')} 설명해 주세요."
     substitute_sentence = "해당 경험이 없으면 면접위원이 모든 지원자에게 동일한 대체상황을 드립니다."
     full_alternatives = (
