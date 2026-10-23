@@ -140,6 +140,13 @@ def _compact_task_base(value: Any, *, max_chars: int = 62) -> str:
     return clipped or text[:max_chars].strip(" ,.;:·ㆍ/-")
 
 
+def _object_particle(word: str) -> str:
+    last = str(word or "").strip()[-1:]
+    if "가" <= last <= "힣":
+        return "을" if (ord(last) - 0xAC00) % 28 else "를"
+    return "를"
+
+
 def _nominalize_attitude_clause(value: Any) -> str:
     text = _clean(value, max_chars=160)
     text = re.sub(r"위해\s*(?:적극적으로\s*)?노력하려는", "위한 적극적", text)
@@ -257,7 +264,7 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # modifier of the observable behaviour; stripping its ending left
         # broken stems such as ``정확도 기`` or ``협 관련``.
         verbal_clause = re.search(
-            r"(?:려는|고자\s*하는|[가-힣]하는|도록\s*하는)\s*(?:태도|자세|의지|의식)\s*$",
+            r"(?:려는|고자\s*하는|[가-힣]하는|도록\s*하는|(?:을|를)\s*위한)\s*(?:태도|자세|의지|의식)\s*$",
             candidate,
         )
         candidate = re.sub(r"\s*(?:태도|자세|의지|의식)\s*$", "", candidate).strip()
@@ -280,9 +287,9 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # NCS element or competency name instead of exposing it verbatim.
         if re.search(r"선택\s*가능|결정적\s*$|결정적\s+행동", candidate):
             return ""
-        if verbal_clause and re.search(r"(?:려는|하는)$", candidate):
+        if verbal_clause and re.search(r"(?:려는|하는|위한)$", candidate):
             clause = _compact_task_base(candidate)
-            if re.search(r"(?:려는|하는)$", clause):
+            if re.search(r"(?:려는|하는|위한)$", clause):
                 return f"{clause} 행동"
         if _DANGLING_END_RE.search(candidate):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
@@ -296,7 +303,11 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # ``행동 기준`` suffix turned them into a rule to recite and made
         # prompts repeat "행동 기준이 드러난 … 행동".
         if candidate.endswith("유지"):
-            return f"{_compact_task_base(candidate[:-2])} 준수 행동"
+            # ``정확성 유지`` names keeping the accuracy; ``준수`` is a
+            # different obligation the KSA never states.
+            keep_base = re.sub(r"\s*(?:을|를)$", "", _compact_task_base(candidate[:-2])).strip()
+            if keep_base:
+                return f"{keep_base}{_object_particle(keep_base)} 유지하는 행동"
         if candidate.endswith("우선"):
             priority_base = re.sub(r"(?:을|를)$", "", candidate[:-2].strip()).strip()
             return f"{_compact_task_base(priority_base)} 우선 행동"
@@ -306,7 +317,7 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             object_text = str(match.group("object") or "").strip()
             particle = str(match.group("particle") or "").strip()
             action = str(match.group("action") or "").strip()
-            if action.endswith(("하려는", "하는", "했던")):
+            if action.endswith(("려는", "는", "했던")):
                 return f"{object_text}{particle} {action}"
             return f"{object_text} {action}"
 
@@ -317,6 +328,11 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             candidate,
         ).strip()
         candidate = _compact_task_base(candidate)
+        candidate = re.sub(
+            r"(?P<object>[0-9A-Za-z가-힣)]+)의\s+준수$",
+            lambda match: f"{match.group('object')}{_object_particle(match.group('object'))} 준수",
+            candidate,
+        )
         if candidate.endswith(("의사소통", "소통", "협업", "조율", "준수")):
             return f"{candidate}하는 행동"
         if candidate.endswith("이해"):

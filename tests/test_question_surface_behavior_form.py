@@ -143,9 +143,11 @@ def test_attitude_templates_ask_to_practise_the_behaviour() -> None:
     situation = _question_for_method("상황면접", "문서관리", focus, "", "", "태도")
     experience_follow_ups = _followups_for_method("경험면접", "문서관리", focus, 3, focus_type="태도")
 
-    assert "정확성 준수 행동을 실천해야 하는 가운데" in debate
-    assert "정확성 준수 행동을 실천하기 어려운 조건" in situation
-    assert "정확성 준수 행동을 하느라 포기하거나 감수한 것" in experience_follow_ups[1]
+    assert "정확성을 유지하는 행동을 실천해야 하는 가운데" in debate
+    assert "정확성을 유지하는 행동을 실천하기 어려운 조건" in situation
+    assert "정확성을 유지하는 행동을 하느라 포기하거나 감수한 것" in experience_follow_ups[1]
     for text in (debate, situation, *experience_follow_ups):
         assert "행동 기준" not in text
+        # The KSA says "유지"; "준수" is an obligation it never names.
+        assert "준수" not in text
         assert "행동을 지키" not in text
