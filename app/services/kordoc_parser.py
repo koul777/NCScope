@@ -1825,7 +1825,9 @@ def _html_table_position_grid(raw_table: str) -> list[list[dict[str, Any]]]:
     return rows
 
 
-def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, Any]]]]:
+def _markdown_table_position_grids(
+    markdown: str, *, min_rows: int = 2,
+) -> list[list[list[dict[str, Any]]]]:
     """Return simple pipe tables with physical row/column coordinates."""
 
     tables: list[list[list[dict[str, Any]]]] = []
@@ -1835,7 +1837,7 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
 
     def flush() -> None:
         nonlocal current_rows, current_ability_rows
-        if len(current_rows) >= 2:
+        if len(current_rows) >= min_rows:
             if len(tables) >= _HTML_TABLE_MAX_TABLES:
                 raise KordocStructureLimitError(
                     "Markdown table count exceeds the safe limit"
@@ -2232,15 +2234,18 @@ def _has_detached_training_header(parsed: dict[str, Any], block: dict[str, Any])
 
 def _reconcile_ksa_detail_columns(
     parsed: dict[str, Any], markdown: str, candidates: list[str],
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Suppress split KSA-column fragments corroborated by another declaration.
+    """Separate KSA column fragments from independent detail declarations.
 
     Adjacent cells may be fragments of one vertically wrapped detail name.
     Rejoining is allowed only when a different source declaration supplies the
-    complete spelling. An independently declared fragment remains a candidate.
+    complete spelling. KSA-only proper prefixes/suffixes of official names
+    remain diagnostics, without guessing a completed name. Independently
+    declared labels and exact official cells remain candidates.
     """
     blocks = _iter_kordoc_table_blocks(parsed)
-    if not re.search(r"(?:지식|기술|태도)\s*명", markdown) and not any(
+    if not re.search(r"(?:지식|기술|태도)(?:\s|<br\s*/?>)*명", markdown, re.I) and not any(
         _is_ksa_column_heading(_block_text(cell))
         for block in blocks for row in _block_table_rows(block)
         for cell in (row if isinstance(row, list) else row.get("cells", []) if isinstance(row, dict) else [])
@@ -2278,15 +2283,28 @@ def _reconcile_ksa_detail_columns(
             independent.update(_norm(part) for part in _expand_composite_detail_candidate(value))
     fragments: set[str] = set()
     additions: list[str] = []
+    official_keys = _official_ncs_detail_name_keys()
     for texts in sequences:
         index = 0
         while index < len(texts):
             if index + 1 < len(texts) and _norm(texts[index] + texts[index + 1]) in independent:
-                fragments.update({_norm(texts[index]), _norm(texts[index + 1])} - independent)
+                fragments.update({_norm(texts[index]), _norm(texts[index + 1])} - independent - official_keys)
                 index += 2
             else:
                 additions.extend(_expand_composite_detail_candidate(texts[index]))
                 index += 1
+        for text in texts:
+            for value in _expand_composite_detail_candidate(text):
+                key = _norm(value)
+                if (
+                    len(key) >= 3 and key not in independent and key not in official_keys
+                    and any(name.startswith(key) or name.endswith(key) for name in official_keys)
+                ):
+                    fragments.add(key)
+                    if diagnostics is not None and not any(_norm(item["text"]) == key for item in diagnostics):
+                        diagnostics.append({
+                            "text": value, "reason": "ksa_column_fragment_without_detail_declaration",
+                        })
     return _dedup_detail_candidates([
         value for value in [*candidates, *additions] if _norm(value) not in fragments
     ])
@@ -2446,6 +2464,18 @@ def _origin_cells(row: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(output, key=lambda item: int(item.get("origin_column") or 0))
 
 
+def _ability_row_has_detail_heading(values: list[str]) -> bool:
+    """A detail cell preceding a numbered unit list is a heading, not a unit."""
+    if len(values) < 2:
+        return False
+    key = _norm(values[0])
+    return bool(
+        key in _official_ncs_detail_name_keys()
+        and key not in _official_ncs_unit_name_keys()
+        and re.match(r"^\s*\d{1,2}\s*[.．)]\s*\S", values[1])
+    )
+
+
 def _table_value_cells_for_label(
     grid: list[list[dict[str, Any]]],
     label: dict[str, Any],
@@ -2498,6 +2528,10 @@ def _table_value_cells_for_label(
     if same_row:
         if section == "job_fields":
             return same_row[:1], "row_label_value"
+        if section == "ability_units" and _ability_row_has_detail_heading(
+            [str(cell.get("text") or "") for cell in same_row]
+        ):
+            same_row = same_row[1:]
         return same_row, "row_label_value"
 
     downward: list[dict[str, Any]] = []
@@ -4183,92 +4217,164 @@ def _contextual_evidence_snippet(markdown: str) -> str:
     return " | ".join(snippet for _line_no, snippet in fallback[:3])[:240]
 
 
-_NCS_HIERARCHY_LEVEL_KEYS = frozenset(
-    _norm(level) for level in ("대분류", "중분류", "소분류", "세분류")
-)
 _NCS_UNDEVELOPED_DECLARATION = re.compile(r"NCS\s*미개발", re.IGNORECASE)
-_NUMBERED_NCS_LABEL = re.compile(r"^\s*\d{1,2}\s*[.．]")
+_NUMBERED_NCS_LABEL = re.compile(r"^\s*\d{1,2}(?:\s*[.．]|\s+(?=\D))")
+_SELF_DEVELOPED_DETAIL_MARKERS = ("자체개발", "기관자체개발", "NCS 미개발")
 
 
-def _ncs_undeveloped_detail_span_labels(markdown: str) -> set[str]:
-    """Return normalized 세분류 cells that sit under ``NCS 미개발`` columns.
-
-    Kordoc 4.24.1 keeps a hierarchy such as ``(현재 NCS 미개발 분야)`` as a
-    cell spanning the columns whose 세분류 cells hold the institution's own
-    job names (``(약제 관리)``). The declaration covers exactly those columns,
-    so the names are source-declared non-NCS labels. Only cells inside the
-    same hierarchy block, in a 세분류 row below the declaration and fully
-    inside its columns count; numbered labels (``01. 의료기기관리``) keep
-    their official-candidate state.
-    """
-
-    labels: set[str] = set()
-    if "미개발" not in markdown:
-        return labels
-    for raw_table in re.findall(
-        r"<table[^>]*>.*?</table>", markdown, flags=re.IGNORECASE | re.DOTALL
-    ):
-        if "미개발" not in raw_table:
+def _ncs_undeveloped_detail_cells(grid: list[list[dict[str, Any]]]) -> set[tuple[int, int]]:
+    """Locate only cells below a declaration in the same hierarchy and columns."""
+    cells: set[tuple[int, int]] = set()
+    levels = {"대분류": 0, "중분류": 1, "소분류": 2, "세분류": 3}
+    row_levels = [
+        next((_norm(c.get("text")) for c in row if _norm(c.get("text")) in levels), "")
+        for row in grid
+    ]
+    for row_index, row in enumerate(grid):
+        level = row_levels[row_index]
+        if not level:
             continue
-        try:
-            grid = _html_table_position_grid(raw_table)
-        except (KordocStructureLimitError, ValueError):
-            continue
-        row_levels = [
-            next(
-                (
-                    _norm(slot.get("text"))
-                    for slot in row
-                    if _norm(slot.get("text")) in _NCS_HIERARCHY_LEVEL_KEYS
-                ),
-                "",
-            )
-            for row in grid
-        ]
-        detail_level = _norm("세분류")
-        for row_index, row in enumerate(grid):
-            if not row_levels[row_index]:
+        for slot in _origin_cells(row):
+            if slot.get("carried") or not _NCS_UNDEVELOPED_DECLARATION.search(str(slot.get("text") or "")):
                 continue
-            for slot in row:
-                if slot.get("carried") or not _NCS_UNDEVELOPED_DECLARATION.search(
-                    str(slot.get("text") or "")
+            start = int(slot.get("origin_column") or 0)
+            end = start + max(1, int(slot.get("column_span") or 1))
+            previous_level = levels[level]
+            for below_index in range(row_index + 1, len(grid)):
+                below_level = row_levels[below_index]
+                if not below_level or levels[below_level] < previous_level:
+                    break
+                if levels[below_level] == previous_level and any(
+                    _norm(c.get("text")) == below_level and not c.get("carried")
+                    for c in grid[below_index]
                 ):
+                    break
+                previous_level = levels[below_level]
+                if below_level != "세분류":
                     continue
-                start = int(slot.get("origin_column") or 0)
-                end = start + max(1, int(slot.get("column_span") or 1))
-                for below_index in range(row_index + 1, len(grid)):
-                    if not row_levels[below_index]:
-                        break
-                    if row_levels[below_index] != detail_level:
+                for cell in _origin_cells(grid[below_index]):
+                    if cell.get("carried"):
                         continue
-                    for cell in grid[below_index]:
-                        if cell.get("carried"):
-                            continue
-                        column = int(cell.get("origin_column") or 0)
-                        span = max(1, int(cell.get("column_span") or 1))
-                        text = str(cell.get("text") or "").strip()
-                        if (
-                            start <= column
-                            and column + span <= end
-                            and text
-                            and not _NUMBERED_NCS_LABEL.match(text)
-                            and not _NCS_UNDEVELOPED_DECLARATION.search(text)
-                        ):
-                            labels.add(_norm(text))
-    labels.discard("")
-    return labels
+                    column = int(cell.get("origin_column") or 0)
+                    span = max(1, int(cell.get("column_span") or 1))
+                    text = str(cell.get("text") or "").strip()
+                    if (
+                        start <= column and column + span <= end and text
+                        and not _NUMBERED_NCS_LABEL.match(text)
+                        and not _NCS_UNDEVELOPED_DECLARATION.search(text)
+                    ):
+                        cells.add((below_index, column))
+    return cells
 
 
 def _mark_ncs_undeveloped_span_details(
     evidence_rows: list[dict[str, Any]],
     markdown: str,
+    parsed: dict[str, Any] | None = None,
 ) -> None:
-    labels = _ncs_undeveloped_detail_span_labels(markdown)
-    if not labels:
+    """Aggregate cell-local declarations without tainting an official occurrence."""
+    blocks = _iter_kordoc_table_blocks(parsed or {})
+    if (
+        not any(row.get("mapping_state") == "source_declared_self_developed" for row in evidence_rows)
+        and not _has_any_norm(markdown, _SELF_DEVELOPED_DETAIL_MARKERS)
+        and not any(_has_any_norm(str(block), _SELF_DEVELOPED_DETAIL_MARKERS) for block in blocks)
+    ):
         return
+    html_grids = [_html_table_position_grid(table) for table in re.findall(
+        r"<table[^>]*>.*?</table>", markdown, re.I | re.S,
+    )]
+    # Native PDF cells may include empty padding as well as spans. For the
+    # same complete table content, HTML supplies the unambiguous span grid.
+    html_signatures = {_table_grid_signature(grid) for grid in html_grids}
+    grids = []
+    for index, block in enumerate(blocks):
+        grid = _block_table_position_grid(block)
+        if _table_grid_signature(grid) not in html_signatures:
+            grids.append(("kordoc_table", index, grid))
+    grids.extend(("kordoc_html_table", index, grid) for index, grid in enumerate(html_grids))
+    # Even a single explicit detail row has distinct cells for this check.
+    grids.extend(
+        ("kordoc_markdown_table", index, grid)
+        for index, grid in enumerate(_markdown_table_position_grids(markdown, min_rows=1))
+    )
+    observations: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for source, table_index, grid in grids:
+        undeveloped = _ncs_undeveloped_detail_cells(grid)
+        detail_cells: dict[tuple[int, int], dict[str, Any]] = {}
+        for cells in grid:
+            for label in _origin_cells(cells):
+                if _section_for_label(str(label.get("text") or "")) != "ncs_detail":
+                    continue
+                values, layout = _table_value_cells_for_label(grid, label, section="ncs_detail")
+                parent_columns = []
+                if layout == "column_header_value":
+                    # A horizontal hierarchy declares a detail through its
+                    # own row's parent columns, including merged parents.
+                    header_row = int(label.get("origin_row") or 0)
+                    detail_column = int(label.get("origin_column") or 0)
+                    parent_headers = [
+                        cell for cell in _origin_cells(grid[header_row])
+                        if int(cell.get("origin_column") or 0) < detail_column
+                        and _norm(cell.get("text")) in {"대분류", "중분류", "소분류"}
+                    ][-3:]
+                    if [_norm(cell.get("text")) for cell in parent_headers] == ["대분류", "중분류", "소분류"]:
+                        parent_columns = [int(cell.get("origin_column") or 0) for cell in parent_headers]
+                for cell in values:
+                    coordinate = (int(cell.get("origin_row") or 0), int(cell.get("origin_column") or 0))
+                    detail_cells[coordinate] = cell
+                    row = grid[coordinate[0]]
+                    if any(
+                        column < len(row) and _has_any_norm(
+                            str(row[column].get("text") or ""), _SELF_DEVELOPED_DETAIL_MARKERS,
+                        )
+                        for column in parent_columns
+                    ):
+                        undeveloped.add(coordinate)
+        for row_index, column in undeveloped:
+            detail_cells[(row_index, column)] = grid[row_index][column]
+        for (row_index, column), cell in detail_cells.items():
+            cell_text = str(cell.get("text") or "")
+            self_developed = (row_index, column) in undeveloped or _has_any_norm(
+                cell_text, _SELF_DEVELOPED_DETAIL_MARKERS,
+            )
+            for detail in _expand_composite_detail_candidate(cell_text):
+                if not _looks_like_detail_candidate(detail):
+                    continue
+                observations[_norm(detail)].append({
+                    "source": source, "source_table_index": table_index,
+                    "value_cell": {
+                        "row": row_index, "column": column,
+                        "row_span": max(1, int(cell.get("row_span") or 1)),
+                        "column_span": max(1, int(cell.get("column_span") or 1)),
+                    },
+                    "raw_cell_text": cell_text,
+                    "mapping_state": "source_declared_self_developed"
+                    if self_developed else "requires_official_validation",
+                })
+    # A separate explicit text occurrence also keeps the candidate eligible
+    # for official validation unless it carries its own development marker.
+    for line in markdown.splitlines():
+        value = _inline_ncs_detail_value(line)
+        if value:
+            for detail in _expand_composite_detail_candidate(value):
+                observations[_norm(detail)].append({
+                    "source": "markdown",
+                    "mapping_state": "source_declared_self_developed"
+                    if _has_any_norm(detail, _SELF_DEVELOPED_DETAIL_MARKERS)
+                    else "requires_official_validation",
+                })
     for row in evidence_rows:
-        if _norm(row.get("detail")) in labels:
-            row["mapping_state"] = "source_declared_self_developed"
+        occurrences = observations.get(_norm(row.get("detail")), [])
+        # A located detail cell outranks a snippet spanning adjacent columns,
+        # even when there are no undeveloped cells. Unlocated/plain-text
+        # candidates keep their original declaration evidence.
+        if any("value_cell" in item for item in occurrences):
+            row["occurrences"] = occurrences
+            row["mapping_state"] = (
+                "source_declared_self_developed"
+                if all(item["mapping_state"] == "source_declared_self_developed" for item in occurrences)
+                else "requires_official_validation"
+            )
 
 
 def _detail_candidate_evidence(
@@ -4312,7 +4418,7 @@ def _detail_candidate_evidence(
                 "source_declared_self_developed"
                 if any(
                     _norm(marker) in key
-                    for marker in ("자체개발", "기관자체개발", "NCS 미개발")
+                    for marker in _SELF_DEVELOPED_DETAIL_MARKERS
                 )
                 else "requires_official_validation"
             ),
@@ -4380,7 +4486,7 @@ def _detail_candidate_evidence(
                 evidence["snippet"] = text
         if any(
             _norm(marker) in _norm(evidence.get("snippet"))
-            for marker in ("자체개발", "기관자체개발", "NCS 미개발")
+            for marker in _SELF_DEVELOPED_DETAIL_MARKERS
         ):
             evidence["mapping_state"] = "source_declared_self_developed"
         evidence_rows.append(evidence)
@@ -5203,10 +5309,15 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             if label_index >= 0:
                 current = _section_for_label(cells[label_index])
                 if current and len(cells) > label_index + 1:
-                    separator = "; " if current == "ability_units" else " "
                     if current == "ability_units":
                         cells = _split_table_row(line, preserve_blank_lines=True)
-                    add(current, separator.join(cells[label_index + 1 :]), line=line_no)
+                        values = cells[label_index + 1 :]
+                        if _ability_row_has_detail_heading(values):
+                            values = values[1:]
+                        for value in values:
+                            add(current, value, line=line_no)
+                    else:
+                        add(current, " ".join(cells[label_index + 1 :]), line=line_no)
                 continue
         heading_text = re.sub(r"^#{1,6}\s*", "", line)
         heading_text = re.sub(
@@ -5312,7 +5423,10 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                                     _clean_text(_block_text(cell), normalize_nfkc=False, preserve_blank_lines=True)
                                     for cell in row_cells[label_index + 1 :]
                                 ]
-                                add(section, "; ".join(ability_values), block=block)
+                                if _ability_row_has_detail_heading(ability_values):
+                                    ability_values = ability_values[1:]
+                                for value in ability_values:
+                                    add(section, value, block=block)
                             else:
                                 add(section, " ".join(values[label_index + 1 :]), block=block)
         for child_key in ("children", "blocks", "rows", "cells"):
@@ -5338,7 +5452,10 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             *(item["text"] for item in sections["ncs_detail"] if not item.get("line")),
         ]
     )
-    explicit_detail_candidates = _reconcile_ksa_detail_columns(parsed, markdown, explicit_detail_candidates)
+    detail_candidate_diagnostics: list[dict[str, Any]] = []
+    explicit_detail_candidates = _reconcile_ksa_detail_columns(
+        parsed, markdown, explicit_detail_candidates, detail_candidate_diagnostics,
+    )
     positioned_items, table_scopes = _extract_positioned_table_evidence(
         parsed,
         markdown,
@@ -5417,7 +5534,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         detail_candidates = _extract_contextual_ncs_detail_candidates(markdown)
         detail_source = "contextual" if detail_candidates else ""
     detail_candidate_evidence = _detail_candidate_evidence(detail_candidates, sections, markdown, detail_source)
-    _mark_ncs_undeveloped_span_details(detail_candidate_evidence, markdown)
+    _mark_ncs_undeveloped_span_details(detail_candidate_evidence, markdown, parsed)
     self_developed_details = [
         str(row.get("detail") or "").strip()
         for row in detail_candidate_evidence
@@ -5577,6 +5694,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             "ncs_detail_candidates": detail_candidates,
             "ncs_detail_source": detail_source,
             "ncs_detail_candidate_evidence": detail_candidate_evidence,
+            "ncs_detail_candidate_diagnostics": detail_candidate_diagnostics,
             "ncs_self_developed_detail_candidates": self_developed_details,
             "ncs_detail_absence_reason": "" if detail_candidates else str(absence_diagnostics.get("reason") or ""),
             "ncs_detail_absence_state": "" if detail_candidates else str(absence_diagnostics.get("state") or ""),
@@ -6189,6 +6307,9 @@ def _split_ability_unit_entries(
     if unit_headings:
         return unit_headings
     text = _join_wrapped_comma_delimited_ability_names(text)
+    # A line ending in a conjunction cannot be a complete list item. Preserve
+    # paragraph, bullet and numbered boundaries while repairing a soft wrap.
+    text = re.sub(r"(?<=및)[ \t]*\n[ \t]*(?=[A-Za-z가-힣])", " ", text)
     text = re.sub(
         r"(?<!\d)(\d{10}(?:_[0-9A-Za-z]+)?\s*[.)])\s*\n+\s*(?=[A-Za-z가-힣])",
         r"\1 ",

@@ -195,7 +195,10 @@ def test_fragmented_ksa_column_does_not_guess_similar_complete_name():
 <tr><td>환경관리</td><td>보관 기술</td></tr></table>
 """}
     assert structure_job_description(parsed)["fields"]["ncs_detail_candidates"] == [
-        "지역사회위생관리", "지역사회", "환경관리",
+        "지역사회위생관리", "환경관리",
+    ]
+    assert structure_job_description(parsed)["fields"]["ncs_detail_candidate_diagnostics"] == [
+        {"text": "지역사회", "reason": "ksa_column_fragment_without_detail_declaration"},
     ]
 
 
@@ -227,5 +230,8 @@ def test_ksa_fragments_cannot_join_across_an_empty_table_row():
 <tr><td>위생관리</td><td>보관 기술</td></tr></table>
 """}
     assert structure_job_description(parsed)["fields"]["ncs_detail_candidates"] == [
-        "지역사회위생관리", "지역사회", "위생관리",
+        "지역사회위생관리",
+    ]
+    assert [item["text"] for item in structure_job_description(parsed)["fields"]["ncs_detail_candidate_diagnostics"]] == [
+        "지역사회", "위생관리",
     ]
