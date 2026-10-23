@@ -391,6 +391,34 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
                 return f"{coordination_object} 조정" if coordination.group("action") == "중재" else (
                     f"{coordination_object} {coordination.group('action')}"
                 )
+        # A skill names the act, not an extra verification procedure. Keep
+        # the factor-specific object when removing its type/capability label.
+        # If the result would be the complete official label verbatim, retain
+        # the existing rendering below rather than falling back to a broader
+        # element (public_task_object deliberately rejects identical labels).
+        skill_actions = (
+            (r"\s*예측\s*기법$", " 예측"),
+            (r"\s*기법$", " 방법 적용"),
+            (r"\s*시스템$", " 도구 활용"),
+            (r"\s*수립$", " 수립"),
+            (r"\s*분석$", " 분석"),
+            (r"\s*검증$", " 검증"),
+            (r"\s*작성$", " 작성"),
+            (r"\s*산정$", " 계산"),
+            (r"\s*활용$", " 활용"),
+            (r"\s*적용$", " 적용"),
+            (r"\s*해석$", " 해석"),
+            (r"\s*의사결정$", " 의사결정"),
+            (r"\s*포착$", " 포착"),
+            (r"\s*수정·보완$", " 수정·보완"),
+            (r"\s*개발$", " 개발"),
+        )
+        for pattern, replacement in skill_actions:
+            if re.search(pattern, candidate):
+                action = re.sub(pattern, replacement, candidate).strip()
+                if _key(action) != _key(label):
+                    return action
+                break
         skill_replacements = (
             (r"\s*예측\s*기법$", " 예측·검증 절차"),
             (r"\s*기법$", " 방법 적용·검증 절차"),
@@ -435,9 +463,9 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         if candidate.endswith("절차"):
             return f"{candidate} 적용·검증 기준"
         if candidate.endswith(("방법", "기법")):
-            return f"{candidate} 적용·검증 절차"
+            return f"{candidate} 적용"
         if candidate.endswith(("도구", "장비", "시스템", "프로그램", "소프트웨어")):
-            return f"{candidate} 활용·검증 절차"
+            return f"{candidate} 활용"
         action_suffixes = (
             "기획", "실행", "할당", "배치", "결정", "판별", "식별", "도출", "구현",
             "설계", "제작", "사용", "운반", "처치", "치료", "문서화", "시뮬레이션",
@@ -446,7 +474,7 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             "추출", "운전", "보수", "응용", "조작", "평가", "진단", "제시", "개선",
         )
         if candidate.endswith(action_suffixes):
-            return f"{candidate}·검증 절차"
+            return candidate if _key(candidate) != _key(label) else f"{candidate}·검증 절차"
         if re.search(r"[가-힣](?:는|은)$", candidate):
             return f"{candidate} 절차와 결과 검증 기준"
         if candidate.endswith("게"):

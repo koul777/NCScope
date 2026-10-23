@@ -1870,8 +1870,8 @@ def test_situational_template_uses_domain_specific_risk_event() -> None:
 @pytest.mark.parametrize(
     ("focus_type", "official_focus", "operational_focus", "public_focus"),
     [
-        ("기술", "소비자 패턴분석 능력", "소비자 패턴분석", "소비자 패턴 검토 절차"),
-        ("기술", "문서 오류 검증 기술", "문서 오류 검증", "문서 오류 확인·검증 절차"),
+        ("기술", "소비자 패턴분석 능력", "소비자 패턴분석", "소비자 패턴 분석"),
+        ("기술", "문서 오류 검증 기술", "문서 오류 검증", "문서 오류 검증"),
         ("지식", "문서 보안 법규 지식", "문서 보안 법규", "문서 보안 규정 적용 기준"),
         ("태도", "정확성을 우선하려는 태도", "정확성을 우선하려는 태도", "정확성 우선 행동"),
     ],
@@ -1919,10 +1919,12 @@ def test_skill_factor_object_uses_application_verb_for_method_or_tool() -> None:
         "기술",
     )
 
-    assert "수요 예측·검증 절차를 직접 수행한 행동의 순서" in method_question
+    assert "수요 예측을 직접 수행한 행동의 순서" in method_question
     assert "절차를 따라" not in method_question
     assert "수요예측 기법" not in method_question
-    assert "문서관리 도구 활용 절차를 실제로 수행해야" in tool_question
+    assert "문서관리 도구 활용을 실제로 수행해야" in tool_question
+    assert "검증 절차" not in method_question
+    assert "활용 절차" not in tool_question
     assert _natural_question_wording_ok(
         {"type": "경험면접", "question_focus": "수요예측 기법", "question_focus_type": "기술"},
         method_question,
@@ -1931,7 +1933,7 @@ def test_skill_factor_object_uses_application_verb_for_method_or_tool() -> None:
     assert _natural_question_wording_ok(
         {"type": "경험면접", "question_focus": "수요예측 기법", "question_focus_type": "기술"},
         method_question.replace(
-            "수요 예측·검증 절차를 직접 수행한 행동의 순서",
+            "수요 예측을 직접 수행한 행동의 순서",
             "수요예측 기법을 직접 수행했는지",
         ),
         [],
@@ -2008,8 +2010,9 @@ def test_all_interview_methods_apply_technique_factor_as_observable_task(method:
     item = out["interview_questions"][0]
     visible = "\n".join([item["question"], *item["follow_ups"]])
     assert item["question_focus"] == "수요예측 기법"
-    assert item["question_focus_surface"] == "수요 예측·검증 절차"
-    assert "수요 예측·검증 절차" in visible
+    assert item["question_focus_surface"] == "수요 예측"
+    assert "수요 예측" in visible
+    assert "수요 예측·검증 절차" not in visible
     assert "수요예측 기법" not in visible
     assert any(token in visible for token in ("적용", "수행"))
     assert "기법'을 직접 수행" not in visible
@@ -2107,7 +2110,8 @@ def test_domain_templates_choose_natural_korean_particles() -> None:
     assert "운임 산정 오류가 동시에" in merged
     assert "화주 요청 변경 내역" in merged
     assert "변경 요청서가 주어졌습니다" in merged
-    assert "운임원가 계산·검증 절차를 실제로 수행" in merged
+    assert "운임원가 계산을 실제로 수행" in merged
+    assert "운임원가 계산·검증 절차" not in merged
     assert "'운임원가산정'와" not in merged
     assert "오류이 동시에" not in merged
 

@@ -177,7 +177,8 @@ def test_skill_intent_suffix_becomes_an_observable_procedure() -> None:
         element_name="규칙습득하기",
     )
 
-    assert surface == "레크스포츠 종목에 따른 규칙 적용·검증 절차"
+    assert surface == "레크스포츠 종목에 따른 규칙 적용"
+    assert "검증 절차" not in surface
     assert source == "factor_repair"
     assert "하려는" not in surface
 
@@ -187,14 +188,14 @@ def test_skill_capability_clauses_become_natural_action_nouns() -> None:
         "내담자와 같이 경력 목표를 설정할 수 있는 능력": "내담자와 같이 경력 목표 설정·확인 절차",
         "작품실행에 적합한 예술가를 선택할 수 있는 능력": "작품실행에 적합한 예술가 선정·확인 절차",
         "분야별 설계중첩 및 누락을 조정할 수 있는 능력": "분야별 설계중첩 및 누락 조정",
-        "최적 조건으로 자료를 수정·보완할 수 있는 능력": "최적 조건으로 자료 수정·보완·검증 절차",
-        "새로운 영업기회를 찾아낼 수 있는 기회포착 능력": "새로운 영업기회 포착·검증 절차",
+        "최적 조건으로 자료를 수정·보완할 수 있는 능력": "최적 조건으로 자료 수정·보완",
+        "새로운 영업기회를 찾아낼 수 있는 기회포착 능력": "새로운 영업기회 포착",
         "프로젝트 관리 영역들 간의 관계를 조율하는 능력": "프로젝트 관리 영역들 간의 관계 조율",
-        "직접계측 조사를 기획하고 실행하는 능력": "직접계측 조사 기획·실행·검증 절차",
+        "직접계측 조사를 기획하고 실행하는 능력": "직접계측 조사 기획·실행",
         "관리 대상 리스크를 선정할 수 있는 능력": "관리 대상 리스크 선정·확인 절차",
         "관련 장비를 다루는 능력": "관련 장비를 다루는 절차와 결과 검증 기준",
-        "평가지표에 맞게 수행하는 기술": "평가지표에 맞게 실행·검증 절차",
-        "자재소요량계획 활용 수행 능력": "자재소요량계획 활용·검증 절차",
+        "평가지표에 맞게 수행하는 기술": "평가지표에 맞게 실행",
+        "자재소요량계획 활용 수행 능력": "자재소요량계획 활용",
         "보안 점검 및 설정 수행 능력": "보안 점검 및 설정·확인 절차",
     }
 
@@ -235,7 +236,8 @@ def test_trailing_connective_is_removed_before_skill_task_suffix() -> None:
         element_name="현장 자료 정리하기",
     )
 
-    assert surface == "현장 자료 정리·검증 절차"
+    assert surface == "현장 자료 정리"
+    assert "검증 절차" not in surface
     assert source == "factor_repair"
     assert "정리하고 관련" not in surface
 
