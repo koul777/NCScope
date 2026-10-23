@@ -3011,9 +3011,9 @@ def _skill_focus_action(focus: Any, form: str = "connective") -> str:
     else:
         verb = "수행"
     forms = {
-        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행해", "하다": "하며"},
+        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행하며", "하다": "하며"},
         "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할", "하다": "할"},
-        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야", "하다": "실행해야"},
+        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야", "하다": "해야"},
         "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한", "하다": "한"},
     }
     return forms.get(form, forms["connective"])[verb]
@@ -3024,7 +3024,7 @@ _SKILL_ACTION_NOUN_END_RE = re.compile(
     r"(?:작성|적용|활용|예측|분석|해석|산정|계산|개발|설계|조율|조정|검토|검증|평가|진단|"
     r"정리|조작|구현|제작|기획|실행|관리|운영|처리|수집|분류|점검|조사|선정|설정|파악|"
     r"확인|수립|도출|개선|대응|해결|반영|구성|비교|통제|배치|결정|판별|식별|추정|방지|"
-    r"추출|운전|보수|응용|제시|의사결정|포착|수정·보완|유지|선택|선별|배양|정보검색)$"
+    r"추출|운전|보수|응용|제시|의사결정|포착|수정·보완|유지|선택|선별|배양|정보검색|수행)$"
 )
 _SKILL_TOOL_SURFACE_RE = re.compile(r"(?:도구|장비|시스템|프로그램|소프트웨어|양식)")
 
@@ -6162,9 +6162,14 @@ def _question_for_method(
                 f"{situation_text}"
             )
         else:
-            situation_focus_context = (
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'must')} 하는 가운데 "
-                f"{situation_text}"
+            # Present the conditions first, then keep the skill task beside
+            # the requested actions even when a long variation is supplied.
+            return (
+                f"{label} 업무 중 {situation_text}입니다. "
+                f"{variation_sentence}"
+                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'must')} 하는 가운데, "
+                "어떤 기준으로 판단하고 위험요인을 어떻게 통제하며, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까? "
+                f"{measurement_instruction}"
             )
         return (
             f"{label} 업무 중 {situation_focus_context}입니다. "

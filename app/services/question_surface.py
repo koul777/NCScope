@@ -18,6 +18,12 @@ _DANGLING_END_RE = re.compile(
     r"(?:에\s*대한|에\s*관한|을\s*위한|를\s*위한|에\s*따른|을\s*통한|를\s*통한|"
     r"하고|하며|하여|해서|따른|통한|관련된|하는|되는|대한|위한|의)\s*$"
 )
+# Only used when dropping 수행. Ambiguous endings keep that noun, rather
+# than exposing a connective, particle or modifier as the task object.
+_PERFORMANCE_NON_NOUN_END_RE = re.compile(
+    r"(?:및|또는|혹은|그리고|[·ㆍ․,/]|와|과|에서|으로|로|을|를|의|에|은|는|"
+    r"한|된|인|할|될|던|게|히|적으로)\s*$"
+)
 _SENTENCE_END_RE = re.compile(r"(?:다|한다|된다|있다|없다)[.!?]?\s*$")
 _GENERIC_OBJECT_KEYS = {
     "지식",
@@ -369,8 +375,10 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         candidate = re.sub(r"\s*하려는\s*$", "", candidate).strip()
         candidate = re.sub(r"\s*에\s*(?:대한|관한)\s*(?=(?:활용|해석|분석|검토|판단|적용)\s*$)", " ", candidate)
         candidate = re.sub(r"(?P<action>활용|설정)\s+수행\s*$", r"\g<action>", candidate)
+        candidate = re.sub(r"관리\s+관리$", "관리", candidate)
         candidate = re.sub(
             r"(?P<object>.+?)(?:을|를)\s*(?P<action>정리|설정|선택|선정|선별|조정|조율|활용|적용|"
+            r"수집|정보검색|분류|처리|운영|관리|파악|점검|배양|유지|"
             r"해석|조사|의사결정|포착|수정·보완|기획|실행|할당|배치|결정|판별|식별|도출|구현|"
             r"설계|제작|사용|운반|처치|치료|문서화|가공|조절|교체|대응|해결|반영|갱신|계획|"
             r"구성|비교|통제|보고|분할|계산|추정|예측|방지|추출|운전|보수|응용|조작|평가|진단|제시|개선)$",
@@ -382,6 +390,18 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             or re.search(r"(?:게|히|적으로|동시에|바탕으로)\s+수행$", candidate)
         ):
             return f"{_compact_task_base(candidate)}하는 절차와 결과 검증 기준"
+        if candidate.endswith("수행"):
+            task = re.sub(r"\s*수행$", "", candidate).strip()
+            if (
+                _useful_object(task, official_factor=label)
+                and not _PERFORMANCE_NON_NOUN_END_RE.search(task)
+            ):
+                return task
+            # Keep 수행 when the remainder is incomplete or too short (면담).
+            # It is still distinct from the official 능력/기술 evidence label.
+            retained = re.sub(r"\s*수행$", " 수행", candidate).strip()
+            if _useful_object(retained, official_factor=label):
+                return retained
         coordination = re.match(r"(?P<object>.+?)\s*(?P<action>조율|조정|중재)$", candidate)
         if coordination:
             # Coordination skills are the coordinating act itself; do not turn
@@ -412,11 +432,29 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             (r"\s*포착$", " 포착"),
             (r"\s*수정·보완$", " 수정·보완"),
             (r"\s*개발$", " 개발"),
+            (r"\s*수집$", " 수집"),
+            (r"\s*정보검색$", " 정보 검색"),
+            (r"\s*분류$", " 분류"),
+            (r"\s*처리$", " 처리"),
+            (r"\s*운영$", " 운영"),
+            (r"\s*관리$", " 관리"),
+            (r"\s*파악$", " 파악"),
+            (r"\s*점검$", " 점검"),
+            (r"\s*설정$", " 설정"),
+            (r"\s*선택$", " 선택"),
+            (r"\s*선정$", " 선정"),
+            (r"\s*선별$", " 선별"),
+            (r"\s*조사$", " 조사"),
+            (r"\s*배양$", " 배양"),
+            (r"\s*유지$", " 유지"),
         )
         for pattern, replacement in skill_actions:
             if re.search(pattern, candidate):
                 action = re.sub(pattern, replacement, candidate).strip()
-                if _key(action) != _key(label):
+                # Keep the established factor surface if shortening would be
+                # rejected later by the public-object guard.
+                # Otherwise public_task_object would choose a broader element.
+                if _useful_object(action, official_factor=label):
                     return action
                 break
         skill_replacements = (

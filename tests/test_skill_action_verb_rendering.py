@@ -72,3 +72,52 @@ def test_experience_tool_surface_does_not_ask_for_the_tool_twice() -> None:
     assert surface in item["question"]
     assert "그때 쓴 도구" not in item["question"]
     assert "행동의 순서와 만든 결과물, 결과를 확인한 방법을 설명해 주세요." in item["question"]
+
+
+@pytest.mark.parametrize(
+    ("factor", "particle"),
+    (
+        ("계약서의 내용 파악 능력", "을"),
+        ("화면전환효과 선택 능력", "을"),
+        ("식재료 선별 능력", "을"),
+        ("무게중심 유지 능력", "를"),
+        ("미생물 배양 능력", "을"),
+        ("보고서 작성 능력", "을"),
+    ),
+)
+def test_situational_action_noun_uses_haeya_without_extra_execution(factor: str, particle: str) -> None:
+    row = _row(factor)
+    for variation_index in (0, 27):
+        item = build_template_question(row, "상황면접", variation_index=variation_index)
+        evaluated = _attach_ksa_evidence_to_strategy(
+            {"interview_questions": [item], "question_plan_used": {"total_main_count": 1}},
+            [evidence_row(row)],
+        )
+        question = evaluated["interview_questions"][0]
+        surface = question["question_focus_surface"]
+
+        assert f"{surface}{particle} 실제로 해야 하는 가운데" in question["question"]
+        assert "실제로 실행해야" not in question["question"]
+        assert question["question_focus"] == factor
+        assert question["ksa_evidence"][0]["factorName"] == factor
+        assert question["question_evidence_id"] == stable_ksa_evidence_id(evidence_row(row))
+        assert evaluated["question_quality_report"]["items"][0]["ready"] is True
+
+
+@pytest.mark.parametrize("method", ("인바스켓면접", "창의적 문제해결력면접"))
+def test_performance_task_uses_matching_concurrent_connective(method: str) -> None:
+    row = _row("피교육생의 수준에 맞는 교육 수행능력")
+    for variation_index in (0, 27):
+        item = build_template_question(row, method, variation_index=variation_index)
+        evaluated = _attach_ksa_evidence_to_strategy(
+            {"interview_questions": [item], "question_plan_used": {"total_main_count": 1}},
+            [evidence_row(row)],
+        )
+        question = evaluated["interview_questions"][0]
+
+        assert "피교육생의 수준에 맞는 교육을 실제로 수행하며" in question["question"]
+        assert "실제로 수행해" not in question["question"]
+        assert question["question_focus"] == row["factor_name"]
+        assert question["ksa_evidence"][0]["factorName"] == row["factor_name"]
+        assert question["question_evidence_id"] == stable_ksa_evidence_id(evidence_row(row))
+        assert evaluated["question_quality_report"]["items"][0]["ready"] is True
