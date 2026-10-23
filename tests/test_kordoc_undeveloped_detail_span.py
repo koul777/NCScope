@@ -10,6 +10,8 @@ that failed to match. Official names in the other columns stay unchanged.
 
 from __future__ import annotations
 
+import pytest
+
 from app.services.kordoc_parser import structure_job_description
 
 # 4.24.1 shape: the 세분류 label spans two rows; the declaration spans seven
@@ -92,3 +94,63 @@ def test_parenthesized_detail_names_without_undeveloped_declaration_stay_officia
     assert all(
         state == "requires_official_validation" for state in _states(fields).values()
     )
+
+
+@pytest.mark.parametrize("official_first", [True, False])
+def test_same_detail_name_in_official_and_undeveloped_tables_keeps_official_candidate(official_first):
+    own = _DECLARATION_ABOVE_DETAIL_ROW.replace("(건강보험<br>제도연구)", "사무행정")
+    official = "<table><tr><td>세분류</td><td>02. 사무행정</td></tr></table>"
+    fields = _fields(official + own if official_first else own + official)
+    assert _states(fields)["사무행정"] == "requires_official_validation"
+    assert "사무행정" not in fields["ncs_self_developed_detail_candidates"]
+
+
+def test_same_detail_name_in_adjacent_official_column_is_not_self_developed():
+    markdown = _DECLARATION_ABOVE_DETAIL_ROW.replace("03. 통계<br>조사", "02. 사무행정").replace(
+        "(건강보험<br>제도연구)", "사무행정"
+    )
+    fields = _fields(markdown)
+    assert _states(fields)["사무행정"] == "requires_official_validation"
+    evidence = next(row for row in fields["ncs_detail_candidate_evidence"] if row["detail"] == "사무행정")
+    assert {item["mapping_state"] for item in evidence["occurrences"]} == {
+        "requires_official_validation", "source_declared_self_developed",
+    }
+    assert len({item["value_cell"]["column"] for item in evidence["occurrences"]}) == 2
+
+
+@pytest.mark.parametrize("label", ["02. 사무행정", "02．사무행정", "02 사무행정"])
+def test_numbered_detail_under_undeveloped_span_remains_validation_candidate(label):
+    fields = _fields(_DECLARATION_ABOVE_DETAIL_ROW.replace("(건강보험<br>제도연구)", label))
+    assert _states(fields)["사무행정"] == "requires_official_validation"
+    assert "사무행정" not in fields["ncs_self_developed_detail_candidates"]
+
+
+def test_undeveloped_span_stops_at_next_hierarchy_even_in_same_table():
+    markdown = """<table>
+<tr><td>대분류</td><td>NCS 미개발</td></tr>
+<tr><td>세분류</td><td>자체업무</td></tr>
+<tr><td>대분류</td><td>02. 경영·회계·사무</td></tr>
+<tr><td>중분류</td><td>02. 총무·인사</td></tr>
+<tr><td>소분류</td><td>03. 일반사무</td></tr>
+<tr><td>세분류</td><td>사무행정</td></tr></table>"""
+    fields = _fields(markdown)
+    assert _states(fields)["자체업무"] == "source_declared_self_developed"
+    assert _states(fields)["사무행정"] == "requires_official_validation"
+
+
+def test_undeveloped_span_stops_at_a_new_detail_label():
+    fields = _fields("""<table>
+<tr><td>대분류</td><td>NCS 미개발</td></tr>
+<tr><td>세분류</td><td>자체업무</td></tr>
+<tr><td>세분류</td><td>사무행정</td></tr></table>""")
+    assert _states(fields)["자체업무"] == "source_declared_self_developed"
+    assert _states(fields)["사무행정"] == "requires_official_validation"
+
+
+def test_native_only_undeveloped_cell_does_not_taint_same_name_official_column():
+    fields = structure_job_description({"blocks": [{"type": "table", "rows": [
+        ["대분류", "02. 경영·회계·사무", "NCS 미개발"],
+        ["세분류", "02. 사무행정", "사무행정"],
+    ]}]})["fields"]
+    assert _states(fields)["사무행정"] == "requires_official_validation"
+    assert fields["ncs_self_developed_detail_candidates"] == []
