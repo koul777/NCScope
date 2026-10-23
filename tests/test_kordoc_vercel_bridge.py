@@ -59,7 +59,7 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
                 {
                     "success": True,
                     "parser": "kordoc",
-                    "parser_version": "4.9.1",
+                    "parser_version": "4.24.1",
                     "markdown": "세분류: 프로젝트관리",
                     "blocks": [],
                     "metadata": {},
@@ -87,7 +87,7 @@ def test_vercel_bridge_parses_binary_with_required_shared_secret(monkeypatch: py
     assert request["headers"]["content-type"] == "application/octet-stream"
     assert request["headers"]["x-ncscope-kordoc-secret"] == shared_secret
     assert result["parser"] == "kordoc"
-    assert result["parser_version"] == "4.9.1"
+    assert result["parser_version"] == "4.24.1"
 
 
 def test_vercel_bridge_signs_each_request_with_ed25519(
@@ -111,7 +111,7 @@ def test_vercel_bridge_signs_each_request_with_ed25519(
                 {
                     "success": True,
                     "parser": "kordoc",
-                    "parser_version": "4.9.1",
+                    "parser_version": "4.24.1",
                     "markdown": "document",
                     "blocks": [],
                     "metadata": {},
@@ -313,7 +313,7 @@ def test_unattested_vercel_bridge_never_receives_document(
             {
                 "markdown": "세분류: 프로젝트관리",
                 "parser": "kordoc",
-                "parser_version": "4.9.1",
+                "parser_version": "4.24.1",
             },
             "kordoc",
         ),
@@ -324,7 +324,7 @@ def test_structured_review_reports_truthful_parser_provenance(parsed: dict, expe
 
     assert result["parser"] == expected
     if expected == "kordoc":
-        assert result["parser_version"] == "4.9.1"
+        assert result["parser_version"] == "4.24.1"
     else:
         assert "parser_version" not in result
 
@@ -356,7 +356,7 @@ def test_zip_review_preserves_each_member_parser_provenance(monkeypatch: pytest.
             return {
                 "markdown": "세분류: 프로젝트관리",
                 "parser": "kordoc",
-                "parser_version": "4.9.1",
+                "parser_version": "4.24.1",
                 "metadata": {},
             }
         return {
@@ -395,7 +395,7 @@ def test_parser_execution_is_bound_to_static_runtime_bundle() -> None:
                 "role": "selected",
                 "parser": "kordoc",
                 "mode": "local_node_subprocess",
-                "parser_version": "4.9.1",
+                "parser_version": "4.24.1",
                 "node_version": "24.0.0",
                 "build_identity": {"kind": "local_source_bundle"},
             }
@@ -420,7 +420,7 @@ def test_parser_execution_is_bound_to_static_runtime_bundle() -> None:
                 "role": "selected",
                 "parser": "kordoc",
                 "mode": "local_node_subprocess",
-                "parser_version": "4.9.1",
+                "parser_version": "4.24.1",
                 "node_version": "24.0.0",
                 "build_identity": {"kind": "not_the_execution_source"},
             }
@@ -444,7 +444,7 @@ def test_remote_execution_must_match_current_vercel_deployment(
                 "role": "selected",
                 "parser": "kordoc",
                 "mode": "authenticated_serverless_bridge",
-                "parser_version": "4.9.1",
+                "parser_version": "4.24.1",
                 "node_version": "24.0.0",
                 "build_identity": {
                     "kind": "vercel_deployment",
@@ -463,13 +463,13 @@ def test_kordoc_result_rejects_missing_or_stale_execution_identity() -> None:
     base = {
         "success": True,
         "parser": "kordoc",
-        "parser_version": "4.9.1",
+        "parser_version": "4.24.1",
         "parser_execution": {
             "schema_version": "ncscope_parser_execution_v1",
             "role": "selected",
             "parser": "kordoc",
             "mode": "local_node_subprocess",
-            "parser_version": "4.9.1",
+            "parser_version": "4.24.1",
             "node_version": "24.0.0",
             "build_identity": {"kind": "local_source_bundle"},
         },

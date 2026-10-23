@@ -426,7 +426,7 @@ def test_worker_is_not_started_once_the_deadline_has_passed(
 
 
 _FAKE_KORDOC_MODULE = """
-export const VERSION = "4.9.1";
+export const VERSION = "4.24.1";
 export async function parse(bytes) {
   const kind = Buffer.from(bytes).toString("utf8");
   const block = (fontName) => ({ type: "paragraph", text: kind, style: { fontSize: 10, fontName } });

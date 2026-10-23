@@ -8,7 +8,7 @@ const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 // Vercel rejects function responses above 4.5 MB. Keep a safety margin so the
 // platform never replaces our controlled error with a generic 500 response.
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-const KORDOC_VERSION = "4.9.1";
+const KORDOC_VERSION = "4.24.1";
 const SIGNATURE_TTL_SECONDS = 120;
 const ED25519_PUBLIC_KEY_RAW = "VBlGEy_kzpdThiEEmtrGj7hU6bfUkNtw0SjIrXwK8vA";
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
