@@ -141,10 +141,19 @@ def _compact_task_base(value: Any, *, max_chars: int = 62) -> str:
 
 
 def _object_particle(word: str) -> str:
-    last = str(word or "").strip()[-1:]
+    """Return 을/를 for the last Korean word, or "" when it cannot be told."""
+
+    text = str(word or "").strip()
+    # ``표준(Code &; Standard)`` takes the particle of ``표준``.
+    while True:
+        stripped = re.sub(r"\s*\([^()]*\)$", "", text).strip()
+        if stripped == text:
+            break
+        text = stripped
+    last = text[-1:]
     if "가" <= last <= "힣":
         return "을" if (ord(last) - 0xAC00) % 28 else "를"
-    return "를"
+    return ""
 
 
 def _nominalize_attitude_clause(value: Any) -> str:
@@ -158,19 +167,56 @@ def _nominalize_attitude_clause(value: Any) -> str:
         r"\g<object> 하려는",
         text,
     )
+    # ``하고자 한`` is the same present intention; a past ``하려 했던``
+    # clashed with the hypothetical situation/discussion/in-basket prompts.
     text = re.sub(
-        r"(?P<object>.+?(?:을|를))\s*하고자\s*한",
-        r"\g<object> 하려 했던",
+        r"(?P<object>.+?(?:을|를))\s*하고자\s*한(?![가-힣])",
+        r"\g<object> 하려는",
         text,
     )
     # When "하고자" follows a verb stem ("달성하고자") it expresses
     # intention, not the generic verb "하다". Preserve that stem instead of
     # creating fused wording such as "달성실행하는".
     text = re.sub(r"(?P<stem>[가-힣]+)하고자\s*하는", r"\g<stem>하려는", text)
-    text = re.sub(r"(?P<stem>[가-힣]+)하고자\s*한", r"\g<stem>하려 했던", text)
-    text = re.sub(r"할\s*수\s*있도록", "가능하도록", text)
-    text = re.sub(r"할\s*수\s*있는", "가능한", text)
+    text = re.sub(r"(?P<stem>[가-힣]+)하고자\s*한(?![가-힣])", r"\g<stem>하려는", text)
+    # ``제시할 수 있는`` stays as written: turning it into ``가능한`` fused
+    # the verb into ``제시가능한``.
     return text.strip()
+
+
+# Attitude labels that end in a trait noun read as ``책임감 있는 행동``.
+# Nouns such as ``사고``, ``숙지`` or ``달성`` do not take ``있는`` and are
+# left as written.
+_ATTITUDE_TRAIT_NOUNS = (
+    "책임감",
+    "사명감",
+    "적극성",
+    "성실성",
+    "유연성",
+    "융통성",
+    "일관성",
+    "자부심",
+)
+
+
+def _compact_clause_tail(value: str, *, max_chars: int = 62) -> str:
+    """Shorten a verbal attitude clause from the front so its verb survives."""
+
+    text = _clean(value, max_chars=180)
+    if len(text) <= max_chars:
+        return text
+    words = text.split()
+    kept: list[str] = []
+    for word in reversed(words):
+        if len(" ".join([word, *kept])) > max_chars:
+            break
+        kept.insert(0, word)
+    # Do not start inside a parenthesis or on a bare connector.
+    while kept and (")" in kept[0] and "(" not in " ".join(kept)):
+        kept.pop(0)
+    while kept and re.fullmatch(r"(?:및|또는|혹은|그리고|등|,)", kept[0]):
+        kept.pop(0)
+    return " ".join(kept).strip(" ,.;:·ㆍ/-") if len(kept) >= 2 else ""
 
 
 def _nominalize_capability_clause(value: Any) -> str:
@@ -264,7 +310,8 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # modifier of the observable behaviour; stripping its ending left
         # broken stems such as ``정확도 기`` or ``협 관련``.
         verbal_clause = re.search(
-            r"(?:려는|고자\s*하는|[가-힣]하는|도록\s*하는|(?:을|를)\s*위한)\s*(?:태도|자세|의지|의식)\s*$",
+            r"(?:려는|고자\s*하는|고자\s*한|하는|수\s*있는|(?:을|를)\s*위한)"
+            r"\s*(?:태도|자세|의지|의식)\s*$",
             candidate,
         )
         candidate = re.sub(r"\s*(?:태도|자세|의지|의식)\s*$", "", candidate).strip()
@@ -285,11 +332,11 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # ``선택가능한 결정적 행동`` is an incomplete/non-operational source
         # fragment, not a measurable task. Let the caller fall back to the
         # NCS element or competency name instead of exposing it verbatim.
-        if re.search(r"선택\s*가능|결정적\s*$|결정적\s+행동", candidate):
+        if re.search(r"선택\s*(?:가능|할\s*수\s*있)|결정적\s*$|결정적\s+행동", candidate):
             return ""
-        if verbal_clause and re.search(r"(?:려는|하는|위한)$", candidate):
-            clause = _compact_task_base(candidate)
-            if re.search(r"(?:려는|하는|위한)$", clause):
+        if verbal_clause and re.search(r"(?:려는|하는|위한|있는)$", candidate):
+            clause = _compact_clause_tail(candidate)
+            if re.search(r"(?:려는|하는|위한|있는)$", clause):
                 return f"{clause} 행동"
         if _DANGLING_END_RE.search(candidate):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
@@ -307,7 +354,11 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             # different obligation the KSA never states.
             keep_base = re.sub(r"\s*(?:을|를)$", "", _compact_task_base(candidate[:-2])).strip()
             if keep_base:
-                return f"{keep_base}{_object_particle(keep_base)} 유지하는 행동"
+                particle = _object_particle(keep_base)
+                if not particle:
+                    # ``KPI 유지``: keep the official wording, do not guess.
+                    return f"{keep_base} 유지 행동"
+                return f"{keep_base}{particle} 유지하는 행동"
         if candidate.endswith("우선"):
             priority_base = re.sub(r"(?:을|를)$", "", candidate[:-2].strip()).strip()
             return f"{_compact_task_base(priority_base)} 우선 행동"
@@ -328,15 +379,19 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             candidate,
         ).strip()
         candidate = _compact_task_base(candidate)
-        candidate = re.sub(
-            r"(?P<object>[0-9A-Za-z가-힣)]+)의\s+준수$",
-            lambda match: f"{match.group('object')}{_object_particle(match.group('object'))} 준수",
-            candidate,
-        )
+        observance = re.match(r"(?P<object>.+?)의\s+준수$", candidate)
+        if observance:
+            particle = _object_particle(observance.group("object"))
+            if not particle:
+                # ``Code의 준수``: keep the official particle, do not guess.
+                return f"{candidate} 행동"
+            candidate = f"{observance.group('object')}{particle} 준수"
         if candidate.endswith(("의사소통", "소통", "협업", "조율", "준수")):
             return f"{candidate}하는 행동"
         if candidate.endswith("이해"):
             return f"{candidate}하고 공유하는 행동"
+        if candidate.endswith(_ATTITUDE_TRAIT_NOUNS):
+            return f"{candidate} 있는 행동"
         return f"{candidate} 행동" if candidate else ""
 
     if kind == "지식":
