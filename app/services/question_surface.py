@@ -507,7 +507,13 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
                 return task
             # Keep 수행 when the remainder is incomplete or too short (면담).
             # It is still distinct from the official 능력/기술 evidence label.
-            retained = re.sub(r"\s*수행$", " 수행", candidate).strip()
+            # A middle dot or slash join keeps the source spacing
+            # (``계획·수행``); only a bare noun gets a space
+            # (``역할수행`` -> ``역할 수행``).
+            if re.search(r"[·ㆍ․/]\s*수행$", candidate) or not task:
+                retained = candidate
+            else:
+                retained = f"{task} 수행"
             if _useful_object(retained, official_factor=label):
                 return retained
         coordination = re.match(r"(?P<object>.+?)\s*(?P<action>조율|조정|중재)$", candidate)
@@ -559,10 +565,11 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         for pattern, replacement in skill_actions:
             if re.search(pattern, candidate):
                 action = re.sub(pattern, replacement, candidate).strip()
-                # Keep the established factor surface if shortening would be
-                # rejected later by the public-object guard.
-                # Otherwise public_task_object would choose a broader element.
-                if _useful_object(action, official_factor=label):
+                # A short action (``분석``) is rejected by public_task_object,
+                # which then uses the element name. Falling through to the
+                # replacements below instead invented wording such as
+                # ``검토 절차`` for ``분석 능력``.
+                if _key(action) != _key(label):
                     return action
                 break
         skill_replacements = (
