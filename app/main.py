@@ -5654,6 +5654,9 @@ def _scenario_condition_text(value: Any) -> str:
     return f"{_with_josa(scenario, '이', '가')} 동시에 발생한 상황"
 
 
+# A coordination-skill surface such as ``관계 조율`` names the act itself.
+_COORDINATION_SURFACE_RE = re.compile(r"^(?P<object>.+\S)\s+(?P<action>조율|조정)$")
+
 # Same limit as the experience entry in ``_natural_question_wording_ok``.
 _EXPERIENCE_MAIN_QUESTION_MAX_CHARS = 360
 
@@ -6083,7 +6086,11 @@ def _question_for_method(
             decision_requirement = "제시안에는 적용 범위·예외·검증·실행 책임을 명시하세요."
         else:
             debate_focus_context = (
-                f"{prompt_focus}에 따라 실제 수행 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                (
+                    f"{_with_josa(prompt_focus, '을', '를')} 실제로 수행할 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                    if _COORDINATION_SURFACE_RE.match(prompt_focus)
+                    else f"{prompt_focus}에 따라 실제 수행 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                )
             )
             decision_requirement = "제시안에는 수행 단계·산출물·품질 검증·실행 책임을 명시하세요."
         return (
@@ -6201,9 +6208,17 @@ def _question_for_method(
         )
     else:
         tool_phrase = "자료나 방법" if _INTERPERSONAL_SKILL_RE.search(prompt_focus) else "도구"
+        if _COORDINATION_SURFACE_RE.match(prompt_focus):
+            # A coordination skill is asked as the coordinating act the
+            # candidate took on, not as a procedure that was "performed".
+            skill_act = f"직접 맡은 {prompt_focus}에서 한"
+        else:
+            skill_act = (
+                f"{_with_josa(prompt_focus, '을', '를')} 직접 "
+                f"{_skill_focus_action(prompt_focus, 'past')}"
+            )
         evidence_task = (
-            f"그 경험에서 본인이 {_with_josa(prompt_focus, '을', '를')} 직접 "
-            f"{_skill_focus_action(prompt_focus, 'past')} 행동의 순서와 그때 쓴 {tool_phrase}, "
+            f"그 경험에서 본인이 {skill_act} 행동의 순서와 그때 쓴 {tool_phrase}, "
             "만든 결과물과 확인한 결과"
         )
     task_sentence = f" {_with_josa(evidence_task, '을', '를')} 설명해 주세요."

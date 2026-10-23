@@ -76,8 +76,8 @@ def test_variation_only_guides_the_choice_of_one_case(focus_type: str, focus: st
 @pytest.mark.parametrize(
     ("focus", "verb", "means"),
     [
-        ("프로젝트 관리 영역들 간의 관계를 조율하는 능력", "수행한", "자료나 방법"),
-        ("갈등중재기술", "수행한", "자료나 방법"),
+        ("프로젝트 관리 영역들 간의 관계를 조율하는 능력", "맡은", "자료나 방법"),
+        ("갈등중재기술", "맡은", "자료나 방법"),
         ("수요예측 기법", "수행한", "도구"),
         ("문서관리 시스템", "수행한", "도구"),
     ],
@@ -92,7 +92,13 @@ def test_skill_question_asks_for_the_past_action_not_procedure_following(
 
         assert "절차를 따라" not in question
         assert "따라 직접" not in question
-        assert re.search(rf"를 직접 {verb} 행동의 순서와 그때 쓴 {means}, ", question), question
+        if verb == "맡은":
+            # Coordination skills are asked as the coordinating act.
+            assert re.search(rf"직접 맡은 .+ (?:조율|조정)에서 한 행동의 순서와 그때 쓴 {means}, ", question), question
+            assert "검증 절차" not in question
+            assert "을 직접 수행한" not in question
+        else:
+            assert re.search(rf"를 직접 {verb} 행동의 순서와 그때 쓴 {means}, ", question), question
         if means == "자료나 방법":
             assert "그때 쓴 도구" not in question
 

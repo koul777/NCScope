@@ -2065,8 +2065,9 @@ def test_compound_skill_suffix_still_counts_as_followup_focus_context() -> None:
 
     item = out["interview_questions"][0]
     assert "갈등중재기술" not in item["question"]
-    assert item["question_focus_surface"] == "갈등 조정 절차"
-    assert "갈등 조정 절차를 직접 수행한 행동의 순서와 그때 쓴 자료나 방법" in item["question"]
+    assert item["question_focus_surface"] == "갈등 조정"
+    assert "직접 맡은 갈등 조정에서 한 행동의 순서와 그때 쓴 자료나 방법" in item["question"]
+    assert "검증 절차" not in item["question"]
     assert "절차를 따라" not in item["question"]
     quality = out["question_quality_report"]["items"][0]
     assert quality["ready"] is False

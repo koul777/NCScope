@@ -236,7 +236,9 @@ def _element_task_object(element_name: Any, kind: str) -> str:
     if kind == "기술":
         if element.endswith("설정"):
             return f"{element}·확인 절차"
-        if element.endswith(("선정", "선택", "조정", "조율", "활용", "의사결정")):
+        if element.endswith(("조정", "조율")):
+            return element
+        if element.endswith(("선정", "선택", "활용", "의사결정")):
             return f"{element}·검증 절차"
     suffix = {
         "지식": " 관련 정보 확인 기준",
@@ -380,6 +382,15 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             or re.search(r"(?:게|히|적으로|동시에|바탕으로)\s+수행$", candidate)
         ):
             return f"{_compact_task_base(candidate)}하는 절차와 결과 검증 기준"
+        coordination = re.match(r"(?P<object>.+?)\s*(?P<action>조율|조정|중재)$", candidate)
+        if coordination:
+            # Coordination skills are the coordinating act itself; do not turn
+            # them into a verification procedure the KSA never names.
+            coordination_object = _compact_task_base(coordination.group("object"))
+            if coordination_object:
+                return f"{coordination_object} 조정" if coordination.group("action") == "중재" else (
+                    f"{coordination_object} {coordination.group('action')}"
+                )
         skill_replacements = (
             (r"\s*예측\s*기법$", " 예측·검증 절차"),
             (r"\s*기법$", " 방법 적용·검증 절차"),
@@ -401,9 +412,6 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             (r"\s*선택$", " 선정·확인 절차"),
             (r"\s*선정$", " 선정·확인 절차"),
             (r"\s*선별$", " 선정·확인 절차"),
-            (r"\s*조정$", " 조정·검증 절차"),
-            (r"\s*조율$", " 조율·검증 절차"),
-            (r"\s*중재$", " 조정 절차"),
             (r"\s*활용$", " 활용·검증 절차"),
             (r"\s*적용$", " 적용·검증 절차"),
             (r"\s*해석$", " 해석·검증 절차"),

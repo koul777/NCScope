@@ -75,6 +75,8 @@ def _row(factor: str, ksa_type: str) -> dict[str, str]:
         ("태도", "정확성 유지"),
         ("지식", "자국의 대외정책, 공적개발원조정책, 국별협력전략"),
         ("지식", "문서 보안 법규 지식"),
+        ("기술", "프로젝트 관리 영역들 간의 관계를 조율하는 능력"),
+        ("기술", "이해관계자 간 이견을 조정하는 능력"),
     ],
 )
 def test_every_method_renders_behaviour_and_check_surfaces_and_keeps_evidence(
@@ -102,9 +104,17 @@ def test_every_method_renders_behaviour_and_check_surfaces_and_keeps_evidence(
             assert "행동 기준" not in visible
             assert "행동 기준을 지키" not in visible
             assert "행동이 드러난 본인의 실제 행동" not in visible
-        else:
+        elif ksa_type == "지식":
             assert "확인·판단 기준" not in visible
             assert "적용·판단 기준" not in visible
+        else:
+            # Coordination skills keep the coordinating act; the KSA never
+            # names a verification procedure.
+            surface = question["question_focus_surface"]
+            assert surface.endswith(("조율", "조정")), surface
+            assert "검증" not in surface and "절차" not in surface
+            assert f"{surface}·검증" not in visible
+            assert "조율·검증 절차" not in visible and "조정·검증 절차" not in visible
 
 
 def test_experience_knowledge_question_says_judgment_once() -> None:
