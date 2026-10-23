@@ -168,7 +168,16 @@ python scripts/perf_kpi.py diff-policy --base <기준 커밋>
 | 검토 에이전트 | Claude `ncs-question-reviewer`, `ncs-corpus-auditor` | 문항 문장, 문서별 판정 변화 확인 |
 
 Cursor Agent는 `.cmd` 대신 `%LOCALAPPDATA%/cursor-agent/versions/<버전>/node.exe index.js`로
-실행함.
+실행함. Git Bash가 아니라 PowerShell에서 실행해야 함(Orca가 설치한 Cursor 훅이 PowerShell
+명령이라 Git Bash에서는 구문 오류로 도구 호출이 모두 막힘). 기본 모델이 월 사용 한도에 걸리면
+지출 한도를 설정하지 않고 `--model auto`로 바꿈.
+
+Codex `workspace-write` 샌드박스는 이 PC에서 anaconda 패키지 읽기가 막혀 pytest가 돌지 않음.
+구현은 사용자 설정 그대로 실행하고, 읽기 전용 검토는 `-s read-only`로 실행함.
+
+지연시간 KPI는 구현자가 동시에 측정을 돌리면 25% 넘게 흔들림. 라운드 중에는 기준·후보를 같은
+시점에 번갈아 재는 교차 측정으로 확인하고 `--allow`에 그 수치를 남김. 최종 판정은 구현자를 모두
+멈춘 뒤 단독 측정으로 함.
 
 ## 라운드 진행
 
