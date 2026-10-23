@@ -18,6 +18,12 @@ _DANGLING_END_RE = re.compile(
     r"(?:에\s*대한|에\s*관한|을\s*위한|를\s*위한|에\s*따른|을\s*통한|를\s*통한|"
     r"하고|하며|하여|해서|따른|통한|관련된|하는|되는|대한|위한|의)\s*$"
 )
+# Only used when dropping 수행. Ambiguous endings keep that noun, rather
+# than exposing a connective, particle or modifier as the task object.
+_PERFORMANCE_NON_NOUN_END_RE = re.compile(
+    r"(?:및|또는|혹은|그리고|[·ㆍ․,/]|와|과|에서|으로|로|을|를|의|에|은|는|"
+    r"한|된|인|할|될|던|게|히|적으로)\s*$"
+)
 _SENTENCE_END_RE = re.compile(r"(?:다|한다|된다|있다|없다)[.!?]?\s*$")
 _GENERIC_OBJECT_KEYS = {
     "지식",
@@ -384,6 +390,18 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             or re.search(r"(?:게|히|적으로|동시에|바탕으로)\s+수행$", candidate)
         ):
             return f"{_compact_task_base(candidate)}하는 절차와 결과 검증 기준"
+        if candidate.endswith("수행"):
+            task = re.sub(r"\s*수행$", "", candidate).strip()
+            if (
+                _useful_object(task, official_factor=label)
+                and not _PERFORMANCE_NON_NOUN_END_RE.search(task)
+            ):
+                return task
+            # Keep 수행 when the remainder is incomplete or too short (면담).
+            # It is still distinct from the official 능력/기술 evidence label.
+            retained = re.sub(r"\s*수행$", " 수행", candidate).strip()
+            if _useful_object(retained, official_factor=label):
+                return retained
         coordination = re.match(r"(?P<object>.+?)\s*(?P<action>조율|조정|중재)$", candidate)
         if coordination:
             # Coordination skills are the coordinating act itself; do not turn
@@ -428,16 +446,13 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             (r"\s*선별$", " 선별"),
             (r"\s*조사$", " 조사"),
             (r"\s*배양$", " 배양"),
-            # The renderer supplies the action verb for the named task:
-            # "교육 수행능력" -> "교육을 수행", not "수행을 수행".
-            (r"\s*수행$", ""),
             (r"\s*유지$", " 유지"),
         )
         for pattern, replacement in skill_actions:
             if re.search(pattern, candidate):
                 action = re.sub(pattern, replacement, candidate).strip()
                 # Keep the established factor surface if shortening would be
-                # rejected later (e.g. "면담 수행능력" -> the two-letter "면담").
+                # rejected later by the public-object guard.
                 # Otherwise public_task_object would choose a broader element.
                 if _useful_object(action, official_factor=label):
                     return action

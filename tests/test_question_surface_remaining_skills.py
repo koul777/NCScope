@@ -449,9 +449,9 @@ _STACKED_ACTION_RE = re.compile(
 @pytest.mark.parametrize(
     ("factor", "element", "expected"),
     (
-        ("면담 수행 능력", "경력코칭 모니터링하기", "면담 수행·검증 절차"),
-        ("세척 수행 능력", "오염물품 세척하기", "세척 수행·검증 절차"),
-        ("검사수행 능력", "도면 확인하기", "검사 수행·검증 절차"),
+        ("면담 수행 능력", "경력코칭 모니터링하기", "면담 수행"),
+        ("세척 수행 능력", "오염물품 세척하기", "세척 수행"),
+        ("검사수행 능력", "도면 확인하기", "검사 수행"),
     ),
 )
 def test_short_performance_task_keeps_factor_anchor(
@@ -461,7 +461,7 @@ def test_short_performance_task_keeps_factor_anchor(
 ) -> None:
     # Official rows: 0403010115_22v3, 0601010806_23v3, 1507010213_19v3.
     # A two-character object is rejected by the existing public-object guard.
-    # Retain its established surface instead of falling back to another task.
+    # Retain 수행 instead of falling back to another task or inventing 검증.
     surface, source = public_task_object(
         factor_name=factor,
         ksa_type="기술",
