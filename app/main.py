@@ -5646,6 +5646,16 @@ def _scenario_condition_text(value: Any) -> str:
     return f"{_with_josa(scenario, '이', '가')} 동시에 발생한 상황"
 
 
+# Same limit as the experience entry in ``_natural_question_wording_ok``.
+_EXPERIENCE_MAIN_QUESTION_MAX_CHARS = 360
+
+# Interpersonal or coordination skills are exercised with materials and
+# methods (meeting notes, agreed criteria), not with a "tool".
+_INTERPERSONAL_SKILL_RE = re.compile(
+    r"(?:조율|조정|협의|협상|협업|협력|소통|커뮤니케이션|설득|중재|갈등|응대|상담|면담|대인)"
+)
+
+
 def _experience_scenario_condition(value: Any) -> str:
     """Keep an experience prompt concrete without copying an entire case brief."""
     scenario = re.sub(r"\s+", " ", str(value or "")).strip(" ,.;")
@@ -6160,31 +6170,61 @@ def _question_for_method(
             "질의응답에 답해 주세요. 해결안에는 원인 가설이 포함된 문제 정의, 비교 가능한 대안 2가지, "
             f"선택안의 검증 방법, 우선 실행계획과 성과지표를 포함하세요. {measurement_instruction}"
         )
-    experience_context = (
-        f"{label}에서 본인이 담당한 실제 경험 한 가지를 선택해 주세요. "
-        "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례로 답해도 됩니다. "
-        "학교·직업교육 실습·봉사·동아리의 유사경험도 괜찮습니다. "
-        "사례가 없으면 동일한 대체상황을 제시합니다."
-    )
+    # One experience question asks for exactly one case.  The situation and
+    # the candidate's role are asked by the fixed first follow-up, so the main
+    # question only names the case and the KSA evidence to describe.
+    experience_variation_sentence = ""
     if variation:
-        experience_variation = _experience_scenario_condition(variation)
-        experience_context += f" 비슷한 {experience_variation}에서 대응했다면 함께 설명해 주세요."
+        # The variation only guides which single case to pick.  ``비슷한``
+        # qualifies the chosen case, never the condition noun itself.
+        experience_variation_sentence = (
+            f" 가능하면 {_experience_scenario_condition(variation)}처럼, "
+            "비슷한 일을 겪은 경험을 골라 주세요."
+        )
     if focus_type == "태도":
         evidence_task = (
-            f"{_with_josa(prompt_focus, '을', '를')} 지키기 어려운 압박이나 상충 요구도 있었던 당시 상황에서 "
-            "본인이 선택한 행동과 그 결과"
+            "그 경험에서 상충하는 요구나 압박을 받았던 장면을 골라, "
+            f"{_with_josa(prompt_focus, '이', '가')} 드러난 본인의 실제 행동과 그 결과"
         )
     elif focus_type == "지식":
         evidence_task = (
-            f"당시 상황에서 {_with_josa(prompt_focus, '을', '를')} 실제로 적용해 어떤 자료를 확인하고 "
-            "적용 범위·예외를 가렸는지, 본인의 실제 행동과 결과"
+            f"그 경험에서 {_with_josa(prompt_focus, '과', '와')} 관련해 무엇을 판단 근거로 삼았고, "
+            "그 근거로 무엇을 결정해 어떻게 행동했는지와 그 결과"
         )
     else:
+        tool_phrase = "자료나 방법" if _INTERPERSONAL_SKILL_RE.search(prompt_focus) else "도구"
         evidence_task = (
-            f"당시 상황에서 본인이 {_with_josa(prompt_focus, '을', '를')} 따라 직접 수행한 행동의 순서와 "
-            "만든 결과물, 확인한 결과"
+            f"그 경험에서 본인이 {_with_josa(prompt_focus, '을', '를')} 직접 "
+            f"{_skill_focus_action(prompt_focus, 'past')} 행동의 순서와 그때 쓴 {tool_phrase}, "
+            "만든 결과물과 확인한 결과"
         )
-    return f"{experience_context} {_with_josa(evidence_task, '을', '를')} 설명해 주세요."
+    task_sentence = f" {_with_josa(evidence_task, '을', '를')} 설명해 주세요."
+    substitute_sentence = "해당 경험이 없으면 면접위원이 모든 지원자에게 동일한 대체상황을 드립니다."
+    full_alternatives = (
+        "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례, "
+        "학교·직업교육 실습·봉사·동아리 경험으로 답해도 됩니다. "
+    )
+    short_alternatives = "직무 경험이 없다면 프로젝트·교육실습·봉사·동아리 경험도 됩니다. "
+    plain_label = subject or detail or "해당 직무"
+    # A source-anchored label can push the prompt past the experience length
+    # limit.  Drop optional wording first (the case-selection hint, then the
+    # long alternatives list) and the source anchor only as a last resort; the
+    # KSA task and the substitute-situation notice always stay.
+    question = ""
+    for opening_label, alternatives, variation_part in (
+        (label, full_alternatives, experience_variation_sentence),
+        (label, short_alternatives, experience_variation_sentence),
+        (label, full_alternatives, ""),
+        (label, short_alternatives, ""),
+        (plain_label, short_alternatives, ""),
+    ):
+        question = (
+            f"{opening_label}에서 본인이 담당한 실제 경험 한 가지를 선택해 주세요. "
+            f"{alternatives}{substitute_sentence}{variation_part}{task_sentence}"
+        )
+        if len(question) <= _EXPERIENCE_MAIN_QUESTION_MAX_CHARS:
+            break
+    return question
 
 
 def _followups_for_method(
@@ -6212,8 +6252,8 @@ def _followups_for_method(
     context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
     if focus_type == "태도":
         experience_focus_probe = (
-            f"그 선택에서 {_with_josa(prompt_focus, '이', '가')} 드러난 실제 행동과 감수한 상충비용은 "
-            "무엇이었고, 어떤 압박 속에서 결과를 확인했습니까?"
+            f"{_with_josa(prompt_focus, '이', '가')} 드러난 그 행동을 하느라 포기하거나 감수한 것은 "
+            "무엇이었고, 상대는 어떻게 반응했습니까?"
         )
         situation_focus_probe = (
             f"그 선택에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러난 구체적 행동과 예상 위험은 무엇입니까?"
@@ -6225,9 +6265,11 @@ def _followups_for_method(
             f"대안 선택 과정에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러날 행동과 상충비용은 무엇입니까?"
         )
     elif focus_type == "지식":
+        # The main question asks for the judgment basis and the decision; the
+        # probe asks only for the scope and exceptions of that basis.
         experience_focus_probe = (
-            f"그 판단에서 {_with_josa(prompt_focus, '을', '를')} 적용할 때 확인한 자료는 무엇이며, "
-            "적용 범위와 예외를 어떻게 판별했습니까?"
+            f"그 판단에서 {_with_josa(prompt_focus, '을', '를')} 적용한 범위와 예외로 둔 경우는 "
+            "무엇이었고, 그렇게 구분한 이유는 무엇입니까?"
         )
         situation_focus_probe = (
             f"{_quoted_with_josa(prompt_focus, '을', '를')} 적용할 때 근거 자료를 확인한 뒤 범위와 예외를 어떻게 구분하겠습니까?"
@@ -6240,8 +6282,8 @@ def _followups_for_method(
         )
     else:
         experience_focus_probe = (
-            f"그 행동에서 {_with_josa(prompt_focus, '을', '를')} 따라 직접 수행한 "
-            "순서·도구·조치와 산출물은 무엇이었습니까?"
+            f"{_with_josa(prompt_focus, '을', '를')} {_skill_focus_action(prompt_focus, 'past')} 과정에서 "
+            "예상대로 되지 않은 단계는 무엇이었고, 어떤 조치로 산출물을 바로잡았습니까?"
         )
         situation_focus_probe = (
             f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'future')} 순서·조치·산출물과 예상 위험은 무엇입니까?"
@@ -6254,7 +6296,7 @@ def _followups_for_method(
         )
     banks = {
         "경험면접": [
-            "그 행동을 하기 전, 당시 상황에서 본인이 맡은 역할과 해결해야 했던 문제는 무엇이었습니까?",
+            "당시 어떤 문제가 있었고, 본인은 어떤 역할을 맡았습니까?",
             experience_focus_probe,
             "다른 선택지와 비교해 그 행동을 선택한 기준은 무엇이었습니까?",
             "성과를 어떤 기준이나 지표로 확인했습니까?",
