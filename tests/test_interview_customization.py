@@ -1354,8 +1354,9 @@ def test_adjust_questions_replaces_shallow_focus_restatement_in_experience_quest
     assert question["model_question_preserved"] is False
     assert question["model_followups_raw"] == raw_followups
     assert "ksa_measurement_task" in question["model_replacement_reasons"]
-    assert "실제 판단에 사용한 장면을 골라 무엇을 확인했고 어떤 기준으로 판단" in question["question"]
-    assert "실제 행동과 결과" in question["question"]
+    assert "확인·판단 기준과 관련해 무엇을 판단 근거로 삼았고" in question["question"]
+    assert "적용 범위" not in question["question"]
+    assert "결과를 설명해 주세요" in question["question"]
     assert any("강점관점 확인·판단 기준" in follow_up for follow_up in question["follow_ups"])
     assert quality["ready"] is False
     assert quality["issues"] == ["field_realism"]
@@ -1571,7 +1572,7 @@ def test_adjust_questions_repairs_real_alio_followup_anchor_variants(
         assert item["model_question_preserved"] is False
         assert "ksa_measurement_task" in item["model_replacement_reasons"]
         assert item["question"] != question
-        assert "실제 행동과 결과" in item["question"]
+        assert "결과를 설명해 주세요" in item["question"]
     elif method == "인바스켓면접" and focus == "화물취급지침 교육스킬":
         assert item["question_source"] == "model_main_repaired_followups", item["model_replacement_reasons"]
         assert item["model_question_preserved"] is True
@@ -1918,7 +1919,8 @@ def test_skill_factor_object_uses_application_verb_for_method_or_tool() -> None:
         "기술",
     )
 
-    assert "수요 예측·검증 절차가 요구된 장면을 골라" in method_question
+    assert "수요 예측·검증 절차를 직접 수행한 행동의 순서" in method_question
+    assert "절차를 따라" not in method_question
     assert "수요예측 기법" not in method_question
     assert "문서관리 도구 활용 절차를 실제로 수행해야" in tool_question
     assert _natural_question_wording_ok(
@@ -1929,7 +1931,7 @@ def test_skill_factor_object_uses_application_verb_for_method_or_tool() -> None:
     assert _natural_question_wording_ok(
         {"type": "경험면접", "question_focus": "수요예측 기법", "question_focus_type": "기술"},
         method_question.replace(
-            "수요 예측·검증 절차가 요구된 장면을 골라",
+            "수요 예측·검증 절차를 직접 수행한 행동의 순서",
             "수요예측 기법을 직접 수행했는지",
         ),
         [],
@@ -2064,7 +2066,8 @@ def test_compound_skill_suffix_still_counts_as_followup_focus_context() -> None:
     item = out["interview_questions"][0]
     assert "갈등중재기술" not in item["question"]
     assert item["question_focus_surface"] == "갈등 조정 절차"
-    assert "갈등 조정 절차가 요구된 장면을 골라" in item["question"]
+    assert "갈등 조정 절차를 직접 수행한 행동의 순서와 그때 쓴 자료나 방법" in item["question"]
+    assert "절차를 따라" not in item["question"]
     quality = out["question_quality_report"]["items"][0]
     assert quality["ready"] is False
     assert quality["issues"] == ["field_realism"]
@@ -2332,7 +2335,7 @@ def test_adjust_questions_uses_inbasket_template_when_selected() -> None:
 @pytest.mark.parametrize(
     ("method", "question_marker", "followup_marker", "evaluation_marker"),
     [
-        ("경험면접", "실제 경험 한 가지를 선택해 주세요", "맡은 역할", "선택 근거와 직접 행동"),
+        ("경험면접", "실제 경험 한 가지를 선택해 주세요", "역할을 맡았", "선택 근거와 직접 행동"),
         ("상황면접", "어떤 기준으로 판단", "먼저 확인해야 할 사실", "대안별 위험을 반영한 판단"),
         ("발표면접", "[발표과제]", "핵심 근거 자료", "대안 비교와 우선순위"),
         ("토론면접", "[토론과제]", "초기 입장", "공통안 또는 미합의 이송안의 실행 가능성"),
@@ -4355,12 +4358,14 @@ def test_experience_template_expresses_attitude_as_observable_behavior() -> None
         focus_type="태도",
     )
 
-    assert "도면 숙지 행동 기준과 관련해 본인이 선택한 행동" in question
-    assert "선택한 행동과 그 결과" in question
+    assert "상충하는 요구나 압박을 받았던 장면을 골라" in question
+    assert "도면 숙지 행동 기준이 드러난 본인의 실제 행동과 그 결과" in question
+    assert "행동 기준을 지키" not in question
+    assert "도 있었던" not in question
     assert "실제 경험 한 가지를 선택" in question
     assert "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례" in question
     assert "도면 숙지 의지를 적용" not in "\n".join([question, *follow_ups])
-    assert "도면 숙지 행동 기준이 드러난 실제 행동과 감수한 상충비용" in follow_ups[1]
+    assert "도면 숙지 행동 기준이 드러난 그 행동을 하느라 포기하거나 감수한 것" in follow_ups[1]
 
 
 def test_discussion_template_expresses_attitude_as_joint_behavior_not_an_applied_noun() -> None:
@@ -4470,15 +4475,15 @@ def test_attitude_tasks_do_not_repeat_situation_interview_instruction() -> None:
 @pytest.mark.parametrize(
     ("method", "focus_type", "focus", "expected"),
     [
-        ("경험면접", "지식", "문서 관리 규정", "적용 범위와 예외를 어떻게 판별"),
+        ("경험면접", "지식", "문서 관리 규정", "적용한 범위와 예외로 둔 경우"),
         ("상황면접", "지식", "문서 관리 규정", "범위와 예외를 어떻게 구분"),
         ("인바스켓면접", "지식", "문서 관리 규정", "기준·범위·예외"),
         ("창의적 문제해결력면접", "지식", "문서 관리 규정", "예외 가능성을 검증"),
-        ("경험면접", "기술", "문서 오류 검증 기술", "순서·도구·조치와 산출물"),
+        ("경험면접", "기술", "문서 오류 검증 기술", "어떤 조치로 산출물을 바로잡았"),
         ("상황면접", "기술", "문서 오류 검증 기술", "순서·조치·산출물과 예상 위험"),
         ("인바스켓면접", "기술", "문서 오류 검증 기술", "분류할 절차와 산출물"),
         ("창의적 문제해결력면접", "기술", "문서 오류 검증 기술", "분석 절차·산출물과 검증 방법"),
-        ("경험면접", "태도", "정확성 유지", "실제 행동과 감수한 상충비용"),
+        ("경험면접", "태도", "정확성 유지", "포기하거나 감수한 것"),
         ("상황면접", "태도", "정확성 유지", "드러난 구체적 행동과 예상 위험"),
         ("인바스켓면접", "태도", "정확성 유지", "드러나게 문서와 요청을 어떻게 분류"),
         ("창의적 문제해결력면접", "태도", "정확성 유지", "드러날 행동과 상충비용"),
