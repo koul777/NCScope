@@ -1505,7 +1505,8 @@ def _recover_ordinal_scoped_reviewed_ability_units(
     official two-digit unit ordinal. Recovery requires a unique base unit code
     in the already exact detail scope and a containment-only name change of at
     most six normalized characters. Ordinal-only or fuzzy matching is not
-    accepted.
+    accepted. Dot-glyph equivalence applies only to exact names; containment
+    keeps the legacy name normalization.
     """
 
     def code_parts(unit: dict[str, Any]) -> tuple[str, str]:
@@ -1548,9 +1549,19 @@ def _recover_ordinal_scoped_reviewed_ability_units(
             current_key = _norm_ability_coverage_key(current_name)
             if not current_key or current_key in ambiguous_keys:
                 continue
-            shorter, longer = sorted((required_key, current_key), key=len)
-            if shorter not in longer or len(longer) - len(shorter) > 6:
-                continue
+            if required_key != current_key:
+                # Dot variants are equivalent only for an exact name match.
+                # Keep the pre-existing normalization for containment recovery
+                # so punctuation equivalence cannot also excuse added words.
+                shorter, longer = sorted(
+                    (
+                        _norm_detail_coverage_key(required_name),
+                        _norm_detail_coverage_key(current_name),
+                    ),
+                    key=len,
+                )
+                if not shorter or shorter not in longer or len(longer) - len(shorter) > 6:
+                    continue
             candidates.append(unit)
         base_codes = {code_parts(unit)[0] for unit in candidates if code_parts(unit)[0]}
         if len(base_codes) != 1:

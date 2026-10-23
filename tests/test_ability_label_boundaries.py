@@ -151,6 +151,53 @@ def test_source_names_and_unproven_line_boundaries_are_not_rewritten(text, expec
     assert [row["text"] for row in _split_ability_unit_entries(text)] == expected
 
 
+@pytest.mark.parametrize("table_format", ["native", "native_cells", "html", "markdown"])
+@pytest.mark.parametrize("blank_line", ["\n\n", "\n \n", "\r\n\r\n"])
+def test_structured_table_preserves_blank_ability_boundary(table_format, blank_line):
+    source = f"경영평가활동{blank_line}수행, 경영평가 모니\n터링"
+    rows = [["세분류", "경영평가"], ["능력단위", source]]
+    if table_format == "native":
+        parsed = {"blocks": [{"type": "table", "rows": rows}]}
+    elif table_format == "native_cells":
+        parsed = {"blocks": [{"type": "table", "table": {"cells": [
+            [{"text": cell} for cell in row] for row in rows
+        ]}}]}
+    else:
+        rows = [[cell.replace("\r\n", "\n").replace("\n", "<br>") for cell in row] for row in rows]
+        if table_format == "html":
+            parsed = {"markdown": "<table>" + "".join(
+                "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+                for row in rows
+            ) + "</table>"}
+        else:
+            parsed = {"markdown": "\n".join("| " + " | ".join(row) + " |" for row in rows)}
+    result = structure_job_description(parsed)
+    expected = ["경영평가활동", "수행", "경영평가 모니 터링"]
+    assert result["fields"]["ability_units"] == expected
+    assert [row["text"] for row in result["sections"]["ability_units"]] == expected
+    assert result["fields"]["ability_units_by_detail"] == {"경영평가": expected}
+    positioned = [row for row in result["fields"]["positioned_items"] if row["section"] == "ability_units"]
+    assert [row["text"] for row in positioned] == expected
+    assert all("\n\n" in row["raw_cell_text"].replace("\r", "").replace(" ", "") for row in positioned)
+
+
+def test_blank_line_preservation_does_not_change_other_table_sections():
+    rows = [["세분류", "경영평가"], ["필요지식", "평가 계획\n\n평가 결과"]]
+    compact_rows = [[label, value.replace("\n\n", "\n")] for label, value in rows]
+    assert structure_job_description({"blocks": [{"type": "table", "rows": rows}]}) == structure_job_description(
+        {"blocks": [{"type": "table", "rows": compact_rows}]}
+    )
+
+
+def test_html_single_line_wrap_keeps_existing_ability_text():
+    result = structure_job_description({"markdown": (
+        "<table><tr><td>세분류</td><td>경영평가</td></tr>"
+        "<tr><td>능력단위</td><td>기관 자체<br>업무</td></tr></table>"
+    )})
+    assert result["fields"]["ability_units"] == ["기관 자체 업무"]
+    assert [row["text"] for row in result["sections"]["ability_units"]] == ["기관 자체 업무"]
+
+
 @pytest.mark.parametrize("source,expected", [
     ("경영평가활동\n수행, 경영평가 결과보고",
      ["경영평가활동", "수행", "경영평가 결과보고"]),

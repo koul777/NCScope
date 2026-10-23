@@ -293,12 +293,15 @@ def _clean_text(value: Any, *, normalize_nfkc: bool = True, preserve_blank_lines
     return text.strip()
 
 
-def _split_table_row(line: str) -> list[str]:
+def _split_table_row(line: str, *, preserve_blank_lines: bool = False) -> list[str]:
     raw = line.strip()
     if not raw.startswith("|"):
         return []
     raw = raw.strip("|")
-    return [_clean_text(part, normalize_nfkc=False) for part in raw.split("|")]
+    return [
+        _clean_text(part, normalize_nfkc=False, preserve_blank_lines=preserve_blank_lines)
+        for part in raw.split("|")
+    ]
 
 
 def _is_separator_row(cells: list[str]) -> bool:
@@ -1532,6 +1535,20 @@ def _html_table_position_grid(raw_table: str) -> list[list[dict[str, Any]]]:
             _validate_html_grid_width(column, colspan)
             origin = {
                 "text": text,
+                # Preserve paragraph boundaries before stripping HTML tags,
+                # while keeping the established handling of a single <br>.
+                "ability_text": "\n\n".join(
+                    _clean_text(
+                        html.unescape(re.sub(r"<[^>]+>", " ", paragraph)),
+                        normalize_nfkc=False,
+                        preserve_blank_lines=True,
+                    )
+                    for paragraph in re.split(
+                        r"(?:<br\s*/?>|\r?\n)[ \t]*(?:<br\s*/?>|\r?\n)",
+                        body,
+                        flags=re.IGNORECASE,
+                    )
+                ),
                 "origin_row": row_index,
                 "origin_column": column,
                 "source_column": source_column,
@@ -1582,10 +1599,11 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
 
     tables: list[list[list[dict[str, Any]]]] = []
     current_rows: list[list[str]] = []
+    current_ability_rows: list[list[str]] = []
     logical_cell_count = 0
 
     def flush() -> None:
-        nonlocal current_rows
+        nonlocal current_rows, current_ability_rows
         if len(current_rows) >= 2:
             if len(tables) >= _HTML_TABLE_MAX_TABLES:
                 raise KordocStructureLimitError(
@@ -1596,6 +1614,7 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
                     [
                         {
                             "text": value,
+                            "ability_text": current_ability_rows[row_index][column],
                             "row": row_index,
                             "column": column,
                             "origin_row": row_index,
@@ -1611,6 +1630,7 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
                 ]
             )
         current_rows = []
+        current_ability_rows = []
 
     for raw_line in str(markdown or "").splitlines():
         cells = _split_table_row(raw_line.strip())
@@ -1629,6 +1649,7 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
                 "Markdown table size exceeds the safe limit"
             )
         current_rows.append(cells)
+        current_ability_rows.append(_split_table_row(raw_line.strip(), preserve_blank_lines=True))
     flush()
     return tables
 
@@ -1916,6 +1937,9 @@ def _block_table_position_grid(block: dict[str, Any]) -> list[list[dict[str, Any
             )
             origin = {
                 "text": text,
+                "ability_text": _clean_text(
+                    _block_text(raw_cell), normalize_nfkc=False, preserve_blank_lines=True,
+                ),
                 "origin_row": row_index,
                 "origin_column": column,
                 "source_column": source_column,
@@ -2107,7 +2131,10 @@ def _table_label_records(
                 section=section or "job_fields",
             )
             for value_cell in values:
-                raw_value = str(value_cell.get("text") or "").strip()
+                # Only ability lists need the uncollapsed paragraph boundaries.
+                # Other sections retain their established text and evidence.
+                value_key = "ability_text" if section == "ability_units" else "text"
+                raw_value = str(value_cell.get(value_key, value_cell.get("text")) or "").strip()
                 if not raw_value:
                     continue
                 if section == "ncs_detail":
@@ -4605,6 +4632,8 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                 current = _section_for_label(cells[label_index])
                 if current and len(cells) > label_index + 1:
                     separator = "; " if current == "ability_units" else " "
+                    if current == "ability_units":
+                        cells = _split_table_row(line, preserve_blank_lines=True)
                     add(current, separator.join(cells[label_index + 1 :]), line=line_no)
                 continue
         heading_text = re.sub(r"^#{1,6}\s*", "", line)
@@ -4707,7 +4736,11 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                                 # Each source cell is a separate list. A space
                                 # would concatenate its last name with the
                                 # next cell's first name in fallback evidence.
-                                add(section, "; ".join(values[label_index + 1 :]), block=block)
+                                ability_values = [
+                                    _clean_text(_block_text(cell), normalize_nfkc=False, preserve_blank_lines=True)
+                                    for cell in row_cells[label_index + 1 :]
+                                ]
+                                add(section, "; ".join(ability_values), block=block)
                             else:
                                 add(section, " ".join(values[label_index + 1 :]), block=block)
         for child_key in ("children", "blocks", "rows", "cells"):
