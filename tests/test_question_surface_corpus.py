@@ -74,7 +74,7 @@ def test_surface_issue_codes_accepts_observable_attitude_intention_clause() -> N
         ksa_type=row["ksa_type"],
     )
 
-    assert surface == "경험을 활용하려는 행동 기준"
+    assert surface == "경험을 활용하려는 행동"
     assert "non_task_clause" not in surface_issue_codes(
         row,
         surface=surface,
@@ -88,7 +88,7 @@ def test_attitude_support_intention_becomes_a_readable_support_behavior() -> Non
         ksa_type="태도",
     )
 
-    assert surface == "입사예정자의 조직적응 지원 행동 기준"
+    assert surface == "입사예정자의 조직적응 지원 행동"
     assert source == "factor_repair"
     assert "도와주고자" not in surface
     assert "관련 행동 기준" not in surface
@@ -103,7 +103,7 @@ def test_malformed_decision_attitude_falls_back_to_ncs_element() -> None:
         competency_name="전직지원",
     )
 
-    assert surface == "대안 선택 수행 시 행동 기준"
+    assert surface == "대안 선택 수행 시 행동"
     assert source == "element_name"
     assert "선택가능" not in surface
     assert "결정적 행동" not in surface
@@ -116,7 +116,7 @@ def test_strategic_hr_knowledge_surface_is_nominalized() -> None:
         competency_name="인사기획",
     )
 
-    assert surface == "전략적 인적자원관리 확인·판단 기준"
+    assert surface == "전략적 인적자원관리 확인 기준"
     assert source == "factor_repair"
 
 
@@ -153,7 +153,7 @@ def test_capability_knowledge_becomes_a_decision_object() -> None:
         element_name="설계조건 확인하기",
     )
 
-    assert surface == "설계도면과 현장여건 검토·판단 기준"
+    assert surface == "설계도면과 현장여건 검토 기준"
     assert source == "factor_repair"
     assert "할 수 있는" not in surface
 
@@ -165,7 +165,7 @@ def test_mislabeled_attitude_row_does_not_leave_a_dangling_knowledge_alias() -> 
         element_name="감리계획서 작성하기",
     )
 
-    assert surface == "관련 공종 설계 및 시공 관련 행동 기준"
+    assert surface == "관련 공종 설계 및 시공 관련 행동"
     assert source == "factor_repair"
     assert "에 대한" not in surface
 
@@ -218,7 +218,7 @@ def test_attitude_verb_intention_does_not_fuse_with_execution_wording() -> None:
         element_name="프로젝트 목표 관리하기",
     )
 
-    assert surface == "프로젝트 목표를 달성하려는 책임 있는 행동 기준"
+    assert surface == "프로젝트 목표를 달성하려는 책임 있는 행동"
     assert source == "factor_repair"
     assert "달성실행" not in surface
     assert "attitude_verb_fusion" not in surface_issue_codes(

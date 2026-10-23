@@ -5888,7 +5888,7 @@ def _freeform_ksa_anchor(
             continue
         anchor = re.sub(
             r"\s*(?:관련\s*)?(?:실무\s*)?(?:적용·검증\s*절차|수행·검증\s*절차|"
-            r"확인·판단\s*기준|행동\s*기준|확인\s*절차|검증\s*절차)\s*$",
+            r"확인(?:·판단)?\s*기준|행동\s*기준|확인\s*절차|검증\s*절차)\s*$",
             "",
             anchor,
         ).strip(" ·ㆍ/")
@@ -6073,7 +6073,7 @@ def _question_for_method(
         if focus_type == "태도":
             debate_focus_context = (
                 f"압박과 이해 충돌 속에서도 "
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 지켜야 하는 가운데"
+                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실천해야 하는 가운데"
             )
             decision_requirement = "제시안에는 공동 행동·점검·실행 책임을 명시하세요."
         elif focus_type == "지식":
@@ -6121,7 +6121,7 @@ def _question_for_method(
         situation_text = _scenario_condition_text(context.get("situation_prompt") or context["situation"])
         if focus_type == "태도":
             situation_focus_context = (
-                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 지키기 어려운 조건"
+                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 실천하기 어려운 조건"
             )
         elif focus_type == "지식":
             situation_focus_context = (
@@ -6192,7 +6192,7 @@ def _question_for_method(
     if focus_type == "태도":
         evidence_task = (
             "그 경험에서 상충하는 요구나 압박을 받았던 장면을 골라, "
-            f"{_with_josa(prompt_focus, '이', '가')} 드러난 본인의 실제 행동과 그 결과"
+            f"본인이 실제로 보인 {_with_josa(prompt_focus, '과', '와')} 그 결과"
         )
     elif focus_type == "지식":
         evidence_task = (
@@ -6264,7 +6264,7 @@ def _followups_for_method(
     context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
     if focus_type == "태도":
         experience_focus_probe = (
-            f"{_with_josa(prompt_focus, '이', '가')} 드러난 그 행동을 하느라 포기하거나 감수한 것은 "
+            f"{_with_josa(prompt_focus, '을', '를')} 보이느라 포기하거나 감수한 것은 "
             "무엇이었고, 상대는 어떻게 반응했습니까?"
         )
         situation_focus_probe = (

@@ -239,9 +239,9 @@ def _element_task_object(element_name: Any, kind: str) -> str:
         if element.endswith(("선정", "선택", "조정", "조율", "활용", "의사결정")):
             return f"{element}·검증 절차"
     suffix = {
-        "지식": " 관련 정보 확인·판단 기준",
+        "지식": " 관련 정보 확인 기준",
         "기술": " 수행·검증 절차",
-        "태도": " 수행 시 행동 기준",
+        "태도": " 수행 시 행동",
     }.get(kind, " 업무 판단·수행 기준")
     return f"{element}{suffix}"
 
@@ -261,7 +261,7 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # Some extracted rows already contain the public suffix. Remove it
         # before rebuilding the surface so ``행동 기준 행동 기준`` cannot be
         # produced.
-        candidate = re.sub(r"\s*행동\s*기준\s*$", "", candidate).strip()
+        candidate = re.sub(r"\s*행동(?:\s*기준)?\s*$", "", candidate).strip()
         # NCS rows sometimes end with a purpose clause such as
         # ``입사예정자의 조직적응을 적극적으로 도와주고자 하는 태도``.
         # After removing ``태도`` the remaining ``...도와주고자`` must be
@@ -285,13 +285,16 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             candidate,
         ).strip()
         candidate = re.sub(r"\s*(?:적극적으로\s*)?노력(?:하는|하려는)?\s*$", "", candidate).strip()
+        # Attitude surfaces name the observable behaviour itself.  A
+        # ``행동 기준`` suffix turned them into a rule to recite and made
+        # prompts repeat "행동 기준이 드러난 … 행동".
         if candidate.endswith("유지"):
-            return f"{_compact_task_base(candidate[:-2])} 준수 행동 기준"
+            return f"{_compact_task_base(candidate[:-2])} 준수 행동"
         if candidate.endswith("우선"):
             priority_base = re.sub(r"(?:을|를)$", "", candidate[:-2].strip()).strip()
-            return f"{_compact_task_base(priority_base)} 우선 행동 기준"
+            return f"{_compact_task_base(priority_base)} 우선 행동"
         if candidate.endswith("주의"):
-            return f"{_compact_task_base(candidate[:-2])} 안전·주의 행동 기준"
+            return f"{_compact_task_base(candidate[:-2])} 안전·주의 행동"
         def _attitude_object_action(match: re.Match[str]) -> str:
             object_text = str(match.group("object") or "").strip()
             particle = str(match.group("particle") or "").strip()
@@ -308,10 +311,10 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         ).strip()
         candidate = _compact_task_base(candidate)
         if candidate.endswith(("의사소통", "소통", "협업", "조율", "준수")):
-            return f"{candidate}하는 행동 기준"
+            return f"{candidate}하는 행동"
         if candidate.endswith("이해"):
-            return f"{candidate}하고 공유하는 행동 기준"
-        return f"{candidate} 행동 기준" if candidate else ""
+            return f"{candidate}하고 공유하는 행동"
+        return f"{candidate} 행동" if candidate else ""
 
     if kind == "지식":
         if _DANGLING_END_RE.search(candidate):
@@ -335,16 +338,19 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             "평가", "검토", "이해", "분석", "판단", "확인", "파악", "해석",
             "예측", "계산", "측정", "조치", "적용", "식별", "설명", "수행",
         )
+        # Knowledge surfaces name what is checked, not a "판단 기준" noun
+        # pile: prompts already ask for the "판단 근거", and "확인·판단 기준
+        # … 판단 근거" repeated the same word.
         if knowledge_base.endswith(action_suffixes):
-            return f"{knowledge_base}·판단 기준"
+            return f"{knowledge_base} 기준"
         decision_suffixes = ("선정", "설정", "추천", "할당", "구성", "확정", "결정")
         if knowledge_base.endswith(decision_suffixes):
             return f"{knowledge_base} 기준"
         if knowledge_base.endswith("기준"):
             return f"{knowledge_base} 적용·검증 절차"
         if knowledge_base.endswith("규정"):
-            return f"{knowledge_base} 적용·판단 기준"
-        return f"{knowledge_base} 확인·판단 기준"
+            return f"{knowledge_base} 적용 기준"
+        return f"{knowledge_base} 확인 기준"
 
     if kind == "기술":
         candidate = _nominalize_capability_clause(candidate)
@@ -474,16 +480,16 @@ def public_task_object(
     competency = _clean(competency_name, max_chars=80)
     if _useful_object(competency, official_factor=official):
         suffix = {
-            "지식": " 판단 기준",
+            "지식": " 확인 기준",
             "기술": " 수행 절차",
-            "태도": " 행동 기준",
+            "태도": " 수행 행동",
         }.get(kind, " 업무 기준")
         return f"{competency}{suffix}", "competency_name"
 
     fallback = {
-        "지식": "업무 범위와 예외를 구분하는 판단 기준",
+        "지식": "업무 범위와 예외를 구분하는 기준",
         "기술": "업무 수행 절차와 산출물 품질 기준",
-        "태도": "상충하는 요구 속에서 지켜야 할 행동 기준",
+        "태도": "상충하는 요구 속에서도 책임을 다하는 행동",
     }.get(kind, "업무 판단과 수행 기준")
     return fallback, "safe_fallback"
 
@@ -578,7 +584,7 @@ def has_dangling_surface(value: Any) -> bool:
     return bool(
         _DANGLING_END_RE.search(text)
         or re.search(
-            r"(?:하고자|고자)\s*(?:관련\s*)?(?:행동\s*기준|확인·판단\s*기준|수행·검증\s*절차)$",
+            r"(?:하고자|고자)\s*(?:관련\s*)?(?:행동(?:\s*기준)?|확인(?:·판단)?\s*기준|수행·검증\s*절차)$",
             text,
         )
     )

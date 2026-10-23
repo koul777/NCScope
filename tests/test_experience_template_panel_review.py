@@ -103,7 +103,11 @@ def test_attitude_question_requires_pressure_and_asks_for_actual_behavior() -> N
         question = _question("태도", focus, index)
 
         assert "상충하는 요구나 압박을 받았던 장면을 골라" in question
-        assert "드러난 본인의 실제 행동과 그 결과를 설명해 주세요" in question
+        assert "본인이 실제로 보인 원활한 커뮤니케이션을 실행하는 적극적인 행동과 그 결과를 설명해 주세요" in question
+        # The surface is the behaviour itself: no "행동 기준" and no
+        # "…행동이 드러난 … 행동" repetition.
+        assert "행동 기준" not in question
+        assert "행동이 드러난" not in question
         assert "행동 기준을 지키" not in question
         assert "도 있었던" not in question
         assert "행동 기준과 관련해" not in question
@@ -118,7 +122,8 @@ def test_attitude_probe_asks_what_was_given_up_and_how_others_reacted() -> None:
         focus_type="태도",
     )
 
-    assert "그 행동을 하느라 포기하거나 감수한 것은 무엇이었고, 상대는 어떻게 반응했습니까?" in follow_ups[1]
+    assert "행동을 보이느라 포기하거나 감수한 것은 무엇이었고, 상대는 어떻게 반응했습니까?" in follow_ups[1]
+    assert "행동 기준" not in follow_ups[1]
 
 
 def test_knowledge_question_and_probe_do_not_ask_the_same_thing() -> None:

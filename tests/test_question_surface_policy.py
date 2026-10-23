@@ -25,7 +25,7 @@ from app.services.question_surface import (
 
 FACTOR = "승인된 변경에 대한 지식"
 TRUNCATED_FACTOR = "승인된 변경에 대한"
-PUBLIC_FOCUS = "승인된 변경 관련 확인·판단 기준"
+PUBLIC_FOCUS = "승인된 변경 관련 확인 기준"
 NCS_CODE = "0101010205_17v2"
 
 
@@ -147,7 +147,7 @@ def test_knowledge_task_frame_keeps_change_history_semantics_for_experience_prom
         competency_definition=competency_definition,
     )
 
-    assert frame["task_object"].endswith("확인·판단 기준")
+    assert frame["task_object"].endswith("확인 기준")
     assert task_marker in frame["task_statement"]
     assert "맡은 역할·목표" in frame["observable_behavior"]
     assert "적용" in frame["observable_behavior"]
