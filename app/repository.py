@@ -492,16 +492,42 @@ def record_question_quality_review(payload: dict[str, Any]) -> dict[str, Any]:
         if not review_token or hashlib.sha256(review_token.encode("utf-8")).hexdigest() != run.review_token_hash:
             raise PermissionError("invalid review token")
         question_hash = str(payload.get("question_hash") or "").strip()
-        evidence_by_hash = {
-            str(item.get("question_hash") or "").strip(): item
-            for item in ((run.evidence_json or {}).get("question_items") or [])
-            if isinstance(item, dict) and str(item.get("question_hash") or "").strip()
-        }
+        evidence_by_hash: dict[str, dict[str, Any]] = {}
+        for item in ((run.evidence_json or {}).get("question_items") or []):
+            if not isinstance(item, dict):
+                continue
+            # New runs are reviewed exclusively by the full artifact hash.
+            # Legacy text hashes remain accepted only for records created
+            # before the artifact contract existed.
+            candidate_hash = str(
+                item.get("question_artifact_hash")
+                or item.get("question_hash")
+                or ""
+            ).strip()
+            if candidate_hash:
+                evidence_by_hash[candidate_hash] = item
         if not question_hash or question_hash not in evidence_by_hash:
             raise ValueError("question_hash is not part of this quality run")
         evidence_item = evidence_by_hash[question_hash]
+        expected_artifact_hash = str(
+            evidence_item.get("question_artifact_hash") or ""
+        ).strip()
+        supplied_artifact_hash = str(
+            payload.get("question_artifact_hash") or ""
+        ).strip()
+        if expected_artifact_hash and supplied_artifact_hash != expected_artifact_hash:
+            raise ValueError("question_artifact_hash does not match the quality-run artifact")
         question_text = str(payload.get("question_text") or "").strip()
-        if question_text and hashlib.sha256(question_text.encode("utf-8")).hexdigest() != question_hash:
+        expected_text_hash = str(
+            evidence_item.get("question_text_hash")
+            or evidence_item.get("question_hash")
+            or ""
+        ).strip()
+        if (
+            question_text
+            and hashlib.sha256(question_text.encode("utf-8")).hexdigest()
+            != expected_text_hash
+        ):
             raise ValueError("question_text does not match question_hash")
         reviewer_ref = str(payload.get("reviewer_ref") or "local-reviewer")
         reviewer_ref_hash = hashlib.sha256(reviewer_ref.encode("utf-8")).hexdigest()
@@ -610,7 +636,11 @@ def rollback_question_quality_review(
             raise PermissionError("invalid review token")
         q_hash = str(question_hash or "").strip()
         allowed_hashes = {
-            str(item.get("question_hash") or "").strip()
+            str(
+                item.get("question_artifact_hash")
+                or item.get("question_hash")
+                or ""
+            ).strip()
             for item in ((run.evidence_json or {}).get("question_items") or [])
             if isinstance(item, dict)
         }

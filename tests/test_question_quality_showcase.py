@@ -47,7 +47,7 @@ def test_exact_ksa_showcase_separates_internal_evidence_from_candidate_copy() ->
         candidate_text = json.dumps(item["candidate_view"], ensure_ascii=False)
         assert OFFICIAL_FACTOR not in candidate_text
         assert "승인된 변경에 대한" not in candidate_text
-        assert item["traceability"]["public_task_object"] == "승인된 변경 관련 확인·판단 기준"
+        assert item["traceability"]["public_task_object"] == "승인된 변경 관련 확인 기준"
         assert item["traceability"]["evidence_id"]
         assert item["quality"]["ready"] is True
         assert item["quality"]["issues"] == []

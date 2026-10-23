@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -81,6 +82,7 @@ from app.services.ncs_mcp_client import (
     use_detached_work_lease,
     use_ncs_mcp_request_session,
 )
+from app.services.ncs_match_gate import build_ncs_match_bundle
 from app.services.jd_strategy import (
     _planned_question_sequence_for_prompt,
     ai_extract_ncs_cl_codes,
@@ -169,7 +171,6 @@ from app.services.question_surface import (
 from app.services.ai_question_quality_review import (
     review_interview_questions_with_ai,
 )
-from app.services.external_ai_privacy import sanitize_external_ai_source_text
 from app.services.request_budget import (
     RequestBudgetExceeded,
     remaining_request_budget_sec,
@@ -1294,6 +1295,16 @@ def _norm_detail_coverage_key(value: Any) -> str:
     return re.sub(r"[\s\-\_/|(),.·・]+", "", str(value or "")).strip().lower()
 
 
+def _norm_ability_coverage_key(value: Any) -> str:
+    """Treat Korean list-dot glyph variants alike for exact unit-name locks.
+
+    Source JDs and official MCP labels use middle dot, hyphenation point,
+    halfwidth middle dot, and araea interchangeably. Keep every word and the
+    existing unique detail/base-code checks; no substring matching is added.
+    """
+    return _norm_detail_coverage_key(re.sub(r"[‧･ㆍᆞ]", "·", str(value or "")))
+
+
 def _reviewed_ability_unit_names(values: Any) -> list[str]:
     """Normalize human-reviewed ability-unit cells for exact MCP matching.
 
@@ -1324,7 +1335,7 @@ def _reviewed_ability_unit_names(values: Any) -> list[str]:
             text = re.sub(r"^\d{1,3}\s*[.)：:\-]\s*", "", text).strip()
             if not text or text in {"-", "해당없음", "없음", "미개발"}:
                 continue
-            key = _norm_detail_coverage_key(text)
+            key = _norm_ability_coverage_key(text)
             if len(key) < 2 or key in seen:
                 continue
             seen.add(key)
@@ -1342,7 +1353,7 @@ def _reviewed_ability_unit_ordinals(fields: dict[str, Any]) -> dict[str, list[st
             continue
         name = str(item.get("text") or "").strip()
         ordinal_raw = str(item.get("ability_unit_ordinal") or "").strip()
-        key = _norm_detail_coverage_key(name)
+        key = _norm_ability_coverage_key(name)
         if not key or not re.fullmatch(r"\d{1,2}", ordinal_raw):
             continue
         ordinal = ordinal_raw.zfill(2)
@@ -1350,6 +1361,20 @@ def _reviewed_ability_unit_ordinals(fields: dict[str, Any]) -> dict[str, list[st
         if ordinal not in bucket:
             bucket.append(ordinal)
     return output
+
+
+def _ambiguous_ability_name_keys(units: list[dict[str, Any]]) -> set[str]:
+    """Find exact-normalized names that identify different official base codes."""
+    bases_by_name: dict[str, set[str]] = {}
+    for unit in units or []:
+        if not isinstance(unit, dict):
+            continue
+        key = _norm_ability_coverage_key(unit.get("compeUnitName") or unit.get("unit_name"))
+        code = str(unit.get("ncsClCd") or unit.get("unit_code") or "").strip()
+        match = re.match(r"^(\d{10})(?:_|$)", code)
+        if key and match:
+            bases_by_name.setdefault(key, set()).add(match.group(1))
+    return {key for key, bases in bases_by_name.items() if len(bases) > 1}
 
 
 def _lock_units_to_reviewed_ability_units(
@@ -1371,7 +1396,7 @@ def _lock_units_to_reviewed_ability_units(
         if not isinstance(unit, dict):
             continue
         unit_name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
-        key = _norm_detail_coverage_key(unit_name)
+        key = _norm_ability_coverage_key(unit_name)
         if key:
             rows_by_name.setdefault(key, []).append(unit)
 
@@ -1379,7 +1404,7 @@ def _lock_units_to_reviewed_ability_units(
     missing: list[str] = []
     seen_codes: set[str] = set()
     for reviewed_name in reviewed_names:
-        matches = rows_by_name.get(_norm_detail_coverage_key(reviewed_name), [])
+        matches = rows_by_name.get(_norm_ability_coverage_key(reviewed_name), [])
         if not matches:
             missing.append(reviewed_name)
             continue
@@ -1452,17 +1477,20 @@ def _scope_reviewed_ability_units_by_exact_detail_membership(
             unit_name = str(
                 unit.get("compeUnitName") or unit.get("unit_name") or ""
             ).strip()
-            unit_key = _norm_detail_coverage_key(unit_name)
+            unit_key = _norm_ability_coverage_key(unit_name)
             if unit_key:
                 details_by_unit_name.setdefault(unit_key, set()).add(detail)
 
+    ambiguous_keys = _ambiguous_ability_name_keys([
+        unit for units in (detail_units_by_name or {}).values() for unit in (units or [])
+    ])
     scoped: dict[str, list[str]] = {}
     unresolved: list[str] = []
     for reviewed_name in reviewed_names or []:
         matches = details_by_unit_name.get(
-            _norm_detail_coverage_key(reviewed_name), set()
+            _norm_ability_coverage_key(reviewed_name), set()
         )
-        if len(matches) != 1:
+        if len(matches) != 1 or _norm_ability_coverage_key(reviewed_name) in ambiguous_keys:
             unresolved.append(reviewed_name)
             continue
         detail = next(iter(matches))
@@ -1483,7 +1511,8 @@ def _recover_ordinal_scoped_reviewed_ability_units(
     official two-digit unit ordinal. Recovery requires a unique base unit code
     in the already exact detail scope and a containment-only name change of at
     most six normalized characters. Ordinal-only or fuzzy matching is not
-    accepted.
+    accepted. Dot-glyph equivalence applies only to exact names; containment
+    keeps the legacy name normalization.
     """
 
     def code_parts(unit: dict[str, Any]) -> tuple[str, str]:
@@ -1506,10 +1535,14 @@ def _recover_ordinal_scoped_reviewed_ability_units(
         for unit in (already_locked or [])
         if isinstance(unit, dict)
     }
+    ambiguous_keys = _ambiguous_ability_name_keys(detail_units)
     recovered: list[dict[str, Any]] = []
     remaining: list[str] = []
     for required_name in missing_names or []:
-        required_key = _norm_detail_coverage_key(required_name)
+        required_key = _norm_ability_coverage_key(required_name)
+        if required_key in ambiguous_keys:
+            remaining.append(required_name)
+            continue
         ordinals = set(ordinals_by_name.get(required_key) or [])
         candidates: list[dict[str, Any]] = []
         for unit in detail_units or []:
@@ -1519,12 +1552,22 @@ def _recover_ordinal_scoped_reviewed_ability_units(
             if not base_code or ordinal not in ordinals:
                 continue
             current_name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
-            current_key = _norm_detail_coverage_key(current_name)
-            if not current_key:
+            current_key = _norm_ability_coverage_key(current_name)
+            if not current_key or current_key in ambiguous_keys:
                 continue
-            shorter, longer = sorted((required_key, current_key), key=len)
-            if shorter not in longer or len(longer) - len(shorter) > 6:
-                continue
+            if required_key != current_key:
+                # Dot variants are equivalent only for an exact name match.
+                # Keep the pre-existing normalization for containment recovery
+                # so punctuation equivalence cannot also excuse added words.
+                shorter, longer = sorted(
+                    (
+                        _norm_detail_coverage_key(required_name),
+                        _norm_detail_coverage_key(current_name),
+                    ),
+                    key=len,
+                )
+                if not shorter or shorter not in longer or len(longer) - len(shorter) > 6:
+                    continue
             candidates.append(unit)
         base_codes = {code_parts(unit)[0] for unit in candidates if code_parts(unit)[0]}
         if len(base_codes) != 1:
@@ -1580,12 +1623,59 @@ def _recover_code_scoped_reviewed_ability_units(
     if not allowed_detail_codes:
         return [], list(missing_names or [])
 
+    # ``candidate_units`` may come from a catalog row whose classification
+    # link is stale.  Preserve that row verbatim, but carry the independently
+    # verified detail edge from the exact-complete bundle so later ranking and
+    # question planning keep the reviewed unit inside its confirmed detail.
+    # A code receives a label only when the bundle provides one unique name;
+    # ambiguous or absent metadata is never inferred.
+    detail_names_by_code: dict[str, dict[str, str]] = {}
+    for unit in detail_units or []:
+        if not isinstance(unit, dict):
+            continue
+        code = detail_code(unit)
+        if not code:
+            continue
+        authoritative_name = next(
+            (
+                str(unit.get(field) or "").strip()
+                for field in (
+                    "matchedDetailName",
+                    "reviewed_detail",
+                    "confirmed_detail",
+                    "ncs_detail",
+                    "officialDetailName",
+                    "ncsSubdCdnm",
+                )
+                if str(unit.get(field) or "").strip()
+            ),
+            "",
+        )
+        normalized_name = _norm_detail_coverage_key(authoritative_name)
+        if authoritative_name and normalized_name:
+            detail_names_by_code.setdefault(code, {}).setdefault(
+                normalized_name,
+                authoritative_name,
+            )
+    authoritative_detail_by_code = {
+        code: next(iter(names.values()))
+        for code, names in detail_names_by_code.items()
+        if len(names) == 1
+    }
+
+    # A later search may return only one side of a collision already observed
+    # in the detail bundle. Never let that narrower result bypass the lock.
+    known_units = [
+        unit for unit in [*(detail_units or []), *(candidate_units or []), *(already_locked or [])]
+        if isinstance(unit, dict) and detail_code(unit) in allowed_detail_codes
+    ]
+    ambiguous_keys = _ambiguous_ability_name_keys(known_units)
     rows_by_name: dict[str, list[dict[str, Any]]] = {}
     for unit in candidate_units or []:
         if not isinstance(unit, dict) or detail_code(unit) not in allowed_detail_codes:
             continue
         name = str(unit.get("compeUnitName") or unit.get("unit_name") or "").strip()
-        key = _norm_detail_coverage_key(name)
+        key = _norm_ability_coverage_key(name)
         if key:
             rows_by_name.setdefault(key, []).append(unit)
 
@@ -1597,11 +1687,12 @@ def _recover_code_scoped_reviewed_ability_units(
     recovered: list[dict[str, Any]] = []
     remaining: list[str] = []
     for required_name in missing_names or []:
-        matches = rows_by_name.get(_norm_detail_coverage_key(required_name), [])
+        required_key = _norm_ability_coverage_key(required_name)
+        matches = rows_by_name.get(required_key, [])
         match_detail_codes = {
             detail_code(match) for match in matches if detail_code(match)
         }
-        if len(match_detail_codes) != 1:
+        if len(match_detail_codes) != 1 or required_key in ambiguous_keys:
             remaining.append(required_name)
             continue
         accepted = False
@@ -1611,14 +1702,18 @@ def _recover_code_scoped_reviewed_ability_units(
                 continue
             seen_codes.add(code)
             accepted = True
-            recovered.append(
-                {
-                    **match,
-                    "requiredAbilityUnitName": required_name,
-                    "requiredAbilityUnitMatch": "exact_name_code_scope_recovery",
-                    "source": "ncs-mcp-required-unit-code-scope-recovery",
-                }
+            recovered_row = {
+                **match,
+                "requiredAbilityUnitName": required_name,
+                "requiredAbilityUnitMatch": "exact_name_code_scope_recovery",
+                "source": "ncs-mcp-required-unit-code-scope-recovery",
+            }
+            authoritative_detail = authoritative_detail_by_code.get(
+                detail_code(match), ""
             )
+            if authoritative_detail:
+                recovered_row["matchedDetailName"] = authoritative_detail
+            recovered.append(recovered_row)
         if not accepted:
             remaining.append(required_name)
     return recovered, remaining
@@ -2042,6 +2137,105 @@ def _detail_lookup_coverage(
     matched = [term for key, term in requested.items() if key in covered_keys]
     unmatched = [term for key, term in requested.items() if key not in covered_keys]
     return matched, unmatched
+
+
+def _raise_for_ncs_match_bundle(bundle: dict[str, Any]) -> None:
+    """Fail closed unless a reviewed detail has complete official coverage.
+
+    The same response contract is shared by document upload and manual unit
+    selection so neither path can reach KSA retrieval or question generation
+    with partial, inferred, capped, or unavailable NCS evidence.
+    """
+
+    if bundle.get("eligible_for_generation") is True and bundle.get("status") == "exact_complete":
+        return
+
+    status = str(bundle.get("status") or "unresolved").strip()
+    lookup_terms = [
+        str(value).strip()
+        for value in (bundle.get("lookup_terms") or [])
+        if str(value).strip()
+    ]
+    reason_codes = [
+        str(value).strip()
+        for value in (bundle.get("reason_codes") or [])
+        if str(value).strip()
+    ]
+    if status == "unavailable":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "ncs_mcp_unavailable",
+                "message": (
+                    "NCS 공식 세분류·능력단위 조회가 일시적으로 불가능합니다. "
+                    "선택 상태를 유지한 채 다시 시도해 주세요."
+                ),
+                "retryable": True,
+                "match_status": status,
+                "reason_codes": reason_codes or ["ncs_mcp_unavailable"],
+                "lookup_terms": lookup_terms,
+            },
+        )
+
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "ncs_exact_complete_match_required",
+            "message": (
+                "선택한 NCS 세분류의 공식 능력단위 전체를 완전하게 확인하지 못했습니다. "
+                "세분류를 다시 확인한 뒤 재시도해 주세요."
+            ),
+            "retryable": False,
+            "match_status": status,
+            "reason_codes": reason_codes,
+            "lookup_terms": lookup_terms,
+            "match_fingerprint": str(bundle.get("fingerprint") or ""),
+        },
+    )
+
+
+def _ncs_unit_base_code(row: dict[str, Any]) -> str:
+    base_code = str(row.get("officialUnitBaseCode") or "").strip()
+    if re.fullmatch(r"\d{10}", base_code):
+        return base_code
+    full_code = str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
+    candidate = full_code.split("_", 1)[0]
+    return candidate if re.fullmatch(r"\d{10}", candidate) else ""
+
+
+def _require_selected_units_in_match_bundle(
+    selected_units: list[dict[str, Any]],
+    bundle: dict[str, Any],
+) -> None:
+    """Verify the selected subset belongs to the gate's complete unit set."""
+
+    official_bases = {
+        _ncs_unit_base_code(row)
+        for row in (bundle.get("units") or [])
+        if isinstance(row, dict)
+    }
+    missing = [
+        {
+            "ncsClCd": str(row.get("ncsClCd") or "").strip(),
+            "compeUnitName": str(row.get("compeUnitName") or "").strip(),
+        }
+        for row in selected_units
+        if not _ncs_unit_base_code(row)
+        or _ncs_unit_base_code(row) not in official_bases
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "selected_ncs_not_in_exact_detail_bundle",
+                "message": (
+                    "선택한 NCS 능력단위가 완전 검증된 공식 세분류 능력단위 목록에 없습니다."
+                ),
+                "invalid_items": missing,
+                "retryable": False,
+                "match_fingerprint": str(bundle.get("fingerprint") or ""),
+            },
+        )
 
 
 _NCS_LINK_PROVENANCE_TEXT_FIELDS = (
@@ -2656,21 +2850,23 @@ def _group_interview_questions_for_response(questions: list[dict[str, Any]]) -> 
     for q in questions or []:
         comp = str((q or {}).get("competency", "")).strip() or "핵심 직무"
         code = str((q or {}).get("ncsClCd", "")).strip()
-        grouped.setdefault((comp, code), []).append(
-            {
-                "question": str((q or {}).get("question", "")).strip(),
-                "follow_ups": list((q or {}).get("follow_ups", []) or []),
-                "evaluation_points": list((q or {}).get("evaluation_points", []) or []),
-                "method": str((q or {}).get("method") or (q or {}).get("type") or "").strip(),
-                "question_focus": str((q or {}).get("question_focus") or "").strip(),
-                "ncs_traceability": dict((q or {}).get("ncs_traceability") or {})
-                if isinstance((q or {}).get("ncs_traceability"), dict)
-                else {},
-                "question_intent": str((q or {}).get("question_intent") or "").strip(),
-                "question_repeat_signature": str((q or {}).get("question_repeat_signature") or "").strip(),
-                "question_repeat_duplicate": bool((q or {}).get("question_repeat_duplicate") is True),
-            }
-        )
+        grouped_row = {
+            "question": str((q or {}).get("question", "")).strip(),
+            "follow_ups": list((q or {}).get("follow_ups", []) or []),
+            "evaluation_points": list((q or {}).get("evaluation_points", []) or []),
+            "method": str((q or {}).get("method") or (q or {}).get("type") or "").strip(),
+            "question_focus": str((q or {}).get("question_focus") or "").strip(),
+            "ncs_traceability": dict((q or {}).get("ncs_traceability") or {})
+            if isinstance((q or {}).get("ncs_traceability"), dict)
+            else {},
+            "question_intent": str((q or {}).get("question_intent") or "").strip(),
+            "question_repeat_signature": str((q or {}).get("question_repeat_signature") or "").strip(),
+            "question_repeat_duplicate": bool((q or {}).get("question_repeat_duplicate") is True),
+        }
+        # The grouped compatibility view is also consumed by downstream
+        # clients, so retain the same field-ready packet as the flat exports.
+        grouped_row.update(_public_question_support_fields(q))
+        grouped.setdefault((comp, code), []).append(grouped_row)
     return [
         {"competency": comp, "ncsClCd": code, "questions": qset}
         for (comp, code), qset in grouped.items()
@@ -2813,15 +3009,30 @@ def _skill_focus_action(focus: Any, form: str = "connective") -> str:
         verb = "적용"
     elif re.search(r"(?:도구|장비|시스템|프로그램|소프트웨어|양식)$", compact):
         verb = "활용"
+    elif _SKILL_ACTION_NOUN_END_RE.search(compact):
+        # The surface already ends in the action ("보고서 작성", "통계 방법
+        # 적용").  "…작성을 수행" stacks a second action verb; "…작성을 한"
+        # keeps the surface intact for the KSA evidence checks.
+        verb = "하다"
     else:
         verb = "수행"
     forms = {
-        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행해"},
-        "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할"},
-        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야"},
-        "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한"},
+        "connective": {"적용": "적용해", "활용": "활용해", "수행": "수행하며", "하다": "하며"},
+        "future": {"적용": "적용할", "활용": "활용할", "수행": "수행할", "하다": "할"},
+        "must": {"적용": "적용해야", "활용": "활용해야", "수행": "수행해야", "하다": "해야"},
+        "past": {"적용": "적용한", "활용": "활용한", "수행": "수행한", "하다": "한"},
     }
     return forms.get(form, forms["connective"])[verb]
+
+
+# Skill surfaces that end in an action noun take "하다" instead of "수행".
+_SKILL_ACTION_NOUN_END_RE = re.compile(
+    r"(?:작성|적용|활용|예측|분석|해석|산정|계산|개발|설계|조율|조정|검토|검증|평가|진단|"
+    r"정리|조작|구현|제작|기획|실행|관리|운영|처리|수집|분류|점검|조사|선정|설정|파악|"
+    r"확인|수립|도출|개선|대응|해결|반영|구성|비교|통제|배치|결정|판별|식별|추정|방지|"
+    r"추출|운전|보수|응용|제시|의사결정|포착|수정·보완|유지|선택|선별|배양|정보검색|수행)$"
+)
+_SKILL_TOOL_SURFACE_RE = re.compile(r"(?:도구|장비|시스템|프로그램|소프트웨어|양식)")
 
 
 def _ksa_type_for_focus(
@@ -3027,6 +3238,34 @@ def _ensure_question_plan_unit_coverage(
     return covered
 
 
+def _preserve_exact_complete_units_for_upload(
+    ranked_matches: list[dict[str, Any]] | None,
+    ncs_match_bundle: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Keep every official unit after upload-path relevance ranking.
+
+    Ranking still determines which units are assigned first when a plan has
+    fewer questions than the detail contains. For an exact-complete bundle it
+    must not erase the remaining official units: a sufficiently large plan
+    must be able to rotate through the entire detail-classification catalog.
+    Non-exact/general-search callers retain their ordinary top-k behavior.
+    """
+
+    bundle = ncs_match_bundle if isinstance(ncs_match_bundle, dict) else {}
+    if not (
+        bundle.get("status") == "exact_complete"
+        and bundle.get("eligible_for_generation") is True
+    ):
+        return _dedupe_units_by_code(ranked_matches)
+    official_units = [
+        dict(row)
+        for row in (bundle.get("units") or [])
+        if isinstance(row, dict)
+        and str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
+    ]
+    return _dedupe_units_by_code([*(ranked_matches or []), *official_units])
+
+
 def _method_evaluation_points(
     method: str,
     ksa_terms: list[str],
@@ -3095,6 +3334,627 @@ def _method_evaluation_points(
     return points[:4]
 
 
+_PROBE_EVIDENCE_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "context_role": ("상황", "사실", "계기", "배경", "역할", "담당", "책임"),
+    "basis": ("기준", "근거", "이유", "우선순위", "선택", "판단", "대안"),
+    "action": ("행동", "조치", "실행", "과정", "절차", "방법", "수행"),
+    "result": ("결과", "성과", "변화", "반응", "효과", "검증", "완료", "입증", "수치"),
+    "coordination": ("협의", "소통", "조정", "관계자", "보고", "위임"),
+    "exception": ("변수", "변경", "충돌", "돌발", "예외", "대처", "수정", "위험", "리스크"),
+    "learning": ("학습", "개선", "피드백", "후속", "재발", "예방", "보완"),
+    "materials": ("자료", "문서", "서류", "항목", "계획안", "기록", "규정", "산출물"),
+    "quality": ("정확", "최신", "신뢰", "오류", "일치", "불일치", "품질"),
+    "allocation": ("배분", "배치", "순서", "시간", "일정", "자원"),
+}
+
+_PROBE_SLOT_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "situation_and_role": ("context_role",),
+    "decision_and_action": ("basis", "action", "coordination", "allocation"),
+    "result_and_learning": ("result", "learning"),
+    "facts_and_constraints": ("context_role", "materials", "quality"),
+    "risk_and_followup": ("exception", "learning", "result"),
+    "evidence_and_assumption": ("materials", "basis", "context_role"),
+    "alternative_and_priority": ("basis", "exception"),
+    "metric_and_followup": ("result", "learning"),
+    "position_and_basis": ("basis", "materials"),
+    "counterargument_and_adjustment": ("exception", "coordination", "basis"),
+    "agreement_and_followup": ("coordination", "learning", "action"),
+    "document_and_urgency": ("materials", "basis", "allocation"),
+    "priority_and_ownership": ("basis", "coordination", "allocation"),
+    "reporting_and_followup": ("coordination", "learning", "action", "exception"),
+    "standard_and_scope": ("basis", "materials"),
+    "procedure_and_exception": ("action", "exception"),
+    "output_and_quality_check": ("materials", "quality", "result"),
+    "problem_and_hypothesis": ("context_role", "basis"),
+    "alternative_and_test": ("basis", "result", "exception"),
+    "decision_and_followup": ("basis", "action", "learning"),
+    "context_and_basis": ("context_role", "basis", "materials"),
+    "result_and_verification": ("result", "learning", "quality"),
+}
+
+_PROBE_SLOTS_BY_METHOD: dict[str, tuple[str, ...]] = {
+    "경험면접": ("situation_and_role", "decision_and_action", "result_and_learning"),
+    "상황면접": ("facts_and_constraints", "decision_and_action", "risk_and_followup"),
+    "발표면접": ("evidence_and_assumption", "alternative_and_priority", "metric_and_followup"),
+    "토론면접": ("position_and_basis", "counterargument_and_adjustment", "agreement_and_followup"),
+    "인바스켓면접": ("document_and_urgency", "priority_and_ownership", "reporting_and_followup"),
+    "직무지식면접": ("standard_and_scope", "procedure_and_exception", "output_and_quality_check"),
+    "창의적 문제해결력면접": ("problem_and_hypothesis", "alternative_and_test", "decision_and_followup"),
+}
+
+_STRICT_PROBE_TRIGGER_SLOT_CONCEPTS: dict[str, frozenset[str]] = {
+    "if_decision_or_action_basis_missing": frozenset({"basis", "action"}),
+    "if_result_or_verification_missing": frozenset({"result", "learning", "quality"}),
+}
+
+
+def _probe_evidence_concepts(value: Any) -> set[str]:
+    compact = re.sub(r"[^0-9a-z가-힣]+", "", str(value or "").casefold())
+    return {
+        family
+        for family, markers in _PROBE_EVIDENCE_CONCEPTS.items()
+        if any(marker in compact for marker in markers)
+    }
+
+
+def _probe_evidence_tokens(value: Any) -> set[str]:
+    stop_words = {
+        "어떤", "무엇", "어떻게", "관련", "대한", "구체적", "말씀", "주세요",
+        "알려", "본인", "지원자",
+    }
+    return {
+        token
+        for token in re.findall(r"[0-9a-z가-힣]{2,}", str(value or "").casefold())
+        if token not in stop_words
+    }
+
+
+def _probe_target_semantically_matches_prompt(target: Any, prompt: Any) -> bool:
+    target_concepts = _probe_evidence_concepts(target)
+    prompt_concepts = _probe_evidence_concepts(prompt)
+    if target_concepts and prompt_concepts:
+        return bool(target_concepts & prompt_concepts)
+    target_tokens = _probe_evidence_tokens(target)
+    return bool(target_tokens and target_tokens & _probe_evidence_tokens(prompt))
+
+
+def _probe_answer_slot_semantically_matches_prompt(answer_slot: Any, prompt: Any) -> bool:
+    slot_concepts = set(_PROBE_SLOT_CONCEPTS.get(str(answer_slot or "").strip(), ()))
+    prompt_concepts = _probe_evidence_concepts(prompt)
+    # Unknown/custom slots and prompts outside the bounded concept vocabulary
+    # retain legacy compatibility. Known contracts must share an observable
+    # meaning instead of relying on their array position.
+    return not slot_concepts or not prompt_concepts or bool(slot_concepts & prompt_concepts)
+
+
+def _probe_contract_semantics_ok(answer_slot: Any, evidence_target: Any, prompt: Any) -> bool:
+    """Require prompt and target to independently support the declared slot."""
+
+    slot_concepts = set(_PROBE_SLOT_CONCEPTS.get(str(answer_slot or "").strip(), ()))
+    if not slot_concepts:
+        return _probe_target_semantically_matches_prompt(evidence_target, prompt)
+    target_concepts = _probe_evidence_concepts(evidence_target)
+    return bool(
+        _probe_answer_slot_semantically_matches_prompt(answer_slot, prompt)
+        and target_concepts
+        and slot_concepts & target_concepts
+    )
+
+
+def _probe_trigger_semantics_ok(trigger: Any, answer_slot: Any) -> bool:
+    """Bind strict adaptive triggers to a compatible observable answer slot."""
+
+    required_concepts = _STRICT_PROBE_TRIGGER_SLOT_CONCEPTS.get(
+        str(trigger or "").strip()
+    )
+    if required_concepts is None:
+        # ``always`` and legacy additional probes retain their existing contract.
+        return True
+    slot_concepts = set(
+        _PROBE_SLOT_CONCEPTS.get(str(answer_slot or "").strip(), ())
+    )
+    return bool(slot_concepts & required_concepts)
+
+
+def _select_probe_answer_slot(
+    *,
+    method: str,
+    prompt: str,
+    probe_index: int,
+) -> str:
+    slots = _PROBE_SLOTS_BY_METHOD.get(
+        str(method or "").strip(),
+        ("context_and_basis", "decision_and_action", "result_and_verification"),
+    )
+    prompt_concepts = _probe_evidence_concepts(prompt)
+    if not prompt_concepts:
+        return slots[min(probe_index, len(slots) - 1)]
+    if not any(
+        set(_PROBE_SLOT_CONCEPTS.get(slot, ())) & prompt_concepts
+        for slot in slots
+    ):
+        for generic_slot in ("context_and_basis", "result_and_verification"):
+            if set(_PROBE_SLOT_CONCEPTS[generic_slot]) & prompt_concepts:
+                return generic_slot
+
+    # Result words are often preceded by a reference to an earlier action
+    # ("그 조치가 효과가..."). Prefer the actual requested evidence, not that
+    # anaphoric action noun.
+    compact_prompt = re.sub(r"\s+", "", str(prompt or ""))
+    requested_result = any(
+        marker in compact_prompt
+        for marker in ("결과", "성과", "효과", "수치", "입증", "개선", "학습", "후속", "예방")
+    )
+    ranked: list[tuple[int, int, str]] = []
+    for slot_index, slot in enumerate(slots):
+        concepts = set(_PROBE_SLOT_CONCEPTS.get(slot, ()))
+        score = len(concepts & prompt_concepts) * 100
+        if requested_result and concepts & {"result", "learning"}:
+            score += 140
+        if slot_index == min(probe_index, len(slots) - 1):
+            score += 5
+        ranked.append((score, -slot_index, slot))
+    ranked.sort(reverse=True)
+    return ranked[0][2]
+
+
+def _select_probe_evidence_target_index(
+    *,
+    method: str,
+    prompt: str,
+    answer_slot: str,
+    evaluation_points: list[str],
+    used_indexes: set[int],
+    probe_index: int,
+) -> int | None:
+    """Choose the authored dimension that the probe actually asks about.
+
+    Evaluation points and probes have different cardinalities and model probes
+    can be rotated, so their array positions are not an evidence contract.  We
+    rank shared observable concepts and use the answer slot only as a bounded
+    tie-breaker.  No new evaluation claim is synthesized.
+    """
+
+    if not evaluation_points:
+        return None
+    prompt_concepts = _probe_evidence_concepts(prompt)
+    prompt_tokens = _probe_evidence_tokens(prompt)
+    slot_concepts = set(_PROBE_SLOT_CONCEPTS.get(answer_slot, ()))
+    # Experience probes deliberately cover context, KSA application, and
+    # result.  The direct-action dimension remains independently scored by the
+    # main answer/rubric; it must not displace the result target on probe 3.
+    experience_tie_break = (0, 1, 3) if method == "경험면접" else ()
+
+    ranked: list[tuple[int, int, int]] = []
+    for target_index, target in enumerate(evaluation_points):
+        target_concepts = _probe_evidence_concepts(target)
+        shared_concepts = target_concepts & prompt_concepts
+        shared_slot_concepts = target_concepts & slot_concepts
+        shared_tokens = _probe_evidence_tokens(target) & prompt_tokens
+        score = (
+            len(shared_concepts) * 100
+            + len(shared_slot_concepts) * 20
+            + min(len(shared_tokens), 3) * 5
+        )
+        if (
+            probe_index < len(experience_tie_break)
+            and target_index == experience_tie_break[probe_index]
+        ):
+            score += 15
+        if target_index in used_indexes:
+            score -= 10
+        ranked.append((score, -target_index, target_index))
+
+    ranked.sort(reverse=True)
+    for best_score, _stable_order, best_index in ranked:
+        if best_score > 0 and _probe_contract_semantics_ok(
+            answer_slot,
+            evaluation_points[best_index],
+            prompt,
+        ):
+            return best_index
+
+    # Legacy/custom callers can supply dimensions without our Korean concept
+    # vocabulary.  Preserve their authored ordering only when semantic matching
+    # is impossible for every point.
+    fallback_index = min(probe_index, len(evaluation_points) - 1)
+    return fallback_index
+
+
+def _aligned_probe_contract(
+    *,
+    method: str,
+    prompt: str,
+    evaluation_points: list[str],
+    used_indexes: set[int],
+    probe_index: int,
+) -> tuple[str, int] | None:
+    """Find a scored dimension and answer slot supported by the same probe.
+
+    Model-authored probes sometimes use concrete nouns (for example a request
+    owner or approval record) that are outside the bounded concept lattice.
+    In that case the method's positional slot can be wrong even though an
+    authored evaluation point shares the exact work object.  This fallback
+    still requires direct prompt/point overlap and the normal slot contract;
+    it never treats the probe itself as a scoring dimension.
+    """
+
+    slots = _PROBE_SLOTS_BY_METHOD.get(
+        str(method or "").strip(),
+        ("context_and_basis", "decision_and_action", "result_and_verification"),
+    )
+    prompt_concepts = _probe_evidence_concepts(prompt)
+    prompt_tokens = _probe_evidence_tokens(prompt)
+    ranked: list[tuple[int, int, int, str]] = []
+    for target_index, target in enumerate(evaluation_points):
+        if not _probe_target_semantically_matches_prompt(target, prompt):
+            continue
+        target_concepts = _probe_evidence_concepts(target)
+        shared_tokens = _probe_evidence_tokens(target) & prompt_tokens
+        shared_concepts = target_concepts & prompt_concepts
+        for slot_index, slot in enumerate(slots):
+            if not _probe_contract_semantics_ok(slot, target, prompt):
+                continue
+            slot_concepts = set(_PROBE_SLOT_CONCEPTS.get(slot, ()))
+            score = (
+                len(shared_concepts) * 100
+                + min(len(shared_tokens), 3) * 20
+                + len(slot_concepts & target_concepts) * 10
+            )
+            if target_index not in used_indexes:
+                score += 5
+            if slot_index == min(probe_index, len(slots) - 1):
+                score += 1
+            ranked.append((score, -target_index, -slot_index, slot))
+    if not ranked:
+        return None
+    ranked.sort(reverse=True)
+    _score, negative_target_index, _negative_slot_index, slot = ranked[0]
+    return slot, -negative_target_index
+
+
+def _structured_follow_ups_for_question(
+    method: str,
+    follow_ups: list[str] | None,
+    evaluation_points: list[str] | None = None,
+    *,
+    require_evaluation_alignment: bool = False,
+) -> list[dict[str, Any]]:
+    """Wrap existing probes with deterministic interviewer operating metadata.
+
+    The candidate-facing prompts are copied verbatim from ``follow_ups``.  This
+    layer therefore makes the probe sequence executable without asking a model
+    to invent another question or another NCS/KSA claim.
+    """
+
+    prompts = [str(value or "").strip() for value in (follow_ups or []) if str(value or "").strip()]
+    evidence = [
+        str(value or "").strip()
+        for value in (evaluation_points or [])
+        if str(value or "").strip()
+    ]
+    triggers = (
+        "always",
+        "if_decision_or_action_basis_missing",
+        "if_result_or_verification_missing",
+    )
+    structured: list[dict[str, Any]] = []
+    used_target_indexes: set[int] = set()
+    for index, prompt in enumerate(prompts):
+        answer_slot = _select_probe_answer_slot(
+            method=method,
+            prompt=prompt,
+            probe_index=index,
+        )
+        target_index = _select_probe_evidence_target_index(
+            method=method,
+            prompt=prompt,
+            answer_slot=answer_slot,
+            evaluation_points=evidence,
+            used_indexes=used_target_indexes,
+            probe_index=index,
+        )
+        evidence_target = evidence[target_index] if target_index is not None else prompt
+        if (
+            require_evaluation_alignment
+            and not _probe_contract_semantics_ok(answer_slot, evidence_target, prompt)
+        ):
+            aligned = _aligned_probe_contract(
+                method=method,
+                prompt=prompt,
+                evaluation_points=evidence,
+                used_indexes=used_target_indexes,
+                probe_index=index,
+            )
+            if aligned is not None:
+                answer_slot, target_index = aligned
+                evidence_target = evidence[target_index]
+        if target_index is not None:
+            used_target_indexes.add(target_index)
+        if (
+            not require_evaluation_alignment
+            and not _probe_contract_semantics_ok(answer_slot, evidence_target, prompt)
+        ):
+            # Preserve the authored probe itself as the observable target when
+            # none of the model-authored evaluation points describes the same
+            # answer slot for legacy/custom callers. Planned AI-authored rows
+            # keep the mismatch visible so the release gate can reject and
+            # regenerate the probe plus its scoring dimension together.
+            evidence_target = prompt
+        structured.append(
+            {
+                "trigger": triggers[index] if index < len(triggers) else "if_additional_evidence_missing",
+                "answer_slot": answer_slot,
+                # Reuse an authored evaluation point (or, when none exists, the
+                # authored probe itself) rather than synthesizing a KSA claim.
+                "evidence_target": evidence_target,
+                "prompt": prompt,
+                "ask_limit": 1,
+            }
+        )
+    return structured
+
+
+def _structured_follow_ups_ok(
+    value: Any,
+    follow_ups: list[str] | None = None,
+    evaluation_points: list[str] | None = None,
+    *,
+    require_evaluation_alignment: bool = False,
+) -> bool:
+    prompts = [str(item or "").strip() for item in (follow_ups or []) if str(item or "").strip()]
+    evidence = {
+        str(item or "").strip()
+        for item in (evaluation_points or [])
+        if str(item or "").strip()
+    }
+    if not isinstance(value, list) or len(value) < 3 or len(value) != len(prompts):
+        return False
+    if require_evaluation_alignment and not evidence:
+        return False
+    allowed_conditional_triggers = {
+        "if_decision_or_action_basis_missing",
+        "if_result_or_verification_missing",
+        "if_additional_evidence_missing",
+    }
+    always_count = 0
+    conditional_count = 0
+    for index, row in enumerate(value):
+        if not isinstance(row, dict):
+            return False
+        trigger = str(row.get("trigger") or "").strip()
+        prompt = str(row.get("prompt") or "").strip()
+        evidence_target = str(row.get("evidence_target") or "").strip()
+        semantic_contract_ok = _probe_contract_semantics_ok(
+            row.get("answer_slot"),
+            evidence_target,
+            prompt,
+        ) or (
+            not require_evaluation_alignment
+            and bool(prompt)
+            and evidence_target == prompt
+        )
+        trigger_semantics_ok = (
+            not require_evaluation_alignment
+            or _probe_trigger_semantics_ok(trigger, row.get("answer_slot"))
+        )
+        if (
+            not trigger
+            or not str(row.get("answer_slot") or "").strip()
+            or not evidence_target
+            or not prompt
+            or type(row.get("ask_limit")) is not int
+            or row.get("ask_limit") != 1
+            or not semantic_contract_ok
+            or not trigger_semantics_ok
+        ):
+            return False
+        if index >= len(prompts) or prompt != prompts[index]:
+            return False
+        if (
+            require_evaluation_alignment
+            and str(row.get("evidence_target") or "").strip() not in evidence
+        ):
+            return False
+        if trigger == "always":
+            always_count += 1
+        elif trigger in allowed_conditional_triggers:
+            conditional_count += 1
+        else:
+            return False
+    return always_count == 1 and conditional_count >= 2
+
+
+def _dimension_observable_evidence(
+    dimension: str,
+    *,
+    method: str,
+    focus_label: str,
+) -> str:
+    """Render a question-specific, recordable observation target per dimension."""
+
+    compact = re.sub(r"\s+", "", str(dimension or ""))
+    focus = str(focus_label or "핵심 수행기준").strip() or "핵심 수행기준"
+    if any(token in compact for token in ("상황", "사실", "자료", "규정", "현황", "원인")):
+        behavior = "확인한 문서·수치·시간·제약 중 2개 이상과 그 출처를 구분해 제시하는 행동"
+    elif any(token in compact for token in ("대안", "판단", "우선", "선택", "기준", "위험")):
+        behavior = "비교한 선택지 2개 이상, 선택 기준과 감수할 위험을 연결해 결정하는 행동"
+    elif any(token in compact for token in ("행동", "순서", "실행", "보고", "위임", "처리", "조정")):
+        behavior = "첫 조치와 후속 조치 2단계 이상, 보고 대상·시점 또는 담당을 순서대로 밝히는 행동"
+    elif any(token in compact for token in ("결과", "성과", "지표", "품질", "오류", "후속", "예방", "검증", "기록")):
+        behavior = "전후 수치·처리시간·오류건수 또는 문서·로그·피드백 중 1개 이상으로 결과를 확인하는 행동"
+    elif method == "경험면접":
+        behavior = "사건의 조건, 본인 역할, 직접 행동과 결과 기록을 서로 구분해 설명하는 행동"
+    else:
+        behavior = "판단 근거, 직접 행동과 확인 가능한 산출물을 한 흐름으로 설명하는 행동"
+    return f"'{focus}' 과제의 {dimension}: {behavior}"
+
+
+def _dimension_midpoint_evidence(dimension: str, *, method: str, focus_label: str) -> str:
+    """Describe score-3 evidence for this exact focus and dimension."""
+
+    compact = re.sub(r"\s+", "", str(dimension or ""))
+    focus = str(focus_label or "핵심 수행기준").strip() or "핵심 수행기준"
+    if any(token in compact for token in ("상황", "사실", "자료", "규정", "현황", "원인")):
+        behavior = "확인 대상과 출처를 1개 제시하되 다른 자료·시간·제약과의 대조는 일부 빠진다"
+    elif any(token in compact for token in ("대안", "판단", "우선", "선택", "기준", "위험")):
+        behavior = "선택지 또는 판단 기준을 1개 제시하되 비교 대안이나 감수할 위험의 연결은 일부 빠진다"
+    elif any(token in compact for token in ("행동", "순서", "실행", "보고", "위임", "처리", "조정")):
+        behavior = "직접 조치와 담당·보고 대상 중 1개를 제시하되 전후 순서나 후속 조치는 일부 빠진다"
+    elif any(token in compact for token in ("결과", "성과", "지표", "품질", "오류", "후속", "예방", "검증", "기록")):
+        behavior = "수치·문서·기록·피드백 중 결과 근거를 1개 제시하되 전후 변화나 후속 확인은 일부 빠진다"
+    elif method == "경험면접":
+        behavior = "본인 역할·직접 행동·결과 기록 중 1개는 확인되지만 사건 조건과의 연결이 일부 빠진다"
+    else:
+        behavior = "판단 근거·직접 행동·산출물 중 1개는 확인되지만 전체 수행 흐름의 연결이 일부 빠진다"
+    return f"'{focus}' 과제의 {dimension}: {behavior}"
+
+
+def _dimension_scorecards(
+    dimensions: list[str],
+    *,
+    method: str = "",
+    focus_label: str = "",
+) -> list[dict[str, Any]]:
+    clean = [str(value or "").strip() for value in dimensions if str(value or "").strip()][:4]
+    if len(clean) != 4 or len(set(clean)) != 4:
+        return []
+    scorecards: list[dict[str, Any]] = []
+    for dimension in clean:
+        observable = _dimension_observable_evidence(
+            dimension,
+            method=method,
+            focus_label=focus_label,
+        )
+        midpoint = _dimension_midpoint_evidence(
+            dimension,
+            method=method,
+            focus_label=focus_label,
+        )
+        scorecards.append(
+            {
+                "dimension": dimension,
+                "observable_evidence": observable,
+                "weight": 25,
+                "critical_floor": 1,
+                "no_answer_rule": (
+                    "직접 직무경험이 없다는 이유만으로 1점을 부여하지 않는다. 유사경험 확인과 "
+                    "표준화 대체상황 제시 뒤에도 이 차원의 관찰행동 또는 검증 근거가 0개이면 1점으로 기록한다."
+                ),
+                "anchors": {
+                    "5": (
+                        f"{dimension} 5점: 직접·유사경험 또는 표준화 대체상황에서 {observable}을 충족하고, "
+                        "핵심 판단·행동 2개 이상을 문서·수치·기록·피드백 중 1개 이상의 검증 근거와 일관되게 연결한다."
+                    ),
+                    "3": (
+                        f"{dimension} 3점: 직접·유사경험 또는 표준화 대체상황에서 {midpoint}. "
+                        "답변에서 확인된 1개 근거만 기록하고 추정으로 보완하지 않는다."
+                    ),
+                    "1": (
+                        f"{dimension} 1점: 유사경험 확인과 동일한 대체상황 제시 뒤에도 {observable}에 해당하는 "
+                        "관찰행동이 0개이거나 문서·수치·기록·피드백으로 확인할 근거가 0개이다."
+                    ),
+                },
+            }
+        )
+    return scorecards
+
+
+def _candidate_evidence_policy(method: str, focus_label: str) -> dict[str, Any]:
+    experience_method = str(method or "").strip() == "경험면접"
+    focus = str(focus_label or "핵심 수행기준").strip() or "핵심 수행기준"
+    return {
+        "direct_job_experience_required": False,
+        "accepted_evidence_types": [
+            "동일 직무의 실제 업무 경험",
+            "다른 직무에서 같은 판단·절차·책임을 수행한 유사경험",
+            "인턴·학교·직업교육·교육실습의 팀 또는 개인 프로젝트",
+            "봉사·동아리·지역활동에서 본인 역할과 결과를 확인할 수 있는 경험",
+        ],
+        "evidence_state_rules": {
+            "no_direct_job_experience": {
+                "classification": "경험 경로 없음",
+                "score_effect": "감점 없음",
+                "interviewer_action": "유사경험을 한 번 확인한 뒤 표준화 대체상황을 제시한다.",
+            },
+            "analogous_evidence_provided": {
+                "classification": "평가 가능한 행동근거",
+                "score_effect": "직접 직무경험과 동일한 4개 평가차원으로 평정",
+                "interviewer_action": "경험의 명칭이 아니라 본인 판단·행동·산출물·결과를 기록한다.",
+            },
+            "no_observable_evidence_after_alternative": {
+                "classification": "근거 없음",
+                "score_effect": "해당 평가차원의 무근거 규칙 적용",
+                "interviewer_action": "유사경험 확인과 표준화 대체상황 뒤에도 관찰근거가 없을 때만 1점을 기록한다.",
+            },
+        },
+        "standardized_alternative_scenario": {
+            "enabled": experience_method,
+            "prompt": (
+                f"관련 직무경험이 없다고 답한 모든 지원자에게 동일하게 묻습니다. '{focus}'가 필요한 업무에서 "
+                "마감 직전 핵심 자료의 불일치와 일정 변경이 동시에 확인되었습니다. 먼저 확인할 사실과 판단 기준, "
+                "본인이 취할 행동 순서, 남길 산출물과 결과 확인 방법을 말씀해 주세요."
+            )
+            if experience_method
+            else "",
+            "delivery_rule": (
+                "경험이 없다고 답한 지원자 모두에게 문구·정보·준비시간을 동일하게 제공하고 추가 사실을 임의로 만들지 않는다."
+                if experience_method
+                else "주질문 자체가 모든 지원자에게 동일한 표준화 과제이므로 별도 대체상황을 추가하지 않는다."
+            ),
+            "scoring_rule": "직접경력 보유 여부가 아니라 동일한 4개 평가차원의 관찰행동과 검증 근거만 평정한다.",
+        },
+    }
+
+
+def _assessment_operating_fields(
+    dimensions: list[str],
+    *,
+    method: str = "",
+    focus_label: str = "",
+) -> dict[str, Any]:
+    scorecards = _dimension_scorecards(
+        dimensions,
+        method=method,
+        focus_label=focus_label,
+    )
+    return {
+        "dimension_rubrics": scorecards,
+        "dimension_weight_total": sum(int(row["weight"]) for row in scorecards),
+        "evaluation_point_mapping": [
+            {
+                "evaluation_point_index": index,
+                "evaluation_point": row["dimension"],
+                "dimension_index": index,
+                "dimension": row["dimension"],
+                "weight": row["weight"],
+            }
+            for index, row in enumerate(scorecards, start=1)
+        ],
+        "weighted_score_formula": {
+            "formula": "Σ(차원점수 × 차원가중치) ÷ 100",
+            "dimension_score_scale": [1, 2, 3, 4, 5],
+            "result_scale_min": 1.0,
+            "result_scale_max": 5.0,
+            "percentage_formula": "가중합 점수 ÷ 5 × 100",
+            "rounding_rule": "가중합 점수는 소수점 둘째 자리에서 반올림해 소수점 첫째 자리까지 기록한다.",
+            "critical_floor_precedence": True,
+        },
+        "candidate_evidence_policy": _candidate_evidence_policy(method, focus_label),
+        "critical_floor": {
+            "score": 1,
+            "rule": "평가차원 중 하나라도 1점이면 종합 추천 전에 해당 결손 근거를 별도로 검토한다.",
+        },
+        "no_answer_rule": {
+            "score": 1,
+            "rule": (
+                "직접 직무경험이 없다는 답은 무응답이 아니다. 유사경험 확인과 표준화 대체상황까지 제시한 뒤에도 "
+                "관찰 가능한 행동 또는 검증 근거가 없을 때만 해당 평가차원을 1점으로 기록한다."
+            ),
+        },
+    }
+
+
 def _behavior_anchored_evaluation(
     method: str,
     focus: str,
@@ -3116,9 +3976,15 @@ def _behavior_anchored_evaluation(
             ksa_evidence = "사용한 자료·도구, 실제 수행 순서와 직접 취한 조치"
         return {
             "scale": "5단계 행동기반 평정",
+            "method": method,
             "focus": focus_label,
             "focus_type": normalized_focus_type or "미분류",
             "dimensions": dimensions,
+            **_assessment_operating_fields(
+                dimensions,
+                method=method,
+                focus_label=focus_label,
+            ),
             "rating_levels": [
                 {
                     "score": 5,
@@ -3301,15 +4167,28 @@ def _behavior_anchored_evaluation(
     ]
     return {
         "scale": "5단계 행동기반 평정",
+        "method": method,
         "focus": focus_label,
         "focus_type": normalized_focus_type or "미분류",
         "dimensions": dimensions,
+        **_assessment_operating_fields(
+            dimensions,
+            method=method,
+            focus_label=focus_label,
+        ),
         "rating_levels": rating_levels,
         "interviewer_instruction": (
             "모든 지원자에게 동일한 기본 과제와 허용된 후속질문 범위를 적용하고, "
             "답변의 인상이나 KSA 자기평가보다 제시된 판단 근거·행동·산출물·결과를 기록해 평정하십시오."
         ),
     }
+
+
+@lru_cache(maxsize=2048)
+def _anchor_similarity_ratio(left: str, right: str) -> float:
+    # The same rubric anchors are compared on every quality pass; the ratio
+    # depends only on the two strings.
+    return SequenceMatcher(None, left, right).ratio()
 
 
 def _behavior_anchors_ok(guide: Any) -> bool:
@@ -3335,12 +4214,145 @@ def _behavior_anchors_ok(guide: Any) -> bool:
     adjacent_similarity_ok = bool(
         len(actual_levels) == 5
         and all(
-            SequenceMatcher(None, actual_levels[index][2], actual_levels[index + 1][2]).ratio() < 0.82
+            _anchor_similarity_ratio(actual_levels[index][2], actual_levels[index + 1][2]) < 0.82
             for index in range(len(actual_levels) - 1)
         )
     )
+    dimensions = [
+        str(value or "").strip()
+        for value in (guide.get("dimensions") or [])
+        if str(value or "").strip()
+    ] if isinstance(guide.get("dimensions"), list) else []
+    dimension_rubrics = (
+        guide.get("dimension_rubrics")
+        if isinstance(guide.get("dimension_rubrics"), list)
+        else []
+    )
+    focus_label = str(guide.get("focus") or "").strip()
+    rubric_rows_ok = len(dimensions) == 4 and len(set(dimensions)) == 4 and len(dimension_rubrics) == 4
+    weights: list[int] = []
+    if rubric_rows_ok:
+        for index, rubric in enumerate(dimension_rubrics):
+            if not isinstance(rubric, dict):
+                rubric_rows_ok = False
+                break
+            anchors = rubric.get("anchors") if isinstance(rubric.get("anchors"), dict) else {}
+            try:
+                weight = int(rubric.get("weight"))
+            except (TypeError, ValueError):
+                weight = 0
+            weights.append(weight)
+            observable = str(rubric.get("observable_evidence") or "").strip()
+            if (
+                str(rubric.get("dimension") or "").strip() != dimensions[index]
+                or dimensions[index] not in observable
+                or not focus_label
+                or focus_label not in observable
+                or observable == dimensions[index]
+                or len(observable) < 45
+                or weight <= 0
+                or rubric.get("critical_floor") != 1
+                or len(str(rubric.get("no_answer_rule") or "").strip()) < 20
+                or set(anchors) != {"5", "3", "1"}
+                or any(len(str(anchors.get(score) or "").strip()) < 30 for score in ("5", "3", "1"))
+                or "2개 이상" not in str(anchors.get("5") or "")
+                or "1개" not in str(anchors.get("3") or "")
+                or "0개" not in str(anchors.get("1") or "")
+                or any(
+                    focus_label not in str(anchors.get(score) or "")
+                    for score in ("5", "3", "1")
+                )
+            ):
+                rubric_rows_ok = False
+                break
+    critical_floor = guide.get("critical_floor") if isinstance(guide.get("critical_floor"), dict) else {}
+    no_answer_rule = guide.get("no_answer_rule") if isinstance(guide.get("no_answer_rule"), dict) else {}
+    point_mapping = (
+        guide.get("evaluation_point_mapping")
+        if isinstance(guide.get("evaluation_point_mapping"), list)
+        else []
+    )
+    mapping_ok = bool(
+        len(point_mapping) == 4
+        and len(weights) == 4
+        and all(
+            isinstance(row, dict)
+            and row.get("evaluation_point_index") == index
+            and row.get("dimension_index") == index
+            and str(row.get("evaluation_point") or "").strip() == dimensions[index - 1]
+            and str(row.get("dimension") or "").strip() == dimensions[index - 1]
+            and row.get("weight") == weights[index - 1]
+            for index, row in enumerate(point_mapping, start=1)
+        )
+    )
+    formula = (
+        guide.get("weighted_score_formula")
+        if isinstance(guide.get("weighted_score_formula"), dict)
+        else {}
+    )
+    formula_ok = bool(
+        str(formula.get("formula") or "").strip() == "Σ(차원점수 × 차원가중치) ÷ 100"
+        and formula.get("dimension_score_scale") == [1, 2, 3, 4, 5]
+        and formula.get("result_scale_min") == 1.0
+        and formula.get("result_scale_max") == 5.0
+        and str(formula.get("percentage_formula") or "").strip()
+        == "가중합 점수 ÷ 5 × 100"
+        and len(str(formula.get("rounding_rule") or "").strip()) >= 20
+        and formula.get("critical_floor_precedence") is True
+    )
+    evidence_policy = (
+        guide.get("candidate_evidence_policy")
+        if isinstance(guide.get("candidate_evidence_policy"), dict)
+        else {}
+    )
+    accepted_evidence = (
+        evidence_policy.get("accepted_evidence_types")
+        if isinstance(evidence_policy.get("accepted_evidence_types"), list)
+        else []
+    )
+    evidence_states = (
+        evidence_policy.get("evidence_state_rules")
+        if isinstance(evidence_policy.get("evidence_state_rules"), dict)
+        else {}
+    )
+    alternative = (
+        evidence_policy.get("standardized_alternative_scenario")
+        if isinstance(evidence_policy.get("standardized_alternative_scenario"), dict)
+        else {}
+    )
+    method = str(guide.get("method") or "").strip()
+    alternative_ok = bool(
+        alternative.get("enabled") is (method == "경험면접")
+        and len(str(alternative.get("delivery_rule") or "").strip()) >= 30
+        and len(str(alternative.get("scoring_rule") or "").strip()) >= 30
+        and (
+            method != "경험면접"
+            or len(str(alternative.get("prompt") or "").strip()) >= 80
+        )
+    )
+    evidence_policy_ok = bool(
+        evidence_policy.get("direct_job_experience_required") is False
+        and len(accepted_evidence) >= 4
+        and all(str(value or "").strip() for value in accepted_evidence)
+        and set(evidence_states)
+        == {
+            "no_direct_job_experience",
+            "analogous_evidence_provided",
+            "no_observable_evidence_after_alternative",
+        }
+        and all(
+            isinstance(evidence_states.get(state), dict)
+            and all(
+                str(evidence_states[state].get(field) or "").strip()
+                for field in ("classification", "score_effect", "interviewer_action")
+            )
+            for state in evidence_states
+        )
+        and alternative_ok
+    )
     return (
         str(guide.get("scale") or "").strip() == "5단계 행동기반 평정"
+        and method in QUALITY_INTERVIEW_METHODS
         and "anchors" not in guide
         and [(score, label) for score, label, _anchor in actual_levels] == expected_levels
         and all(len(anchor) >= 40 for _score, _label, anchor in actual_levels)
@@ -3348,6 +4360,17 @@ def _behavior_anchors_ok(guide: Any) -> bool:
         and all("영향 검토 한 부분" not in anchor for _score, _label, anchor in actual_levels)
         and adjacent_similarity_ok
         and len(str(guide.get("interviewer_instruction") or "").strip()) >= 30
+        and rubric_rows_ok
+        and sum(weights) == 100
+        and guide.get("dimension_weight_total") == 100
+        and critical_floor.get("score") == 1
+        and len(str(critical_floor.get("rule") or "").strip()) >= 20
+        and no_answer_rule.get("score") == 1
+        and len(str(no_answer_rule.get("rule") or "").strip()) >= 20
+        and "직접 직무경험이 없다는 답은 무응답이 아니다" in str(no_answer_rule.get("rule") or "")
+        and mapping_ok
+        and formula_ok
+        and evidence_policy_ok
     )
 
 
@@ -4695,30 +5718,31 @@ def _scenario_condition_text(value: Any) -> str:
     return f"{_with_josa(scenario, '이', '가')} 동시에 발생한 상황"
 
 
+# A coordination-skill surface such as ``관계 조율`` names the act itself.
+_COORDINATION_SURFACE_RE = re.compile(r"^(?P<object>.+\S)\s+(?P<action>조율|조정)$")
+
+# Same limit as the experience entry in ``_natural_question_wording_ok``.
+_EXPERIENCE_MAIN_QUESTION_MAX_CHARS = 360
+
+# Interpersonal or coordination skills are exercised with materials and
+# methods (meeting notes, agreed criteria), not with a "tool".
+_INTERPERSONAL_SKILL_RE = re.compile(
+    r"(?:조율|조정|협의|협상|협업|협력|소통|커뮤니케이션|설득|중재|갈등|응대|상담|면담|대인)"
+)
+
+
 def _experience_scenario_condition(value: Any) -> str:
     """Keep an experience prompt concrete without copying an entire case brief."""
     scenario = re.sub(r"\s+", " ", str(value or "")).strip(" ,.;")
     parts = [part.strip() for part in scenario.split(",") if part.strip()]
     selected = parts[:2] if parts else ["업무 기준과 일정 충돌"]
-    connective_endings = (
-        (r"\s*조건이고$", " 조건"),
-        (r"\s*조건이며$", " 조건"),
-        (r"중이고$", "중인 상황"),
-        (r"있고$", "있는 상황"),
-        (r"이며$", "인 상황"),
-        (r"이고$", "인 상황"),
-    )
     normalized: list[str] = []
     for part in selected:
-        rendered = part
-        for pattern, replacement in connective_endings:
-            if re.search(pattern, rendered):
-                rendered = re.sub(pattern, replacement, rendered)
-                break
-        if not re.search(r"(?:상황|조건|상태)$", rendered):
-            rendered = f"{_with_josa(rendered, '이', '가')} 발생한 상황"
+        rendered = re.sub(r"\s*조건(?:이고|이며)?$", "", part).strip()
+        if not re.search(r"(?:상황|상태)$", rendered):
+            rendered = f"{rendered} 상황"
         normalized.append(rendered)
-    return ", ".join(normalized)
+    return "이고, ".join(normalized)
 
 
 _QUESTION_VARIATION_CONSTRAINTS = (
@@ -4931,7 +5955,7 @@ def _freeform_ksa_anchor(
             continue
         anchor = re.sub(
             r"\s*(?:관련\s*)?(?:실무\s*)?(?:적용·검증\s*절차|수행·검증\s*절차|"
-            r"확인·판단\s*기준|행동\s*기준|확인\s*절차|검증\s*절차)\s*$",
+            r"확인(?:·판단)?\s*기준|행동\s*기준|확인\s*절차|검증\s*절차)\s*$",
             "",
             anchor,
         ).strip(" ·ㆍ/")
@@ -5127,7 +6151,7 @@ def _question_for_method(
         if focus_type == "태도":
             debate_focus_context = (
                 f"압박과 이해 충돌 속에서도 "
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 지켜야 하는 가운데"
+                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실천해야 하는 가운데"
             )
             decision_requirement = "제시안에는 공동 행동·점검·실행 책임을 명시하세요."
         elif focus_type == "지식":
@@ -5137,7 +6161,11 @@ def _question_for_method(
             decision_requirement = "제시안에는 적용 범위·예외·검증·실행 책임을 명시하세요."
         else:
             debate_focus_context = (
-                f"{prompt_focus}에 따라 실제 수행 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                (
+                    f"{_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'future')} 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                    if not prompt_focus.endswith(("절차", "기준"))
+                    else f"{prompt_focus}에 따라 실제 수행 단계·산출물·품질 검증 방법을 정해야 하는 가운데"
+                )
             )
             decision_requirement = "제시안에는 수행 단계·산출물·품질 검증·실행 책임을 명시하세요."
         return (
@@ -5175,7 +6203,7 @@ def _question_for_method(
         situation_text = _scenario_condition_text(context.get("situation_prompt") or context["situation"])
         if focus_type == "태도":
             situation_focus_context = (
-                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 지키기 어려운 조건"
+                f"{situation_text}에서 {_quoted_with_josa(prompt_focus, '을', '를')} 실천하기 어려운 조건"
             )
         elif focus_type == "지식":
             situation_focus_context = (
@@ -5183,9 +6211,14 @@ def _question_for_method(
                 f"{situation_text}"
             )
         else:
-            situation_focus_context = (
-                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'must')} 하는 가운데 "
-                f"{situation_text}"
+            # Present the conditions first, then keep the skill task beside
+            # the requested actions even when a long variation is supplied.
+            return (
+                f"{label} 업무 중 {situation_text}입니다. "
+                f"{variation_sentence}"
+                f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'must')} 하는 가운데, "
+                "어떤 기준으로 판단하고 위험요인을 어떻게 통제하며, 사실 확인부터 보고와 실행까지 어떤 순서로 행동하시겠습니까? "
+                f"{measurement_instruction}"
             )
         return (
             f"{label} 업무 중 {situation_focus_context}입니다. "
@@ -5233,32 +6266,76 @@ def _question_for_method(
             "질의응답에 답해 주세요. 해결안에는 원인 가설이 포함된 문제 정의, 비교 가능한 대안 2가지, "
             f"선택안의 검증 방법, 우선 실행계획과 성과지표를 포함하세요. {measurement_instruction}"
         )
-    experience_context = (
-        f"{_with_josa(label, '과', '와')} 관련해 본인이 판단하고 행동한 실제 경험 한 가지를 선택해 주세요. "
-        "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례도 가능합니다."
-    )
+    # One experience question asks for exactly one case.  The situation and
+    # the candidate's role are asked by the fixed first follow-up, so the main
+    # question only names the case and the KSA evidence to describe.
+    experience_variation_sentence = ""
     if variation:
-        experience_variation = _experience_scenario_condition(variation)
-        experience_context += f" 특히 {experience_variation}과 유사한 사례를 우선해 주세요."
+        # The variation only guides which single case to pick.  ``비슷한``
+        # qualifies the chosen case, never the condition noun itself.
+        experience_variation_sentence = (
+            f" 가능하면 {_experience_scenario_condition(variation)}처럼, "
+            "비슷한 일을 겪은 경험을 골라 주세요."
+        )
     if focus_type == "태도":
         evidence_task = (
-            f"그 경험에서 압박이나 상충 요구가 있었던 장면을 골라 {_quoted_with_josa(prompt_focus, '과', '와')} 관련해 "
-            "본인이 선택한 행동과 그 결과"
+            "그 경험에서 상충하는 요구나 압박을 받았던 장면을 골라, "
+            f"본인이 실제로 보인 {_with_josa(prompt_focus, '과', '와')} 그 결과"
         )
     elif focus_type == "지식":
         evidence_task = (
-            f"그 경험에서 {_quoted_with_josa(prompt_focus, '을', '를')} 실제 판단에 사용한 장면을 골라 무엇을 확인했고 어떤 기준으로 판단해 "
-            "본인이 어떻게 행동했는지"
+            f"그 경험에서 {prompt_focus}에 비춰 무엇을 판단 근거로 삼았고, "
+            "그 근거로 무엇을 결정해 어떻게 행동했는지와 그 결과"
         )
     else:
-        evidence_task = (
-            f"그 경험에서 {_quoted_with_josa(prompt_focus, '이', '가')} 요구된 장면을 골라 어떤 순서와 조치로 "
-            "산출물을 만들고 결과를 확인했는지"
-        )
-    return (
-        f"{experience_context} {_with_josa(evidence_task, '을', '를')} 설명해 주세요. "
-        "당시 상황과 문제, 본인 역할, 실제 행동과 결과를 포함해 주세요."
+        tool_phrase = "자료나 방법" if _INTERPERSONAL_SKILL_RE.search(prompt_focus) else "도구"
+        if _COORDINATION_SURFACE_RE.match(prompt_focus):
+            # A coordination skill is asked as the coordinating act the
+            # candidate took on, not as a procedure that was "performed".
+            skill_act = f"직접 맡은 {prompt_focus}에서 한"
+        else:
+            skill_act = (
+                f"{_with_josa(prompt_focus, '을', '를')} 직접 "
+                f"{_skill_focus_action(prompt_focus, 'past')}"
+            )
+        if _SKILL_TOOL_SURFACE_RE.search(prompt_focus):
+            # The surface already names the tool; do not ask for it twice.
+            evidence_task = (
+                f"그 경험에서 본인이 {skill_act} 행동의 순서와 만든 결과물, "
+                "결과를 확인한 방법"
+            )
+        else:
+            evidence_task = (
+                f"그 경험에서 본인이 {skill_act} 행동의 순서와 그때 쓴 {tool_phrase}, "
+                "만든 결과물과 확인한 결과"
+            )
+    task_sentence = f" {_with_josa(evidence_task, '을', '를')} 설명해 주세요."
+    substitute_sentence = "해당 경험이 없으면 면접위원이 모든 지원자에게 동일한 대체상황을 드립니다."
+    full_alternatives = (
+        "직무 경험이 없다면 본인 역할이 분명한 프로젝트나 교육실습 사례, "
+        "학교·직업교육 실습·봉사·동아리 경험으로 답해도 됩니다. "
     )
+    short_alternatives = "직무 경험이 없다면 프로젝트·교육실습·봉사·동아리 경험도 됩니다. "
+    plain_label = subject or detail or "해당 직무"
+    # A source-anchored label can push the prompt past the experience length
+    # limit.  Drop optional wording first (the case-selection hint, then the
+    # long alternatives list) and the source anchor only as a last resort; the
+    # KSA task and the substitute-situation notice always stay.
+    question = ""
+    for opening_label, alternatives, variation_part in (
+        (label, full_alternatives, experience_variation_sentence),
+        (label, short_alternatives, experience_variation_sentence),
+        (label, full_alternatives, ""),
+        (label, short_alternatives, ""),
+        (plain_label, short_alternatives, ""),
+    ):
+        question = (
+            f"{opening_label}에서 본인이 담당한 실제 경험 한 가지를 선택해 주세요. "
+            f"{alternatives}{substitute_sentence}{variation_part}{task_sentence}"
+        )
+        if len(question) <= _EXPERIENCE_MAIN_QUESTION_MAX_CHARS:
+            break
+    return question
 
 
 def _followups_for_method(
@@ -5270,6 +6347,10 @@ def _followups_for_method(
     focus_type: str = "",
     task_frame: dict[str, str] | None = None,
 ) -> list[str]:
+    # The experience main question leaves the situation and the candidate's
+    # role to the fixed first follow-up, so an experience item keeps it.
+    if method == "경험면접":
+        count = max(1, count)
     if count <= 0:
         return []
     label = subject or "해당 업무"
@@ -5286,20 +6367,26 @@ def _followups_for_method(
     context = _domain_context_pack(detail="", subject=subject, focus=focus, comp_def="")
     if focus_type == "태도":
         experience_focus_probe = (
-            f"그 선택에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러난 실제 행동과 감수한 상충비용은 무엇이었습니까?"
+            f"{_with_josa(prompt_focus, '을', '를')} 하느라 포기하거나 감수한 것은 "
+            "무엇이었고, 상대는 어떻게 반응했습니까?"
         )
         situation_focus_probe = (
-            f"그 선택에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러난 구체적 행동과 예상 위험은 무엇입니까?"
+            f"그 선택에서 {_quoted_with_josa(prompt_focus, '을', '를')} 구체적으로 어떻게 실천하겠으며, "
+            "예상되는 위험은 무엇입니까?"
         )
         inbasket_focus_probe = (
             f"압박 속에서도 {_quoted_with_josa(prompt_focus, '이', '가')} 드러나게 문서와 요청을 어떻게 분류하겠습니까?"
         )
         creative_focus_probe = (
-            f"대안 선택 과정에서 {_quoted_with_josa(prompt_focus, '이', '가')} 드러날 행동과 상충비용은 무엇입니까?"
+            f"대안을 고를 때 {_quoted_with_josa(prompt_focus, '을', '를')} 어떻게 실천하겠으며, "
+            "그 때문에 감수할 비용은 무엇입니까?"
         )
     elif focus_type == "지식":
+        # The main question asks for the judgment basis and the decision; the
+        # probe asks only for the scope and exceptions of that basis.
         experience_focus_probe = (
-            f"{_quoted_with_josa(prompt_focus, '을', '를')} 적용할 때 어떤 자료를 확인했고 적용 범위와 예외를 어떻게 판별했습니까?"
+            f"그 판단에서 {_with_josa(prompt_focus, '을', '를')} 적용한 범위와 예외로 둔 경우는 "
+            "무엇이었고, 그렇게 구분한 이유는 무엇입니까?"
         )
         situation_focus_probe = (
             f"{_quoted_with_josa(prompt_focus, '을', '를')} 적용할 때 근거 자료를 확인한 뒤 범위와 예외를 어떻게 구분하겠습니까?"
@@ -5312,7 +6399,8 @@ def _followups_for_method(
         )
     else:
         experience_focus_probe = (
-            f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'past')} 순서·도구·조치와 산출물은 무엇이었습니까?"
+            f"{_with_josa(prompt_focus, '을', '를')} {_skill_focus_action(prompt_focus, 'past')} 과정에서 "
+            "예상대로 되지 않은 단계가 있었다면 무엇이었고, 어떻게 바로잡았습니까?"
         )
         situation_focus_probe = (
             f"{_quoted_with_josa(prompt_focus, '을', '를')} 실제로 {_skill_focus_action(prompt_focus, 'future')} 순서·조치·산출물과 예상 위험은 무엇입니까?"
@@ -5325,7 +6413,7 @@ def _followups_for_method(
         )
     banks = {
         "경험면접": [
-            "당시 상황과 본인이 맡은 역할을 구체적으로 설명해 주세요.",
+            "당시 어떤 문제가 있었고, 본인은 어떤 역할을 맡았습니까?",
             experience_focus_probe,
             "다른 선택지와 비교해 그 행동을 선택한 기준은 무엇이었습니까?",
             "성과를 어떤 기준이나 지표로 확인했습니까?",
@@ -6079,6 +7167,9 @@ def _adjust_generated_questions(
             else methods[idx % len(methods)]
         )
         item["method"] = method
+        if method == "경험면접":
+            # Keep the fixed role/problem follow-up even for a zero plan.
+            row_follow_count = max(1, row_follow_count)
         item["type"] = method
 
         ncs_code = str(item.get("ncsClCd", "")).strip()
@@ -6654,6 +7745,7 @@ def _adjust_generated_questions(
     field_repair_issue_fields: dict[str, set[str]] = {
         "follow_up_depth": {"follow_ups"},
         "follow_up_quality": {"follow_ups"},
+        "structured_follow_ups": {"follow_ups", "structured_follow_ups"},
         "evaluation_points": {"evaluation_points"},
         "evaluation_points_quality": {"evaluation_points"},
         "blind_hiring_safe": {"question"},
@@ -6722,6 +7814,28 @@ def _adjust_generated_questions(
                 candidate["follow_up"] = candidate["follow_ups"][0] if candidate["follow_ups"] else ""
             if "evaluation_points" in repairable_fields:
                 candidate["evaluation_points"] = list(fallback.get("evaluation_points") or [])
+            if repairable_fields & {"follow_ups", "evaluation_points"}:
+                # Probe targets are derived from both authored prompts and the
+                # four scored dimensions.  Rebuild them whenever either input
+                # changes and record that dependent-field repair explicitly.
+                repairable_fields.add("structured_follow_ups")
+            if "structured_follow_ups" in repairable_fields:
+                candidate["structured_follow_ups"] = _structured_follow_ups_for_question(
+                    str(candidate.get("type") or candidate.get("method") or "").strip(),
+                    [
+                        str(value or "").strip()
+                        for value in (candidate.get("follow_ups") or [])
+                        if str(value or "").strip()
+                    ],
+                    [
+                        str(value or "").strip()
+                        for value in (candidate.get("evaluation_points") or [])
+                        if str(value or "").strip()
+                    ],
+                    require_evaluation_alignment=(
+                        candidate.get("strict_probe_evaluation_alignment") is True
+                    ),
+                )
             if "question" in repairable_fields:
                 candidate["question"] = str(
                     fallback.get("question") or candidate.get("question") or ""
@@ -6775,6 +7889,24 @@ def _adjust_generated_questions(
         item["evaluation_points"] = list(fallback.get("evaluation_points") or [])
         item["task_conditions"] = dict(fallback.get("task_conditions") or {})
         item["assessment_guide"] = dict(fallback.get("assessment_guide") or {})
+    for item in adjusted:
+        if not isinstance(item, dict):
+            continue
+        item_follow_ups = [
+            str(value or "").strip()
+            for value in (item.get("follow_ups") or [])
+            if str(value or "").strip()
+        ] if isinstance(item.get("follow_ups"), list) else []
+        item_evaluation_points = [
+            str(value or "").strip()
+            for value in (item.get("evaluation_points") or [])
+            if str(value or "").strip()
+        ] if isinstance(item.get("evaluation_points"), list) else []
+        item["structured_follow_ups"] = _structured_follow_ups_for_question(
+            str(item.get("type") or item.get("method") or "").strip(),
+            item_follow_ups,
+            item_evaluation_points,
+        )
     _refresh_question_repeat_metadata(adjusted)
     strategy["interview_questions"] = adjusted
     strategy["interview_by_competency"] = _group_interview_questions_for_response(adjusted)
@@ -7677,6 +8809,115 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
 
 
+def _question_artifact_hash(
+    question: dict[str, Any],
+    *,
+    ncs_matches: list[dict[str, Any]] | None = None,
+    ncs_match_bundle: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Hash the complete interviewer-facing question packet and NCS lock.
+
+    ``question_hash`` remains the legacy text hash used by older quality-run
+    records.  This artifact hash deliberately changes when a probe, scoring
+    guide, task condition, evidence reference, selected official unit, or the
+    exact-complete bundle fingerprint changes.
+    """
+
+    def plain(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): plain(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            }
+        if isinstance(value, (list, tuple)):
+            return [plain(item) for item in value]
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        return str(value)
+
+    unit_code = str(question.get("ncsClCd") or "").strip()
+    unit_base = unit_code.split("_", 1)[0]
+    unit_locks: list[dict[str, Any]] = []
+    for row in ncs_matches or []:
+        if not isinstance(row, dict):
+            continue
+        row_code = str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
+        row_base = str(row.get("officialUnitBaseCode") or "").strip() or row_code.split("_", 1)[0]
+        if unit_base and row_base != unit_base:
+            continue
+        unit_locks.append(
+            {
+                "base_code": row_base,
+                "full_code": row_code,
+                "name": str(
+                    row.get("officialUnitName")
+                    or row.get("compeUnitName")
+                    or ""
+                ).strip(),
+                "detail_code": str(row.get("officialDetailCode") or "").strip(),
+                "detail_name": str(row.get("officialDetailName") or "").strip(),
+                "unit_catalog_verified": row.get("unitCatalogVerified") is True,
+                "detail_path_code_verified": row.get("detailPathCodeVerified") is True,
+                "resolution_kind": str(row.get("unitResolutionKind") or "").strip(),
+            }
+        )
+
+    bundle = ncs_match_bundle if isinstance(ncs_match_bundle, dict) else {}
+    details = [row for row in (bundle.get("details") or []) if isinstance(row, dict)]
+    match_lock = {
+        "status": str(bundle.get("status") or "").strip(),
+        "eligible_for_generation": bundle.get("eligible_for_generation") is True,
+        "matcher_version": str(bundle.get("matcher_version") or "").strip(),
+        "bundle_fingerprint": str(bundle.get("fingerprint") or "").strip(),
+        "details": [
+            {
+                "detail_code": str(row.get("officialDetailCode") or "").strip(),
+                "detail_name": str(row.get("officialDetailName") or "").strip(),
+                "expected_unit_count": row.get("detailExpectedUnitBaseCount"),
+                "verified_unit_count": row.get("detailVerifiedUnitBaseCount"),
+                "retrieval_complete": row.get("detailRetrievalComplete") is True,
+                "retrieval_cap_limited": row.get("detailRetrievalCapLimited") is True,
+            }
+            for row in details
+        ],
+    }
+    artifact = {
+        "schema": "ncs-question-artifact-v1",
+        "question": str(question.get("question") or "").strip(),
+        "method": str(question.get("type") or question.get("method") or "").strip(),
+        "ncs_code": unit_code,
+        "competency": str(question.get("competency") or "").strip(),
+        "question_focus": str(question.get("question_focus") or "").strip(),
+        "question_focus_surface": str(question.get("question_focus_surface") or "").strip(),
+        "follow_ups": plain(question.get("follow_ups") or []),
+        "structured_follow_ups": plain(question.get("structured_follow_ups") or []),
+        "evaluation_points": plain(question.get("evaluation_points") or []),
+        "task_conditions": plain(question.get("task_conditions") or {}),
+        "assessment_guide": plain(question.get("assessment_guide") or {}),
+        "ncs_traceability": plain(question.get("ncs_traceability") or {}),
+        "ksa_refs": plain(question.get("ksa_refs") or []),
+        "ksa_evidence": plain(question.get("ksa_evidence") or []),
+        "evidence_ids": plain(question.get("evidence_ids") or []),
+        "question_evidence_id": str(question.get("question_evidence_id") or "").strip(),
+        "question_source": str(question.get("question_source") or "").strip(),
+        "match_bundle_fingerprint": str(
+            question.get("match_bundle_fingerprint")
+            or bundle.get("fingerprint")
+            or ""
+        ).strip(),
+        "match_lock": match_lock,
+        "unit_locks": unit_locks,
+    }
+    canonical = json.dumps(
+        plain(artifact),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return _sha256_text(canonical), artifact
+
+
 def _quality_feedback_context(ncs_matches: list[dict[str, Any]] | None) -> str:
     codes = list(
         dict.fromkeys(
@@ -7705,9 +8946,26 @@ def _register_question_quality_evidence(
     *,
     source_endpoint: str,
     ncs_matches: list[dict[str, Any]] | None,
+    ncs_match_bundle: dict[str, Any] | None = None,
+    required_review_trigger: str = "",
 ) -> dict[str, Any]:
     report = strategy.get("question_quality_report") if isinstance(strategy.get("question_quality_report"), dict) else {}
     control = derive_quality_control(strategy)
+    pending_review_trigger = str(required_review_trigger or "").strip()
+    if pending_review_trigger:
+        control = {
+            **control,
+            "review_required": True,
+            "exception_allowed": False,
+            "trigger_codes": list(
+                dict.fromkeys(
+                    [
+                        *(control.get("trigger_codes") or []),
+                        pending_review_trigger,
+                    ]
+                )
+            ),
+        }
     policy_version = str(report.get("policy") or QUALITY_POLICY_VERSION).strip() or QUALITY_POLICY_VERSION
     questions = [item for item in (strategy.get("interview_questions") or []) if isinstance(item, dict)]
     report_items = {
@@ -7719,12 +8977,29 @@ def _register_question_quality_evidence(
     for index, question in enumerate(questions, start=1):
         text = str(question.get("question") or "").strip()
         question_hash = _sha256_text(text)
+        question_artifact_hash, _ = _question_artifact_hash(
+            question,
+            ncs_matches=ncs_matches,
+            ncs_match_bundle=ncs_match_bundle,
+        )
         question["question_hash"] = question_hash
+        question["question_text_hash"] = question_hash
+        question["question_artifact_hash"] = question_artifact_hash
+        question["match_bundle_fingerprint"] = str(
+            (ncs_match_bundle or {}).get("fingerprint") or ""
+        ).strip()
         item_report = report_items.get(index) or {}
+        deterministic_ready = bool(item_report.get("ready"))
         question_items.append(
             {
                 "index": index,
                 "question_hash": question_hash,
+                "question_text_hash": question_hash,
+                "question_artifact_hash": question_artifact_hash,
+                "question_artifact_schema": "ncs-question-artifact-v1",
+                "match_bundle_fingerprint": str(
+                    (ncs_match_bundle or {}).get("fingerprint") or ""
+                ).strip(),
                 "method": str(question.get("type") or question.get("method") or "").strip(),
                 "ncs_code": str(question.get("ncsClCd") or "").strip(),
                 "question_focus": str(question.get("question_focus") or "").strip(),
@@ -7745,7 +9020,9 @@ def _register_question_quality_evidence(
                 ][:30]
                 if isinstance(question.get("quality_repair_reasons"), list)
                 else [],
-                "ready": bool(item_report.get("ready")),
+                "ready": deterministic_ready and not pending_review_trigger,
+                "deterministic_ready": deterministic_ready,
+                "release_ready": deterministic_ready and not pending_review_trigger,
                 "issues": list(item_report.get("issues") or [])[:30],
                 "checks": dict(item_report.get("checks") or {}),
                 "check_statuses": dict(item_report.get("check_statuses") or {}),
@@ -7781,7 +9058,14 @@ def _register_question_quality_evidence(
         "quality_policy_version": policy_version,
         "generator_version": str(strategy.get("question_customization_policy") or ""),
         "question_count": int((report.get("summary") or {}).get("question_count") or len(questions)),
-        "ready_count": int((report.get("summary") or {}).get("ready_count") or 0),
+        "ready_count": (
+            0
+            if pending_review_trigger
+            else int((report.get("summary") or {}).get("ready_count") or 0)
+        ),
+        "deterministic_ready_count": int(
+            (report.get("summary") or {}).get("ready_count") or 0
+        ),
         "review_required": bool(control.get("review_required", True)),
         "escalation_required": bool(control.get("escalation_required", False)),
         "exception_allowed": bool(control.get("exception_allowed", True)),
@@ -8673,11 +9957,28 @@ def _ncs_traceability_payload(
 
     row = evidence if isinstance(evidence, dict) else {}
     criteria = _criteria_values(row)
+    ncs_code = str(row.get("ncsClCd") or question.get("ncsClCd") or "").strip()
+    base_code = ncs_code.split("_", 1)[0]
+    ability_unit_base_code = base_code if re.fullmatch(r"\d{10}", base_code) else ""
+    detail_code = (
+        str(question.get("officialDetailCode") or row.get("officialDetailCode") or "").strip()
+        or (ability_unit_base_code[:8] if ability_unit_base_code else "")
+    )
     return {
-        "ncs_code": str(question.get("ncsClCd") or row.get("ncsClCd") or "").strip(),
+        "ncs_code": ncs_code,
+        "ability_unit_base_code": ability_unit_base_code,
         "ability_unit_name": str(
-            question.get("competency")
-            or row.get("compeUnitName")
+            row.get("compeUnitName")
+            or question.get("competency")
+            or ""
+        ).strip(),
+        "detail_code": detail_code,
+        "detail_name": str(
+            question.get("ncs_detail")
+            or question.get("matchedDetailName")
+            or question.get("ncsSubdCdnm")
+            or question.get("ncsSclasCdnm")
+            or row.get("officialDetailName")
             or ""
         ).strip(),
         "element_id": str(row.get("elementId") or "").strip(),
@@ -9750,6 +11051,65 @@ def _quality_check_statuses(
     return statuses
 
 
+_KSA_MEASUREMENT_CHECK_NAMES = (
+    "has_question",
+    "has_supported_method",
+    "focus_visible",
+    "ksa_type_operationalized",
+    "observable_task",
+    "elicits_response",
+    "sufficient_task_detail",
+    "not_ksa_restatement",
+    "evidence_linked",
+)
+_KSA_MEASUREMENT_ISSUE_CODES = frozenset(
+    f"ksa_measurement_{name}" for name in _KSA_MEASUREMENT_CHECK_NAMES
+)
+
+
+def _safe_ksa_measurement_issue_codes(result: Any) -> list[str]:
+    """Return only bounded check names, never question or evidence content."""
+
+    checks = result.get("checks") if isinstance(result, dict) else None
+    if not isinstance(checks, dict):
+        return []
+    return [
+        f"ksa_measurement_{name}"
+        for name in _KSA_MEASUREMENT_CHECK_NAMES
+        if checks.get(name) is False
+    ]
+
+
+def _ensure_experience_candidate_evidence_notice(question: Any, method: str) -> tuple[str, bool]:
+    """Append the same concise newcomer instruction when an experience stem omits it."""
+
+    text = str(question or "").strip()
+    if str(method or "").strip() != "경험면접" or not text:
+        return text, False
+    compact = re.sub(r"\s+", "", text)
+    analogous_visible = any(
+        marker in compact
+        for marker in (
+            "유사경험",
+            "유사한경험",
+            "직무경험이없",
+            "직접경험이없",
+            "프로젝트나교육실습",
+            "학업·프로젝트",
+        )
+    )
+    alternative_visible = any(
+        marker in compact
+        for marker in ("동일한대체상황", "같은표준대체상황", "표준화대체상황")
+    )
+    if analogous_visible and alternative_visible:
+        return text, False
+    notice = (
+        "직무 경험이 없으면 유사경험으로 답하며, 경험도 없으면 모두에게 같은 표준 대체상황을 제시합니다."
+    )
+    return f"{text} {notice}", True
+
+
 def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(strategy, dict):
         strategy = {}
@@ -9785,14 +11145,39 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
     for idx, raw in enumerate(questions, start=1):
         q = raw if isinstance(raw, dict) else {}
         method = str(q.get("type") or q.get("method") or "").strip()
-        question = str(q.get("question") or "").strip()
+        if str(q.get("schedule_role") or "").strip() in {"core", "alternate"}:
+            question, notice_added = _ensure_experience_candidate_evidence_notice(
+                q.get("question"),
+                method,
+            )
+        else:
+            question = str(q.get("question") or "").strip()
+            notice_added = False
+        if notice_added:
+            q["question"] = question
+            q["candidate_evidence_notice_added"] = True
         follow_ups = [str(x).strip() for x in (q.get("follow_ups") or []) if str(x).strip()] if isinstance(q.get("follow_ups"), list) else []
         evaluation_points = [
             str(x).strip()
             for x in (q.get("evaluation_points") or [])
             if str(x).strip()
         ] if isinstance(q.get("evaluation_points"), list) else []
-        if not q.get("assessment_guide"):
+        require_probe_evaluation_alignment = (
+            q.get("strict_probe_evaluation_alignment") is True
+        )
+        if not _structured_follow_ups_ok(
+            q.get("structured_follow_ups"),
+            follow_ups,
+            evaluation_points,
+            require_evaluation_alignment=require_probe_evaluation_alignment,
+        ):
+            q["structured_follow_ups"] = _structured_follow_ups_for_question(
+                method,
+                follow_ups,
+                evaluation_points,
+                require_evaluation_alignment=require_probe_evaluation_alignment,
+            )
+        if not _behavior_anchors_ok(q.get("assessment_guide")):
             q["assessment_guide"] = _behavior_anchored_evaluation(
                 method,
                 str(q.get("question_focus") or "").strip(),
@@ -9830,6 +11215,10 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
         realism = evaluate_question_realism(q)
         precision_grounding = evaluate_question_precision_grounding(q)
         evaluation_alignment = evaluate_evaluation_elicitation_alignment(q)
+        ksa_measurement = evaluate_ksa_measurement(q)
+        ksa_measurement_issue_codes = _safe_ksa_measurement_issue_codes(
+            ksa_measurement
+        )
         checks = {
             "supported_method": method in QUALITY_INTERVIEW_METHODS,
             "method_shape": _method_shape_ok(method, merged),
@@ -9837,6 +11226,12 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
             "main_question_job_context": _main_question_job_context_ok(q, question),
             "follow_up_depth": len(follow_ups) >= 3,
             "follow_up_quality": _follow_ups_quality_ok(method, q, follow_ups),
+            "structured_follow_ups": _structured_follow_ups_ok(
+                q.get("structured_follow_ups"),
+                follow_ups,
+                evaluation_points,
+                require_evaluation_alignment=require_probe_evaluation_alignment,
+            ),
             "evaluation_points": len(evaluation_points) == 4,
             "evaluation_points_quality": _evaluation_points_quality_ok(method, evaluation_points),
             "ncs_grounded": bool(ncs_code and str(q.get("competency") or "").strip()),
@@ -9845,7 +11240,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
             "evidence_linked": bool(str(q.get("question_evidence_id") or "").strip())
             if q.get("question_evidence_required")
             else True,
-            "ksa_measurement_task": bool(evaluate_ksa_measurement(q).get("passed")),
+            "ksa_measurement_task": bool(ksa_measurement.get("passed")),
             "candidate_surface_safe": _candidate_surface_ksa_safe(q, question, follow_ups, evaluation_points),
             "official_sample_format": _official_sample_format_ok(method, question, follow_ups, evaluation_points),
             "blind_hiring_safe": not _contains_blind_hiring_cue(merged),
@@ -9914,6 +11309,7 @@ def _attach_question_quality_report(strategy: dict[str, Any]) -> dict[str, Any]:
                 "precision_grounding_metrics": dict(
                     precision_grounding.get("metrics") or {}
                 ),
+                "ksa_measurement_issue_codes": ksa_measurement_issue_codes,
                 # v1 remains shadow-only while its bounded semantic lattice is
                 # calibrated on additional real institutions.  Expose its
                 # fail/review evidence now; do not silently convert it into a
@@ -10098,6 +11494,9 @@ def _attach_ksa_evidence_to_strategy(strategy: dict[str, Any], ncs_ksa: list[dic
                 ),
                 evidence[0],
             )
+            official_unit_name = str(primary_evidence.get("compeUnitName") or "").strip()
+            if official_unit_name:
+                q["competency"] = official_unit_name
             q["ncs_traceability"] = _ncs_traceability_payload(q, primary_evidence)
         enriched.append(q)
     strategy["interview_questions"] = enriched
@@ -11385,6 +12784,7 @@ _INSTITUTION_HARD_QUALITY_CHECKS = frozenset(
         "decision_authority_context",
         "inbasket_authority_context",
         "behavior_anchored_evaluation",
+        "structured_follow_ups",
         "precision_grounding",
     }
 )
@@ -11535,6 +12935,7 @@ def _institution_question_rejection_codes(
     result: Any,
     *,
     require_quality_metadata: bool = False,
+    require_ai_review: bool | None = None,
 ) -> list[str]:
     """Return stable server-owned reasons why public question output is unsafe.
 
@@ -11590,20 +12991,26 @@ def _institution_question_rejection_codes(
     ):
         codes.append("question_evidence_assignment_failed")
 
+    if require_ai_review is None:
+        require_ai_review = require_quality_metadata
+
     quality_report = result.get("question_quality_report")
     if require_quality_metadata and not isinstance(quality_report, dict):
         codes.append("question_quality_report_missing")
+    elif (
+        require_quality_metadata
+        and isinstance(quality_report, dict)
+        and quality_report.get("passed") is not True
+    ):
+        codes.append("question_quality_report_failed")
 
     orchestration = result.get("question_quality_orchestration")
     if require_quality_metadata and not isinstance(orchestration, dict):
         codes.append("question_quality_orchestration_missing")
     elif (
-        isinstance(orchestration, dict)
+        require_quality_metadata
+        and isinstance(orchestration, dict)
         and str(orchestration.get("status") or "").strip() != "passed"
-        and any(
-            isinstance(item, dict) and bool(item.get("final_issues"))
-            for item in (orchestration.get("items") or [])
-        )
     ):
         codes.append("question_quality_orchestration_failed")
 
@@ -11623,7 +13030,7 @@ def _institution_question_rejection_codes(
 
     ai_review = result.get("ai_quality_review")
     if not isinstance(ai_review, dict):
-        if require_quality_metadata:
+        if require_ai_review:
             codes.append("ai_quality_review_missing")
     elif str(ai_review.get("status") or "").strip() != "passed":
         codes.append("ai_quality_review_failed")
@@ -11644,22 +13051,27 @@ def _institution_question_quality_issue_codes(
         return []
     codes: list[str] = []
     report = result.get("question_quality_report")
-    if isinstance(report, dict) and not blocking_only:
+    if isinstance(report, dict):
         for item in report.get("items") or []:
             if not isinstance(item, dict):
                 continue
-            for value in item.get("issues") or []:
+            if not blocking_only:
+                for value in item.get("issues") or []:
+                    code = str(value or "").strip()
+                    if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                        codes.append(code)
+                for value in item.get("realism_issue_codes") or []:
+                    code = str(value or "").strip()
+                    if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                        codes.append(f"field_realism_{code}")
+                for value in item.get("precision_grounding_issue_codes") or []:
+                    code = str(value or "").strip()
+                    if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                        codes.append(f"precision_grounding_{code}")
+            for value in item.get("ksa_measurement_issue_codes") or []:
                 code = str(value or "").strip()
-                if _SAFE_QUALITY_CODE_RE.fullmatch(code):
+                if code in _KSA_MEASUREMENT_ISSUE_CODES:
                     codes.append(code)
-            for value in item.get("realism_issue_codes") or []:
-                code = str(value or "").strip()
-                if _SAFE_QUALITY_CODE_RE.fullmatch(code):
-                    codes.append(f"field_realism_{code}")
-            for value in item.get("precision_grounding_issue_codes") or []:
-                code = str(value or "").strip()
-                if _SAFE_QUALITY_CODE_RE.fullmatch(code):
-                    codes.append(f"precision_grounding_{code}")
     orchestration = result.get("question_quality_orchestration")
     if isinstance(orchestration, dict):
         for item in orchestration.get("items") or []:
@@ -11710,6 +13122,18 @@ def _institution_hard_question_indexes(result: Any) -> list[int]:
     hard_indexes: set[int] = set(
         _result_follow_up_count_mismatch_indexes(result)
     )
+    report = result.get("question_quality_report")
+    if isinstance(report, dict):
+        for fallback_index, item in enumerate(report.get("items") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            if item.get("ready") is True and not item.get("issues"):
+                continue
+            try:
+                index = int(item.get("index") or fallback_index)
+            except (TypeError, ValueError):
+                index = fallback_index
+            hard_indexes.add(index)
     orchestration = result.get("question_quality_orchestration")
     if isinstance(orchestration, dict):
         for fallback_index, item in enumerate(orchestration.get("items") or [], start=1):
@@ -11884,7 +13308,16 @@ def _generation_batch_plans(
         for local_index, source in enumerate(source_rows, start=1):
             row = dict(source)
             try:
-                original_index = int(row.get("index") or (start + local_index))
+                # A targeted quality retry already carries the original slot
+                # identity.  Preserve it when the retry is wrapped in a
+                # generation batch; otherwise local ``index=1`` can silently
+                # rebind (for example) original slot 3 to slot 1's KSA.
+                original_index = int(
+                    row.get("generation_original_index")
+                    or row.get("retry_original_index")
+                    or row.get("index")
+                    or (start + local_index)
+                )
             except (TypeError, ValueError):
                 original_index = start + local_index
             row["generation_original_index"] = original_index
@@ -12246,6 +13679,504 @@ def _raw_model_question_texts(strategy: Any, *, max_items: int = 20) -> list[str
     return texts
 
 
+def _public_question_string_list(
+    value: Any,
+    *,
+    max_items: int,
+    max_chars: int,
+) -> list[str]:
+    """Return bounded display strings from a question's public support data."""
+
+    if not isinstance(value, (list, tuple)):
+        return []
+    output: list[str] = []
+    for raw in value:
+        if not isinstance(raw, (str, int, float)):
+            continue
+        cleaned = _clean_question_text(raw, max_chars=max_chars)
+        if cleaned and cleaned not in output:
+            output.append(cleaned)
+        if len(output) >= max_items:
+            break
+    return output
+
+
+def _public_task_conditions(value: Any) -> dict[str, Any]:
+    """Whitelist the candidate/interviewer-facing task-condition contract."""
+
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key, max_chars in (
+        ("candidate_instruction", 2400),
+        ("standardization", 1200),
+        ("timing_basis", 1200),
+        ("topic_axis", 240),
+    ):
+        cleaned = _clean_question_text(value.get(key), max_chars=max_chars)
+        if cleaned:
+            output[key] = cleaned
+
+    for key, max_items, max_chars in (
+        ("provided_materials", 30, 500),
+        ("required_outputs", 20, 500),
+        ("case_facts", 30, 1200),
+    ):
+        cleaned_rows = _public_question_string_list(
+            value.get(key),
+            max_items=max_items,
+            max_chars=max_chars,
+        )
+        if cleaned_rows:
+            output[key] = cleaned_rows
+
+    time_plan: list[dict[str, Any]] = []
+    raw_time_plan = value.get("time_plan")
+    for raw in raw_time_plan if isinstance(raw_time_plan, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        phase = _clean_question_text(raw.get("phase"), max_chars=120)
+        try:
+            minutes = int(raw.get("minutes") or 0)
+        except (TypeError, ValueError):
+            minutes = 0
+        if phase and 0 < minutes <= 24 * 60:
+            time_plan.append({"phase": phase, "minutes": minutes})
+        if len(time_plan) >= 12:
+            break
+    if time_plan:
+        output["time_plan"] = time_plan
+
+    case_materials: list[dict[str, str]] = []
+    raw_case_materials = value.get("case_materials")
+    for raw in raw_case_materials if isinstance(raw_case_materials, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        row = {
+            "source": _clean_question_text(raw.get("source"), max_chars=240),
+            "field": _clean_question_text(raw.get("field"), max_chars=240),
+            "value": _clean_question_text(raw.get("value"), max_chars=2400),
+        }
+        if all(row.values()):
+            case_materials.append(row)
+        if len(case_materials) >= 30:
+            break
+    if case_materials:
+        output["case_materials"] = case_materials
+    return output
+
+
+def _public_structured_follow_ups(value: Any) -> list[dict[str, Any]]:
+    """Whitelist executable probe metadata paired with authored prompts."""
+
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            ask_limit = int(raw.get("ask_limit") or 0)
+        except (TypeError, ValueError):
+            ask_limit = 0
+        row = {
+            "trigger": _clean_question_text(raw.get("trigger"), max_chars=120),
+            "answer_slot": _clean_question_text(raw.get("answer_slot"), max_chars=240),
+            "evidence_target": _clean_question_text(
+                raw.get("evidence_target"), max_chars=800
+            ),
+            "prompt": _clean_question_text(raw.get("prompt"), max_chars=500),
+            "ask_limit": ask_limit,
+        }
+        if all(row[key] for key in ("trigger", "answer_slot", "evidence_target", "prompt")) and ask_limit == 1:
+            output.append(row)
+        if len(output) >= 8:
+            break
+    return output
+
+
+def _public_assessment_guide(value: Any) -> dict[str, Any]:
+    """Whitelist behavior anchors while excluding provider/internal metadata."""
+
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key, max_chars in (
+        ("scale", 240),
+        ("method", 120),
+        ("focus", 500),
+        ("focus_type", 120),
+        ("interviewer_instruction", 2400),
+    ):
+        cleaned = _clean_question_text(value.get(key), max_chars=max_chars)
+        if cleaned:
+            output[key] = cleaned
+    dimensions = _public_question_string_list(
+        value.get("dimensions"),
+        max_items=12,
+        max_chars=500,
+    )
+    if dimensions:
+        output["dimensions"] = dimensions
+
+    rating_levels: list[dict[str, Any]] = []
+    raw_rating_levels = value.get("rating_levels")
+    for raw in raw_rating_levels if isinstance(raw_rating_levels, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            score = int(raw.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        label = _clean_question_text(raw.get("label"), max_chars=120)
+        anchor = _clean_question_text(raw.get("anchor"), max_chars=2400)
+        if 1 <= score <= 5 and anchor:
+            rating_levels.append({"score": score, "label": label, "anchor": anchor})
+        if len(rating_levels) >= 5:
+            break
+    if rating_levels:
+        output["rating_levels"] = rating_levels
+
+    dimension_rubrics: list[dict[str, Any]] = []
+    raw_dimension_rubrics = value.get("dimension_rubrics")
+    for raw in raw_dimension_rubrics if isinstance(raw_dimension_rubrics, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            weight = int(raw.get("weight") or 0)
+            critical_floor = int(raw.get("critical_floor") or 0)
+        except (TypeError, ValueError):
+            continue
+        raw_anchors = raw.get("anchors") if isinstance(raw.get("anchors"), dict) else {}
+        anchors = {
+            score: _clean_question_text(raw_anchors.get(score), max_chars=2400)
+            for score in ("5", "3", "1")
+        }
+        row = {
+            "dimension": _clean_question_text(raw.get("dimension"), max_chars=500),
+            "observable_evidence": _clean_question_text(
+                raw.get("observable_evidence"), max_chars=1200
+            ),
+            "weight": weight,
+            "critical_floor": critical_floor,
+            "no_answer_rule": _clean_question_text(
+                raw.get("no_answer_rule"), max_chars=1200
+            ),
+            "anchors": anchors,
+        }
+        if (
+            row["dimension"]
+            and row["observable_evidence"]
+            and 0 < weight <= 100
+            and critical_floor == 1
+            and row["no_answer_rule"]
+            and all(anchors.values())
+        ):
+            dimension_rubrics.append(row)
+        if len(dimension_rubrics) >= 4:
+            break
+    if dimension_rubrics:
+        output["dimension_rubrics"] = dimension_rubrics
+        try:
+            total = int(value.get("dimension_weight_total") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        if total == 100:
+            output["dimension_weight_total"] = total
+
+    point_mapping: list[dict[str, Any]] = []
+    raw_point_mapping = value.get("evaluation_point_mapping")
+    for raw in raw_point_mapping if isinstance(raw_point_mapping, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            point_index = int(raw.get("evaluation_point_index") or 0)
+            dimension_index = int(raw.get("dimension_index") or 0)
+            weight = int(raw.get("weight") or 0)
+        except (TypeError, ValueError):
+            continue
+        row = {
+            "evaluation_point_index": point_index,
+            "evaluation_point": _clean_question_text(
+                raw.get("evaluation_point"), max_chars=500
+            ),
+            "dimension_index": dimension_index,
+            "dimension": _clean_question_text(raw.get("dimension"), max_chars=500),
+            "weight": weight,
+        }
+        if (
+            1 <= point_index <= 4
+            and point_index == dimension_index
+            and row["evaluation_point"]
+            and row["evaluation_point"] == row["dimension"]
+            and 0 < weight <= 100
+        ):
+            point_mapping.append(row)
+        if len(point_mapping) >= 4:
+            break
+    if len(point_mapping) == 4:
+        output["evaluation_point_mapping"] = point_mapping
+
+    raw_formula = value.get("weighted_score_formula")
+    if isinstance(raw_formula, dict):
+        raw_scale = raw_formula.get("dimension_score_scale")
+        score_scale: list[int] = []
+        for raw_score in raw_scale if isinstance(raw_scale, list) else []:
+            try:
+                score_scale.append(int(raw_score))
+            except (TypeError, ValueError):
+                score_scale = []
+                break
+        try:
+            result_scale_min = float(raw_formula.get("result_scale_min"))
+            result_scale_max = float(raw_formula.get("result_scale_max"))
+        except (TypeError, ValueError):
+            result_scale_min = 0.0
+            result_scale_max = 0.0
+        weighted_formula = {
+            "formula": _clean_question_text(raw_formula.get("formula"), max_chars=500),
+            "dimension_score_scale": score_scale,
+            "result_scale_min": result_scale_min,
+            "result_scale_max": result_scale_max,
+            "percentage_formula": _clean_question_text(
+                raw_formula.get("percentage_formula"), max_chars=500
+            ),
+            "rounding_rule": _clean_question_text(
+                raw_formula.get("rounding_rule"), max_chars=1000
+            ),
+            "critical_floor_precedence": raw_formula.get("critical_floor_precedence")
+            is True,
+        }
+        if (
+            weighted_formula["formula"]
+            and score_scale == [1, 2, 3, 4, 5]
+            and result_scale_min == 1.0
+            and result_scale_max == 5.0
+            and weighted_formula["percentage_formula"]
+            and weighted_formula["rounding_rule"]
+        ):
+            output["weighted_score_formula"] = weighted_formula
+
+    raw_evidence_policy = value.get("candidate_evidence_policy")
+    if isinstance(raw_evidence_policy, dict):
+        accepted_evidence = _public_question_string_list(
+            raw_evidence_policy.get("accepted_evidence_types"),
+            max_items=8,
+            max_chars=800,
+        )
+        state_rules: dict[str, dict[str, str]] = {}
+        raw_state_rules = raw_evidence_policy.get("evidence_state_rules")
+        allowed_states = (
+            "no_direct_job_experience",
+            "analogous_evidence_provided",
+            "no_observable_evidence_after_alternative",
+        )
+        if isinstance(raw_state_rules, dict):
+            for state in allowed_states:
+                raw_state = raw_state_rules.get(state)
+                if not isinstance(raw_state, dict):
+                    continue
+                cleaned_state = {
+                    field: _clean_question_text(raw_state.get(field), max_chars=1200)
+                    for field in ("classification", "score_effect", "interviewer_action")
+                }
+                if all(cleaned_state.values()):
+                    state_rules[state] = cleaned_state
+        raw_alternative = raw_evidence_policy.get("standardized_alternative_scenario")
+        alternative: dict[str, Any] = {}
+        if isinstance(raw_alternative, dict):
+            alternative = {
+                "enabled": raw_alternative.get("enabled") is True,
+                "prompt": _clean_question_text(raw_alternative.get("prompt"), max_chars=2400),
+                "delivery_rule": _clean_question_text(
+                    raw_alternative.get("delivery_rule"), max_chars=1600
+                ),
+                "scoring_rule": _clean_question_text(
+                    raw_alternative.get("scoring_rule"), max_chars=1600
+                ),
+            }
+        if (
+            raw_evidence_policy.get("direct_job_experience_required") is False
+            and len(accepted_evidence) >= 4
+            and set(state_rules) == set(allowed_states)
+            and alternative.get("delivery_rule")
+            and alternative.get("scoring_rule")
+        ):
+            output["candidate_evidence_policy"] = {
+                "direct_job_experience_required": False,
+                "accepted_evidence_types": accepted_evidence,
+                "evidence_state_rules": state_rules,
+                "standardized_alternative_scenario": alternative,
+            }
+
+    for key in ("critical_floor", "no_answer_rule"):
+        raw_policy = value.get(key)
+        if not isinstance(raw_policy, dict):
+            continue
+        try:
+            score = int(raw_policy.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        rule = _clean_question_text(raw_policy.get("rule"), max_chars=1600)
+        if score == 1 and rule:
+            output[key] = {"score": score, "rule": rule}
+
+    legacy_anchors = value.get("anchors")
+    if isinstance(legacy_anchors, dict):
+        anchors = {
+            key: _clean_question_text(legacy_anchors.get(key), max_chars=2400)
+            for key in ("high", "medium", "low")
+        }
+        anchors = {key: text for key, text in anchors.items() if text}
+        if anchors:
+            output["anchors"] = anchors
+    return output
+
+
+def _public_ncs_traceability(value: Any) -> dict[str, Any]:
+    """Whitelist the stable official-NCS provenance shown to interviewers."""
+
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key, max_chars in (
+        ("ncs_code", 80),
+        ("ability_unit_base_code", 80),
+        ("ability_unit_name", 500),
+        ("detail_code", 80),
+        ("detail_name", 500),
+        ("element_id", 120),
+        ("element_name", 500),
+        ("ksa_type", 120),
+        ("ksa_factor", 800),
+        ("ksa_factor_no", 120),
+        ("evidence_id", 120),
+        ("source", 240),
+    ):
+        cleaned = _clean_question_text(value.get(key), max_chars=max_chars)
+        if cleaned:
+            output[key] = cleaned
+    criteria = _public_question_string_list(
+        value.get("performance_criteria"),
+        max_items=12,
+        max_chars=800,
+    )
+    if criteria:
+        output["performance_criteria"] = criteria
+    output["performance_criteria_linked"] = bool(criteria)
+    return output
+
+
+def _public_ksa_evidence(value: Any) -> list[dict[str, Any]]:
+    """Return only stable, non-secret evidence fields used by the UI."""
+
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        row: dict[str, Any] = {}
+        for key, aliases, max_chars in (
+            ("evidence_id", ("evidence_id",), 120),
+            ("ncsClCd", ("ncsClCd", "unit_code"), 80),
+            ("compeUnitName", ("compeUnitName", "unit_name"), 500),
+            ("factorName", ("factorName", "factor_name"), 800),
+            ("ksaTypeName", ("ksaTypeName", "factorType", "ksa_type"), 120),
+            ("elementName", ("elementName", "element_name"), 500),
+            ("factorLevel", ("factorLevel",), 120),
+            ("factorSource", ("factorSource", "source"), 240),
+            ("ksaStatus", ("ksaStatus",), 120),
+            ("elementId", ("elementId", "element_id"), 120),
+            ("factorNo", ("factorNo", "ksaNo", "number"), 120),
+        ):
+            raw_value = next((raw.get(alias) for alias in aliases if raw.get(alias)), "")
+            cleaned = _clean_question_text(raw_value, max_chars=max_chars)
+            if cleaned:
+                row[key] = cleaned
+        criteria = _public_question_string_list(
+            raw.get("performanceCriteria") or raw.get("performance_criteria"),
+            max_items=12,
+            max_chars=800,
+        )
+        if criteria:
+            row["performanceCriteria"] = criteria
+        if row.get("evidence_id") and row.get("factorName"):
+            output.append(row)
+        if len(output) >= 12:
+            break
+    return output
+
+
+def _public_question_support_fields(item: Any) -> dict[str, Any]:
+    """Copy the complete interviewer kit without leaking model/runtime fields."""
+
+    if not isinstance(item, dict):
+        return {}
+    output: dict[str, Any] = {}
+    follow_ups = _public_question_string_list(
+        item.get("follow_ups"),
+        max_items=8,
+        max_chars=260,
+    )
+    single_follow_up = _clean_question_text(item.get("follow_up"), max_chars=260)
+    if single_follow_up and single_follow_up not in follow_ups:
+        follow_ups.insert(0, single_follow_up)
+    if follow_ups:
+        output["follow_ups"] = follow_ups[:8]
+    structured_follow_ups = _public_structured_follow_ups(
+        item.get("structured_follow_ups")
+    )
+    if structured_follow_ups:
+        output["structured_follow_ups"] = structured_follow_ups
+    evaluation_points = _public_question_string_list(
+        item.get("evaluation_points") or item.get("eval_points"),
+        max_items=12,
+        max_chars=500,
+    )
+    if evaluation_points:
+        output["evaluation_points"] = evaluation_points
+
+    task_conditions = _public_task_conditions(item.get("task_conditions"))
+    if task_conditions:
+        output["task_conditions"] = task_conditions
+    assessment_guide = _public_assessment_guide(item.get("assessment_guide"))
+    if assessment_guide:
+        output["assessment_guide"] = assessment_guide
+    traceability = _public_ncs_traceability(item.get("ncs_traceability"))
+    if traceability:
+        output["ncs_traceability"] = traceability
+
+    ksa_refs = _public_question_string_list(
+        item.get("ksa_refs"),
+        max_items=12,
+        max_chars=800,
+    )
+    if ksa_refs:
+        output["ksa_refs"] = ksa_refs
+    ksa_evidence = _public_ksa_evidence(item.get("ksa_evidence"))
+    if ksa_evidence:
+        output["ksa_evidence"] = ksa_evidence
+    evidence_ids = _public_question_string_list(
+        item.get("evidence_ids"),
+        max_items=12,
+        max_chars=120,
+    )
+    if evidence_ids:
+        output["evidence_ids"] = evidence_ids
+    for key in (
+        "question_hash",
+        "question_text_hash",
+        "question_artifact_hash",
+        "question_evidence_id",
+        "match_bundle_fingerprint",
+    ):
+        cleaned = _clean_question_text(item.get(key), max_chars=128)
+        if cleaned:
+            output[key] = cleaned
+    return output
+
+
 def _extract_generated_question_items(
     strategy: Any,
     *,
@@ -12264,11 +14195,6 @@ def _extract_generated_question_items(
         question = _clean_question_text(item.get("question"), max_chars=400)
         if not question:
             continue
-        follow_ups = [
-            _clean_question_text(fu, max_chars=200)
-            for fu in (item.get("follow_ups") or [])
-            if isinstance(fu, str) and _clean_question_text(fu, max_chars=200)
-        ]
         row = {
             "index": idx,
             "question": question,
@@ -12277,6 +14203,7 @@ def _extract_generated_question_items(
             "competency": str(item.get("competency") or "").strip(),
             "question_source": str(item.get("question_source") or "").strip(),
         }
+        row.update(_public_question_support_fields(item))
         review_only = bool(
             item.get("human_review_required")
             or item.get("degraded")
@@ -12289,8 +14216,6 @@ def _extract_generated_question_items(
         if review_only:
             row["review_required"] = True
         row["ready"] = bool(question) and not review_only
-        if follow_ups:
-            row["follow_ups"] = follow_ups
         output.append(row)
         if len(output) >= max(1, int(max_items)):
             break
@@ -12318,6 +14243,16 @@ def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]
     if expected_count <= 0:
         expected_count = len(questions)
 
+    independent_review = strategy.get("independent_review_requirement")
+    independent_review_pending = bool(
+        strategy.get("question_release_status") == "awaiting_claude_ncs_mcp_review"
+        or (
+            isinstance(independent_review, dict)
+            and independent_review.get("status") == "pending"
+            and independent_review.get("ncs_mcp_required") is True
+        )
+    )
+
     output: list[dict[str, Any]] = []
     for idx in range(1, expected_count + 1):
         item = questions[idx - 1] if idx <= len(questions) else None
@@ -12339,24 +14274,7 @@ def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]
             ).strip()
             row["competency"] = str(item.get("competency") or "").strip()
             row["question_source"] = str(item.get("question_source") or "").strip()
-            follow_ups = [
-                _clean_question_text(fu, max_chars=200)
-                for fu in (item.get("follow_ups") or [])
-                if isinstance(fu, str) and _clean_question_text(fu, max_chars=200)
-            ]
-            if follow_ups:
-                row["follow_ups"] = follow_ups
-            evaluation_points = [
-                _clean_question_text(point, max_chars=180)
-                for point in (item.get("evaluation_points") or item.get("eval_points") or [])
-                if isinstance(point, str) and _clean_question_text(point, max_chars=180)
-            ]
-            if evaluation_points:
-                row["evaluation_points"] = evaluation_points
-            if item.get("question_hash"):
-                row["question_hash"] = str(item.get("question_hash"))
-            if item.get("question_evidence_id"):
-                row["question_evidence_id"] = str(item.get("question_evidence_id"))
+            row.update(_public_question_support_fields(item))
             review_only = bool(
                 item.get("human_review_required")
                 or item.get("degraded")
@@ -12366,9 +14284,15 @@ def _extract_all_generated_question_items(strategy: Any) -> list[dict[str, Any]]
                     "rule_fallback",
                 }
             )
-            if review_only:
+            deterministic_ready = bool(question) and not review_only
+            if review_only or independent_review_pending:
                 row["review_required"] = True
-            row["ready"] = bool(question) and not review_only
+            if independent_review_pending:
+                row["deterministic_ready"] = deterministic_ready
+                row["release_ready"] = False
+                row["ready"] = False
+            else:
+                row["ready"] = deterministic_ready
             if "index" in item:
                 try:
                     row["source_index"] = int(item.get("index"))
@@ -12413,6 +14337,7 @@ def _build_generated_question_text_rows(strategy: Any) -> list[dict[str, Any]]:
         }
         if row.get("review_required") is True:
             output_row["review_required"] = True
+        output_row.update(_public_question_support_fields(row))
         output.append(output_row)
     return output
 
@@ -12460,24 +14385,7 @@ def _normalize_generated_questions(
         )
         if review_only:
             row["review_required"] = True
-        follow_ups = [
-            _clean_question_text(fu, max_chars=260)
-            for fu in (item.get("follow_ups") or [])
-            if isinstance(fu, str) and _clean_question_text(fu, max_chars=260)
-        ]
-        if follow_ups:
-            row["follow_ups"] = follow_ups
-        evaluation_points = [
-            _clean_question_text(point, max_chars=260)
-            for point in (item.get("evaluation_points") or item.get("eval_points") or [])
-            if isinstance(point, str) and _clean_question_text(point, max_chars=260)
-        ]
-        if evaluation_points:
-            row["evaluation_points"] = evaluation_points
-        if item.get("question_hash"):
-            row["question_hash"] = str(item.get("question_hash"))
-        if item.get("question_evidence_id"):
-            row["question_evidence_id"] = str(item.get("question_evidence_id"))
+        row.update(_public_question_support_fields(item))
         # A degraded/provider-free draft must never look production-ready just
         # because it contains non-empty text. The full strategy carries the
         # detailed quality report; this compact export mirrors that release
@@ -12604,12 +14512,66 @@ def _planned_question_evidence_assignments(
 def _raw_model_evidence_assignment_report(
     strategy: Any,
     evidence_locks: list[tuple[int, str]],
+    *,
+    server_locked_by_order: bool = False,
 ) -> dict[str, Any]:
-    """Compare raw model IDs with the prompt plan before enrichment can repair them."""
+    """Verify the raw rows against the server-owned evidence manifest.
+
+    The legacy/full response schema requires the provider to echo each locked
+    evidence ID. The planned surface-only schema deliberately exposes only
+    ``question``, ``follow_ups`` and ``evaluation_points``. Its caller may
+    explicitly opt in to positional server binding, but only when every lock
+    is present in exact contiguous order and the response has the exact same
+    row count. A provider-supplied conflicting ID still fails closed.
+    """
 
     expected = dict(evidence_locks)
     questions = strategy.get("interview_questions") if isinstance(strategy, dict) else None
     rows = questions if isinstance(questions, list) else []
+
+    if server_locked_by_order:
+        expected_indexes = [index for index, _evidence_id in evidence_locks]
+        exact_manifest = (
+            bool(evidence_locks)
+            and expected_indexes == list(range(1, len(evidence_locks) + 1))
+            and len(expected) == len(evidence_locks)
+            and all(
+                re.fullmatch(r"ksa_[0-9a-f]{24}", str(evidence_id or ""))
+                for _index, evidence_id in evidence_locks
+            )
+        )
+        mismatched: set[int] = set()
+        if not exact_manifest:
+            mismatched.update(
+                range(1, max(len(rows), len(evidence_locks), 1) + 1)
+            )
+        if len(rows) != len(evidence_locks):
+            mismatched.update(
+                range(
+                    min(len(rows), len(evidence_locks)) + 1,
+                    max(len(rows), len(evidence_locks)) + 1,
+                )
+            )
+        for index, evidence_id in evidence_locks:
+            raw_item = rows[index - 1] if 0 < index <= len(rows) else None
+            if not isinstance(raw_item, dict):
+                mismatched.add(index)
+                continue
+            raw_id = str(raw_item.get("question_evidence_id") or "").strip()
+            if raw_id and raw_id != evidence_id:
+                mismatched.add(index)
+        mismatched_indexes = sorted(mismatched)
+        matched_count = sum(index not in mismatched for index in expected_indexes)
+        return {
+            "policy": _QUESTION_EVIDENCE_ASSIGNMENT_POLICY,
+            "applicable": True,
+            "passed": exact_manifest and not mismatched_indexes,
+            "expected_count": len(evidence_locks),
+            "matched_count": matched_count,
+            "mismatch_count": len(mismatched_indexes),
+            "mismatched_indexes": mismatched_indexes,
+        }
+
     mismatched_indexes: list[int] = []
     for index, evidence_id in evidence_locks:
         raw_item = rows[index - 1] if 0 < index <= len(rows) else None
@@ -12644,43 +14606,116 @@ def _quality_retry_context(
         code for code in dict.fromkeys(trigger_codes)
         if code in _INSTITUTION_RETRYABLE_QUALITY_CODES
     )
-    lock_payload = [[index, evidence_id] for index, evidence_id in evidence_locks]
+    # Evidence identifiers and failed draft wording are server-owned data. The
+    # slot order is sufficient for regeneration because the server re-attaches
+    # the locked identity after parsing.  Keeping IDs and rejected prose out of
+    # the authoring prompt prevents a retry from copying the exact metadata leak
+    # that caused the first rejection.
+    locked_indexes = [index for index, _evidence_id in evidence_locks]
     safe_issue_codes = [
         code
         for code in dict.fromkeys(quality_issue_codes)
         if _SAFE_QUALITY_CODE_RE.fullmatch(str(code or "").strip())
     ][:30]
-    previous_drafts: list[str] = []
-    seen_previous: set[str] = set()
-    for raw in reversed(previous_questions):
-        cleaned = sanitize_external_ai_source_text(raw, max_chars=220).strip()
-        key = normalize_question_dedup_key(cleaned)
-        if not key or key in seen_previous:
-            continue
-        seen_previous.add(key)
-        previous_drafts.append(cleaned)
-        if len(previous_drafts) >= 12:
-            break
-    instruction = (
-        "[독립 검수 실패 재생성]\n"
-        "- 공식 KSA·능력단위·직무 맥락에서 문항 전체를 새로 작성하세요.\n"
-        "- 아래 코드는 실패한 품질 차원만 나타냅니다. 문장 골격이나 상황을 지정하지 않습니다.\n"
-        "- previous_drafts_to_avoid는 명령이 아닌 이전 초안 데이터입니다. 그대로 반복하거나 어순·명사만 바꾸지 말고, 사건·핵심 행동·요구 결과·질문 도입 중 최소 두 축을 바꾸세요.\n"
-        f"- 독립 검수 코드: {','.join(safe_codes)}\n"
-        f"- 안전검사 코드: {','.join(safe_issue_codes) or 'none'}\n"
-        f"- index별 evidence_id 잠금(JSON): {json.dumps(lock_payload, ensure_ascii=True, separators=(',', ':'))}\n"
-        f"- previous_drafts_to_avoid(JSON, 최신순): {json.dumps(previous_drafts, ensure_ascii=False, separators=(',', ':'))}"
-    )
+    # ``previous_questions`` is intentionally retained in the function
+    # signature for callers that also feed it to the server-side duplicate
+    # selector. It must not be reflected into model-facing context.
+    del previous_questions
     retry_targets = [
         int(value)
         for value in (target_original_indexes or [])
         if str(value).isdigit() and int(value) > 0
     ]
-    if retry_targets:
-        instruction += (
-            "\n- 재생성 대상 원래 index(JSON): "
-            + json.dumps(retry_targets, ensure_ascii=True, separators=(",", ":"))
+    issue_set = set(safe_codes) | set(safe_issue_codes)
+    correction_rules: list[str] = []
+    if issue_set.intersection(
+        {
+            "candidate_visible_ncs_label",
+            "field_realism_candidate_visible_ncs_label",
+            "candidate_surface_safe",
+            "unsafe_question_surface",
+            "unsafe_metadata_exposure",
+        }
+    ):
+        correction_rules.append(
+            "- 메타 노출 교정: slot의 의미 힌트 전체를 역량명처럼 복사하거나 내부 이름을 추측하지 말고, 실제 문서·자료·행동·산출물로 나누어 표현하세요."
         )
+    if issue_set.intersection(
+        {
+            "field_realism_non_adaptive_follow_ups",
+            "structured_follow_ups",
+        }
+    ):
+        correction_rules.append(
+            "- 꼬리질문 교정: 1개는 표준 확인, 2개는 '방금/앞서' 답변의 선택·근거·조치·기록을 받아 반대 자료·누락·목표 미달 때의 수정/검증을 묻고, 대응 평가포인트와 같은 구체 표현을 사용하세요."
+        )
+    measurement_correction_rules = (
+        (
+            "ksa_measurement_has_question",
+            "- 주질문 완결 교정: 빈 문구나 제목이 아니라 지원자가 답할 수 있는 완결된 한국어 질문을 작성하세요.",
+        ),
+        (
+            "ksa_measurement_has_supported_method",
+            "- 면접기법 교정: 해당 slot에 지정된 면접기법의 응답 방식과 관찰 구조를 주질문에 반영하세요.",
+        ),
+        (
+            "ksa_measurement_focus_visible",
+            "- 평가초점 교정: 내부 이름을 복사하지 말고 제공된 공개 의미 힌트의 업무 대상·행동을 주질문의 구체 문서·자료·산출물로 식별 가능하게 표현하세요.",
+        ),
+        (
+            "ksa_measurement_ksa_type_operationalized",
+            "- KSA 유형 교정: 지식은 근거와 판단, 기술은 직접 행동과 산출물, 태도는 제약 속 선택과 행동이 답변에서 관찰되게 작성하세요.",
+        ),
+        (
+            "ksa_measurement_observable_task",
+            "- 관찰과업 교정: 주질문 자체에 구체 업무 사건, 본인의 판단 또는 행동, 확인 가능한 결과나 산출물을 연결하세요.",
+        ),
+        (
+            "ksa_measurement_elicits_response",
+            "- 응답요구 교정: 설명·제시·작성·선택·판단처럼 지원자가 해야 할 응답 행동을 명시적인 질문형으로 끝내세요.",
+        ),
+        (
+            "ksa_measurement_sufficient_task_detail",
+            "- 과업구체성 교정: 업무 대상, 제약, 판단 또는 행동, 결과 확인이 드러나도록 주질문을 충분히 구체화하세요.",
+        ),
+        (
+            "ksa_measurement_not_ksa_restatement",
+            "- 단순재진술 교정: '관련 경험이 있습니까'처럼 의미 힌트를 되묻지 말고 실제 사건·판단·행동·결과를 묻는 과업으로 다시 작성하세요.",
+        ),
+        (
+            "ksa_measurement_evidence_linked",
+            "- 근거잠금 교정: slot 순서와 배정된 의미 힌트를 그대로 유지하고 다른 slot의 업무 의미를 섞지 마세요. 내부 식별자는 출력하지 마세요.",
+        ),
+    )
+    detailed_measurement_rule_added = False
+    for code, rule in measurement_correction_rules:
+        if code in issue_set:
+            correction_rules.append(rule)
+            detailed_measurement_rule_added = True
+    if "ksa_measurement_task" in issue_set and not detailed_measurement_rule_added:
+        correction_rules.append(
+            "- KSA 측정 교정: 주질문 자체에 구체 업무 대상이나 사건, 본인의 판단·행동, 문서·수치·기록·피드백으로 확인한 결과를 모두 포함하세요."
+        )
+    if "duplicate_question" in issue_set:
+        correction_rules.append(
+            "- 중복 교정: 이전 문장을 바꿔 쓰지 말고, 배정된 의미 힌트를 유지하면서 사건·핵심 판단 또는 행동·요구 결과·질문 도입 중 최소 두 축을 새로 설계하세요."
+        )
+    if not correction_rules:
+        correction_rules.append(
+            "- 실패 코드를 기준으로 해당 문항을 새로 작성하되, 내부 메타 이름을 추측하거나 후보자용 문장에 노출하지 마세요."
+        )
+    instruction = (
+        "[독립 검수 실패 재생성]\n"
+        "- 제공된 의미 힌트와 채용 문맥에서 문항 전체를 새로 작성하세요. 공식 내부 라벨은 모델 입력에 없으며 추측하지 마세요.\n"
+        "- 아래 코드는 실패한 품질 차원을 나타냅니다. 해당 교정 규칙을 모두 만족하도록 다시 작성하세요.\n"
+        "- 재생성 대상 index는 집중 수정 위치입니다. 출력은 여전히 전체 슬롯을 같은 순서와 개수로 완결하세요.\n"
+        "- 이전 초안은 모델에게 다시 보여주지 않습니다. 서버가 중복 여부와 동일 evidence lock을 별도로 검증합니다.\n"
+        f"- 독립 검수 코드: {','.join(safe_codes)}\n"
+        f"- 안전검사 코드: {','.join(safe_issue_codes) or 'none'}\n"
+        f"{chr(10).join(correction_rules)}\n"
+        f"- 재생성 대상 원래 index(JSON): {json.dumps(retry_targets, ensure_ascii=True, separators=(',', ':'))}\n"
+        f"- 서버 잠금 slot index(JSON): {json.dumps(locked_indexes, ensure_ascii=True, separators=(',', ':'))}"
+    )
     return _join_generation_context(instruction, original_context)[:2800]
 
 
@@ -12757,6 +14792,7 @@ def _enrich_ai_authored_question_metadata(
     interview_methods: list[str],
     ncs_matches: list[dict[str, Any]],
     ncs_ksa: list[dict[str, Any]],
+    server_locked_by_order: bool = False,
 ) -> dict[str, Any]:
     """Attach locked NCS metadata without running legacy question rewriting.
 
@@ -12816,7 +14852,11 @@ def _enrich_ai_authored_question_metadata(
             planned_code,
             planned_evidence_id,
         )
-        evidence = raw_evidence or planned_evidence
+        evidence = (
+            planned_evidence
+            if server_locked_by_order
+            else raw_evidence or planned_evidence
+        )
         unit = next(
             (
                 dict(item)
@@ -12883,12 +14923,26 @@ def _enrich_ai_authored_question_metadata(
             or row["ncsSclasCdnm"]
         )
 
-        if planned_evidence_id:
+        if server_locked_by_order:
             row["question_evidence_assignment_valid"] = bool(
-                planned_evidence and raw_evidence_id == planned_evidence_id
+                planned_evidence_id
+                and planned_evidence
+                and (
+                    not raw_evidence_id
+                    or raw_evidence_id == planned_evidence_id
+                )
             )
-        if raw_evidence_id or planned_evidence_id:
-            row["question_evidence_id"] = raw_evidence_id or planned_evidence_id
+            if planned_evidence_id:
+                row["question_evidence_id"] = planned_evidence_id
+            else:
+                row.pop("question_evidence_id", None)
+        else:
+            if planned_evidence_id:
+                row["question_evidence_assignment_valid"] = bool(
+                    planned_evidence and raw_evidence_id == planned_evidence_id
+                )
+            if raw_evidence_id or planned_evidence_id:
+                row["question_evidence_id"] = raw_evidence_id or planned_evidence_id
         if evidence:
             official_factor = str(evidence.get("factorName") or "").strip()
             ksa_type = str(
@@ -12905,11 +14959,31 @@ def _enrich_ai_authored_question_metadata(
                 comp_def=row["compeUnitDef"],
                 evidence_row=evidence,
             )
+            # The prompt-facing sequence already contains the canonical public
+            # translation of this locked evidence row.  Preserve those exact
+            # values instead of deriving a second, potentially different
+            # candidate surface from the official factor during enrichment.
+            # Official factor/evidence metadata remains server-owned below.
+            canonical_surface = str(
+                planned.get("required_surface_focus") or ""
+            ).strip()
+            canonical_task_statement = str(
+                planned.get("required_task_statement") or ""
+            ).strip()
+            canonical_observable_behavior = str(
+                planned.get("required_observable_behavior") or ""
+            ).strip()
+            if canonical_surface:
+                task_frame["task_object"] = canonical_surface
+            if canonical_task_statement:
+                task_frame["task_statement"] = canonical_task_statement
+            if canonical_observable_behavior:
+                task_frame["observable_behavior"] = canonical_observable_behavior
             row["question_focus"] = official_factor
             row["question_focus_type"] = ksa_type
             row["question_focus_source"] = "official_ksa"
             row["question_focus_surface"] = str(
-                task_frame.get("task_object") or ""
+                canonical_surface or task_frame.get("task_object") or ""
             ).strip()
             row["question_task_frame"] = task_frame
             row["question_evidence_required"] = True
@@ -15727,152 +17801,100 @@ async def jd_strategy_upload(
                 "max_items": 40,
             },
         )
+    ncs_match_bundle: dict[str, Any] = {}
     if mcp_only:
-        detail_search_unit_limit = max(20, run_top_k * 12)
+        ncs_match_bundle = await _to_thread_with_request_lease(
+            build_ncs_match_bundle,
+            mcp_lookup_terms,
+            detail_source="explicit",
+            max_units=200,
+        )
+        _raise_for_ncs_match_bundle(ncs_match_bundle)
+        ncs_items = [
+            dict(row)
+            for row in (ncs_match_bundle.get("units") or [])
+            if isinstance(row, dict)
+        ]
         if reviewed_ability_units:
-            detail_search_unit_limit = min(
-                200,
-                max(80, len(reviewed_ability_units) * 4, detail_search_unit_limit),
-            )
-        try:
-            ncs_items = await _to_thread_with_request_lease(
-                search_units_by_detail,
-                mcp_lookup_terms,
-                max_units=detail_search_unit_limit,
-            )
-        except NcsMcpError as exc:
-            logger.error(
-                "ncs_mcp_search_failed",
-                exc_info=(type(exc), exc, exc.__traceback__),
-            )
-            # A reviewed exact detail label must never be downgraded to a
-            # keyword, public API, or local-map guess when the authoritative
-            # NCS MCP is unavailable. Preserve the user's review state and let
-            # the same request be retried without exposing the provider error.
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "ncs_mcp_unavailable",
-                    "message": (
-                        "NCS 공식 세분류·능력단위 조회가 일시적으로 불가능합니다. "
-                        "선택 상태를 유지한 채 다시 시도해 주세요."
-                    ),
-                    "retryable": True,
-                    "lookup_terms": list(mcp_lookup_terms),
-                },
-            ) from exc
-        else:
-            matched_lookup_terms, unmatched_lookup_terms = _detail_lookup_coverage(
-                mcp_lookup_terms,
+            locked_units, missing_ability_units = _lock_units_to_reviewed_ability_units(
                 ncs_items,
+                reviewed_ability_units,
             )
-            if not ncs_items or unmatched_lookup_terms:
-                suggestion_terms = unmatched_lookup_terms or mcp_lookup_terms
+            if missing_ability_units:
+                ordinal_recovered, missing_ability_units = (
+                    _recover_ordinal_scoped_reviewed_ability_units(
+                        ncs_items,
+                        missing_ability_units,
+                        reviewed_ability_unit_ordinals,
+                        already_locked=locked_units,
+                    )
+                )
+                locked_units.extend(ordinal_recovered)
+            catalog_candidates: list[dict[str, Any]] = []
+            if missing_ability_units:
+                catalog_candidates = exact_official_units_by_name(missing_ability_units)
+                catalog_recovered, missing_ability_units = (
+                    _recover_code_scoped_reviewed_ability_units(
+                        ncs_items,
+                        missing_ability_units,
+                        catalog_candidates,
+                        already_locked=locked_units,
+                    )
+                )
+                locked_units.extend(catalog_recovered)
+            if missing_ability_units:
+                recovery_candidates: list[dict[str, Any]] = []
                 try:
-                    suggestions = await _to_thread_with_request_lease(
-                        suggest_units_by_text,
-                        suggestion_terms,
-                        max_units=12,
+                    def fetch_recovery_candidates() -> list[dict[str, Any]]:
+                        recovered: list[dict[str, Any]] = []
+                        # Bound the remote recovery fan-out. Any remaining
+                        # names stay unmatched and preserve the fail-closed
+                        # 422 response below.
+                        for missing_name in missing_ability_units[:40]:
+                            recovered.extend(
+                                suggest_units_by_text([missing_name], max_units=20)
+                            )
+                        return recovered
+
+                    recovery_candidates = await _to_thread_with_request_lease(
+                        fetch_recovery_candidates
                     )
                 except NcsMcpError:
-                    suggestions = []
-                message = (
-                    "Local NCS DB returned partial exact coverage for reviewed "
-                    "detail-class terms. Human selection is required."
-                    if ncs_items
-                    else "Local NCS DB returned no exact competency units for "
-                    "the reviewed detail candidates. Human selection is required."
+                    recovery_candidates = []
+                recovered_units, missing_ability_units = (
+                    _recover_code_scoped_reviewed_ability_units(
+                        ncs_items,
+                        missing_ability_units,
+                        [*catalog_candidates, *recovery_candidates],
+                        already_locked=locked_units,
+                    )
                 )
+                locked_units.extend(recovered_units)
+            if missing_ability_units:
                 raise HTTPException(
                     status_code=422,
                     detail={
-                        "message": message,
-                        "lookup_terms": list(mcp_lookup_terms),
-                        "matched_detail_terms": list(matched_lookup_terms),
-                        "unmatched_detail_terms": list(
-                            unmatched_lookup_terms or mcp_lookup_terms
+                        "code": "ncs_required_ability_unit_mismatch",
+                        "message": (
+                            "검토·확정한 요구능력단위 일부가 선택한 세분류의 공식 NCS 능력단위와 "
+                            "정확히 일치하지 않습니다. 직무기술서 표의 능력단위명을 다시 확인해 주세요."
                         ),
-                        "suggested_ncs_units": list(suggestions or []),
+                        "reviewed_detail_terms": list(mcp_lookup_terms),
+                        "reviewed_ability_units": list(reviewed_ability_units),
+                        "matched_ability_units": [
+                            str(unit.get("compeUnitName") or "").strip()
+                            for unit in locked_units
+                            if str(unit.get("compeUnitName") or "").strip()
+                        ],
+                        "unmatched_ability_units": list(missing_ability_units),
+                        "retryable": False,
                     },
                 )
-            if reviewed_ability_units:
-                locked_units, missing_ability_units = _lock_units_to_reviewed_ability_units(
-                    ncs_items,
-                    reviewed_ability_units,
-                )
-                if missing_ability_units:
-                    ordinal_recovered, missing_ability_units = (
-                        _recover_ordinal_scoped_reviewed_ability_units(
-                            ncs_items,
-                            missing_ability_units,
-                            reviewed_ability_unit_ordinals,
-                            already_locked=locked_units,
-                        )
-                    )
-                    locked_units.extend(ordinal_recovered)
-                if missing_ability_units:
-                    catalog_recovered, missing_ability_units = (
-                        _recover_code_scoped_reviewed_ability_units(
-                            ncs_items,
-                            missing_ability_units,
-                            exact_official_units_by_name(missing_ability_units),
-                            already_locked=locked_units,
-                        )
-                    )
-                    locked_units.extend(catalog_recovered)
-                if missing_ability_units:
-                    recovery_candidates: list[dict[str, Any]] = []
-                    try:
-                        def fetch_recovery_candidates() -> list[dict[str, Any]]:
-                            recovered: list[dict[str, Any]] = []
-                            # Bound the remote recovery fan-out. Any remaining
-                            # names stay unmatched and preserve the fail-closed
-                            # 422 response below.
-                            for missing_name in missing_ability_units[:40]:
-                                recovered.extend(
-                                    suggest_units_by_text([missing_name], max_units=20)
-                                )
-                            return recovered
-
-                        recovery_candidates = await _to_thread_with_request_lease(
-                            fetch_recovery_candidates
-                        )
-                    except NcsMcpError:
-                        recovery_candidates = []
-                    recovered_units, missing_ability_units = (
-                        _recover_code_scoped_reviewed_ability_units(
-                            ncs_items,
-                            missing_ability_units,
-                            recovery_candidates,
-                            already_locked=locked_units,
-                        )
-                    )
-                    locked_units.extend(recovered_units)
-                if missing_ability_units:
-                    raise HTTPException(
-                        status_code=422,
-                        detail={
-                            "code": "ncs_required_ability_unit_mismatch",
-                            "message": (
-                                "검토·확정한 요구능력단위 일부가 선택한 세분류의 공식 NCS 능력단위와 "
-                                "정확히 일치하지 않습니다. 직무기술서 표의 능력단위명을 다시 확인해 주세요."
-                            ),
-                            "reviewed_detail_terms": list(mcp_lookup_terms),
-                            "reviewed_ability_units": list(reviewed_ability_units),
-                            "matched_ability_units": [
-                                str(unit.get("compeUnitName") or "").strip()
-                                for unit in locked_units
-                                if str(unit.get("compeUnitName") or "").strip()
-                            ],
-                            "unmatched_ability_units": list(missing_ability_units),
-                            "retryable": False,
-                        },
-                    )
-                ncs_items = locked_units
-                ncs_source = "ncs-mcp+required-unit-lock"
-            else:
-                ncs_source = "ncs-mcp"
-            ncs_query_terms = list(mcp_lookup_terms)
+            ncs_items = locked_units
+            ncs_source = "ncs-mcp+required-unit-lock"
+        else:
+            ncs_source = "ncs-mcp"
+        ncs_query_terms = list(mcp_lookup_terms)
 
     # 4) 코드 기반 조회 후, 키워드 기반으로 순차 fallback
     max_sclass_verified = _clamp_sclass_limit(os.getenv("NCS_API_MAX_SCLASS_VERIFIED", "4"), default=4)
@@ -15964,6 +17986,11 @@ async def jd_strategy_upload(
                         "matched_keywords": list(it.get("matched_keywords", []) or []),
                     }
                 )
+        if mcp_only:
+            ncs_matches = _preserve_exact_complete_units_for_upload(
+                ncs_matches,
+                ncs_match_bundle,
+            )
     elif ncs_items and ncs_query_terms:
         def _norm(v: str) -> str:
             return (v or "").replace(" ", "").strip().lower()
@@ -16037,7 +18064,27 @@ async def jd_strategy_upload(
         # Ranking and safe fallbacks may rebuild row dictionaries. Re-attach
         # only the evidence created by the server-side MCP/catalog join so the
         # response keeps an auditable detail -> unit chain.
-        ncs_matches = _reattach_ncs_link_provenance(ncs_matches, ncs_items)
+        if mcp_only and ncs_match_bundle.get("status") == "exact_complete":
+            provenance_by_code = {
+                str(row.get("ncsClCd") or row.get("unit_code") or "").strip(): dict(row)
+                for row in (ncs_match_bundle.get("units") or [])
+                if isinstance(row, dict)
+                and str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
+            }
+            # A human-confirmed ability-unit lock adds reviewed-name evidence.
+            # Overlay it on the same official row rather than emitting two
+            # divergent provenance rows, which the ambiguity guard rejects.
+            for row in ncs_items:
+                code = str(row.get("ncsClCd") or row.get("unit_code") or "").strip()
+                if code:
+                    provenance_by_code[code] = {
+                        **provenance_by_code.get(code, {}),
+                        **dict(row),
+                    }
+            provenance_units = list(provenance_by_code.values())
+        else:
+            provenance_units = ncs_items
+        ncs_matches = _reattach_ncs_link_provenance(ncs_matches, provenance_units)
 
     # NCS 평가요소를 수집해 OpenAI 입력에 함께 전달한다.
     # 질문계획에서 실제 배정될 능력단위만 조회한 뒤, JD 핵심 +
@@ -16193,6 +18240,7 @@ async def jd_strategy_upload(
         strategy,
         source_endpoint="/api/jd/strategy/upload",
         ncs_matches=ncs_matches,
+        ncs_match_bundle=ncs_match_bundle,
     )
     generated_questions_all = _extract_all_generated_question_items(strategy)
     generated_questions = _build_generated_questions_payload(
@@ -16259,6 +18307,7 @@ async def jd_strategy_upload(
         "profile_used": bool((strengths or "").strip()),
         "ncs_source": ncs_source,
         "ncs_error": ncs_error,
+        "ncs_match_bundle": ncs_match_bundle,
         "question_generation": {
             **_generation_provider_descriptor(request_generation_provider),
             "resolved_model": str(
@@ -16454,12 +18503,12 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
             )
         except NcsMcpError as exc:
             raise HTTPException(
-                status_code=502,
+                status_code=503,
                 detail={
-                    "code": "ncs_catalog_validation_unavailable",
+                    "code": "ncs_mcp_unavailable",
                     "message": (
-                        "공식 NCS 연결 카탈로그를 확인할 수 없어 "
-                        "선택한 능력단위를 검증하지 못했습니다."
+                        "NCS 공식 세분류·능력단위 조회가 일시적으로 불가능합니다. "
+                        "선택 상태를 유지한 채 다시 시도해 주세요."
                     ),
                     "retryable": True,
                 },
@@ -16509,6 +18558,16 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
     question_plan = _restrict_question_plan_to_terms(question_plan, plan_terms)
     _enforce_question_plan_capacity(question_plan)
     _require_ncs_mcp_url()
+
+    manual_match_terms = _canonicalize_detail_lookup_terms(plan_terms)
+    ncs_match_bundle = await _to_thread_with_request_lease(
+        build_ncs_match_bundle,
+        manual_match_terms,
+        detail_source="explicit",
+        max_units=200,
+    )
+    _raise_for_ncs_match_bundle(ncs_match_bundle)
+    _require_selected_units_in_match_bundle(ncs_matches, ncs_match_bundle)
 
     prompt_notice_text = _build_priority_notice_text(
         notice_text=notice_text,
@@ -16645,6 +18704,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         strategy,
         source_endpoint="/api/questions/generate-from-text",
         ncs_matches=ncs_matches,
+        ncs_match_bundle=ncs_match_bundle,
     )
     generated_questions_all = _extract_all_generated_question_items(strategy)
     generated_questions = _build_generated_questions_payload(
@@ -16693,6 +18753,7 @@ async def generate_questions_from_text(request: Request, payload: dict) -> dict:
         "profile_used": False,
         "ncs_source": "manual-selected",
         "ncs_error": "",
+        "ncs_match_bundle": ncs_match_bundle,
         "question_generation": {
             **_generation_provider_descriptor(request_generation_provider),
             "resolved_model": str(

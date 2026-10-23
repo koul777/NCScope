@@ -143,6 +143,26 @@ def _patch_pipeline(
     rows = list(ksa_rows or [_ksa()])
     review_state: dict[str, Any] = {"passed": True, "failed_indexes": []}
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    monkeypatch.setattr(
+        main,
+        "build_ncs_match_bundle",
+        lambda terms, **_kwargs: {
+            "status": "exact_complete",
+            "eligible_for_generation": True,
+            "reason_codes": [],
+            "lookup_terms": list(terms),
+            "details": [],
+            "units": [
+                {
+                    **_unit(),
+                    "officialUnitBaseCode": _unit()["ncsClCd"].split("_", 1)[0],
+                    "unitCatalogVerified": True,
+                }
+            ],
+            "matcher_version": "test-exact-complete",
+            "fingerprint": "b" * 64,
+        },
+    )
     monkeypatch.setattr(main, "_fetch_ncs_ksa_or_502", lambda **_kwargs: rows)
     monkeypatch.setattr(main, "rank_ksa_factors_by_query", lambda **_kwargs: rows)
     monkeypatch.setattr(main, "build_ncs_context_pack", lambda **_kwargs: {})
@@ -313,6 +333,83 @@ def _strategy_with_questions(questions: list[dict[str, Any]]) -> dict[str, Any]:
     return {"interview_questions": [dict(item) for item in questions]}
 
 
+@pytest.mark.parametrize("server_locked_by_order", [False, True])
+def test_enrichment_preserves_canonical_prompt_task_frame_and_evidence_lock(
+    server_locked_by_order: bool,
+) -> None:
+    unit = _unit()
+    evidence = _ksa("공식 내부 판단 기술", "canonical-1")
+    evidence_id = stable_ksa_evidence_id(evidence)
+    canonical_surface = "상충 자료의 적용 범위 확인"
+    canonical_task_statement = "상충 자료를 대조해 적용 범위를 정하고 확인표를 제시한다"
+    canonical_observable_behavior = "대조 근거, 범위 판단, 확인표와 수정 조건을 제시한다"
+    source_question = {
+        "type": "경험면접",
+        "question": (
+            "서로 다른 자료의 적용 범위를 대조해 확인표를 만든 경험에서 "
+            "본인의 판단과 확인 결과를 설명해 주세요."
+        ),
+        "follow_ups": [
+            "방금 선택한 범위의 근거가 불명확하다면 무엇을 수정하시겠습니까?",
+            "앞서 판단한 내용과 반대 자료가 확인된다면 결론을 어떻게 바꾸시겠습니까?",
+            "그 결과를 어떤 확인 기록으로 입증했습니까?",
+        ],
+        "evaluation_points": [
+            "상충 자료를 식별한 상황",
+            "적용 범위를 정한 판단 근거",
+            "자료를 대조한 직접 행동",
+            "확인표와 수정 조건으로 입증한 결과",
+        ],
+    }
+    if not server_locked_by_order:
+        source_question["question_evidence_id"] = evidence_id
+    plan = {
+        "total_main_count": 1,
+        "follow_up_count": 3,
+        "question_sequence": [
+            {
+                "index": 1,
+                "detail": "경영기획",
+                "type": "경험면접",
+                "follow_up_count": 3,
+                "ncsClCd": unit["ncsClCd"],
+                "compeUnitName": unit["compeUnitName"],
+                "compeUnitDef": unit["compeUnitDef"],
+                "evidence_id": evidence_id,
+                "required_surface_focus": canonical_surface,
+                "required_task_statement": canonical_task_statement,
+                "required_observable_behavior": canonical_observable_behavior,
+            }
+        ],
+    }
+
+    enriched = main._enrich_ai_authored_question_metadata(
+        _strategy_with_questions([source_question]),
+        question_plan=plan,
+        interview_methods=["경험면접"],
+        ncs_matches=[unit],
+        ncs_ksa=[evidence],
+        server_locked_by_order=server_locked_by_order,
+    )
+
+    row = enriched["interview_questions"][0]
+    assert row["question_focus_surface"] == canonical_surface
+    assert row["question_task_frame"]["task_object"] == canonical_surface
+    assert row["question_task_frame"]["task_statement"] == canonical_task_statement
+    assert (
+        row["question_task_frame"]["observable_behavior"]
+        == canonical_observable_behavior
+    )
+    assert row["question_focus"] == evidence["factorName"]
+    assert row["question_evidence_id"] == evidence_id
+    assert row["question_evidence_assignment_valid"] is True
+    candidate_text = "\n".join(
+        [row["question"], *row["follow_ups"], *row["evaluation_points"]]
+    )
+    assert evidence["factorName"] not in candidate_text
+    assert evidence_id not in candidate_text
+
+
 def test_server_safety_blocks_candidate_visible_official_ncs_label() -> None:
     evidence_id = stable_ksa_evidence_id(_ksa())
     row = _model_strategy(evidence_id=evidence_id)["interview_questions"][0]
@@ -396,6 +493,29 @@ def test_follow_up_count_mismatch_is_retryable_and_targets_only_that_slot() -> N
     assert "follow_up_count_mismatch" in main._INSTITUTION_RETRYABLE_QUALITY_CODES
 
 
+def test_hard_question_indexes_include_failed_quality_report_items() -> None:
+    result = {
+        "interview_questions": [
+            {"question": "첫 문항"},
+            {"question": "둘째 문항"},
+            {"question": "셋째 문항"},
+        ],
+        "question_quality_report": {
+            "items": [
+                {"index": 1, "ready": True, "issues": []},
+                {"index": 2, "ready": False, "issues": ["structured_follow_ups"]},
+                {"index": 3, "ready": False, "issues": ["ksa_measurement_task"]},
+            ]
+        },
+        "question_quality_orchestration": {
+            "status": "passed",
+            "items": [],
+        },
+    }
+
+    assert main._institution_hard_question_indexes(result) == [2, 3]
+
+
 def test_quality_retry_regenerates_only_the_wrong_follow_up_count_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -450,7 +570,12 @@ def test_quality_retry_regenerates_only_the_wrong_follow_up_count_slot(
                 f"{evidence_label} 답변에서 확인할 후속 근거 {index}는 무엇입니까?"
                 for index in range(1, follow_up_count + 1)
             ],
-            "evaluation_points": [f"{evidence_label} 판단 근거"],
+            "evaluation_points": [
+                f"{evidence_label} 상황 근거",
+                f"{evidence_label} 판단 근거",
+                f"{evidence_label} 행동 근거",
+                f"{evidence_label} 결과 근거",
+            ],
         }
 
     initial_rows = [
@@ -482,10 +607,39 @@ def test_quality_retry_regenerates_only_the_wrong_follow_up_count_slot(
         _ncs_ksa: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
         attached = copy.deepcopy(strategy)
-        for row in attached.get("interview_questions") or []:
+        rows = [
+            row
+            for row in (attached.get("interview_questions") or [])
+            if isinstance(row, dict)
+        ]
+        for row in rows:
             evidence_id = str(row.get("question_evidence_id") or "")
             row["evidence_ids"] = [evidence_id] if evidence_id else []
-        return main._attach_question_quality_report(attached)
+        item_rows = [
+            {
+                "index": index,
+                "ready": len(row.get("follow_ups") or []) == requested_count,
+                "issues": (
+                    []
+                    if len(row.get("follow_ups") or []) == requested_count
+                    else ["follow_up_count_mismatch"]
+                ),
+                "checks": {},
+            }
+            for index, row in enumerate(rows, start=1)
+        ]
+        ready_count = sum(bool(item["ready"]) for item in item_rows)
+        attached["question_quality_report"] = {
+            "policy": "test-follow-up-count-quality-v1",
+            "passed": bool(rows) and ready_count == len(rows),
+            "summary": {
+                "question_count": len(rows),
+                "ready_count": ready_count,
+                "needs_review_count": len(rows) - ready_count,
+            },
+            "items": item_rows,
+        }
+        return attached
 
     monkeypatch.setenv("INSTITUTION_MODEL_REQUESTS_PER_BATCH", "1")
     monkeypatch.setenv("INSTITUTION_QUALITY_RETRY_ENABLED", "true")
@@ -596,8 +750,10 @@ def test_primary_endpoint_retries_one_failed_quality_candidate_then_returns_200(
     assert build_calls[1]["transport_max_attempts"] == 1
     assert build_calls[0]["extra_context"] != build_calls[1]["extra_context"]
     assert "ai_quality_review_failed" in build_calls[1]["extra_context"]
-    assert _model_strategy()["interview_questions"][0]["question"] in build_calls[1]["extra_context"]
-    assert "최소 두 축을 바꾸세요" in build_calls[1]["extra_context"]
+    previous_question = _model_strategy()["interview_questions"][0]["question"]
+    assert previous_question not in build_calls[1]["extra_context"]
+    assert previous_question in build_calls[1]["avoid_questions"]
+    assert "이전 초안은 모델에게 다시 보여주지 않습니다" in build_calls[1]["extra_context"]
     assert "required_scenario_frame" not in build_calls[1]["extra_context"]
     assert "자료가 서로 달랐던 때" not in build_calls[1]["extra_context"]
     assert "STAR" not in build_calls[1]["extra_context"]
@@ -611,7 +767,11 @@ def test_primary_endpoint_retries_one_failed_quality_candidate_then_returns_200(
         "retry_count": 1,
         "attempt_count": 2,
         "outcome": "passed_after_retry",
-        "trigger_codes": ["ai_quality_review_failed"],
+        "trigger_codes": [
+            "ai_quality_review_failed",
+            "question_quality_orchestration_failed",
+            "question_quality_report_failed",
+        ],
         "previous_candidate_count": 1,
         "evidence_lock_count": 1,
         "provider_generation_request_count": 0,
@@ -1430,9 +1590,10 @@ def test_primary_endpoint_targeted_retry_rebuilds_only_failed_slot_and_revalidat
     assert len(retry_plan["question_sequence"]) == 1
     assert retry_plan["question_sequence"][0]["index"] == 1
     assert retry_plan["question_sequence"][0]["type"] == "상황면접"
-    assert evidence_ids[1] in retry_call["extra_context"]
-    assert evidence_ids[0] not in retry_call["extra_context"]
-    assert evidence_ids[2] not in retry_call["extra_context"]
+    assert retry_plan["question_sequence"][0]["evidence_id"] == evidence_ids[1]
+    assert not any(evidence_id in retry_call["extra_context"] for evidence_id in evidence_ids)
+    assert "재생성 대상 원래 index(JSON): [2]" in retry_call["extra_context"]
+    assert "서버 잠금 slot index(JSON): [1]" in retry_call["extra_context"]
 
     assert [len(call["questions"]) for call in orchestration_calls] == [3, 1, 3]
     assert orchestration_calls[1]["methods"] == ["상황면접"]
@@ -1468,6 +1629,7 @@ def test_primary_endpoint_targeted_retry_rebuilds_only_failed_slot_and_revalidat
         "trigger_codes": [
             "ai_quality_review_failed",
             "question_quality_orchestration_failed",
+            "question_quality_report_failed",
         ],
         "previous_candidate_count": 3,
         "evidence_lock_count": 3,
@@ -1872,7 +2034,11 @@ def test_primary_endpoint_targeted_retry_keeps_max_safe_question_order_and_timin
     assert retry_call["question_plan"]["targeted_retry_original_indexes"] == [failed_index]
     assert retry_call["question_plan"]["total_main_count"] == 1
     assert retry_call["interview_methods"] == [method_by_index[failed_index - 1]]
-    assert evidence_ids[failed_index - 1] in retry_call["extra_context"]
+    assert (
+        retry_call["question_plan"]["question_sequence"][0]["evidence_id"]
+        == evidence_ids[failed_index - 1]
+    )
+    assert not any(evidence_id in retry_call["extra_context"] for evidence_id in evidence_ids)
 
     strategy = response.json()["strategy"]
     assert len(strategy["interview_questions"]) == total_count
@@ -1899,13 +2065,57 @@ def test_primary_endpoint_targeted_retry_keeps_max_safe_question_order_and_timin
     }
     assert strategy["model_quality_retry"]["provider_generation_request_count"] == 0
     assert strategy["model_quality_retry"]["provider_generation_request_limit"] == 2
-
     timing = strategy["generation_timing"]
     assert timing["generation_attempt_count"] >= 2
     assert timing["total_elapsed_ms"] >= 0
     assert all(value >= 0 for value in timing["generation_attempt_elapsed_ms"])
     assert REQUEST_KEY not in response.text
 
+
+def test_targeted_retry_production_plan_keeps_original_slot_through_batching() -> None:
+    ksa_rows = [_ksa(f"KSA {index}", str(index)) for index in range(1, 4)]
+    evidence_ids = [stable_ksa_evidence_id(row) for row in ksa_rows]
+    question_plan = {
+        "total_main_count": 3,
+        "question_sequence": [
+            {
+                "index": index,
+                "detail": _unit()["ncsSubdCdnm"],
+                "type": "experience",
+                "follow_up_count": 3,
+                "ncsClCd": _unit()["ncsClCd"],
+                "evidence_id": evidence_ids[index - 1],
+            }
+            for index in range(1, 4)
+        ],
+    }
+    runtime_plan, _locks = main._planned_question_evidence_assignments(
+        question_plan=question_plan,
+        interview_methods=["experience"],
+        ncs_matches=[_unit()],
+        ncs_ksa=ksa_rows,
+    )
+    retry_plan, original_indexes, retry_methods = main._targeted_quality_retry_plan(
+        runtime_plan,
+        [3],
+    )
+    retry_runtime_plan, retry_locks = main._planned_question_evidence_assignments(
+        question_plan=retry_plan,
+        interview_methods=retry_methods,
+        ncs_matches=[_unit()],
+        ncs_ksa=ksa_rows,
+    )
+    batch_plan, batch_original_indexes, _batch_methods = main._generation_batch_plans(
+        retry_runtime_plan,
+    )[0]
+
+    assert original_indexes == [3]
+    assert retry_locks == [(1, evidence_ids[2])]
+    assert batch_original_indexes == [3]
+    assert batch_plan["generation_batch_original_indexes"] == [3]
+    assert batch_plan["question_sequence"][0]["generation_original_index"] == 3
+    assert batch_plan["question_sequence"][0]["retry_original_index"] == 3
+    assert batch_plan["question_sequence"][0]["evidence_id"] == evidence_ids[2]
 
 @pytest.mark.parametrize("path", PRIMARY_PATHS)
 @pytest.mark.parametrize("failure_stage", ["provider", "empty", "legacy_postprocess"])
@@ -1992,7 +2202,11 @@ def test_retry_locks_each_server_validated_evidence_assignment(
         response = _post_primary(client, path)
 
     assert len(build_calls) == 2
-    assert first_id in build_calls[1]["extra_context"]
+    assert (
+        build_calls[1]["question_plan"]["question_sequence"][0]["evidence_id"]
+        == first_id
+    )
+    assert first_id not in build_calls[1]["extra_context"]
     assert REQUEST_KEY not in build_calls[1]["extra_context"]
     if change_assignment:
         _assert_no_fallback_questions(response)
@@ -2040,7 +2254,11 @@ def test_primary_endpoint_retries_raw_evidence_assignment_drift_against_server_p
     assert response.status_code == 200
     assert len(build_calls) == 2
     assert "question_evidence_assignment_failed" in build_calls[1]["extra_context"]
-    assert planned_id in build_calls[1]["extra_context"]
+    assert (
+        build_calls[1]["question_plan"]["question_sequence"][0]["evidence_id"]
+        == planned_id
+    )
+    assert planned_id not in build_calls[1]["extra_context"]
     strategy = response.json()["strategy"]
     assert strategy["question_evidence_assignment"] == {
         "policy": "planned-question-evidence-assignment-v1",

@@ -43,6 +43,7 @@ _*
 !tests/fixtures/stored_jd_final_blind_freeze_addendum.json
 !tests/fixtures/stored_jd_final_blind_result.json
 !tests/fixtures/stored_jd_final_blind_comparison_ledger.json
+!tests/fixtures/secretary_02020301_interview_packet.json
 bench_*.json
 bench_pdfs/
 interview_questions.json

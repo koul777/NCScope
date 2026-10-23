@@ -7,6 +7,7 @@ the original block/page evidence before NCS lookup is started.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import csv
 import hashlib
@@ -15,9 +16,11 @@ import html
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
+import threading
 import time
 import unicodedata
 from collections import defaultdict
@@ -54,7 +57,7 @@ class _LocalKordocUnavailable(KordocParseError):
     """Raised only when the local Node/Kordoc runtime cannot be started."""
 
 
-_KORDOC_PARSER_VERSION = "4.9.1"
+_KORDOC_PARSER_VERSION = "4.24.1"
 _KORDOC_BRIDGE_MAX_BYTES = 4 * 1024 * 1024
 _KORDOC_BRIDGE_PATH = "/api/kordoc-parse"
 _KORDOC_BRIDGE_ED25519_PUBLIC_KEY_RAW = (
@@ -191,11 +194,19 @@ _INLINE_SECTION_TRANSITION_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+# Characters ``_norm`` deletes: whitespace and separators, middle-dot
+# variants, and every private-use code point (Unicode category ``Co``, which is
+# exactly these three ranges).  Deleting the union in one pass yields the same
+# text as deleting each set in turn.
+_NORM_DROP_RE = re.compile(
+    "[\\s:：·•\\-_/\\\\()\\[\\]{}ᆞ․‧∙⋅・ㆍ"
+    "\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]+"
+)
+
+
 def _norm(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
-    text = "".join(char for char in text if unicodedata.category(char) != "Co")
-    text = re.sub(r"[·ᆞ․‧•∙⋅・ㆍ]", "", text)
-    return re.sub(r"[\s:：·•\-_/\\()\[\]{}]+", "", text).lower()
+    return _NORM_DROP_RE.sub("", text).lower()
 
 
 _SECTION_ALIAS_KEYS = {
@@ -257,26 +268,40 @@ def _exact_detail_hint_matches(
     return [], ""
 
 
-def _clean_text(value: Any, *, normalize_nfkc: bool = True) -> str:
+_CLEAN_TEXT_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_CLEAN_TEXT_LINK_RE = re.compile(r"\[(.*?)\]\([^)]*\)")
+_CLEAN_TEXT_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_CLEAN_TEXT_TAG_RE = re.compile(r"<[^>]+>")
+_CLEAN_TEXT_EMPHASIS_RE = re.compile(r"[*_`~]+")
+_CLEAN_TEXT_SPACE_RE = re.compile(r"[ \t\r\f\v]+")
+_CLEAN_TEXT_NEWLINES_RE = re.compile(r"\n{2,}")
+
+
+def _clean_text(value: Any, *, normalize_nfkc: bool = True, preserve_blank_lines: bool = False) -> str:
     text = str(value or "")
     if normalize_nfkc:
         text = unicodedata.normalize("NFKC", text)
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
-    text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", text)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[*_`~]+", "", text)
-    text = re.sub(r"[ \t\r\f\v]+", " ", text)
-    text = re.sub(r"\n{2,}", "\n", text).strip(" |\t\r\n:：-•")
+    text = _CLEAN_TEXT_IMAGE_RE.sub("", text)
+    text = _CLEAN_TEXT_LINK_RE.sub(r"\1", text)
+    text = _CLEAN_TEXT_BR_RE.sub("\n", text)
+    text = _CLEAN_TEXT_TAG_RE.sub(" ", text)
+    text = _CLEAN_TEXT_EMPHASIS_RE.sub("", text)
+    text = _CLEAN_TEXT_SPACE_RE.sub(" ", text)
+    if not preserve_blank_lines:
+        text = _CLEAN_TEXT_NEWLINES_RE.sub("\n", text)
+    text = text.strip(" |\t\r\n:：-•")
     return text.strip()
 
 
-def _split_table_row(line: str) -> list[str]:
+def _split_table_row(line: str, *, preserve_blank_lines: bool = False) -> list[str]:
     raw = line.strip()
     if not raw.startswith("|"):
         return []
     raw = raw.strip("|")
-    return [_clean_text(part, normalize_nfkc=False) for part in raw.split("|")]
+    return [
+        _clean_text(part, normalize_nfkc=False, preserve_blank_lines=preserve_blank_lines)
+        for part in raw.split("|")
+    ]
 
 
 def _is_separator_row(cells: list[str]) -> bool:
@@ -464,6 +489,29 @@ def _normalized_literal_keys(labels: tuple[str, ...]) -> frozenset[str]:
     return frozenset(_norm(label) for label in labels)
 
 
+_DETAIL_SENTENCE_FRAGMENT_RE = re.compile(
+    r"^(?:의|로|으로|를|을|은|는|이|가|에|에서|에게|와|과|도|만|및)\s"
+    r"|(?:니다|[가-힣][다함]\.)\s*$"
+)
+
+
+def _is_detail_sentence_fragment(value: str) -> bool:
+    """Return whether one split candidate is prose rather than a detail label.
+
+    A detail name is a noun label.  A split item that starts with a detached
+    postposition or ends like a sentence is the rest of a sentence in which
+    ``세분류`` was only a word, e.g. ``…(세분류)의 하위 요소를 참고하여
+    제시하였습니다`` or ``NCS 미개발 직무(세분류)로 별도 분석을 통해 내용 도출``.
+    Apply it to split items only: a whole cell may hold real details followed
+    by a prose line.  Current official names are never fragments.
+    """
+
+    text = _clean_text(value)
+    if not text or _norm(text) in _official_ncs_detail_name_keys():
+        return False
+    return bool(_DETAIL_SENTENCE_FRAGMENT_RE.search(text))
+
+
 def _looks_like_detail_candidate(value: str) -> bool:
     text = _clean_text(value)
     if not text:
@@ -496,7 +544,7 @@ def _looks_like_detail_candidate(value: str) -> bool:
     }
     if any(fragment in key for fragment in noise_fragments):
         return False
-    if re.fullmatch(r"(?:지식|기술|태도)명\\*(?:ncs)?참고", key):
+    if _is_ksa_column_heading(text) or key == "ncs참고":
         return False
     if re.search(r"(?:https?://|www\.)", text, flags=re.IGNORECASE):
         return False
@@ -599,7 +647,12 @@ def _is_detail_value_stop_label(value: str) -> bool:
         "핵심책무",
         "직무 설명",
     }
-    return bool(key and key in {_norm(label) for label in labels})
+    return bool(key and key in {_norm(label) for label in labels}) or _is_ksa_column_heading(value)
+
+
+def _is_ksa_column_heading(value: Any) -> bool:
+    key = _norm(_clean_text(value))
+    return bool(re.fullmatch(r"(?:지식|기술|태도)명(?:(?:ncs)?참고)?", key))
 
 
 def _row_declares_no_ncs_mapping(cells: list[str]) -> bool:
@@ -1436,9 +1489,9 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
     protected_slash = "\ufff0"
     split_text = re.sub(r"(?<=[A-Za-z])/(?=[A-Za-z])", protected_slash, text)
     separated = [
-        _clean_detail_candidate_text(part.replace(protected_slash, "/"))
-        for part in re.split(r"\s*(?:[,，、;/|]+)\s*", split_text)
-        if _clean_detail_candidate_text(part.replace(protected_slash, "/"))
+        cleaned
+        for part in re.split(r"\s*(?:[,，、;/|¡]+)\s*", split_text)
+        if (cleaned := _clean_detail_candidate_text(part.replace(protected_slash, "/")))
     ]
     if len(separated) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
         raise KordocStructureLimitError(
@@ -1448,9 +1501,9 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
         return separated
 
     numbered = [
-        _clean_detail_candidate_text(part)
+        cleaned
         for part in re.split(r"\s+(?=\d{1,2}\s*[,.)：:\-])", text)
-        if _clean_detail_candidate_text(part)
+        if (cleaned := _clean_detail_candidate_text(part))
     ]
     if len(numbered) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
         raise KordocStructureLimitError(
@@ -1459,31 +1512,32 @@ def _expand_composite_detail_candidate(value: str) -> list[str]:
     if len(numbered) > 1 and all(_looks_like_detail_candidate(part) for part in numbered):
         return numbered
 
-    joined = split_joined_official_detail_labels(text)
-    if len(joined) > 1:
-        return joined
-
+    # A shared suffix (``한식·양식·조리``) expands to the official names
+    # themselves. Try it before the joined-label split, which matches on
+    # normalized keys and would keep the source spelling ``양식·조리``.
     unified = re.sub(r"[‧･ㆍ•∙⋅・]", "·", text)
     parts = [_clean_detail_candidate_text(part) for part in unified.split("·")]
     parts = [part for part in parts if part]
-    if len(parts) < 2:
-        return [text]
-
-    detail_keys = _official_ncs_detail_name_keys()
-    for suffix in _SHARED_DETAIL_SUFFIXES:
-        if not any(part.endswith(suffix) or part == suffix for part in parts):
-            continue
-        expanded: list[str] = []
-        for part in parts:
-            if part == suffix:
+    if len(parts) >= 2:
+        detail_keys = _official_ncs_detail_name_keys()
+        for suffix in _SHARED_DETAIL_SUFFIXES:
+            if not any(part.endswith(suffix) or part == suffix for part in parts):
                 continue
-            expanded.append(part if part.endswith(suffix) else f"{part}{suffix}")
-        if (
-            expanded
-            and detail_keys
-            and all(_norm(part) in detail_keys for part in expanded)
-        ):
-            return expanded
+            expanded: list[str] = []
+            for part in parts:
+                if part == suffix:
+                    continue
+                expanded.append(part if part.endswith(suffix) else f"{part}{suffix}")
+            if (
+                expanded
+                and detail_keys
+                and all(_norm(part) in detail_keys for part in expanded)
+            ):
+                return expanded
+
+    joined = split_joined_official_detail_labels(text)
+    if len(joined) > 1:
+        return joined
     return [text]
 
 
@@ -1712,6 +1766,20 @@ def _html_table_position_grid(raw_table: str) -> list[list[dict[str, Any]]]:
             _validate_html_grid_width(column, colspan)
             origin = {
                 "text": text,
+                # Preserve paragraph boundaries before stripping HTML tags,
+                # while keeping the established handling of a single <br>.
+                "ability_text": "\n\n".join(
+                    _clean_text(
+                        html.unescape(re.sub(r"<[^>]+>", " ", paragraph)),
+                        normalize_nfkc=False,
+                        preserve_blank_lines=True,
+                    )
+                    for paragraph in re.split(
+                        r"(?:<br\s*/?>|\r?\n)[ \t]*(?:<br\s*/?>|\r?\n)",
+                        body,
+                        flags=re.IGNORECASE,
+                    )
+                ),
                 "origin_row": row_index,
                 "origin_column": column,
                 "source_column": source_column,
@@ -1762,10 +1830,11 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
 
     tables: list[list[list[dict[str, Any]]]] = []
     current_rows: list[list[str]] = []
+    current_ability_rows: list[list[str]] = []
     logical_cell_count = 0
 
     def flush() -> None:
-        nonlocal current_rows
+        nonlocal current_rows, current_ability_rows
         if len(current_rows) >= 2:
             if len(tables) >= _HTML_TABLE_MAX_TABLES:
                 raise KordocStructureLimitError(
@@ -1776,6 +1845,7 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
                     [
                         {
                             "text": value,
+                            "ability_text": current_ability_rows[row_index][column],
                             "row": row_index,
                             "column": column,
                             "origin_row": row_index,
@@ -1791,6 +1861,7 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
                 ]
             )
         current_rows = []
+        current_ability_rows = []
 
     for raw_line in str(markdown or "").splitlines():
         cells = _split_table_row(raw_line.strip())
@@ -1809,6 +1880,7 @@ def _markdown_table_position_grids(markdown: str) -> list[list[list[dict[str, An
                 "Markdown table size exceeds the safe limit"
             )
         current_rows.append(cells)
+        current_ability_rows.append(_split_table_row(raw_line.strip(), preserve_blank_lines=True))
     flush()
     return tables
 
@@ -2001,6 +2073,225 @@ def _block_table_rows(block: dict[str, Any]) -> list[Any]:
     return []
 
 
+def _table_block_box(block: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    box = block.get("bbox")
+    if not isinstance(box, dict):
+        return None
+    try:
+        values = tuple(float(box[key]) for key in ("x", "y", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(float("-inf") < value < float("inf") for value in values):
+        return None
+    return values if values[2] > 0 and values[3] > 0 else None
+
+
+def _recover_detached_table_detail_records(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reconnect a PDF hierarchy header only with complete spatial evidence.
+
+    PDF table detection may leave the header as several paragraph blocks. The
+    source's x order and full-width cells identify the column; catalog names
+    are deliberately not used to guess either the column or its values.
+    """
+    paragraphs = [
+        block for block in parsed.get("blocks") or []
+        if isinstance(block, dict) and block.get("type") == "paragraph"
+        and _table_block_box(block) is not None
+    ]
+    records: list[dict[str, Any]] = []
+    for table_index, block in enumerate(_iter_kordoc_table_blocks(parsed)):
+        box = _table_block_box(block)
+        rows = _block_table_rows(block)
+        table = block.get("table") if isinstance(block.get("table"), dict) else block
+        width = table.get("cols")
+        if not box or not isinstance(width, int) or not 4 <= width <= 8:
+            continue
+        # A padded native row supplies actual column positions even when the
+        # first/last columns contain rowspan placeholders.
+        if not rows or any(not isinstance(row, list) or len(row) != width for row in rows):
+            continue
+        if any(_positive_cell_span(cell, "colSpan", "colspan") != 1 for row in rows for cell in row):
+            continue
+        page = block.get("pageNumber", block.get("page", 0))
+        if not isinstance(page, int) or page <= 0:
+            continue
+        x, y, w, h = box
+        nearby = []
+        for paragraph in paragraphs:
+            if paragraph.get("pageNumber", paragraph.get("page", 0)) != page:
+                continue
+            px, py, pw, _ph = _table_block_box(paragraph)
+            if x <= px and px + pw <= x + w + 2 and 0 <= py - (y + h) <= 20:
+                nearby.append(paragraph)
+        detail_headers = [p for p in nearby if _norm(p.get("text")) == "세분류"]
+        if len(detail_headers) == 1:
+            header = detail_headers[0]
+            header_y = _table_block_box(header)[1]
+            aligned = sorted(
+                (p for p in nearby if abs(_table_block_box(p)[1] - header_y) <= 2),
+                key=lambda p: _table_block_box(p)[0],
+            )
+            labels = [part.strip() for p in aligned for part in str(p.get("text") or "").split("\t")]
+        else:
+            detached = _detached_hierarchy_header_table(parsed, block)
+            if detached is None:
+                continue
+            labels, header = detached
+        keys = [_norm(label) for label in labels]
+        if len(labels) != width or keys.count("세분류") != 1:
+            continue
+        hierarchy = [re.sub(r"\(.*\)$", "", label).strip() for label in labels]
+        if [label for label in hierarchy if label in {"대분류", "중분류", "소분류", "세분류"}] != [
+            "대분류", "중분류", "소분류", "세분류",
+        ]:
+            continue
+        column = keys.index("세분류")
+        ncs_until = 0
+        for row_index, row in enumerate(rows):
+            marker = next((cell for cell in row if _norm(_block_text(cell)) == "ncs기준"), None)
+            if marker is not None:
+                ncs_until = row_index + _positive_cell_span(marker, "rowSpan", "rowspan")
+            if row_index >= ncs_until:
+                continue
+            raw_value = _clean_text(_block_text(row[column]), normalize_nfkc=False)
+            if _row_declares_no_ncs_mapping([raw_value]):
+                continue
+            for value in _expand_composite_detail_candidate(raw_value):
+                if not _looks_like_detail_candidate(value):
+                    continue
+                records.append({
+                    "section": "ncs_detail", "text": value, "raw_cell_text": raw_value,
+                    "source": "kordoc_detached_table_header", "page": page,
+                    "table_index": table_index, "layout": "detached_column_header_value",
+                    "label": "세분류", "label_bbox": header["bbox"], "table_bbox": block["bbox"],
+                    "value_cell": {"row": row_index, "column": column, "row_span": 1, "column_span": 1},
+                })
+    return records
+
+
+def _detached_hierarchy_header_table(
+    parsed: dict[str, Any], block: dict[str, Any],
+) -> tuple[list[str], dict[str, Any]] | None:
+    """Match a complete header row in the immediately adjoining PDF table."""
+    box = _table_block_box(block)
+    if not box:
+        return None
+    x, y, w, h = box
+    page = block.get("pageNumber", block.get("page", 0))
+    pattern = r"구분|대분류|중분류|소분류(?:\([^)]*\))?|세분류|직무정의"
+    matches = []
+    for header in _iter_kordoc_table_blocks(parsed):
+        header_box = _table_block_box(header)
+        if not header_box or header.get("pageNumber", header.get("page", 0)) != page:
+            continue
+        hx, hy, hw, _hh = header_box
+        if abs(hx - x) > 3 or abs(hx + hw - x - w) > 3 or not 0 <= hy - y - h <= 20:
+            continue
+        rows = _block_table_rows(header)
+        if not rows or not isinstance(rows[-1], list):
+            continue
+        text = " ".join(_clean_text(_block_text(cell)) for cell in rows[-1]).strip()
+        if re.sub(pattern, "", text).strip():
+            continue
+        labels = re.findall(pattern, text)
+        if labels:
+            matches.append((labels, header))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _has_detached_training_header(parsed: dict[str, Any], block: dict[str, Any]) -> bool:
+    """Recognize a nearby training header over isolated code/name table rows."""
+    box = _table_block_box(block)
+    rows = _block_table_rows(block)
+    if not box or not rows:
+        return False
+    # No prose or other kind of table can acquire training context this way.
+    if any(
+        not isinstance(row, list) or len(row) != 2
+        or not re.fullmatch(r"\d{10}(?:_\d{2}v\d+)?", _block_text(row[0]).strip())
+        for row in rows
+    ):
+        return False
+    x, y, w, h = box
+    page = block.get("pageNumber", block.get("page", 0))
+    if not isinstance(page, int) or page <= 0:
+        return False
+    for header in parsed.get("blocks") or []:
+        if not isinstance(header, dict) or header.get("type") != "paragraph":
+            continue
+        if _norm(header.get("text")) not in {"필요교육", "직무교육과정"}:
+            continue
+        header_box = _table_block_box(header)
+        if not header_box or header.get("pageNumber", header.get("page", 0)) != page:
+            continue
+        hx, hy, hw, _hh = header_box
+        if x <= hx and hx + hw <= x + w and 0 <= hy - (y + h) <= 40:
+            return True
+    return False
+
+
+def _reconcile_ksa_detail_columns(
+    parsed: dict[str, Any], markdown: str, candidates: list[str],
+) -> list[str]:
+    """Suppress split KSA-column fragments corroborated by another declaration.
+
+    Adjacent cells may be fragments of one vertically wrapped detail name.
+    Rejoining is allowed only when a different source declaration supplies the
+    complete spelling. An independently declared fragment remains a candidate.
+    """
+    blocks = _iter_kordoc_table_blocks(parsed)
+    if not re.search(r"(?:지식|기술|태도)\s*명", markdown) and not any(
+        _is_ksa_column_heading(_block_text(cell))
+        for block in blocks for row in _block_table_rows(block)
+        for cell in (row if isinstance(row, list) else row.get("cells", []) if isinstance(row, dict) else [])
+    ):
+        return candidates
+    grids = [_block_table_position_grid(block) for block in blocks]
+    grids.extend(
+        _html_table_position_grid(table)
+        for table in re.findall(r"<table[^>]*>(.*?)</table>", markdown, re.I | re.S)
+    )
+    grids.extend(_markdown_table_position_grids(markdown))
+    sequences: list[list[str]] = []
+    independent: set[str] = set()
+    for grid in grids:
+        for row in grid:
+            origins = _origin_cells(row)
+            is_ksa = any(_is_ksa_column_heading(cell.get("text")) for cell in origins)
+            for label in origins:
+                if _section_for_label(str(label.get("text") or "")) != "ncs_detail":
+                    continue
+                values, layout = _table_value_cells_for_label(grid, label, section="ncs_detail")
+                texts = [str(cell.get("text") or "").strip() for cell in values]
+                if is_ksa and layout == "column_header_value":
+                    sequences.append(texts)
+                elif not is_ksa:
+                    independent.update(
+                        _norm(value) for text in texts for value in _expand_composite_detail_candidate(text)
+                        if _looks_like_detail_candidate(value)
+                    )
+    if not sequences:
+        return candidates
+    for line in markdown.splitlines():
+        value = _inline_ncs_detail_value(line)
+        if value:
+            independent.update(_norm(part) for part in _expand_composite_detail_candidate(value))
+    fragments: set[str] = set()
+    additions: list[str] = []
+    for texts in sequences:
+        index = 0
+        while index < len(texts):
+            if index + 1 < len(texts) and _norm(texts[index] + texts[index + 1]) in independent:
+                fragments.update({_norm(texts[index]), _norm(texts[index + 1])} - independent)
+                index += 2
+            else:
+                additions.extend(_expand_composite_detail_candidate(texts[index]))
+                index += 1
+    return _dedup_detail_candidates([
+        value for value in [*candidates, *additions] if _norm(value) not in fragments
+    ])
+
+
 def _block_table_position_grid(block: dict[str, Any]) -> list[list[dict[str, Any]]]:
     """Expand one Kordoc table block while retaining physical cell origins."""
 
@@ -2096,6 +2387,9 @@ def _block_table_position_grid(block: dict[str, Any]) -> list[list[dict[str, Any
             )
             origin = {
                 "text": text,
+                "ability_text": _clean_text(
+                    _block_text(raw_cell), normalize_nfkc=False, preserve_blank_lines=True,
+                ),
                 "origin_row": row_index,
                 "origin_column": column,
                 "source_column": source_column,
@@ -2196,6 +2490,10 @@ def _table_value_cells_for_label(
                 continue
             if _section_for_label(text):
                 continue
+            if section == "ncs_detail" and (
+                _is_ksa_column_heading(text) or _norm(text) == "ncs참고"
+            ):
+                continue
             same_row.append(cell)
     if same_row:
         if section == "job_fields":
@@ -2287,7 +2585,10 @@ def _table_label_records(
                 section=section or "job_fields",
             )
             for value_cell in values:
-                raw_value = str(value_cell.get("text") or "").strip()
+                # Only ability lists need the uncollapsed paragraph boundaries.
+                # Other sections retain their established text and evidence.
+                value_key = "ability_text" if section == "ability_units" else "text"
+                raw_value = str(value_cell.get(value_key, value_cell.get("text")) or "").strip()
                 if not raw_value:
                     continue
                 if section == "ncs_detail":
@@ -3286,6 +3587,58 @@ def _inline_ncs_detail_value(value: Any) -> str | None:
     return None
 
 
+def _merged_numbered_detail_row_candidates(
+    cells: list[str], fresh_columns: set[int]
+) -> list[str]:
+    """Read an explicit detail label merged with numbered official values.
+
+    The caller must establish classification context first. Only fresh
+    physical cells count: a carried rowspan or a repeated colspan slot is
+    not another source value. Every recovered label must be an exact current
+    detail name, including values in the adjacent cells of the same row.
+    """
+
+    fresh_cells = [
+        cells[index]
+        for index in sorted(fresh_columns)
+        if index < len(cells) and cells[index]
+    ]
+    if not fresh_cells:
+        return []
+    match = re.fullmatch(
+        r"세\s*분류\s*[:：]?\s*(\d{1,2}\s*[.．]\s*.+)",
+        fresh_cells[0],
+    )
+    if not match:
+        return []
+    official_keys = _official_ncs_detail_name_keys()
+    candidates: list[str] = []
+    for value in [match.group(1), *fresh_cells[1:]]:
+        if _is_detail_value_stop_label(value):
+            break
+        if not re.match(r"^\d{1,2}\s*[.．]\s*", value):
+            return []
+        if len(value) > _DETAIL_CANDIDATE_CELL_MAX_CHARS:
+            raise KordocStructureLimitError(
+                "NCS detail candidate cell exceeds the safe limit"
+            )
+        # Strip numbering and list delimiters only. The ordinary detail
+        # cleaner also expands abbreviations and trims explanatory suffixes;
+        # those transformations cannot establish this recovery's exact scope.
+        segments = [
+            part.strip(" \t\r\n,，;；")
+            for part in re.split(r"(?:^|(?<=[\s,，;；]))\d{1,2}\s*[.．]\s*", value)[1:]
+        ]
+        if len(segments) > _DETAIL_COMPOSITE_MAX_SEGMENTS:
+            raise KordocStructureLimitError(
+                "NCS detail candidate group exceeds the safe limit"
+            )
+        if not segments or not all(_norm(item) in official_keys for item in segments):
+            return []
+        candidates.extend(segments)
+    return candidates
+
+
 def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     candidates: list[str] = []
 
@@ -3395,6 +3748,17 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
                 )
                 if not preserves_explicit_custom_label:
                     continue
+            if classification_context:
+                merged_details = _merged_numbered_detail_row_candidates(
+                    cells, fresh_columns
+                )
+                if merged_details:
+                    candidates.extend(merged_details)
+                    # This is a complete label/value row, not a column header
+                    # whose coordinates should leak into later ability rows.
+                    detail_index = None
+                    header_sections = {}
+                    continue
             row_sections: dict[int, str] = {}
             combined_hierarchy_indexes: list[int] = []
             for idx, cell in enumerate(cells):
@@ -3498,7 +3862,7 @@ def _extract_ncs_detail_candidates(markdown: str) -> list[str]:
     clean_candidates = []
     for item in candidates:
         for text in _expand_composite_detail_candidate(item):
-            if not _looks_like_detail_candidate(text):
+            if not _looks_like_detail_candidate(text) or _is_detail_sentence_fragment(text):
                 continue
             key = _norm(text)
             if key in seen:
@@ -3550,6 +3914,92 @@ def _plain_classification_detail_candidates(markdown: str) -> list[str]:
             if key and key in official_keys and key not in seen:
                 seen.add(key)
                 output.append(value)
+    return output
+
+
+def _flattened_plain_classification_detail_candidates(markdown: str) -> list[str]:
+    """Recover official details from a one-line fallback NCS hierarchy.
+
+    Local HWP/PDF fallback parsers can flatten a four-column hierarchy into a
+    single long line.  The ordinary plain-text reader intentionally relies on
+    line boundaries, so it cannot see those cells.  This recovery path is
+    deliberately narrow: it ignores HTML tables, requires an ordered
+    대/중/소/세분류 header in explicit NCS/classification context, stops before
+    the first non-classification section, and only accepts exact names from
+    the shipped current official detail catalog.
+    """
+
+    raw = str(markdown or "")
+    if not raw or re.search(r"<table\b", raw, flags=re.IGNORECASE):
+        return []
+
+    text = _clean_text(raw, normalize_nfkc=False)
+    header_pattern = re.compile(
+        r"대\s*분류\s*중\s*분류\s*소\s*분류\s*세\s*분류"
+        r"(?:\s*[\(（][^)）]{0,40}[\)）])?",
+        flags=re.IGNORECASE,
+    )
+    stop_pattern = re.compile(
+        r"(?:기관|공단|연구원|공사)?\s*주요\s*(?:사업|업무)|"
+        r"(?:기관|공단|연구원|공사)\s*소개|"
+        r"능력\s*단위|직무\s*수행|전형\s*방법|자격\s*요건|"
+        r"자체\s*개발|[○◦□■]",
+        flags=re.IGNORECASE,
+    )
+    official_keys = _official_ncs_detail_name_keys()
+    if not official_keys:
+        return []
+
+    output: list[str] = []
+    seen: set[str] = set()
+    for header in header_pattern.finditer(text):
+        context_key = _norm(text[max(0, header.start() - 240) : header.start()])
+        if "ncs" not in context_key and _norm("분류체계") not in context_key:
+            continue
+        fragment = text[header.end() : header.end() + 1_600]
+        stop = stop_pattern.search(fragment)
+        if stop:
+            fragment = fragment[: stop.start()]
+        if _row_declares_no_ncs_mapping([fragment]):
+            continue
+        numbered = list(
+            re.finditer(r"(?<!\d)\d{1,2}\s*(?:[.．]\s*)?", fragment)
+        )
+        # Four hierarchy columns are the minimum evidence that this is a
+        # flattened classification row rather than numbered prose.
+        if len(numbered) < 4:
+            continue
+        for index, match in enumerate(numbered):
+            end = numbered[index + 1].start() if index + 1 < len(numbered) else len(fragment)
+            raw_candidate = fragment[match.end() : end]
+            candidate = _clean_detail_candidate_text(raw_candidate)
+            first_line = next(
+                (
+                    _clean_detail_candidate_text(line)
+                    for line in raw_candidate.splitlines()
+                    if line.strip()
+                ),
+                "",
+            )
+            variants = (
+                candidate,
+                _legacy_strip_trailing_parenthetical_qualifier(candidate),
+                first_line,
+                _legacy_strip_trailing_parenthetical_qualifier(first_line),
+            )
+            selected = next(
+                (
+                    value
+                    for value in variants
+                    if value and _norm(value) in official_keys
+                ),
+                "",
+            )
+            key = _norm(selected)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            output.append(selected)
     return output
 
 
@@ -3645,7 +4095,7 @@ def _dedup_detail_candidates(values: list[str]) -> list[str]:
     output: list[str] = []
     for item in values:
         for text in _expand_composite_detail_candidate(item):
-            if not _looks_like_detail_candidate(text):
+            if not _looks_like_detail_candidate(text) or _is_detail_sentence_fragment(text):
                 continue
             key = _norm(text)
             if key in seen:
@@ -3731,6 +4181,94 @@ def _contextual_evidence_snippet(markdown: str) -> str:
         scored.sort(key=lambda item: (-item[0], item[1]))
         return " | ".join(snippet for _score, _line_no, snippet in scored[:3])[:240]
     return " | ".join(snippet for _line_no, snippet in fallback[:3])[:240]
+
+
+_NCS_HIERARCHY_LEVEL_KEYS = frozenset(
+    _norm(level) for level in ("대분류", "중분류", "소분류", "세분류")
+)
+_NCS_UNDEVELOPED_DECLARATION = re.compile(r"NCS\s*미개발", re.IGNORECASE)
+_NUMBERED_NCS_LABEL = re.compile(r"^\s*\d{1,2}\s*[.．]")
+
+
+def _ncs_undeveloped_detail_span_labels(markdown: str) -> set[str]:
+    """Return normalized 세분류 cells that sit under ``NCS 미개발`` columns.
+
+    Kordoc 4.24.1 keeps a hierarchy such as ``(현재 NCS 미개발 분야)`` as a
+    cell spanning the columns whose 세분류 cells hold the institution's own
+    job names (``(약제 관리)``). The declaration covers exactly those columns,
+    so the names are source-declared non-NCS labels. Only cells inside the
+    same hierarchy block, in a 세분류 row below the declaration and fully
+    inside its columns count; numbered labels (``01. 의료기기관리``) keep
+    their official-candidate state.
+    """
+
+    labels: set[str] = set()
+    if "미개발" not in markdown:
+        return labels
+    for raw_table in re.findall(
+        r"<table[^>]*>.*?</table>", markdown, flags=re.IGNORECASE | re.DOTALL
+    ):
+        if "미개발" not in raw_table:
+            continue
+        try:
+            grid = _html_table_position_grid(raw_table)
+        except (KordocStructureLimitError, ValueError):
+            continue
+        row_levels = [
+            next(
+                (
+                    _norm(slot.get("text"))
+                    for slot in row
+                    if _norm(slot.get("text")) in _NCS_HIERARCHY_LEVEL_KEYS
+                ),
+                "",
+            )
+            for row in grid
+        ]
+        detail_level = _norm("세분류")
+        for row_index, row in enumerate(grid):
+            if not row_levels[row_index]:
+                continue
+            for slot in row:
+                if slot.get("carried") or not _NCS_UNDEVELOPED_DECLARATION.search(
+                    str(slot.get("text") or "")
+                ):
+                    continue
+                start = int(slot.get("origin_column") or 0)
+                end = start + max(1, int(slot.get("column_span") or 1))
+                for below_index in range(row_index + 1, len(grid)):
+                    if not row_levels[below_index]:
+                        break
+                    if row_levels[below_index] != detail_level:
+                        continue
+                    for cell in grid[below_index]:
+                        if cell.get("carried"):
+                            continue
+                        column = int(cell.get("origin_column") or 0)
+                        span = max(1, int(cell.get("column_span") or 1))
+                        text = str(cell.get("text") or "").strip()
+                        if (
+                            start <= column
+                            and column + span <= end
+                            and text
+                            and not _NUMBERED_NCS_LABEL.match(text)
+                            and not _NCS_UNDEVELOPED_DECLARATION.search(text)
+                        ):
+                            labels.add(_norm(text))
+    labels.discard("")
+    return labels
+
+
+def _mark_ncs_undeveloped_span_details(
+    evidence_rows: list[dict[str, Any]],
+    markdown: str,
+) -> None:
+    labels = _ncs_undeveloped_detail_span_labels(markdown)
+    if not labels:
+        return
+    for row in evidence_rows:
+        if _norm(row.get("detail")) in labels:
+            row["mapping_state"] = "source_declared_self_developed"
 
 
 def _detail_candidate_evidence(
@@ -4174,6 +4712,247 @@ def _parse_with_remote_kordoc(
     )
 
 
+_KORDOC_WORKER_MARKER = b"\x1eNCSCOPE_KORDOC_WORKER "
+_KORDOC_WORKER_MAX_REQUESTS = 100
+_KORDOC_WORKER_IDLE_SEC = 540.0
+_KORDOC_WORKER_START_TIMEOUT_SEC = 30.0
+_KORDOC_WORKER_RETRY_AFTER_SEC = 300.0
+
+
+class _KordocWorkerFailure(RuntimeError):
+    """The persistent worker could not answer; the one-shot process is used."""
+
+
+class _KordocWorkerTimeout(RuntimeError):
+    """The persistent worker did not answer within the parse timeout."""
+
+
+class _KordocWorker:
+    """One long-lived ``kordoc_parse.mjs --serve`` process.
+
+    Spawning Node and importing Kordoc costs about 250-400 ms per document on
+    Windows, more than parsing a typical HWP file.  The worker runs the same
+    ``parseRequest`` code as the one-shot runner and returns the same JSON
+    text, so only the process start-up is shared between documents.
+    """
+
+    def __init__(self, node: str, script: Path, *, start_timeout: float) -> None:
+        self.node = node
+        self.script = script
+        self.requests = 0
+        self.last_used = time.monotonic()
+        self._next_id = 0
+        self._lines: queue.Queue[bytes | None] = queue.Queue()
+        self._process = subprocess.Popen(
+            [node, str(script), "--serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            cwd=str(script.parents[1]),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        threading.Thread(
+            target=self._read_stdout,
+            name="kordoc-worker-stdout",
+            daemon=True,
+        ).start()
+        try:
+            status, _payload = self._read_response(0, start_timeout)
+        except (_KordocWorkerFailure, _KordocWorkerTimeout) as exc:
+            self.close()
+            raise _KordocWorkerFailure("Kordoc worker did not start") from exc
+        if status != b"ready":
+            self.close()
+            raise _KordocWorkerFailure("Kordoc worker did not start")
+
+    def _read_stdout(self) -> None:
+        stream = self._process.stdout
+        try:
+            if stream is not None:
+                for line in iter(stream.readline, b""):
+                    if line.startswith(_KORDOC_WORKER_MARKER):
+                        self._lines.put(
+                            line[len(_KORDOC_WORKER_MARKER) :].rstrip(b"\r\n")
+                        )
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._lines.put(None)
+
+    def _read_response(self, request_id: int, timeout: float) -> tuple[bytes, bytes]:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        expected_id = str(request_id).encode("ascii")
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _KordocWorkerTimeout("Kordoc worker timed out")
+            try:
+                line = self._lines.get(timeout=remaining)
+            except queue.Empty:
+                raise _KordocWorkerTimeout("Kordoc worker timed out") from None
+            if line is None:
+                raise _KordocWorkerFailure("Kordoc worker exited")
+            header_id, _sep, rest = line.partition(b" ")
+            status, _sep, payload = rest.partition(b" ")
+            if header_id == expected_id:
+                return status, payload
+
+    def usable(self, node: str, script: Path) -> bool:
+        return (
+            self._process.poll() is None
+            and self.node == node
+            and self.script == script
+            and self.requests < _KORDOC_WORKER_MAX_REQUESTS
+            and time.monotonic() - self.last_used < _KORDOC_WORKER_IDLE_SEC
+        )
+
+    def _write_request(self, line: bytes, deadline: float) -> None:
+        """Send one request line, giving up at ``deadline``.
+
+        A pipe write blocks once the worker stops reading.  The write runs on
+        a helper thread so the caller can time out; the caller then kills the
+        worker, which ends the blocked write with a broken-pipe error.
+        """
+
+        stdin = self._process.stdin
+        if stdin is None:
+            raise _KordocWorkerFailure("Kordoc worker stdin is closed")
+        outcome: list[BaseException | None] = []
+
+        def write() -> None:
+            try:
+                stdin.write(line)
+                stdin.flush()
+            except BaseException as exc:  # reported to the caller below
+                outcome.append(exc)
+            else:
+                outcome.append(None)
+
+        writer = threading.Thread(target=write, name="kordoc-worker-stdin", daemon=True)
+        writer.start()
+        writer.join(max(0.0, deadline - time.monotonic()))
+        if writer.is_alive() or not outcome:
+            raise _KordocWorkerTimeout("Kordoc worker did not read the request in time")
+        error = outcome[0]
+        if isinstance(error, (OSError, ValueError)):
+            raise _KordocWorkerFailure("Kordoc worker stdin is closed") from error
+        if error is not None:
+            raise error
+
+    def parse(self, payload: dict[str, Any], *, timeout: float) -> bytes:
+        # Sending the request and waiting for the answer share one deadline.
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        self._next_id += 1
+        self.requests += 1
+        request_id = self._next_id
+        line = json.dumps({**payload, "id": request_id}).encode("utf-8") + b"\n"
+        self._write_request(line, deadline)
+        status, body = self._read_response(request_id, deadline - time.monotonic())
+        self.last_used = time.monotonic()
+        if status != b"ok":
+            raise _KordocWorkerFailure("Kordoc worker could not parse the document")
+        return body
+
+    def close(self) -> None:
+        process = self._process
+        # Kill before closing stdin: a request write blocked on a full pipe
+        # holds the stdin buffer lock until the pipe breaks.
+        if process.poll() is None:
+            process.kill()
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+        except (OSError, ValueError):
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+_KORDOC_WORKER_LOCK = threading.Lock()
+_KORDOC_WORKER: _KordocWorker | None = None
+_KORDOC_WORKER_RETRY_AT = 0.0
+
+
+def _kordoc_worker_enabled() -> bool:
+    flag = os.getenv("KORDOC_PERSISTENT_WORKER", "1").strip().casefold()
+    return flag not in {"0", "false", "no", "off"}
+
+
+def _close_kordoc_worker() -> None:
+    global _KORDOC_WORKER
+    with _KORDOC_WORKER_LOCK:
+        worker, _KORDOC_WORKER = _KORDOC_WORKER, None
+    if worker is not None:
+        worker.close()
+
+
+atexit.register(_close_kordoc_worker)
+
+
+def _parse_with_kordoc_worker(
+    node: str,
+    script: Path,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    deadline: float | None = None,
+) -> bytes | None:
+    """Return the worker's stdout JSON, or ``None`` to use a one-shot process.
+
+    A busy worker is never waited for: concurrent requests keep their own
+    one-shot process as before.  Any worker failure other than a timeout also
+    falls back, so error classification stays with the one-shot runner.
+    Worker start-up and parsing only use the time left before ``deadline``
+    (``time.monotonic()``), the single budget shared with the one-shot retry.
+    """
+
+    global _KORDOC_WORKER, _KORDOC_WORKER_RETRY_AT
+    if deadline is None:
+        deadline = time.monotonic() + float(timeout)
+    if not _kordoc_worker_enabled():
+        return None
+    if not _KORDOC_WORKER_LOCK.acquire(blocking=False):
+        return None
+    try:
+        worker = _KORDOC_WORKER
+        if worker is not None and not worker.usable(node, script):
+            _KORDOC_WORKER = None
+            worker.close()
+            worker = None
+        if worker is None:
+            if time.monotonic() < _KORDOC_WORKER_RETRY_AT:
+                return None
+            start_budget = min(
+                deadline - time.monotonic(),
+                _KORDOC_WORKER_START_TIMEOUT_SEC,
+            )
+            if start_budget <= 0:
+                return None
+            try:
+                worker = _KordocWorker(node, script, start_timeout=start_budget)
+            except (_KordocWorkerFailure, OSError):
+                _KORDOC_WORKER_RETRY_AT = time.monotonic() + _KORDOC_WORKER_RETRY_AFTER_SEC
+                return None
+            _KORDOC_WORKER = worker
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            return worker.parse(payload, timeout=remaining)
+        except _KordocWorkerTimeout:
+            _KORDOC_WORKER = None
+            worker.close()
+            raise KordocParseError(f"Kordoc parsing timed out after {timeout}s") from None
+        except _KordocWorkerFailure:
+            _KORDOC_WORKER = None
+            worker.close()
+            return None
+    finally:
+        _KORDOC_WORKER_LOCK.release()
+
+
 def _parse_with_local_kordoc(
     data: bytes,
     *,
@@ -4193,32 +4972,47 @@ def _parse_with_local_kordoc(
         "dataBase64": base64.b64encode(data).decode("ascii"),
         "ocr": bool(ocr),
     }
-    try:
-        completed = subprocess.run(
-            [node, str(script)],
-            input=json.dumps(payload).encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(script.parents[1]),
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise KordocParseError(f"Kordoc parsing timed out after {timeout}s") from exc
-    except OSError as exc:
-        raise _LocalKordocUnavailable("local Kordoc process could not start") from exc
-    if completed.returncode != 0:
-        detail = completed.stderr.decode("utf-8", errors="replace").strip()[-1200:]
-        unavailable_markers = (
-            "err_module_not_found",
-            "cannot find package",
-            "cannot find module",
-            "module not found",
-        )
-        if any(marker in detail.casefold() for marker in unavailable_markers):
-            raise _LocalKordocUnavailable("local Kordoc module is unavailable")
-        raise KordocParseError("Kordoc could not parse the document")
-    raw = completed.stdout.decode("utf-8", errors="replace").strip()
+    # One budget covers the whole local parse: worker start-up, worker parsing
+    # and the one-shot fallback each get only the time that is left.
+    deadline = time.monotonic() + float(timeout)
+    stdout = _parse_with_kordoc_worker(
+        node,
+        script,
+        payload,
+        timeout=timeout,
+        deadline=deadline,
+    )
+    if stdout is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise KordocParseError(f"Kordoc parsing timed out after {timeout}s")
+        try:
+            completed = subprocess.run(
+                [node, str(script)],
+                input=json.dumps(payload).encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(script.parents[1]),
+                timeout=remaining,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise KordocParseError(f"Kordoc parsing timed out after {timeout}s") from exc
+        except OSError as exc:
+            raise _LocalKordocUnavailable("local Kordoc process could not start") from exc
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", errors="replace").strip()[-1200:]
+            unavailable_markers = (
+                "err_module_not_found",
+                "cannot find package",
+                "cannot find module",
+                "module not found",
+            )
+            if any(marker in detail.casefold() for marker in unavailable_markers):
+                raise _LocalKordocUnavailable("local Kordoc module is unavailable")
+            raise KordocParseError("Kordoc could not parse the document")
+        stdout = completed.stdout
+    raw = stdout.decode("utf-8", errors="replace").strip()
     try:
         result = _loads_kordoc_json(raw)
     except json.JSONDecodeError as exc:
@@ -4409,7 +5203,10 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
             if label_index >= 0:
                 current = _section_for_label(cells[label_index])
                 if current and len(cells) > label_index + 1:
-                    add(current, " ".join(cells[label_index + 1 :]), line=line_no)
+                    separator = "; " if current == "ability_units" else " "
+                    if current == "ability_units":
+                        cells = _split_table_row(line, preserve_blank_lines=True)
+                    add(current, separator.join(cells[label_index + 1 :]), line=line_no)
                 continue
         heading_text = re.sub(r"^#{1,6}\s*", "", line)
         heading_text = re.sub(
@@ -4507,6 +5304,15 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
                                     if _is_detail_value_stop_label(value):
                                         break
                                     add(section, re.sub(r"\s+", " ", value), block=block)
+                            elif section == "ability_units":
+                                # Each source cell is a separate list. A space
+                                # would concatenate its last name with the
+                                # next cell's first name in fallback evidence.
+                                ability_values = [
+                                    _clean_text(_block_text(cell), normalize_nfkc=False, preserve_blank_lines=True)
+                                    for cell in row_cells[label_index + 1 :]
+                                ]
+                                add(section, "; ".join(ability_values), block=block)
                             else:
                                 add(section, " ".join(values[label_index + 1 :]), block=block)
         for child_key in ("children", "blocks", "rows", "cells"):
@@ -4522,18 +5328,23 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     # coordinate extractor may locate many label/value pairs, but it must not
     # promote a nearby duty, ability unit, or an explicit "no mapping" row to
     # an NCS detail merely because it occupies the expected table column.
+    detached_detail_items = _recover_detached_table_detail_records(parsed)
     explicit_detail_candidates = _dedup_detail_candidates(
         [
             *_extract_ncs_detail_candidates(markdown),
             *_plain_classification_detail_candidates(markdown),
+            *_flattened_plain_classification_detail_candidates(markdown),
+            *(item["text"] for item in detached_detail_items),
             *(item["text"] for item in sections["ncs_detail"] if not item.get("line")),
         ]
     )
+    explicit_detail_candidates = _reconcile_ksa_detail_columns(parsed, markdown, explicit_detail_candidates)
     positioned_items, table_scopes = _extract_positioned_table_evidence(
         parsed,
         markdown,
         valid_detail_candidates=explicit_detail_candidates,
     )
+    positioned_items.extend(detached_detail_items)
     positioned_ability_keys = {
         (
             _norm(item.get("text")),
@@ -4606,6 +5417,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         detail_candidates = _extract_contextual_ncs_detail_candidates(markdown)
         detail_source = "contextual" if detail_candidates else ""
     detail_candidate_evidence = _detail_candidate_evidence(detail_candidates, sections, markdown, detail_source)
+    _mark_ncs_undeveloped_span_details(detail_candidate_evidence, markdown)
     self_developed_details = [
         str(row.get("detail") or "").strip()
         for row in detail_candidate_evidence
@@ -4802,7 +5614,9 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     }
 
 
-_BULLET_CHARS = "•○●□■▪▫◦ㅇ⚪"
+# Kordoc 4.24.1 maps the symbol-font bullet U+F0FA to U+1F8AD (Wingdings
+# table); both forms are the same bullet.
+_BULLET_CHARS = "•○●□■▪▫◦ㅇ⚪¡\uf0fa\U0001F8AD"
 _FINAL_UNIT_ROWS_BY_CODE: dict[str, dict[str, Any]] | None = None
 _ORIGINAL_EXTRACT_POSITIONED_TABLE_EVIDENCE = _base_extract_positioned_table_evidence
 
@@ -4840,8 +5654,8 @@ def _final_unit_rows_by_code() -> dict[str, dict[str, Any]]:
 
 def _final_clean_ability_text(value: str) -> str:
     text = str(value or "").strip()
-    text = re.sub(r"^[\s\-*•○●□■▪▫◦ㅇ⚪]+", "", text)
-    text = re.sub(r"[\s\-*•○●□■▪▫◦ㅇ⚪]+$", "", text)
+    text = re.sub(r"^[\s\-*•○●□■▪▫◦ㅇ⚪¡\uf0fa]+", "", text)
+    text = re.sub(r"[\s\-*•○●□■▪▫◦ㅇ⚪¡\uf0fa]+$", "", text)
     text = re.sub(r"(?<=[가-힣A-Za-z])[ㆍᆞ](?=[가-힣A-Za-z])", "", text)
     text = re.sub(r"\s+[·ㆍᆞ]$", "", text)
     text = re.sub(r"\s+등$", "", text)
@@ -4873,13 +5687,36 @@ def _split_numbered_item_by_safe_commas(
 
 
 def _split_numbered_ability_units(value: str) -> list[dict[str, str]]:
-    text = _final_clean_ability_text(str(value or "").strip(" ,;"))
+    # Keep line starts until markers have been checked; flattening whitespace
+    # first makes an embedded customer number indistinguishable from a code.
+    text = "\n".join(
+        _final_clean_ability_text(line)
+        for line in str(value or "").strip(" ,;").splitlines()
+    )
     if not text:
         return []
     marker = re.compile(
-        r"(?<!\d)(?P<number>\d{1,2})\s*(?:[.)]\s*|\s+(?=[A-Za-z가-힣]))"
+        r"(?<!\d)(?:(?i:NCS)\s*)?(?:(?P<code>\d{10}(?:_?\d{2}v\d+)?)\s*[.)]\s*|"
+        r"(?P<number>\d{1,2})\s*(?:[.)]\s*|\s+(?=[A-Za-z가-힣])))"
     )
-    matches = list(marker.finditer(text))
+    matches: list[re.Match[str]] = []
+    for match in marker.finditer(text):
+        if match.group("code"):
+            prefix = text[:match.start()]
+            explicit_start = not prefix.strip() or bool(re.search(r"[\n,;；|]\s*$", prefix))
+            # Flat PDF code lists can lose their separators. An exact complete
+            # preceding label and another code in the same detail establish
+            # the next item start; an embedded number alone never does.
+            coded_list_continuation = bool(
+                matches and matches[0].group("code")
+                and not text[:matches[0].start()].strip()
+                and prefix and prefix[-1].isspace()
+                and match.group("code")[:8] == matches[0].group("code")[:8]
+                and _norm(text[matches[-1].end():match.start()]) in _official_ncs_unit_name_keys()
+            )
+            if not explicit_start and not coded_list_continuation:
+                continue
+        matches.append(match)
     if not matches:
         comma_parts = [_final_clean_ability_text(part) for part in _split_top_level_commas(text)]
         comma_parts = [part for part in comma_parts if part]
@@ -4900,7 +5737,8 @@ def _split_numbered_ability_units(value: str) -> list[dict[str, str]]:
         item = _final_clean_ability_text(text[match.end() : end].strip(" ,;"))
         if not item:
             continue
-        ordinal = str(match.group("number") or "").zfill(2)
+        number = match.group("number")
+        ordinal = number.zfill(2) if number else ""
         output.extend(_split_numbered_item_by_safe_commas(item, ordinal=ordinal))
     return output
 
@@ -4989,7 +5827,7 @@ def _recover_code_anchored_ability_records(
                 else []
             )
         ]
-        if not any(_norm(text) in training_label_keys for text in table_texts):
+        if not any(_norm(text) in training_label_keys for text in table_texts) and not _has_detached_training_header(parsed, block):
             continue
         for row_index, raw_row in enumerate(rows):
             cells = (
@@ -5006,9 +5844,10 @@ def _recover_code_anchored_ability_records(
             if not any(texts):
                 continue
             for cell_index, text in enumerate(texts):
+                source_text = _block_text(cells[cell_index])
                 code_match = re.search(
                     r"(?<!\d)(?P<base>\d{10})(?:(?:_)?\d{2}v\d+)?(?!\w)",
-                    text,
+                    source_text,
                     flags=re.IGNORECASE,
                 )
                 if not code_match:
@@ -5247,6 +6086,89 @@ def _extract_positioned_table_evidence(
     return positioned, table_scopes
 
 
+@lru_cache(maxsize=1)
+def _official_ability_word_boundaries() -> dict[str, frozenset[int]]:
+    """Index spelling boundaries as layout evidence, never as code authority."""
+    boundaries: dict[str, set[int]] = {}
+    for row in _final_unit_rows_by_code().values():
+        name = str(row.get("name") or "")
+        key = _norm(name)
+        if key:
+            offsets = boundaries.setdefault(key, set())
+            offsets.update(len(_norm(name[:match.start()])) for match in re.finditer(r"\s+", name))
+    return {key: frozenset(offsets) for key, offsets in boundaries.items()}
+
+
+def _join_wrapped_comma_delimited_ability_names(text: str) -> str:
+    """Join only exact names with independent comma-list/word-wrap evidence."""
+    if "\n" not in text or "," not in text:
+        return text
+    official_keys = _official_ncs_unit_name_keys()
+    parts = _split_top_level_commas(text)
+    lines_by_part = [[line.strip() for line in part.splitlines() if line.strip()] for part in parts]
+    candidates = {
+        index for index, (part, lines) in enumerate(zip(parts, lines_by_part))
+        if len(lines) == 2 and not re.search(r"\n\s*\n", part)
+        and not re.search(rf"(?m)^\s*[-{re.escape(_BULLET_CHARS)}(]", part)
+        and _norm(part) in official_keys
+        and all(_norm(line) not in official_keys for line in lines)
+    }
+    word_boundaries = _official_ability_word_boundaries()
+    midword_wraps = {
+        index for index in candidates
+        if _norm(parts[index]) in word_boundaries
+        and len(_norm(lines_by_part[index][0])) not in word_boundaries[_norm(parts[index])]
+    }
+    # A single wrap inside an otherwise comma-only list, or another proven
+    # mid-word wrap in that list, is layout evidence. A bare leading pair such
+    # as "경영평가활동\n수행, ..." supplies no such evidence.
+    complete_comma_list = all(_norm(part) in official_keys for part in parts)
+    word_boundary_wraps = candidates - midword_wraps
+    changed = False
+    for index in candidates:
+        comma_layout = complete_comma_list and (
+            bool(midword_wraps)
+            or (len(word_boundary_wraps) == 1 and 0 < index < len(parts) - 1)
+            or (len(word_boundary_wraps) == 1 and index == len(parts) - 1 and index >= 2)
+        )
+        if index in midword_wraps or comma_layout:
+            parts[index] = " ".join(lines_by_part[index])
+            changed = True
+    return ", ".join(parts) if changed else text
+
+
+def _parenthetical_ability_headings(text: str) -> list[dict[str, str]]:
+    """Read explicit unit headings followed by descriptions in a bullet list.
+
+    Every bullet must have an exact unit heading (and not a detail heading).
+    Mixed or unknown subgroups continue through the conservative splitter.
+    The caller keeps the original cell as evidence, including descriptions.
+    """
+    bullet = rf"[-{re.escape(_BULLET_CHARS)}]"
+    chunks = [chunk.strip() for chunk in re.split(rf"(?m)^\s*{bullet}\s*", text) if chunk.strip()]
+    if len(chunks) < 2 or not re.match(rf"^\s*{bullet}\s*\(", text):
+        return []
+    units = _official_ncs_unit_name_keys()
+    details = _official_ncs_detail_name_keys()
+    result = []
+    for chunk in chunks:
+        heading, body = _leading_parenthetical(chunk)
+        if not body or _norm(heading) not in units or _norm(heading) in details:
+            return []
+        result.append({"text": heading, "detail_hint": "", "ordinal": ""})
+    return result
+
+
+def _numbered_parenthetical_detail_hint(hint: str, declared: dict[str, str]) -> str:
+    """Remove a source ordinal only when the remaining scope is exact."""
+    match = re.fullmatch(r"\d{1,2}[.)]\s*(.+)", hint)
+    if match:
+        name = match.group(1).strip()
+        if _scope_label_key(name) in declared or _norm(name) in _official_ncs_detail_name_keys():
+            return name
+    return hint
+
+
 def _split_ability_unit_entries(
     value: str,
     *,
@@ -5260,9 +6182,13 @@ def _split_ability_unit_entries(
     source heading from descriptive metadata, so only its left side is emitted.
     """
 
-    text = _clean_text(value, normalize_nfkc=False)
+    text = _clean_text(value, normalize_nfkc=False, preserve_blank_lines=True)
     if not text:
         return []
+    unit_headings = _parenthetical_ability_headings(text)
+    if unit_headings:
+        return unit_headings
+    text = _join_wrapped_comma_delimited_ability_names(text)
     text = re.sub(
         r"(?<!\d)(\d{10}(?:_[0-9A-Za-z]+)?\s*[.)])\s*\n+\s*(?=[A-Za-z가-힣])",
         r"\1 ",
@@ -5279,7 +6205,7 @@ def _split_ability_unit_entries(
     # A lone internal bullet in prose is not an item boundary. Explicit
     # leading bullets and parenthetical detail switches remain structural.
     bullet_matches = list(re.finditer(rf"[{bullet_class}]", text))
-    leading_bullet = bool(re.match(rf"^\s*[{bullet_class}]", text))
+    leading_bullet = bool(re.search(rf"(?m)^\s*[{bullet_class}]", text))
     explicit_switch = bool(
         re.search(rf"[{bullet_class}]\s*\([^\n()]{{1,80}}\)", text)
     )
@@ -5318,6 +6244,7 @@ def _split_ability_unit_entries(
         detail_hint, body = _leading_parenthetical(chunk)
         subgroup = ""
         if detail_hint:
+            detail_hint = _numbered_parenthetical_detail_hint(detail_hint, declared_by_key)
             detail_key = _scope_label_key(detail_hint)
             base_detail_key = _scope_label_key(
                 _legacy_strip_trailing_parenthetical_qualifier(detail_hint)

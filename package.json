@@ -7,7 +7,7 @@
     "parse-document": "node scripts/kordoc_parse.mjs"
   },
   "dependencies": {
-    "kordoc": "^4.9.1"
+    "kordoc": "^4.24.1"
   },
   "overrides": {
     "adm-zip": "^0.6.0",

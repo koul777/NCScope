@@ -49,6 +49,25 @@ def test_jd_strategy_upload_no_nameerror_regression(monkeypatch, mocker):
         "compeUnitDef": "총무 업무를 수행한다.",
         "score": 1.0,
     }
+    mocker.patch(
+        "app.main.build_ncs_match_bundle",
+        side_effect=lambda terms, **_kwargs: {
+            "status": "exact_complete",
+            "eligible_for_generation": True,
+            "reason_codes": [],
+            "lookup_terms": list(terms),
+            "details": [],
+            "units": [
+                {
+                    **unit,
+                    "officialUnitBaseCode": "0202010101",
+                    "unitCatalogVerified": True,
+                }
+            ],
+            "matcher_version": "test-exact-complete",
+            "fingerprint": "8" * 64,
+        },
+    )
     mocker.patch("app.main.search_units_by_detail", return_value=[unit])
     mocker.patch("app.main.rerank_ncs_matches", return_value=([unit], "rule"))
     mocker.patch("app.main.fetch_ncs_ksa_by_units", return_value=[])

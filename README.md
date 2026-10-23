@@ -235,7 +235,7 @@ KSA 조회까지 한 번에 끝난 비율**입니다. 이 값을 세분류 정�
 
 업로드는 PDF, HWP, HWPX, DOCX, TXT, 이미지와 이 문서들을 담은 ZIP을 지원합니다.
 로컬은 Node/Kordoc을 직접 실행하고, Vercel은 같은 NCScope 배포의 인증된 비공개
-Node 함수에서 Kordoc 4.9.1을 자체 실행합니다. 문서를 외부 변환 API로 보내지 않으며
+Node 함수에서 Kordoc 4.24.1을 자체 실행합니다. 문서를 외부 변환 API로 보내지 않으며
 `KORDOC_OFFLINE=1`로 외부 OCR·모델 다운로드를 막습니다. 운영 환경에는 저장소에
 기록하지 않은 `KORDOC_BRIDGE_ED25519_PRIVATE_KEY`를 설정하며, Node 함수는 저장소에
 고정한 공개키로 120초 유효 요청 서명을 검증합니다. 공유 비밀은 로컬·전환용
@@ -297,6 +297,26 @@ python scripts/collect_alio_documents.py --start-date 2011-01-01 --limit 0 --kee
 ```
 
 프로필 학습에는 문서가 세분류를 명시하고, 그 값이 로컬 공식 NCS 목록에 정확히 매칭되며, 한 문서에 세분류가 하나뿐인 사례만 사용합니다. 세분류가 없는 새 문서에는 일치 어휘와 학습 문서 수를 포함한 `review_required` 후보만 제안합니다. `NCS 미개발/매핑 없음`이 명시된 문서는 제안 대상에서 제외됩니다. 다른 위치의 프로필을 쓰려면 `ALIO_SCLASS_PROFILE_PATH`를 설정합니다.
+
+### ALIO → NCS → 구조화면접 지속 파이프라인
+
+수집·파싱·공식 NCS 완전매칭과 면접 생성·Claude 검수를 한 주기로 실행하는 운영 진입점도 제공합니다. `exact_complete`가 아니거나 공식 능력단위가 일부라도 누락된 문서는 생성기로 넘어가지 않습니다. 자동 재시도는 오류가 `retryable=true`로 명시된 경우에만 지수 백오프 후 수행하며, 402·모델 설정 오류처럼 비재시도 오류는 운영자가 설정을 바꿀 때까지 보존합니다. 단일 인스턴스 잠금과 비밀정보를 제외한 `pipeline_runs.jsonl`/`pipeline_latest.json` 상태 기록을 사용합니다.
+
+```powershell
+# 최근 7일을 수집·매칭하고 현재 대기열을 한 번 처리
+python scripts/run_alio_pipeline.py once
+
+# 외부 모델을 호출하지 않고 수집·NCS 매칭·대기열 준비까지만 수행
+python scripts/run_alio_pipeline.py once --prepare-only
+
+# 15분 간격 지속 실행(중단할 때까지)
+python scripts/run_alio_pipeline.py loop --interval-sec 900
+
+# 운영 검증용 3주기 제한 실행
+python scripts/run_alio_pipeline.py loop --interval-sec 900 --max-cycles 3
+```
+
+라이브 생성에는 `.env`의 `OPENAI_API_KEY` 또는 `OPENROUTER_API_KEY`가 필요합니다. 두 키가 함께 있으면 `INTERVIEW_GENERATION_PROVIDER`가 선택한 제공자의 키만 사용하며, OpenRouter 운영 모델은 `OPENROUTER_DEFAULT_MODEL`로 고정할 수 있습니다. 제공자·모델·질문 수처럼 비밀이 아닌 실행 설정은 입력 지문에 포함되므로 설정을 바꾸면 이전의 실패·완료 run을 덮어쓰지 않고 새 run을 만듭니다. 자동 승인에는 생성 결과 전체 해시와 결합된 Claude 검수 및 로컬 read-only `ncs-training` MCP 확인이 모두 필요하며, 어느 단계든 실패하면 승인 상태로 승격하지 않습니다.
 
 ### 저장 직무기술서 회귀·블라인드 품질 게이트
 

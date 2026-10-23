@@ -100,6 +100,29 @@ def _patch_generation_pipeline(
 
     ksa = _ksa()
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
+    detail_units = [
+        {
+            **_unit(),
+            "ncsClCd": f"02010101{number:02d}_22v2",
+            "officialUnitBaseCode": f"02010101{number:02d}",
+            "unitCatalogVerified": True,
+        }
+        for number in range(1, 6)
+    ]
+    monkeypatch.setattr(
+        main,
+        "build_ncs_match_bundle",
+        lambda terms, **_kwargs: {
+            "status": "exact_complete",
+            "eligible_for_generation": True,
+            "reason_codes": [],
+            "lookup_terms": list(terms),
+            "details": [],
+            "units": detail_units,
+            "matcher_version": "test-exact-complete",
+            "fingerprint": "a" * 64,
+        },
+    )
     monkeypatch.setattr(main, "_fetch_ncs_ksa_or_502", lambda **_kwargs: [ksa])
     monkeypatch.setattr(main, "rank_ksa_factors_by_query", lambda **_kwargs: [ksa])
     monkeypatch.setattr(main, "build_ncs_context_pack", lambda **_kwargs: {})

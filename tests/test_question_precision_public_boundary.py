@@ -73,6 +73,26 @@ def _passed_post_quality(strategy: dict[str, Any], **_kwargs: Any) -> dict[str, 
 def _patch_strategy_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        main,
+        "build_ncs_match_bundle",
+        lambda terms, **_kwargs: {
+            "status": "exact_complete",
+            "eligible_for_generation": True,
+            "reason_codes": [],
+            "lookup_terms": list(terms),
+            "details": [],
+            "units": [
+                {
+                    **_unit(),
+                    "officialUnitBaseCode": NCS_CODE.split("_", 1)[0],
+                    "unitCatalogVerified": True,
+                }
+            ],
+            "matcher_version": "test-exact-complete",
+            "fingerprint": "c" * 64,
+        },
+    )
     monkeypatch.setattr(main, "_fetch_ncs_ksa_or_502", lambda **_kwargs: [_ksa()])
     monkeypatch.setattr(main, "rank_ksa_factors_by_query", lambda **_kwargs: [_ksa()])
     monkeypatch.setattr(main, "build_ncs_context_pack", lambda **_kwargs: {})

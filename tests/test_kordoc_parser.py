@@ -2484,6 +2484,75 @@ def test_packed_single_cell_detail_candidate_group_is_bounded() -> None:
         structure_job_description({"markdown": markdown}, filename="packed-details.md")
 
 
+def test_structure_job_description_splits_alio_inverted_exclamation_details() -> None:
+    markdown = "| NCS 세분류명 |\n|---|\n| 세분류 | 경영기획 ¡ 자금 |"
+
+    result = structure_job_description({"markdown": markdown}, filename="alio.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["경영기획", "자금"]
+
+
+def test_structure_job_description_recovers_official_details_from_flattened_hierarchy() -> None:
+    markdown = (
+        "NCS 기반 채용 직무 설명자료 채용분야 홍보 NCS 분류 체계 "
+        "대분류 중분류 소분류 세분류 "
+        "02. 경영·회계·사무 01. 기획사무 02. 홍보·광고 01. PR "
+        "02. 총무·인사 03. 일반사무 02. 사무행정(연구행정) "
+        "연구원 소개 " + "국민의 삶의 질 향상을 위한 정책 연구와 공공서비스 수행 " * 8
+    )
+
+    result = structure_job_description({"markdown": markdown}, filename="fallback.pdf")
+
+    assert result["fields"]["ncs_detail_candidates"] == ["PR", "사무행정"]
+    assert result["fields"]["ncs_detail_source"] == "explicit"
+
+
+def test_flattened_hierarchy_recovery_keeps_last_detail_before_role_caption() -> None:
+    markdown = """
+직무기술서
+분류
+체계
+대분류
+중분류
+소분류
+세분류
+02. 경영·회계·사무
+01. 기획사무
+01. 경영기획
+01. 경영기획
+02. 총무·인사
+01. 총무
+01. 총무
+03. 금융·보험
+01. 금융
+05. 금융영업지원
+02. 채권추심
+경영기획 및 지원
+능력단위
+01. 환경 분석
+"""
+
+    result = structure_job_description({"markdown": markdown}, filename="fallback.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == [
+        "경영기획",
+        "총무",
+        "채권추심",
+    ]
+
+
+def test_flattened_hierarchy_recovery_stops_before_ability_units() -> None:
+    markdown = (
+        "NCS 직무기술서 NCS 분류체계 대분류 중분류 소분류 세분류 "
+        "주요사업 " + "기관의 공공서비스 지원과 행정 업무 수행 " * 8
+        + "능력단위 01. 문서 작성 02. 문서 관리 07. 사무행정 업무 관리"
+    )
+
+    result = structure_job_description({"markdown": markdown}, filename="fallback.hwp")
+
+    assert result["fields"]["ncs_detail_candidates"] == []
+
+
 def test_long_non_candidate_evidence_line_does_not_trigger_candidate_budget() -> None:
     markdown = (
         "| NCS 세분류명 | 사무행정 |\n"

@@ -25,7 +25,7 @@ from app.services.question_surface import (
 
 FACTOR = "승인된 변경에 대한 지식"
 TRUNCATED_FACTOR = "승인된 변경에 대한"
-PUBLIC_FOCUS = "승인된 변경 관련 확인·판단 기준"
+PUBLIC_FOCUS = "승인된 변경 관련 확인 기준"
 NCS_CODE = "0101010205_17v2"
 
 
@@ -57,8 +57,11 @@ def test_slash_ksa_type_selects_a_different_public_task_frame() -> None:
     assert knowledge_source == skill_source == attitude_source == "factor_repair"
     assert knowledge != skill
     assert skill != attitude
-    assert "행동 기준" in attitude
-    assert "행동 기준" not in knowledge
+    # Attitude surfaces name the observable behaviour; the former
+    # ``행동 기준`` suffix was removed in the 2026-10-23 surface round (R6-C).
+    assert attitude.endswith("행동")
+    assert "행동 기준" not in attitude
+    assert "행동" not in knowledge
 
 
 def test_timed_assessment_templates_separate_task_from_operating_conditions() -> None:
@@ -168,7 +171,7 @@ def test_knowledge_task_frame_keeps_change_history_semantics_for_experience_prom
         competency_definition=competency_definition,
     )
 
-    assert frame["task_object"].endswith("확인·판단 기준")
+    assert frame["task_object"].endswith("확인 기준")
     assert task_marker in frame["task_statement"]
     assert "맡은 역할·목표" in frame["observable_behavior"]
     assert "적용" in frame["observable_behavior"]
@@ -195,7 +198,8 @@ def test_distinct_planning_skills_keep_distinct_observable_surfaces() -> None:
 
     assert schedule == "일정 계획 작성·검토 절차"
     assert budget == "예산 계획 작성·검토 절차"
-    assert collection == "정보 수집·확인 절차"
+    assert collection == "정보 수집"
+    assert "수집·확인 절차" not in collection
     assert {schedule_source, budget_source, collection_source} == {"factor_repair"}
     assert len({schedule, budget, collection}) == 3
 

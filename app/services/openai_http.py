@@ -181,7 +181,10 @@ def _safe_transport_failure_code(
         ),
     ):
         return f"{prefix}_network_unreachable"
-    status_match = re.search(r"(?:openai|openrouter)_http_(\d{3})", normalized)
+    status_match = re.search(
+        r"(?:openai|openrouter)(?:_fallback)?_http_(\d{3})",
+        normalized,
+    )
     if status_match:
         return f"{prefix}_http_{status_match.group(1)}"
     return f"{prefix}_request_failed"
@@ -374,12 +377,17 @@ def post_chat_completions_with_retries(
     use_curl_fallback = _curl_fallback_enabled() and max_attempts is None
     last_error: Exception | None = None
     fallback_attempted = False
+    posts_used = 0
     for attempt in range(1, attempts + 1):
+        if posts_used >= attempts:
+            break
         # One loop iteration means one upstream POST.  Alternating the proxy
         # environment on later retries retains the old recovery behavior
         # without silently doubling every configured attempt.
         trust_env = attempt % 2 == 1
         for base in _provider_base_urls(provider):
+            if posts_used >= attempts:
+                break
             url = f"{base}/chat/completions"
             try:
                 try:
@@ -398,6 +406,7 @@ def post_chat_completions_with_retries(
                     http2=False,
                     trust_env=trust_env,
                 ) as client:
+                    posts_used += 1
                     status_code, response_payload = _post_json_response(
                         client,
                         url,
@@ -431,6 +440,7 @@ def post_chat_completions_with_retries(
                     fallback_effort
                     and not fallback_attempted
                     and isinstance(e, httpx.TimeoutException)
+                    and posts_used < attempts
                 ):
                     fallback_attempted = True
                     fallback_payload = dict(payload)
@@ -457,6 +467,7 @@ def post_chat_completions_with_retries(
                             http2=False,
                             trust_env=trust_env,
                         ) as fallback_client:
+                            posts_used += 1
                             fallback_status, fallback_response_payload = _post_json_response(
                                 fallback_client,
                                 url,
@@ -512,6 +523,8 @@ def post_chat_completions_with_retries(
                         last_error = curl_exc
                 continue
             continue
+        if posts_used >= attempts:
+            break
         if attempt < attempts:
             _sleep_backoff(attempt)
 

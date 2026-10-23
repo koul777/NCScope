@@ -155,6 +155,56 @@ def test_quality_review_persists_and_becomes_next_generation_feedback(isolated_q
     assert metrics["decisions"] == {"needs_edit": 1}
 
 
+def test_new_quality_run_reviews_are_bound_to_complete_question_artifact(
+    isolated_quality_db,
+) -> None:
+    question = "충돌한 일정을 조정한 경험과 확인 가능한 결과를 말씀해 주세요."
+    payload = _run_payload(question)
+    text_hash = payload["evidence"]["question_items"][0]["question_hash"]
+    artifact_hash = "a" * 64
+    payload["evidence"]["question_items"][0].update(
+        {
+            "question_text_hash": text_hash,
+            "question_artifact_hash": artifact_hash,
+        }
+    )
+    run = repository.create_question_quality_run(payload)
+    base = {
+        "run_id": run["id"],
+        "review_token": run["review_token"],
+        "question_text": question,
+        "verdict": "approve",
+        "issue_codes": [],
+        "reviewer_ref": "artifact-reviewer",
+    }
+
+    with pytest.raises(ValueError, match="not part"):
+        repository.record_question_quality_review(
+            {**base, "question_hash": text_hash}
+        )
+    with pytest.raises(ValueError, match="question_artifact_hash"):
+        repository.record_question_quality_review(
+            {**base, "question_hash": artifact_hash}
+        )
+    with pytest.raises(ValueError, match="question_artifact_hash"):
+        repository.record_question_quality_review(
+            {
+                **base,
+                "question_hash": artifact_hash,
+                "question_artifact_hash": "b" * 64,
+            }
+        )
+
+    review = repository.record_question_quality_review(
+        {
+            **base,
+            "question_hash": artifact_hash,
+            "question_artifact_hash": artifact_hash,
+        }
+    )
+    assert review["question_hash"] == artifact_hash
+
+
 def test_concurrent_reviews_leave_exactly_one_active_decision(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "concurrent-quality.db"
     engine = create_engine(
@@ -397,6 +447,61 @@ def test_register_quality_evidence_stores_hashes_not_raw_questions(monkeypatch) 
     assert strategy["interview_questions"][0]["question_hash"]
     assert "문서 요구사항" not in str(captured["evidence"])
     assert captured["evidence"]["question_items"][0]["question_hash"]
+
+
+def test_register_quality_evidence_keeps_claude_mcp_review_pending(monkeypatch) -> None:
+    captured = {}
+
+    def fake_create(payload):
+        captured.update(payload)
+        return {"id": payload["id"], "review_token": payload["review_token"]}
+
+    monkeypatch.setattr(main, "create_question_quality_run", fake_create)
+    strategy = {
+        "interview_questions": [
+            {
+                "question": "일정 충돌을 조정한 기준과 결과를 설명해 주세요.",
+                "type": "경험면접",
+                "ncsClCd": "0202030101_25v1",
+            }
+        ],
+        "question_quality_report": {
+            "policy": "policy-v1",
+            "passed": True,
+            "summary": {
+                "question_count": 1,
+                "ready_count": 1,
+                "needs_review_count": 0,
+            },
+            "items": [
+                {
+                    "index": 1,
+                    "ready": True,
+                    "issues": [],
+                    "checks": {"blind_hiring_safe": True},
+                }
+            ],
+        },
+    }
+
+    control = main._register_question_quality_evidence(
+        strategy,
+        source_endpoint="alio_live_adapter:openrouter_pre_claude",
+        ncs_matches=[
+            {"ncsClCd": "0202030101_25v1", "compeUnitName": "경영진 일정관리"}
+        ],
+        required_review_trigger="claude_ncs_mcp_review_pending",
+    )
+
+    assert control["review_required"] is True
+    assert control["exception_allowed"] is False
+    assert "claude_ncs_mcp_review_pending" in control["trigger_codes"]
+    assert captured["ready_count"] == 0
+    assert captured["deterministic_ready_count"] == 1
+    evidence_question = captured["evidence"]["question_items"][0]
+    assert evidence_question["deterministic_ready"] is True
+    assert evidence_question["release_ready"] is False
+    assert evidence_question["ready"] is False
 
 
 def test_register_quality_evidence_degrades_safely_when_store_is_unavailable(monkeypatch) -> None:

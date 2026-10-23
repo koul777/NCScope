@@ -1,7 +1,7 @@
 {
   "schema_version": "ncscope_node_lock_attestation_v1",
-  "package_lock_git_text_sha256": "ffba8b957e675b2f3e7f27107a5822aee5d3cc8fb07d43c318cdf92c06088203",
+  "package_lock_git_text_sha256": "ad0ffe592e4456fe46a8f9c535fe4be4367a8c5076f62217bac9bd7aebe91746",
   "package_name": "kordoc",
-  "package_version": "4.9.1",
-  "package_integrity": "sha512-kGwqIZNu6JAoOmseQqTcKeozuWBdJa5aZUxjfHbuFfSStBOGMuK1Ochb8VqCOhxabMmNZ1tJlkjVeltoWaDVTQ=="
+  "package_version": "4.24.1",
+  "package_integrity": "sha512-WrkTNL2xjH5TY07ogzNSx03FUUFb3N6PkNjyRQbhwdKqNgjd8tyvLy7qluM86MvNzXgC7AsPsQHpYHlyIy27IQ=="
 }

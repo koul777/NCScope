@@ -62,7 +62,10 @@ def test_frontend_preserves_review_state_across_pagination_and_blocks_duplicate_
     script = _inline_script()
 
     assert "let questionReviewStates = new Map()" in script
-    assert "const reviewStateKey = `${reviewRunId}|${String(q.question_hash || '')}`" in script
+    assert "const reviewArtifactHash = String(q.question_artifact_hash || q.question_hash || '')" in script
+    assert "const reviewStateKey = `${reviewRunId}|${reviewArtifactHash}`" in script
+    assert "question_artifact_hash: q.question_artifact_hash || ''" in script
+    assert "encodeURIComponent(reviewArtifactHash)" in script
     assert "questionReviewStates.get(reviewStateKey)" in script
     assert "['recording', 'recorded', 'rolling_back'].includes(existing.phase)" in script
     assert "phase: 'recorded'" in script

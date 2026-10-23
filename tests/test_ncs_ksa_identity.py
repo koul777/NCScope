@@ -5,6 +5,17 @@ import pytest
 from app.services import ncs_mcp_client
 
 
+@pytest.fixture(autouse=True)
+def _use_legacy_direct_ncs_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Low-level unit-detail fakes in this module use the direct contract."""
+
+    monkeypatch.setattr(
+        ncs_mcp_client,
+        "_tool_names",
+        lambda **_kwargs: {"ncs_search", "ncs_unit_detail"},
+    )
+
+
 def _catalog_unit() -> dict[str, object]:
     return dict(ncs_mcp_client._official_unit_catalog_rows()[0])
 

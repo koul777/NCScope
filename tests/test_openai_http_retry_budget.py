@@ -15,6 +15,16 @@ class _Response:
         return self._payload
 
 
+def test_openrouter_fallback_http_status_keeps_bounded_diagnostic() -> None:
+    assert (
+        openai_http._safe_transport_failure_code(
+            RuntimeError("openrouter_fallback_http_429"),
+            "openrouter_api",
+        )
+        == "openrouter_http_429"
+    )
+
+
 class _Client:
     def __init__(self, *, trust_env: bool, outcomes: list[object], calls: list[bool]) -> None:
         self._trust_env = trust_env
@@ -76,6 +86,24 @@ def test_explicit_single_attempt_is_exactly_one_post_and_never_curl(
             payload={"model": "test"},
             api_key="request-key",
             max_attempts=1,
+        )
+
+    assert calls == [True]
+
+
+def test_openrouter_single_attempt_timeout_does_not_issue_recovery_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _patch_client(monkeypatch, [httpx.ReadTimeout("primary timed out")])
+    monkeypatch.setenv("OPENROUTER_FALLBACK_REASONING_EFFORT", "low")
+    monkeypatch.setenv("OPENROUTER_RECOVERY_MODEL", "example/recovery-model")
+
+    with pytest.raises(RuntimeError, match="^openrouter_request_timeout$"):
+        openai_http.post_chat_completions_with_retries(
+            payload={"model": "example/primary-model", "reasoning_effort": "max"},
+            api_key="sk-or-test-key",
+            max_attempts=1,
+            provider="openrouter_api",
         )
 
     assert calls == [True]

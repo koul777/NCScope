@@ -28,7 +28,7 @@ def test_openai_byok_card_is_required_and_accessible() -> None:
     assert "Vercel Production 서버 키" not in script
 
 
-def test_frontend_releases_only_openai_ai_reviewed_questions() -> None:
+def test_frontend_releases_only_known_ai_reviewed_questions() -> None:
     _, script = _page()
 
     assert "function isReleasedAiQuestion(item)" in script
@@ -36,10 +36,38 @@ def test_frontend_releases_only_openai_ai_reviewed_questions() -> None:
     assert "releasedPayloadForDisplay(pendingRawPayload)" in script
     assert "function deferRawPayload(value, aiQualityPassed)" in script
     assert "rawJsonDetails.addEventListener('toggle'" in script
-    assert "String(row.question_source || '').trim() === 'openai_api'" in script
+    assert "function releasedAiSourceBase(value)" in script
+    assert "source === base || source.startsWith(`${base}_`)" in script
+    for source in ("openai_api", "openrouter_api", "codex_cli", "claude_code"):
+        assert f"'{source}'" in script
+    assert "&& releasedAiSourceBase(row.question_source)" in script
     assert "candidateQList.filter(isReleasedAiQuestion)" in script
     assert "data.generated_questions_all.filter(isReleasedAiQuestion)" in script
     assert "data.generated_question_text_rows.filter(isReleasedAiQuestion)" in script
+
+
+def test_interviewer_kit_is_rendered_in_copy_text_and_review_uses_artifact_hash() -> None:
+    _, script = _page()
+
+    for label in (
+        "평가 포인트",
+        "응시자 지시문",
+        "제공자료",
+        "필수 산출",
+        "평정 차원",
+        "면접위원 지침",
+        "NCS 근거",
+        "수행준거",
+        "KSA 근거",
+    ):
+        assert label in script
+    assert "q.task_conditions && typeof q.task_conditions === 'object'" in script
+    assert "q.assessment_guide && typeof q.assessment_guide === 'object'" in script
+    assert "q.ncs_traceability && typeof q.ncs_traceability === 'object'" in script
+    assert "const evidenceRows = Array.isArray(q.ksa_evidence)" in script
+    assert "const reviewArtifactHash = String(q.question_artifact_hash || q.question_hash || '')" in script
+    assert "question_artifact_hash: q.question_artifact_hash || ''" in script
+    assert "encodeURIComponent(reviewArtifactHash)" in script
 
 
 def test_only_openai_key_prefix_is_accepted_by_the_ui() -> None:

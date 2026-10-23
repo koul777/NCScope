@@ -1039,6 +1039,9 @@ def test_runtime_retains_realistic_codex_question_but_blocks_failed_ksa_measurem
     assert report["passed"] is False
     assert report["items"][0]["check_statuses"]["ksa_measurement_task"] == "fail"
     assert "ksa_measurement_task" in report["items"][0]["issues"]
+    assert report["items"][0]["ksa_measurement_issue_codes"] == [
+        "ksa_measurement_focus_visible"
+    ]
 
 
 def test_runtime_valid_codex_question_passes_realism_and_ksa_measurement() -> None:

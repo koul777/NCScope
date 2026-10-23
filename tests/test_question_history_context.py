@@ -17,16 +17,149 @@ def test_quality_retry_context_keeps_ksa_freewriting_contract() -> None:
         original_context="",
     )
 
-    assert "공식 KSA·능력단위·직무 맥락에서 문항 전체를 새로 작성" in context
-    assert "문장 골격이나 상황을 지정하지 않습니다" in context
+    assert "제공된 의미 힌트와 채용 문맥에서 문항 전체를 새로 작성" in context
+    assert "공식 내부 라벨은 모델 입력에 없으며 추측하지 마세요" in context
     assert "natural_wording,ksa_measurement_task" in context
-    assert "index별 evidence_id 잠금" in context
+    assert "서버 잠금 slot index(JSON): [1]" in context
     assert "STAR" not in context
-    assert "previous_drafts_to_avoid" in context
-    assert "이전의 기계적인 질문" in context
-    assert "최소 두 축을 바꾸세요" in context
-    assert "수치·문서·피드백으로 확인한 결과가 모두 나오게" not in context
+    assert "previous_drafts_to_avoid" not in context
+    assert "이전의 기계적인 질문" not in context
+    assert "ksa_test_001" not in context
+    assert "문서·수치·기록·피드백으로 확인한 결과" in context
     assert "당시 맡은 역할·목표" not in context
+
+
+def test_quality_retry_context_keeps_failed_indexes_without_drafts_or_evidence_ids() -> None:
+    context = main._quality_retry_context(
+        trigger_codes=["question_quality_report_failed"],
+        previous_questions=[f"이전 초안 {index} " + ("가" * 400) for index in range(12)],
+        evidence_locks=[(index, f"ksa_{index:024x}") for index in range(1, 6)],
+        quality_issue_codes=["structured_follow_ups", "ksa_measurement_task"],
+        original_context="",
+        target_original_indexes=[2, 4],
+    )
+
+    target_marker = "재생성 대상 원래 index(JSON): [2,4]"
+    assert target_marker in context[:2200]
+    assert "서버 잠금 slot index(JSON): [1,2,3,4,5]" in context
+    assert "이전 초안 11" not in context
+    assert "ksa_000000000000000000000001" not in context
+    assert "1개는 표준 확인, 2개는 '방금/앞서'" in context
+
+
+def test_quality_retry_context_combines_trigger_and_issue_corrections_safely() -> None:
+    context = main._quality_retry_context(
+        trigger_codes=["unsafe_question_surface"],
+        previous_questions=["노출되면 안 되는 이전 질문 원문"],
+        evidence_locks=[(1, "ksa_0123456789abcdef01234567")],
+        quality_issue_codes=["duplicate_question"],
+        original_context="",
+        target_original_indexes=[3],
+    )
+
+    assert "메타 노출 교정" in context
+    assert "중복 교정" in context
+    assert "사건·핵심 판단 또는 행동·요구 결과·질문 도입 중 최소 두 축" in context
+    assert "재생성 대상 원래 index(JSON): [3]" in context
+    assert "노출되면 안 되는 이전 질문 원문" not in context
+    assert "ksa_0123456789abcdef01234567" not in context
+
+
+@pytest.mark.parametrize(
+    ("issue_code", "expected_rule"),
+    [
+        (
+            "ksa_measurement_has_question",
+            "완결된 한국어 질문",
+        ),
+        (
+            "ksa_measurement_has_supported_method",
+            "해당 slot에 지정된 면접기법",
+        ),
+        (
+            "ksa_measurement_focus_visible",
+            "공개 의미 힌트의 업무 대상·행동",
+        ),
+        (
+            "ksa_measurement_ksa_type_operationalized",
+            "지식은 근거와 판단, 기술은 직접 행동과 산출물",
+        ),
+        (
+            "ksa_measurement_observable_task",
+            "구체 업무 사건, 본인의 판단 또는 행동",
+        ),
+        (
+            "ksa_measurement_elicits_response",
+            "지원자가 해야 할 응답 행동",
+        ),
+        (
+            "ksa_measurement_sufficient_task_detail",
+            "업무 대상, 제약, 판단 또는 행동",
+        ),
+        (
+            "ksa_measurement_not_ksa_restatement",
+            "의미 힌트를 되묻지 말고 실제 사건",
+        ),
+        (
+            "ksa_measurement_evidence_linked",
+            "slot 순서와 배정된 의미 힌트",
+        ),
+    ],
+)
+def test_quality_retry_context_selects_safe_ksa_measurement_rule(
+    issue_code: str,
+    expected_rule: str,
+) -> None:
+    context = main._quality_retry_context(
+        trigger_codes=["question_quality_report_failed"],
+        previous_questions=["민감한 질문 원문"],
+        evidence_locks=[(1, "ksa_0123456789abcdef01234567")],
+        quality_issue_codes=["ksa_measurement_task", issue_code],
+        original_context="",
+    )
+
+    assert expected_rule in context
+    assert "민감한 질문 원문" not in context
+    assert "ksa_0123456789abcdef01234567" not in context
+
+
+def test_quality_issue_codes_include_only_allowlisted_ksa_measurement_details() -> None:
+    result = {
+        "question_quality_report": {
+            "items": [
+                {
+                    "issues": ["ksa_measurement_task"],
+                    "ksa_measurement_issue_codes": [
+                        "ksa_measurement_observable_task",
+                        "ksa_measurement_elicits_response",
+                        "ksa_measurement_secret_factor",
+                        "official_factor_name",
+                    ],
+                }
+            ]
+        }
+    }
+
+    all_codes = main._institution_question_quality_issue_codes(
+        result,
+        blocking_only=False,
+    )
+    blocking_codes = main._institution_question_quality_issue_codes(
+        result,
+        blocking_only=True,
+    )
+
+    assert all_codes == [
+        "ksa_measurement_task",
+        "ksa_measurement_observable_task",
+        "ksa_measurement_elicits_response",
+    ]
+    assert blocking_codes == [
+        "ksa_measurement_observable_task",
+        "ksa_measurement_elicits_response",
+    ]
+    assert "ksa_measurement_secret_factor" not in all_codes
+    assert "official_factor_name" not in all_codes
 
 
 def test_blocking_retry_codes_exclude_legacy_editorial_report_noise() -> None:
@@ -107,6 +240,27 @@ def test_model_star_completion_does_not_create_false_history_duplicate() -> None
 def _configured_request_scoped_boundaries(monkeypatch):
     monkeypatch.setenv("NCS_MCP_URL", "http://mcp.example/mcp")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        main,
+        "build_ncs_match_bundle",
+        lambda terms, **_kwargs: {
+            "status": "exact_complete",
+            "eligible_for_generation": True,
+            "reason_codes": [],
+            "lookup_terms": list(terms),
+            "details": [],
+            "units": [
+                {
+                    "ncsClCd": f"02020302{number:02d}_25v3",
+                    "officialUnitBaseCode": f"02020302{number:02d}",
+                    "unitCatalogVerified": True,
+                }
+                for number in range(1, 4)
+            ],
+            "matcher_version": "test-exact-complete",
+            "fingerprint": "d" * 64,
+        },
+    )
     # These tests exercise request-local history and deduplication only.  The
     # public quality boundary has dedicated endpoint tests with production-like
     # evidence metadata.
@@ -699,7 +853,8 @@ def test_review_then_regenerate_uses_feedback_and_rotates_quality_run(monkeypatc
             f"/api/quality/runs/{first_control['run_id']}/review",
             json={
                 "review_token": first_control["review_token"],
-                "question_hash": first_question["question_hash"],
+                "question_hash": first_question["question_artifact_hash"],
+                "question_artifact_hash": first_question["question_artifact_hash"],
                 "question_text": first_question["question"],
                 "question_index": 1,
                 "ncs_code": code,
@@ -835,7 +990,6 @@ def test_generate_from_text_bypasses_legacy_adjustment_without_rule_fallback(
         "ksaTypeName": "기술",
     }
     method = "경험면접"
-    focus = ksa["factorName"]
     builder_called = False
 
     def model_strategy(**kwargs):
@@ -843,23 +997,11 @@ def test_generate_from_text_bypasses_legacy_adjustment_without_rule_fallback(
         builder_called = True
         return {
             "interview_questions": [
-                {
-                    "type": method,
-                    "ncsClCd": code,
-                    "competency": unit["compeUnitName"],
-                    "question_focus": focus,
-                    "question_focus_source": "official_ksa",
-                    "ksa_refs": [focus],
-                    "question_source": "openai_api",
-                    "question_evidence_id": main.stable_ksa_evidence_id(ksa),
-                    "question": "작성한 문서에서 서로 맞지 않는 내용을 찾아 바로잡았던 경험을 설명해 주세요.",
-                    "follow_ups": [
-                        "판단 기준은 무엇이었습니까?",
-                        "직접 확인한 자료는 무엇이었습니까?",
-                        "그 결과를 어떻게 확인했습니까?",
-                    ],
-                    "evaluation_points": ["판단근거", "행동", "결과", "검증"],
-                }
+                _ready_openai_model_question(
+                    unit,
+                    ksa,
+                    scenario="최신본과 승인본이 섞인 보고 자료를 바로잡은",
+                )
             ]
         }
 

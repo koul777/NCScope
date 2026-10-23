@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from functools import lru_cache
 from typing import Any
 
 
@@ -1555,6 +1556,15 @@ def _metadata_labels(item: Mapping[str, Any]) -> list[dict[str, Any]]:
     return list(labels_by_key.values())
 
 
+# ``[0-9A-Za-z가-힣]`` compiled with re.IGNORECASE also matches four case-fold
+# variants (U+0130, U+0131, U+017F, U+212A).  Listing them and switching
+# IGNORECASE off for the class matches exactly the same code points, but the
+# Hangul range is no longer case-folded character by character every time a
+# per-label pattern is compiled.
+_LABEL_WORD_CHAR = "(?-i:[0-9A-Za-z가-힣\u0130\u0131\u017f\u212a])"
+_LABEL_NON_WORD_CHAR = "(?-i:[^0-9A-Za-z가-힣\u0130\u0131\u017f\u212a])"
+
+
 def _flexible_label_pattern(label: str) -> str:
     # Metadata and model output do not always use the same whitespace or
     # middle-dot convention (for example, ``계획대비`` vs ``계획 대비``).
@@ -1562,9 +1572,9 @@ def _flexible_label_pattern(label: str) -> str:
     # the boundary and the grammar-specific suffixes below still prevent
     # partial-token matches from becoming leaks.
     characters = re.findall(r"[0-9A-Za-z가-힣]", label)
-    body = r"[^0-9A-Za-z가-힣]*".join(re.escape(char) for char in characters)
+    body = f"{_LABEL_NON_WORD_CHAR}*".join(re.escape(char) for char in characters)
     return (
-        r"(?<![0-9A-Za-z가-힣])"
+        f"(?<!{_LABEL_WORD_CHAR})"
         r"(?:['\"“”‘’]\s*)?"
         f"{body}"
         r"(?:\s*['\"“”‘’])?"
@@ -1586,6 +1596,12 @@ def _is_natural_explanation_object(label: str) -> bool:
     )
 
 
+# Compiling these case-insensitive Hangul-range patterns costs milliseconds per
+# label, and every quality pass re-checks the same metadata labels (both
+# matrix passes, repair and re-check loops).  The result depends only on the
+# label and compiled patterns are immutable, so a bounded cache returns the
+# exact same patterns.  512 labels keep roughly 15 MB of compiled patterns.
+@lru_cache(maxsize=512)
 def _label_like_patterns(label: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
     label_pattern = _flexible_label_pattern(label)
     patterns: list[tuple[str, re.Pattern[str]]] = [
@@ -1663,7 +1679,8 @@ def _label_like_patterns(label: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
                 "exact_taxonomy_label",
                 re.compile(
                     label_pattern
-                    + r"(?=$|[^0-9A-Za-z가-힣]|(?:은|는|이|가|을|를|의|에|과|와|도|만|로|으로|에서))",
+                    + f"(?=$|{_LABEL_NON_WORD_CHAR}|"
+                    + r"(?:은|는|이|가|을|를|의|에|과|와|도|만|로|으로|에서))",
                     re.IGNORECASE,
                 ),
             )

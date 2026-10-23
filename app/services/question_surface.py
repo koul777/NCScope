@@ -18,6 +18,12 @@ _DANGLING_END_RE = re.compile(
     r"(?:에\s*대한|에\s*관한|을\s*위한|를\s*위한|에\s*따른|을\s*통한|를\s*통한|"
     r"하고|하며|하여|해서|따른|통한|관련된|하는|되는|대한|위한|의)\s*$"
 )
+# Only used when dropping 수행. Ambiguous endings keep that noun, rather
+# than exposing a connective, particle or modifier as the task object.
+_PERFORMANCE_NON_NOUN_END_RE = re.compile(
+    r"(?:및|또는|혹은|그리고|[·ㆍ․,/]|와|과|에서|으로|로|을|를|의|에|은|는|"
+    r"한|된|인|할|될|던|게|히|적으로)\s*$"
+)
 _SENTENCE_END_RE = re.compile(r"(?:다|한다|된다|있다|없다)[.!?]?\s*$")
 _GENERIC_OBJECT_KEYS = {
     "지식",
@@ -201,33 +207,104 @@ def _compact_task_base(value: Any, *, max_chars: int = 62) -> str:
     return clipped or text[:max_chars].strip(" ,.;:·ㆍ/-")
 
 
+def _object_particle(word: str) -> str:
+    """Return 을/를 for the last Korean word, or "" when it cannot be told."""
+
+    text = str(word or "").strip()
+    # ``표준(Code &; Standard)`` takes the particle of ``표준``.
+    while True:
+        stripped = re.sub(r"\s*\([^()]*\)$", "", text).strip()
+        if stripped == text:
+            break
+        text = stripped
+    last = text[-1:]
+    if "가" <= last <= "힣":
+        return "을" if (ord(last) - 0xAC00) % 28 else "를"
+    return ""
+
+
 def _nominalize_attitude_clause(value: Any) -> str:
     text = _clean(value, max_chars=160)
     text = re.sub(r"위해\s*(?:적극적으로\s*)?노력하려는", "위한 적극적", text)
     text = re.sub(r"위해\s*(?:적극적으로\s*)?노력하는", "위한 적극적", text)
+    # ``커뮤니케이션을 하고자 하는`` keeps the official verb ``하다``.
+    # Rewriting it as ``실행하는`` named an action the KSA never states.
     text = re.sub(
         r"(?P<object>.+?(?:을|를))\s*하고자\s*하는",
-        r"\g<object> 실행하는",
+        r"\g<object> 하려는",
         text,
     )
+    # ``하고자 한`` is the same present intention; a past ``하려 했던``
+    # clashed with the hypothetical situation/discussion/in-basket prompts.
     text = re.sub(
-        r"(?P<object>.+?(?:을|를))\s*하고자\s*한",
-        r"\g<object> 실행한",
-        text,
-    )
-    text = re.sub(
-        r"(?P<object>.+?(?:을|를))\s*하려는",
-        r"\g<object> 실행하는",
+        r"(?P<object>.+?(?:을|를))\s*하고자\s*한(?![가-힣])",
+        r"\g<object> 하려는",
         text,
     )
     # When "하고자" follows a verb stem ("달성하고자") it expresses
     # intention, not the generic verb "하다". Preserve that stem instead of
     # creating fused wording such as "달성실행하는".
     text = re.sub(r"(?P<stem>[가-힣]+)하고자\s*하는", r"\g<stem>하려는", text)
-    text = re.sub(r"(?P<stem>[가-힣]+)하고자\s*한", r"\g<stem>하려 했던", text)
-    text = re.sub(r"할\s*수\s*있도록", "가능하도록", text)
-    text = re.sub(r"할\s*수\s*있는", "가능한", text)
+    text = re.sub(r"(?P<stem>[가-힣]+)하고자\s*한(?![가-힣])", r"\g<stem>하려는", text)
+    # ``제시할 수 있는`` stays as written: turning it into ``가능한`` fused
+    # the verb into ``제시가능한``.
     return text.strip()
+
+
+# Attitude labels that end in a trait noun read as ``책임감 있는 행동``.
+# Nouns such as ``사고``, ``숙지`` or ``달성`` do not take ``있는`` and are
+# left as written.
+_ATTITUDE_TRAIT_NOUNS = (
+    "책임감",
+    "사명감",
+    "적극성",
+    "성실성",
+    "유연성",
+    "융통성",
+    "일관성",
+    "자부심",
+    "열의",
+    "성의",
+)
+
+
+def _compact_clause_tail(value: str, *, max_chars: int = 77) -> str:
+    """Shorten a verbal attitude clause from the front so its verb survives.
+
+    Up to ``max_chars`` the whole official clause is kept (the surface stays
+    within the 80-character limit with `` 행동``).  Beyond it, the cut never
+    drops the owner of the next word (``협력대상국의``), never starts on an
+    enumerated item (``지역적,``), a cut-off modifier or inside parentheses.
+    Without such a cut "" lets the caller fall back to the element.
+    """
+
+    text = _clean(value, max_chars=180)
+    if len(text) <= max_chars:
+        return text
+    words = text.split()
+    for start in range(1, len(words) - 1):
+        kept = words[start:]
+        if len(" ".join(kept)) > max_chars:
+            continue
+        first = kept[0]
+        if words[start - 1].endswith("의") or first.endswith(","):
+            continue
+        if ")" in first and "(" not in first:
+            continue
+        if re.search(r"(?:^(?:및|또는|혹은|그리고|등)$|(?:따른|대한|관한|위한|통한|의한|관련된)$)", first):
+            continue
+        clause = " ".join(kept)
+        if clause.count("(") != clause.count(")"):
+            continue
+        return clause.strip(" ,.;:·ㆍ/-")
+    return ""
+
+
+def _ends_with_modifier(text: str) -> bool:
+    """True when the last word modifies a noun (``세심한``, ``충분한``)."""
+
+    last = str(text or "").split()[-1:] or [""]
+    return bool(re.search(r"(?:한|는|은|된|인|던|운|른|적)$", last[0]))
 
 
 def _nominalize_capability_clause(value: Any) -> str:
@@ -297,12 +374,14 @@ def _element_task_object(element_name: Any, kind: str) -> str:
     if kind == "기술":
         if element.endswith("설정"):
             return f"{element}·확인 절차"
-        if element.endswith(("선정", "선택", "조정", "조율", "활용", "의사결정")):
+        if element.endswith(("조정", "조율")):
+            return element
+        if element.endswith(("선정", "선택", "활용", "의사결정")):
             return f"{element}·검증 절차"
     suffix = {
-        "지식": " 관련 정보 확인·판단 기준",
+        "지식": " 관련 정보 확인 기준",
         "기술": " 수행·검증 절차",
-        "태도": " 수행 시 행동 기준",
+        "태도": " 수행 시 행동",
     }.get(kind, " 업무 판단·수행 기준")
     return f"{element}{suffix}"
 
@@ -314,15 +393,21 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         return ""
 
     if kind == "태도":
-        candidate = re.sub(
-            r"\s*(?:(?:하려는|하고자\s*하는)\s*)?(?:태도|자세|의지|의식)\s*$",
-            "",
+        # Replace only the attitude head noun.  The official clause before
+        # it (``정확도를 기하려는``, ``고객과 협의하려는``) is already a
+        # modifier of the observable behaviour; stripping its ending left
+        # broken stems such as ``정확도 기`` or ``협 관련``.
+        verbal_clause = re.search(
+            r"(?:려는|고자\s*하는|고자\s*한|하는|수\s*있는|(?:을|를|기)\s*위한)"
+            r"\s*(?:태도|자세|의지|의식|노력)\s*$",
             candidate,
-        ).strip()
+        )
+        head_nouns = r"태도|자세|의지|의식|노력" if verbal_clause else r"태도|자세|의지|의식"
+        candidate = re.sub(rf"\s*(?:{head_nouns})\s*$", "", candidate).strip()
         # Some extracted rows already contain the public suffix. Remove it
         # before rebuilding the surface so ``행동 기준 행동 기준`` cannot be
         # produced.
-        candidate = re.sub(r"\s*행동\s*기준\s*$", "", candidate).strip()
+        candidate = re.sub(r"\s*행동(?:\s*기준)?\s*$", "", candidate).strip()
         # NCS rows sometimes end with a purpose clause such as
         # ``입사예정자의 조직적응을 적극적으로 도와주고자 하는 태도``.
         # After removing ``태도`` the remaining ``...도와주고자`` must be
@@ -336,9 +421,16 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         # ``선택가능한 결정적 행동`` is an incomplete/non-operational source
         # fragment, not a measurable task. Let the caller fall back to the
         # NCS element or competency name instead of exposing it verbatim.
-        if re.search(r"선택\s*가능|결정적\s*$|결정적\s+행동", candidate):
+        if re.search(r"선택\s*(?:가능|할\s*수\s*있)|결정적\s*$|결정적\s+행동", candidate):
             return ""
-        if _DANGLING_END_RE.search(candidate):
+        if verbal_clause and re.search(r"(?:려는|하는|위한|있는)$", candidate):
+            clause = _compact_clause_tail(candidate)
+            if re.search(r"(?:려는|하는|위한|있는)$", clause):
+                return f"{clause} 행동"
+        # ``협의``, ``주의``, ``열의`` are nouns, not a dangling genitive ``의``.
+        if _DANGLING_END_RE.search(candidate) and not re.search(
+            r"(?:(?:^|\s)[가-힣]|주|협|합|회|논|창|건|토|결|문|심)의$", candidate
+        ):
             candidate = f"{_DANGLING_END_RE.sub('', candidate).strip()} 관련"
         candidate = re.sub(
             r"(?P<object>.+?(?:을|를))\s*위해\s*(?:적극적으로\s*)?노력(?:하는|하려는)?\s*$",
@@ -346,18 +438,33 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             candidate,
         ).strip()
         candidate = re.sub(r"\s*(?:적극적으로\s*)?노력(?:하는|하려는)?\s*$", "", candidate).strip()
+        # Attitude surfaces name the observable behaviour itself.  A
+        # ``행동 기준`` suffix turned them into a rule to recite and made
+        # prompts repeat "행동 기준이 드러난 … 행동".
         if candidate.endswith("유지"):
-            return f"{_compact_task_base(candidate[:-2])} 준수 행동 기준"
+            # ``정확성 유지`` names keeping the accuracy; ``준수`` is a
+            # different obligation the KSA never states.
+            keep_base = re.sub(r"\s*(?:을|를)$", "", _compact_task_base(candidate[:-2])).strip()
+            if keep_base:
+                particle = _object_particle(keep_base)
+                if not particle:
+                    # ``KPI 유지``: keep the official wording, do not guess.
+                    return f"{keep_base} 유지 행동"
+                return f"{keep_base}{particle} 유지하는 행동"
         if candidate.endswith("우선"):
             priority_base = re.sub(r"(?:을|를)$", "", candidate[:-2].strip()).strip()
-            return f"{_compact_task_base(priority_base)} 우선 행동 기준"
-        if candidate.endswith("주의"):
-            return f"{_compact_task_base(candidate[:-2])} 안전·주의 행동 기준"
+            return f"{_compact_task_base(priority_base)} 우선 행동"
+        if candidate.endswith("주의") and not re.search(r"[가-힣]주의$", candidate):
+            # Keep the official ``주의``; ``안전`` is not in the KSA.
+            caution_base = _compact_task_base(candidate[:-2])
+            if caution_base and not _ends_with_modifier(caution_base):
+                return f"{caution_base}에 주의하는 행동"
+            return f"{caution_base} 주의 행동".strip()
         def _attitude_object_action(match: re.Match[str]) -> str:
             object_text = str(match.group("object") or "").strip()
             particle = str(match.group("particle") or "").strip()
             action = str(match.group("action") or "").strip()
-            if action.endswith(("하려는", "하는", "했던")):
+            if action.endswith(("려는", "는", "했던")):
                 return f"{object_text}{particle} {action}"
             return f"{object_text} {action}"
 
@@ -368,11 +475,23 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             candidate,
         ).strip()
         candidate = _compact_task_base(candidate)
+        observance = re.match(r"(?P<object>.+?)의\s+준수$", candidate)
+        if observance:
+            particle = _object_particle(observance.group("object"))
+            if not particle:
+                # ``Code의 준수``: keep the official particle, do not guess.
+                return f"{candidate} 행동"
+            candidate = f"{observance.group('object')}{particle} 준수"
         if candidate.endswith(("의사소통", "소통", "협업", "조율", "준수")):
-            return f"{candidate}하는 행동 기준"
+            return f"{candidate}하는 행동"
         if candidate.endswith("이해"):
-            return f"{candidate}하고 공유하는 행동 기준"
-        return f"{candidate} 행동 기준" if candidate else ""
+            # ``공유`` is not in the KSA; keep ``이해`` as the act.
+            if _ends_with_modifier(candidate[:-2]):
+                return f"{candidate} 행동"
+            return f"{candidate}하는 행동"
+        if candidate.endswith(_ATTITUDE_TRAIT_NOUNS):
+            return f"{candidate} 있는 행동"
+        return f"{candidate} 행동" if candidate else ""
 
     if kind == "지식":
         if _DANGLING_END_RE.search(candidate):
@@ -396,16 +515,19 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             "평가", "검토", "이해", "분석", "판단", "확인", "파악", "해석",
             "예측", "계산", "측정", "조치", "적용", "식별", "설명", "수행",
         )
+        # Knowledge surfaces name what is checked, not a "판단 기준" noun
+        # pile: prompts already ask for the "판단 근거", and "확인·판단 기준
+        # … 판단 근거" repeated the same word.
         if knowledge_base.endswith(action_suffixes):
-            return f"{knowledge_base}·판단 기준"
+            return f"{knowledge_base} 기준"
         decision_suffixes = ("선정", "설정", "추천", "할당", "구성", "확정", "결정")
         if knowledge_base.endswith(decision_suffixes):
             return f"{knowledge_base} 기준"
         if knowledge_base.endswith("기준"):
             return f"{knowledge_base} 적용·검증 절차"
         if knowledge_base.endswith("규정"):
-            return f"{knowledge_base} 적용·판단 기준"
-        return f"{knowledge_base} 확인·판단 기준"
+            return f"{knowledge_base} 적용 기준"
+        return f"{knowledge_base} 확인 기준"
 
     if kind == "기술":
         candidate = _nominalize_capability_clause(candidate)
@@ -422,8 +544,10 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         candidate = re.sub(r"\s*하려는\s*$", "", candidate).strip()
         candidate = re.sub(r"\s*에\s*(?:대한|관한)\s*(?=(?:활용|해석|분석|검토|판단|적용)\s*$)", " ", candidate)
         candidate = re.sub(r"(?P<action>활용|설정)\s+수행\s*$", r"\g<action>", candidate)
+        candidate = re.sub(r"관리\s+관리$", "관리", candidate)
         candidate = re.sub(
             r"(?P<object>.+?)(?:을|를)\s*(?P<action>정리|설정|선택|선정|선별|조정|조율|활용|적용|"
+            r"수집|정보검색|분류|처리|운영|관리|파악|점검|배양|유지|"
             r"해석|조사|의사결정|포착|수정·보완|기획|실행|할당|배치|결정|판별|식별|도출|구현|"
             r"설계|제작|사용|운반|처치|치료|문서화|가공|조절|교체|대응|해결|반영|갱신|계획|"
             r"구성|비교|통제|보고|분할|계산|추정|예측|방지|추출|운전|보수|응용|조작|평가|진단|제시|개선)$",
@@ -435,6 +559,80 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             or re.search(r"(?:게|히|적으로|동시에|바탕으로)\s+수행$", candidate)
         ):
             return f"{_compact_task_base(candidate)}하는 절차와 결과 검증 기준"
+        if candidate.endswith("수행"):
+            task = re.sub(r"\s*수행$", "", candidate).strip()
+            if (
+                _useful_object(task, official_factor=label)
+                and not _PERFORMANCE_NON_NOUN_END_RE.search(task)
+            ):
+                return task
+            # Keep 수행 when the remainder is incomplete or too short (면담).
+            # It is still distinct from the official 능력/기술 evidence label.
+            # A middle dot or slash join keeps the source spacing
+            # (``계획·수행``); only a bare noun gets a space
+            # (``역할수행`` -> ``역할 수행``).
+            if re.search(r"[·ㆍ․/]\s*수행$", candidate) or not task:
+                retained = candidate
+            else:
+                retained = f"{task} 수행"
+            if _useful_object(retained, official_factor=label):
+                return retained
+        coordination = re.match(r"(?P<object>.+?)\s*(?P<action>조율|조정|중재)$", candidate)
+        if coordination:
+            # Coordination skills are the coordinating act itself; do not turn
+            # them into a verification procedure the KSA never names.
+            coordination_object = _compact_task_base(coordination.group("object"))
+            if coordination_object:
+                return f"{coordination_object} 조정" if coordination.group("action") == "중재" else (
+                    f"{coordination_object} {coordination.group('action')}"
+                )
+        # A skill names the act, not an extra verification procedure. Keep
+        # the factor-specific object when removing its type/capability label.
+        # If the result would be the complete official label verbatim, retain
+        # the existing rendering below rather than falling back to a broader
+        # element (public_task_object deliberately rejects identical labels).
+        skill_actions = (
+            (r"\s*예측\s*기법$", " 예측"),
+            (r"\s*기법$", " 방법 적용"),
+            (r"\s*시스템$", " 도구 활용"),
+            (r"\s*수립$", " 수립"),
+            (r"\s*분석$", " 분석"),
+            (r"\s*검증$", " 검증"),
+            (r"\s*작성$", " 작성"),
+            (r"\s*산정$", " 계산"),
+            (r"\s*활용$", " 활용"),
+            (r"\s*적용$", " 적용"),
+            (r"\s*해석$", " 해석"),
+            (r"\s*의사결정$", " 의사결정"),
+            (r"\s*포착$", " 포착"),
+            (r"\s*수정·보완$", " 수정·보완"),
+            (r"\s*개발$", " 개발"),
+            (r"\s*수집$", " 수집"),
+            (r"\s*정보검색$", " 정보 검색"),
+            (r"\s*분류$", " 분류"),
+            (r"\s*처리$", " 처리"),
+            (r"\s*운영$", " 운영"),
+            (r"\s*관리$", " 관리"),
+            (r"\s*파악$", " 파악"),
+            (r"\s*점검$", " 점검"),
+            (r"\s*설정$", " 설정"),
+            (r"\s*선택$", " 선택"),
+            (r"\s*선정$", " 선정"),
+            (r"\s*선별$", " 선별"),
+            (r"\s*조사$", " 조사"),
+            (r"\s*배양$", " 배양"),
+            (r"\s*유지$", " 유지"),
+        )
+        for pattern, replacement in skill_actions:
+            if re.search(pattern, candidate):
+                action = re.sub(pattern, replacement, candidate).strip()
+                # A short action (``분석``) is rejected by public_task_object,
+                # which then uses the element name. Falling through to the
+                # replacements below instead invented wording such as
+                # ``검토 절차`` for ``분석 능력``.
+                if _key(action) != _key(label):
+                    return action
+                break
         skill_replacements = (
             (r"\s*예측\s*기법$", " 예측·검증 절차"),
             (r"\s*기법$", " 방법 적용·검증 절차"),
@@ -456,9 +654,6 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             (r"\s*선택$", " 선정·확인 절차"),
             (r"\s*선정$", " 선정·확인 절차"),
             (r"\s*선별$", " 선정·확인 절차"),
-            (r"\s*조정$", " 조정·검증 절차"),
-            (r"\s*조율$", " 조율·검증 절차"),
-            (r"\s*중재$", " 조정 절차"),
             (r"\s*활용$", " 활용·검증 절차"),
             (r"\s*적용$", " 적용·검증 절차"),
             (r"\s*해석$", " 해석·검증 절차"),
@@ -482,9 +677,9 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
         if candidate.endswith("절차"):
             return f"{candidate} 적용·검증 기준"
         if candidate.endswith(("방법", "기법")):
-            return f"{candidate} 적용·검증 절차"
+            return f"{candidate} 적용"
         if candidate.endswith(("도구", "장비", "시스템", "프로그램", "소프트웨어")):
-            return f"{candidate} 활용·검증 절차"
+            return f"{candidate} 활용"
         action_suffixes = (
             "기획", "실행", "할당", "배치", "결정", "판별", "식별", "도출", "구현",
             "설계", "제작", "사용", "운반", "처치", "치료", "문서화", "시뮬레이션",
@@ -493,7 +688,7 @@ def _repair_factor_object(factor_name: Any, kind: str) -> str:
             "추출", "운전", "보수", "응용", "조작", "평가", "진단", "제시", "개선",
         )
         if candidate.endswith(action_suffixes):
-            return f"{candidate}·검증 절차"
+            return candidate if _key(candidate) != _key(label) else f"{candidate}·검증 절차"
         if re.search(r"[가-힣](?:는|은)$", candidate):
             return f"{candidate} 절차와 결과 검증 기준"
         if candidate.endswith("게"):
@@ -535,16 +730,16 @@ def public_task_object(
     competency = _clean(competency_name, max_chars=80)
     if _useful_object(competency, official_factor=official):
         suffix = {
-            "지식": " 판단 기준",
+            "지식": " 확인 기준",
             "기술": " 수행 절차",
-            "태도": " 행동 기준",
+            "태도": " 수행 행동",
         }.get(kind, " 업무 기준")
         return f"{competency}{suffix}", "competency_name"
 
     fallback = {
-        "지식": "업무 범위와 예외를 구분하는 판단 기준",
+        "지식": "업무 범위와 예외를 구분하는 기준",
         "기술": "업무 수행 절차와 산출물 품질 기준",
-        "태도": "상충하는 요구 속에서 지켜야 할 행동 기준",
+        "태도": "상충하는 요구 속에서도 책임을 다하는 행동",
     }.get(kind, "업무 판단과 수행 기준")
     return fallback, "safe_fallback"
 
@@ -639,7 +834,7 @@ def has_dangling_surface(value: Any) -> bool:
     return bool(
         _DANGLING_END_RE.search(text)
         or re.search(
-            r"(?:하고자|고자)\s*(?:관련\s*)?(?:행동\s*기준|확인·판단\s*기준|수행·검증\s*절차)$",
+            r"(?:하고자|고자)\s*(?:관련\s*)?(?:행동(?:\s*기준)?|확인(?:·판단)?\s*기준|수행·검증\s*절차)$",
             text,
         )
     )
