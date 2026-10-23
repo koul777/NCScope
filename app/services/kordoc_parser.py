@@ -4237,20 +4237,48 @@ class _KordocWorker:
             and time.monotonic() - self.last_used < _KORDOC_WORKER_IDLE_SEC
         )
 
+    def _write_request(self, line: bytes, deadline: float) -> None:
+        """Send one request line, giving up at ``deadline``.
+
+        A pipe write blocks once the worker stops reading.  The write runs on
+        a helper thread so the caller can time out; the caller then kills the
+        worker, which ends the blocked write with a broken-pipe error.
+        """
+
+        stdin = self._process.stdin
+        if stdin is None:
+            raise _KordocWorkerFailure("Kordoc worker stdin is closed")
+        outcome: list[BaseException | None] = []
+
+        def write() -> None:
+            try:
+                stdin.write(line)
+                stdin.flush()
+            except BaseException as exc:  # reported to the caller below
+                outcome.append(exc)
+            else:
+                outcome.append(None)
+
+        writer = threading.Thread(target=write, name="kordoc-worker-stdin", daemon=True)
+        writer.start()
+        writer.join(max(0.0, deadline - time.monotonic()))
+        if writer.is_alive() or not outcome:
+            raise _KordocWorkerTimeout("Kordoc worker did not read the request in time")
+        error = outcome[0]
+        if isinstance(error, (OSError, ValueError)):
+            raise _KordocWorkerFailure("Kordoc worker stdin is closed") from error
+        if error is not None:
+            raise error
+
     def parse(self, payload: dict[str, Any], *, timeout: float) -> bytes:
+        # Sending the request and waiting for the answer share one deadline.
+        deadline = time.monotonic() + max(0.0, float(timeout))
         self._next_id += 1
         self.requests += 1
         request_id = self._next_id
         line = json.dumps({**payload, "id": request_id}).encode("utf-8") + b"\n"
-        stdin = self._process.stdin
-        try:
-            if stdin is None:
-                raise _KordocWorkerFailure("Kordoc worker stdin is closed")
-            stdin.write(line)
-            stdin.flush()
-        except (OSError, ValueError) as exc:
-            raise _KordocWorkerFailure("Kordoc worker stdin is closed") from exc
-        status, body = self._read_response(request_id, timeout)
+        self._write_request(line, deadline)
+        status, body = self._read_response(request_id, deadline - time.monotonic())
         self.last_used = time.monotonic()
         if status != b"ok":
             raise _KordocWorkerFailure("Kordoc worker could not parse the document")
@@ -4258,13 +4286,15 @@ class _KordocWorker:
 
     def close(self) -> None:
         process = self._process
+        # Kill before closing stdin: a request write blocked on a full pipe
+        # holds the stdin buffer lock until the pipe breaks.
+        if process.poll() is None:
+            process.kill()
         try:
             if process.stdin is not None:
                 process.stdin.close()
-        except OSError:
+        except (OSError, ValueError):
             pass
-        if process.poll() is None:
-            process.kill()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
