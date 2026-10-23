@@ -1863,7 +1863,7 @@ def test_situational_template_uses_domain_specific_risk_event() -> None:
     assert "안전사고 위험 구역 발견" in question["question"]
     assert "안전사고 위험 구역 발견이 동시에" in question["question"]
     assert question["question_focus_surface"] == "청소범위 설정"
-    assert "청소범위 설정을 실제로 실행해야 하는 가운데" in question["question"]
+    assert "청소범위 설정을 실제로 해야 하는 가운데" in question["question"]
     assert "청소범위 설정·확인 절차" not in question["question"]
     assert "설정능력을 실제로 수행" not in question["question"]
     assert "'청소범위 설정능력'와" not in "\n".join([question["question"], *question["follow_ups"]])
@@ -1926,7 +1926,7 @@ def test_skill_factor_object_uses_application_verb_for_method_or_tool() -> None:
     assert "예측을 직접 수행" not in method_question
     assert "절차를 따라" not in method_question
     assert "수요예측 기법" not in method_question
-    assert "문서관리 도구 활용을 실제로 실행해야" in tool_question
+    assert "문서관리 도구 활용을 실제로 해야" in tool_question
     assert "활용을 실제로 수행" not in tool_question
     assert "검증 절차" not in method_question
     assert "활용 절차" not in tool_question
@@ -2117,7 +2117,7 @@ def test_domain_templates_choose_natural_korean_particles() -> None:
     assert "운임 산정 오류가 동시에" in merged
     assert "화주 요청 변경 내역" in merged
     assert "변경 요청서가 주어졌습니다" in merged
-    assert "운임원가 계산을 실제로 실행" in merged
+    assert "운임원가 계산을 실제로 해야 하는 가운데" in merged
     assert "계산을 실제로 수행" not in merged
     assert "운임원가 계산·검증 절차" not in merged
     assert "'운임원가산정'와" not in merged
