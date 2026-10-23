@@ -635,9 +635,9 @@ def test_planned_question_sequence_for_prompt_includes_unit_and_required_factor(
     assert result[0]["required_factorName"] == "Requirement Analysis"
     assert result[0]["required_ksa_type"] == "기술"
     assert result[0]["evidence_id"].startswith("ksa_")
-    assert result[0]["required_surface_focus"] == "Requirement Analysis"
+    assert result[0]["required_surface_focus"] == "Requirement Analysis 관련 작업"
     assert result[0]["required_task_statement"] == (
-        "Requirement Analysis에 따라 조치하고 산출물의 품질을 확인한다"
+        "Requirement Analysis 관련 작업에 따라 조치하고 산출물의 품질을 확인한다"
     )
     assert result[0]["required_observable_behavior"] == (
         "수행 순서, 사용 자료·도구, 조치, 산출물과 품질 확인 결과를 제시한다"

@@ -94,14 +94,14 @@ def test_every_method_keeps_skill_action_and_official_evidence(
 @pytest.mark.parametrize(
     ("factor", "expected"),
     (
-        ("규칙 적용", "규칙 적용·검증 절차"),
-        ("문서 오류 검증", "문서 오류 확인·검증 절차"),
-        ("장비 조작", "장비 조작·검증 절차"),
+        ("규칙 적용", "규칙을 적용하는 작업"),
+        ("문서 오류 검증", "문서 오류를 검증하는 작업"),
+        ("장비 조작", "장비를 조작하는 작업"),
         ("요구조사 수행능력", "요구조사"),
         ("정보 수집 능력", "정보 수집"),
         ("보안 점검 및 설정 수행 능력", "보안 점검 및 설정"),
-        ("관련 장비를 다루는 능력", "관련 장비를 다루는 절차와 결과 검증 기준"),
-        ("검사 절차", "검사 절차 적용·검증 기준"),
+        ("관련 장비를 다루는 능력", "관련 장비를 다루는 작업"),
+        ("검사 절차", "검사 절차 적용"),
     ),
 )
 def test_unshortened_skill_keeps_its_factor_anchor(factor: str, expected: str) -> None:
@@ -115,3 +115,6 @@ def test_unshortened_skill_keeps_its_factor_anchor(factor: str, expected: str) -
     assert surface == expected
     assert source == "factor_repair"
     assert "문서 작성" not in surface
+    for word in ("검증", "확인", "점검", "절차"):
+        if word not in factor:
+            assert word not in surface
