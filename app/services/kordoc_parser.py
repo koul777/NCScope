@@ -3957,6 +3957,94 @@ def _contextual_evidence_snippet(markdown: str) -> str:
     return " | ".join(snippet for _line_no, snippet in fallback[:3])[:240]
 
 
+_NCS_HIERARCHY_LEVEL_KEYS = frozenset(
+    _norm(level) for level in ("대분류", "중분류", "소분류", "세분류")
+)
+_NCS_UNDEVELOPED_DECLARATION = re.compile(r"NCS\s*미개발", re.IGNORECASE)
+_NUMBERED_NCS_LABEL = re.compile(r"^\s*\d{1,2}\s*[.．]")
+
+
+def _ncs_undeveloped_detail_span_labels(markdown: str) -> set[str]:
+    """Return normalized 세분류 cells that sit under ``NCS 미개발`` columns.
+
+    Kordoc 4.24.1 keeps a hierarchy such as ``(현재 NCS 미개발 분야)`` as a
+    cell spanning the columns whose 세분류 cells hold the institution's own
+    job names (``(약제 관리)``). The declaration covers exactly those columns,
+    so the names are source-declared non-NCS labels. Only cells inside the
+    same hierarchy block, in a 세분류 row below the declaration and fully
+    inside its columns count; numbered labels (``01. 의료기기관리``) keep
+    their official-candidate state.
+    """
+
+    labels: set[str] = set()
+    if "미개발" not in markdown:
+        return labels
+    for raw_table in re.findall(
+        r"<table[^>]*>.*?</table>", markdown, flags=re.IGNORECASE | re.DOTALL
+    ):
+        if "미개발" not in raw_table:
+            continue
+        try:
+            grid = _html_table_position_grid(raw_table)
+        except (KordocStructureLimitError, ValueError):
+            continue
+        row_levels = [
+            next(
+                (
+                    _norm(slot.get("text"))
+                    for slot in row
+                    if _norm(slot.get("text")) in _NCS_HIERARCHY_LEVEL_KEYS
+                ),
+                "",
+            )
+            for row in grid
+        ]
+        detail_level = _norm("세분류")
+        for row_index, row in enumerate(grid):
+            if not row_levels[row_index]:
+                continue
+            for slot in row:
+                if slot.get("carried") or not _NCS_UNDEVELOPED_DECLARATION.search(
+                    str(slot.get("text") or "")
+                ):
+                    continue
+                start = int(slot.get("origin_column") or 0)
+                end = start + max(1, int(slot.get("column_span") or 1))
+                for below_index in range(row_index + 1, len(grid)):
+                    if not row_levels[below_index]:
+                        break
+                    if row_levels[below_index] != detail_level:
+                        continue
+                    for cell in grid[below_index]:
+                        if cell.get("carried"):
+                            continue
+                        column = int(cell.get("origin_column") or 0)
+                        span = max(1, int(cell.get("column_span") or 1))
+                        text = str(cell.get("text") or "").strip()
+                        if (
+                            start <= column
+                            and column + span <= end
+                            and text
+                            and not _NUMBERED_NCS_LABEL.match(text)
+                            and not _NCS_UNDEVELOPED_DECLARATION.search(text)
+                        ):
+                            labels.add(_norm(text))
+    labels.discard("")
+    return labels
+
+
+def _mark_ncs_undeveloped_span_details(
+    evidence_rows: list[dict[str, Any]],
+    markdown: str,
+) -> None:
+    labels = _ncs_undeveloped_detail_span_labels(markdown)
+    if not labels:
+        return
+    for row in evidence_rows:
+        if _norm(row.get("detail")) in labels:
+            row["mapping_state"] = "source_declared_self_developed"
+
+
 def _detail_candidate_evidence(
     detail_candidates: list[str],
     sections: dict[str, list[dict[str, Any]]],
@@ -5103,6 +5191,7 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
         detail_candidates = _extract_contextual_ncs_detail_candidates(markdown)
         detail_source = "contextual" if detail_candidates else ""
     detail_candidate_evidence = _detail_candidate_evidence(detail_candidates, sections, markdown, detail_source)
+    _mark_ncs_undeveloped_span_details(detail_candidate_evidence, markdown)
     self_developed_details = [
         str(row.get("detail") or "").strip()
         for row in detail_candidate_evidence
@@ -5299,7 +5388,9 @@ def structure_job_description(parsed: dict[str, Any], filename: str = "") -> dic
     }
 
 
-_BULLET_CHARS = "•○●□■▪▫◦ㅇ⚪¡\uf0fa"
+# Kordoc 4.24.1 maps the symbol-font bullet U+F0FA to U+1F8AD (Wingdings
+# table); both forms are the same bullet.
+_BULLET_CHARS = "•○●□■▪▫◦ㅇ⚪¡\uf0fa\U0001F8AD"
 _FINAL_UNIT_ROWS_BY_CODE: dict[str, dict[str, Any]] | None = None
 _ORIGINAL_EXTRACT_POSITIONED_TABLE_EVIDENCE = _base_extract_positioned_table_evidence
 

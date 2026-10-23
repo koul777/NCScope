@@ -25,12 +25,55 @@ const clean = (value, depth = 0) => {
   return value;
 };
 
+// Kordoc 4.24.1 OCR defaults differ from 4.9.1 (ParseOptions.ocr in
+// dist/index.d.ts): an unset ``ocr`` runs the built-in OCR whenever the model
+// is cached in ~/.cache/kordoc, and ``ocr: true`` also reads every picture
+// without a text layer on normal pages and every inserted HWP/HWPX picture.
+// Keep 4.9.1's behaviour: parse the text layer with OCR off and run the OCR
+// pass only when Kordoc reports a page without usable text (NEEDS_OCR) or the
+// text-layer parse fails.
+const needsOcrPass = (parsed) =>
+  !parsed ||
+  parsed.success === false ||
+  (parsed.warnings || []).some((warning) => warning?.code === "NEEDS_OCR");
+
+const parseWithOcrPolicy = async (bytes, ocrRequested) => {
+  if (!ocrRequested) return { parsed: await parse(bytes, { ocr: false }), reparsed: false };
+  let textLayer;
+  try {
+    textLayer = await parse(new Uint8Array(bytes), { ocr: false });
+  } catch {
+    textLayer = null;
+  }
+  if (!needsOcrPass(textLayer)) return { parsed: textLayer, reparsed: false };
+  return { parsed: await parse(bytes, { ocr: true }), reparsed: true };
+};
+
+// pdf.js numbers every loaded document per process (font ids "g_d<N>_f<M>").
+// A one-shot process always starts at d0, so shift the ids back by the first
+// document number this request used to keep the output byte-identical.
+// Only Kordoc's PDF parser emits pdf.js font ids. HWP/HWPX/DOCX results carry
+// the document's real font faces, which must pass through unchanged even if
+// a face happens to look like "g_d3_f1"; an unknown format is not touched.
+// A request that needed the OCR pass loaded the PDF twice, so the one-shot
+// runner shifts that result too and matches a single OCR parse.
+const fontIdPattern = /"fontName":"g_d(\d+)_f(\d+)"/g;
+const restoreFreshProcessFontIds = (json) => {
+  let offset = Infinity;
+  for (const match of json.matchAll(fontIdPattern)) {
+    offset = Math.min(offset, Number(match[1]));
+  }
+  if (!Number.isFinite(offset) || offset === 0) return json;
+  return json.replace(
+    fontIdPattern,
+    (_match, doc, font) => `"fontName":"g_d${Number(doc) - offset}_f${font}"`,
+  );
+};
+
 const parseRequest = async (request) => {
   const bytes = Buffer.from(String(request.dataBase64 || ""), "base64");
-  const options = {};
-  if (request.ocr) options.ocr = true;
 
-  const parsed = await parse(bytes, options);
+  const { parsed, reparsed } = await parseWithOcrPolicy(bytes, Boolean(request.ocr));
 
   const response = {
     success: parsed?.success !== false,
@@ -56,7 +99,7 @@ const parseRequest = async (request) => {
   // ``fileType`` is Kordoc's own format detection. It is not part of the JSON
   // returned to Python; the persistent worker uses it only to decide whether
   // the pdf.js font-id restoration below applies.
-  return { fileType: parsed?.fileType, json: JSON.stringify(clean(response)) };
+  return { fileType: parsed?.fileType, reparsed, json: JSON.stringify(clean(response)) };
 };
 
 // Persistent mode: the Python service keeps one process alive so each document
@@ -80,24 +123,6 @@ const serve = async () => {
     new Promise((resolve) => {
       process.stdout.write(`\n${marker}${id} ${status} ${payload}\n`, resolve);
     });
-  // pdf.js numbers every loaded document per process (font ids "g_d<N>_f<M>").
-  // A one-shot process always starts at d0, so shift the ids back by the first
-  // document number this request used to keep the output byte-identical.
-  // Only Kordoc's PDF parser emits pdf.js font ids. HWP/HWPX/DOCX results carry
-  // the document's real font faces, which must pass through unchanged even if
-  // a face happens to look like "g_d3_f1"; an unknown format is not touched.
-  const fontIdPattern = /"fontName":"g_d(\d+)_f(\d+)"/g;
-  const restoreFreshProcessFontIds = (json) => {
-    let offset = Infinity;
-    for (const match of json.matchAll(fontIdPattern)) {
-      offset = Math.min(offset, Number(match[1]));
-    }
-    if (!Number.isFinite(offset) || offset === 0) return json;
-    return json.replace(
-      fontIdPattern,
-      (_match, doc, font) => `"fontName":"g_d${Number(doc) - offset}_f${font}"`,
-    );
-  };
   await emit(0, "ready", JSON.stringify({ parser_version: VERSION }));
   armIdleTimer();
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -130,5 +155,6 @@ if (process.argv.includes("--serve")) {
   });
 
   const request = JSON.parse(input || "{}");
-  process.stdout.write((await parseRequest(request)).json);
+  const { fileType, reparsed, json } = await parseRequest(request);
+  process.stdout.write(fileType === "pdf" && reparsed ? restoreFreshProcessFontIds(json) : json);
 }
